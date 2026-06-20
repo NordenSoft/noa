@@ -65,8 +65,9 @@ Canonicalized per **RFC 8785 (JCS)** — with NOA hardening (§4) — before has
 - **Unknown fields are REJECTED** at every level (`additionalProperties:false`). This is a
   security control: it closes the "smuggle PII / data in an unrecognized field" channel and
   keeps the hashed surface exactly the documented surface.
-- **PII-free invariant:** never embed raw params, customer data, secrets, or free text — only
-  `paramsHash` and enum/id fields.
+- **PII-free producer obligation** (the format cannot enforce this — see THREAT-MODEL T9):
+  producers MUST NOT embed raw params, customer data, secrets, or free text — only `paramsHash`
+  and enum/id fields. Unknown fields are rejected, but PII placed in a known opaque field is not.
 - **Integer-only:** all numbers are JSON integers in the safe range. Floats/exponents are
   rejected (removes number-serialization ambiguity entirely).
 - **`paramsHash`** is `sha256:<hex>` or, recommended for low-entropy params,

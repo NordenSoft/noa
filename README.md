@@ -28,7 +28,7 @@ with no dependency on us.
 
 AI agents are starting to *do* things, not just answer. Once a wrong action runs, it's done.
 Observability tools tell you what happened — *afterwards*. This layer decides what *should*
-happen **before** it runs, and leaves an independently verifiable proof.
+happen **before** it runs, and leaves an independently verifiable provenance record.
 
 > **What it is, precisely:** tamper-*evident* provenance — it proves a record was produced under
 > the stated rules and not edited mid-chain. It is **not** proof-of-action, non-repudiation, or a
@@ -59,7 +59,7 @@ the signing key is bound into the hash, and verification runs **offline** — no
 
 ```bash
 npm install          # zero runtime dependencies (Node ≥ 20 stdlib only)
-npm test             # build + generate conformance vectors + run 59 tests
+npm test             # build + generate conformance vectors + run 60 tests
 
 # verify a signed chain against a keyring + checkpoint
 node dist/src/cli.js verify conformance/vectors/valid-chain.json \
@@ -84,7 +84,7 @@ import { buildReceipt, verifyChain, generateKeyPair } from "@noa/receipt";
 
 - ✅ **Receipt spec (v0.1)** — mandatory Ed25519, key-pinning, genesis + tail-truncation rules.
 - ✅ **Offline verifier** — library + `noa verify` CLI, zero runtime deps, hostile-input hardened.
-- ✅ **JSON-Schema + conformance suite** — 59 tests, 14 attack + 9 malformed vectors, all rejected.
+- ✅ **JSON-Schema + conformance suite** — 60 tests, 14 attack + 9 malformed vectors, all rejected.
 - 🚧 **SDK `noa.guard()` · MCP proxy · hosted control-plane** — examples in [`examples/`](examples), hardening in progress.
 - This is **early access**, and it is **one organ** of NOA — not the whole brain. The full
   agent-cognition platform (cognition, memory, BYO-agent hosting) is separate and proprietary.
@@ -92,8 +92,9 @@ import { buildReceipt, verifyChain, generateKeyPair } from "@noa/receipt";
 ## The standard
 
 A receipt is only as valuable as the breadth of parties who accept it — so it must be
-**vendor-neutral**. The goal is an open standard (proposed to the Linux Foundation's
-Agentic AI Foundation), not a NOA-owned format. No single vendor can be the neutral steward
+**vendor-neutral**. The goal is an open standard — the intended home is a neutral foundation
+(e.g. the Linux Foundation's Agentic AI Foundation), not a NOA-owned format. No single vendor
+can be the neutral steward
 auditors, insurers, and counterparties trust — which is exactly why this organ is open.
 
 ## Get involved

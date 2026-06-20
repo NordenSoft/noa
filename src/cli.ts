@@ -68,9 +68,15 @@ function main(argv: string[]): number {
 
   for (let i = 1; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--keyring") keyringPath = args[++i];
-    else if (a === "--checkpoint") checkpointPath = args[++i];
-    else if (a.startsWith("--")) usage(`unknown flag: ${a}`);
+    if (a === "--keyring") {
+      const v = args[++i];
+      if (v === undefined || v.startsWith("--")) usage("--keyring requires a path");
+      keyringPath = v;
+    } else if (a === "--checkpoint") {
+      const v = args[++i];
+      if (v === undefined || v.startsWith("--")) usage("--checkpoint requires a path");
+      checkpointPath = v;
+    } else if (a.startsWith("--")) usage(`unknown flag: ${a}`);
     else if (!receiptsPath) receiptsPath = a;
     else usage(`unexpected argument: ${a}`);
   }
