@@ -106,9 +106,11 @@ R0(seq=0, prevHash=null) -> R1(prevHash=H(R0)) -> R2(prevHash=H(R1)) -> …
 
 - **Genesis** is `seq == 0` with `prevHash == null`. A non-null genesis prevHash is rejected.
   The genesis receipt is signed; obtain its key out-of-band (the keyring is the trust root).
-- **Key-pinning:** the first receipt for a given `agent.id` pins its `sig.kid`. A later
-  receipt for the same `agent.id` under a **different** `kid` is rejected — a mid-chain key
-  swap cannot pass even if the attacker holds a valid keypair.
+- **Key-pinning (continuity):** the first receipt for a given `agent.id` pins its `sig.kid`. A
+  later receipt for the same `agent.id` under a **different** `kid` is rejected — a mid-chain key
+  swap cannot pass even if the attacker holds a valid keypair. (Pinning is per `agent.id`; one
+  `kid` MAY be shared across multiple `agent.id`s by design. This is key *continuity* — identity
+  authenticity comes from the out-of-band keyring, not from first-sight.)
 - Editing any `Ri` changes `H(Ri)` → mismatches `R(i+1).prevHash`. **Tamper-evident.**
 
 ---
@@ -173,7 +175,11 @@ attacker drops the tail; the prefix still validates). A signed **checkpoint** cl
 ```
 
 A verifier given a checkpoint asserts the chain head equals `{highestSeq, headHash}` →
-truncation/extension is detected. Without a checkpoint the verifier **warns** that
+truncation/extension is detected. **The checkpoint signature is held to the same trust root as
+receipts**: with a keyring supplied, a checkpoint signed by an unknown `kid` (or with a bad
+signature) is `TAMPERED`, and `tailChecked` is set true **only** for an authenticated
+checkpoint — otherwise an attacker could drop the tail and forge a checkpoint over the
+truncated head with their own key. Without a checkpoint the verifier **warns** that
 tail-truncation is undetectable offline. True tamper-*proof* (vs evident) needs an external
 anchor — transparency log / receiver-attestation — which is **v1.0** (§7).
 

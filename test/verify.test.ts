@@ -95,6 +95,26 @@ test("wrong-signature requires a keyring to detect", () => {
   assert.match(withKey.reason ?? "", /signature/);
 });
 
+test("forged checkpoint (out-of-keyring key) cannot fake a tail check — trust root applies to checkpoints", () => {
+  const truncated = load("attack/forged-checkpoint-chain.json");
+  const forgedCp = load("attack/forged-checkpoint-cp.json") as Checkpoint;
+  // with keyring → TAMPERED (checkpoint must authenticate against the same trust root as receipts)
+  const withKey = verifyChain(truncated, { keyring, checkpoint: forgedCp });
+  assert.equal(withKey.status, "TAMPERED");
+  assert.match(withKey.reason ?? "", /checkpoint not authenticated/);
+  // without keyring → UNVERIFIED, and tailChecked MUST be false (no silently-faked tail check)
+  const noKey = verifyChain(truncated, { checkpoint: forgedCp });
+  assert.equal(noKey.status, "UNVERIFIED");
+  assert.equal(noKey.tailChecked, false);
+});
+
+test("verifyChain returns MALFORMED (never throws) on a lone-surrogate receipt fed directly", () => {
+  const r = structuredClone(load("valid-chain.json")) as Array<Record<string, any>>;
+  r[0]!.action.canonical = "transfer\uD800"; // lone surrogate, bypassing safeParse
+  const res = verifyChain(r, { keyring });
+  assert.equal(res.status, "MALFORMED");
+});
+
 test("tail-truncation: undetectable without checkpoint, detected with checkpoint", () => {
   const noCp = verifyChain(load("attack/tail-truncated.json"), { keyring });
   // honest: without a checkpoint a truncated-but-otherwise-valid prefix verifies, WITH a warning

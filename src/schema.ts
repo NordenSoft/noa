@@ -56,7 +56,10 @@ function checkExactKeys(
 }
 
 function str(v: unknown): v is string {
-  return typeof v === "string";
+  // Reject non-well-formed strings (lone UTF-16 surrogates) at the structural layer so a
+  // receipt fed directly to verifyChain (bypassing safeParse) becomes MALFORMED rather than
+  // throwing a JcsError from the hashing step — keeps the public return-type contract.
+  return typeof v === "string" && v.isWellFormed();
 }
 
 export function validateReceiptShape(value: unknown): SchemaResult {

@@ -29,8 +29,9 @@ This is a **trust layer**, so it is built to be boring and hostile-input-safe:
 
 ## Known limits (see THREAT-MODEL.md)
 
-- Tail-truncation is only detectable with a signed checkpoint (full fix = external anchor,
-  v1.0).
+- Tail-truncation is only detectable with a signed checkpoint, and the checkpoint is held to the
+  same keyring trust root as receipts (an unauthenticated checkpoint ⇒ `TAMPERED`, never a faked
+  tail check). Full fix = external anchor, v1.0.
 - `noa.guard()` is **advisory** unless installed where the action's credentials/write
   authority actually live; the MCP proxy is designed to **fail-closed**. Unmanaged tools are
   outside the trust boundary — document which tools are governed.

@@ -6,7 +6,7 @@
  * below is a TEST-ONLY fixture (its private key is intentionally public) — NEVER a real key.
  */
 
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, readdirSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildReceipt, buildCheckpoint, type Signer } from "../src/builder.js";
@@ -168,6 +168,15 @@ relinked[2]!.chain.prevHash = chain[0]!.chain.hash;
 reseal(relinked[2]!, PRIVATE_KEY);
 write("attack/relinked.json", relinked);
 
+// 9. forged checkpoint: attacker truncates the chain (hides seq 2) and signs a checkpoint over
+//    the fake head with an OUT-OF-KEYRING key. The receipts still authenticate, so without the
+//    trust-root rule for checkpoints this would falsely report VALID + tailChecked:true. Must be
+//    TAMPERED when a keyring is supplied. Companion checkpoint written alongside.
+const forgedCpChain = clone(chain).slice(0, 2);
+const forgedCheckpoint = buildCheckpoint(forgedCpChain[1]!, "2026-06-20T07:50:00.000Z", attackerSigner);
+write("attack/forged-checkpoint-chain.json", forgedCpChain);
+write("attack/forged-checkpoint-cp.json", forgedCheckpoint);
+
 // --- malformed (raw text / structural rejects) ---
 
 // duplicate object key (cannot be expressed with JS objects → raw text)
@@ -194,4 +203,8 @@ write("malformed/lone-high-surrogate.json", '["transfer\\ud800"]\n');
 write("malformed/lone-low-surrogate.json", '["transfer\\udfff"]\n');
 write("malformed/reversed-surrogate-pair.json", '["x\\udc00\\ud800y"]\n');
 
-process.stdout.write(`generated ${chain.length}-receipt chain + checkpoint + 10 attack + 6 malformed vectors -> ${OUT}\n`);
+const attackCount = readdirSync(join(OUT, "attack")).length;
+const malformedCount = readdirSync(join(OUT, "malformed")).length;
+process.stdout.write(
+  `generated ${chain.length}-receipt chain + checkpoint + ${attackCount} attack + ${malformedCount} malformed vectors -> ${OUT}\n`,
+);

@@ -9,7 +9,7 @@
   "properties": {
     "spec": { "const": "noa.receipt/0.1" },
     "id": { "type": "string", "minLength": 1, "maxLength": 128 },
-    "ts": { "type": "string", "format": "date-time" },
+    "ts": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$" },
     "scope": {
       "type": "object",
       "additionalProperties": false,
@@ -59,7 +59,7 @@
           "required": ["by", "at"],
           "properties": {
             "by": { "type": "string" },
-            "at": { "type": "string", "format": "date-time" }
+            "at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$" }
           }
         }
       }

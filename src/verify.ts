@@ -107,7 +107,14 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     const seq = r.chain.seq;
 
     // 4a. Hash integrity.
-    const hashInput = receiptHashInput(r);
+    let hashInput: string;
+    try {
+      hashInput = receiptHashInput(r);
+    } catch {
+      // canonicalization refused the content (e.g. non-well-formed Unicode that slipped past
+      // structural validation) — treat as malformed, never throw out of the public API.
+      return fail("MALFORMED", "receipt contains non-canonicalizable content", chainId, list.length, seq);
+    }
     const recomputed = "sha256:" + sha256Hex(hashInput);
     if (recomputed !== r.chain.hash) {
       return fail("TAMPERED", "hash mismatch (content altered)", chainId, list.length, seq);
@@ -152,15 +159,27 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   if (opts.checkpoint) {
     const cp = opts.checkpoint;
     const cpVerify = verifyCheckpoint(cp, opts.keyring);
-    if (cpVerify === "bad checkpoint signature" || cpVerify === "bad spec" || cpVerify === "malformed checkpoint") {
+    if (cpVerify === "bad spec" || cpVerify === "malformed checkpoint") {
       return fail("TAMPERED", `checkpoint invalid: ${cpVerify}`, chainId, list.length);
+    }
+    // The checkpoint signature is held to the SAME trust root as receipts: with a keyring, a
+    // checkpoint that is not authenticated (bad signature OR a kid not in the keyring) is
+    // TAMPERED — never silently honored. Otherwise an attacker could mint their own key, drop
+    // the tail, and forge a checkpoint over the truncated head (a trust-root bypass on the only
+    // anti-truncation control). Mirrors the receipt unknown-kid rule above.
+    if (haveKeyring && cpVerify !== "ok") {
+      return fail("TAMPERED", `checkpoint not authenticated against keyring (${cpVerify})`, chainId, list.length);
     }
     if (cp.chain !== chainId) return fail("TAMPERED", "checkpoint chain mismatch", chainId, list.length);
     if (cp.highestSeq !== head.chain.seq || cp.headHash !== head.chain.hash) {
       return fail("TAMPERED", "chain head does not match checkpoint (tail truncated/extended)", chainId, list.length, head.chain.seq);
     }
-    tailChecked = true;
-    if (cpVerify === "unverified") warnings.push("checkpoint signature not authenticated (no keyring / unknown kid)");
+    // tailChecked is true ONLY for an authenticated checkpoint — an unauthenticated head match
+    // is not a tail check and must not be reported as one.
+    tailChecked = cpVerify === "ok";
+    if (cpVerify !== "ok") {
+      warnings.push("checkpoint present but not authenticated (no keyring) — tail NOT verified");
+    }
   } else {
     warnings.push("no checkpoint supplied: tail-truncation (deleting most-recent receipts) cannot be detected offline");
   }
@@ -186,6 +205,12 @@ export function verifyCheckpoint(cp: Checkpoint, keyring?: Keyring): CheckpointV
   if (!cp.sig || typeof cp.sig.kid !== "string" || typeof cp.sig.value !== "string") return "malformed checkpoint";
   const pub = keyring?.[cp.sig.kid];
   if (!pub) return "unverified";
-  const ok = verifyEd25519(pub, signingMessage(CHECKPOINT_SIG_DOMAIN, checkpointHashInput(cp)), cp.sig.value);
+  let msg: Buffer;
+  try {
+    msg = signingMessage(CHECKPOINT_SIG_DOMAIN, checkpointHashInput(cp));
+  } catch {
+    return "malformed checkpoint";
+  }
+  const ok = verifyEd25519(pub, msg, cp.sig.value);
   return ok ? "ok" : "bad checkpoint signature";
 }
