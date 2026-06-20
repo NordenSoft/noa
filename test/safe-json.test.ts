@@ -52,3 +52,11 @@ test("accepts valid escapes including \\u", () => {
   assert.equal(safeParse('"a\\u0041b"'), "aAb");
   assert.equal(safeParse('"\\n"'), "\n");
 });
+
+test("REJECTS unpaired surrogates (raw and \\u-escaped) — forgery channel", () => {
+  assert.throws(() => safeParse('"\\ud800"'), SafeJsonError); // lone high
+  assert.throws(() => safeParse('"\\udfff"'), SafeJsonError); // lone low
+  assert.throws(() => safeParse('"x\\udc00\\ud800y"'), SafeJsonError); // reversed pair
+  // a valid surrogate pair is accepted
+  assert.equal(safeParse('"\\ud834\\udd1e"'), "\u{1D11E}");
+});

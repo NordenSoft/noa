@@ -41,3 +41,15 @@ test("nested structures are deterministic regardless of insertion order", () => 
 test("rejects undefined values", () => {
   assert.throws(() => canonicalize({ a: undefined }), JcsError);
 });
+
+test("rejects unpaired surrogates (forgery-channel defense), accepts valid astral pairs", () => {
+  // lone high / low surrogate — would collapse to U+FFFD at the UTF-8 hashing step
+  assert.throws(() => canonicalize("transfer\uD800"), JcsError);
+  assert.throws(() => canonicalize("\uDFFF"), JcsError);
+  assert.throws(() => canonicalize({ "\uD834": 1 }), JcsError); // lone surrogate in a key
+  // a valid surrogate PAIR (U+1D11E, musical G-clef) is well-formed and must serialize fine
+  assert.equal(canonicalize("\u{1D11E}"), '"\u{1D11E}"');
+  // two distinct lone surrogates must NOT be allowed to collide
+  assert.throws(() => canonicalize("x\uD800"), JcsError);
+  assert.throws(() => canonicalize("x\uDC00"), JcsError);
+});

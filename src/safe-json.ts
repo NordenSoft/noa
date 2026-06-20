@@ -141,7 +141,10 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
       if (i >= n) err("unterminated string");
       const c = text[i];
       if (c === '"') {
-        i++;
+        i++; // consume closing quote
+        // Reject unpaired surrogates (from raw input or \u escapes): they are not well-formed
+        // Unicode and would collapse to U+FFFD at the UTF-8 hashing step — a forgery channel.
+        if (!out.isWellFormed()) err("unpaired surrogate in string");
         return out;
       }
       if (c === "\\") {

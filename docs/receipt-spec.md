@@ -81,8 +81,18 @@ hash = sha256( JCS( receipt WITHOUT chain.hash AND WITHOUT sig.value ) )
 
 `sig.alg` and `sig.kid` **are inside** the hashed bytes. Therefore an attacker cannot strip
 the signature, swap to another key, and re-sign: changing `sig.kid` changes the hash, which
-breaks linkage. `chain.hash = "sha256:" + hash`. The **signature** is Ed25519 over the raw
-32-byte digest whose hex is `chain.hash`.
+breaks linkage. `chain.hash = "sha256:" + hash`.
+
+The **signature** is Ed25519 over a **domain-separated preimage**, not the bare digest:
+
+```
+sig.value = Ed25519_sign( privkey,  "NOA-Receipt-v0.1-sig:" ++ sha256(JCS(receipt \ chain.hash \ sig.value)) )
+```
+
+The domain tag (`NOA-Checkpoint-v0.1-sig:` for checkpoints) prevents cross-protocol signature
+reuse — a signature over a 32-byte value in another context can never be replayed as a receipt
+signature. Well-formed Unicode is required: **unpaired UTF-16 surrogates are rejected** (they
+would collapse to U+FFFD at the UTF-8 hashing step, a forgery channel).
 
 ---
 
@@ -134,16 +144,21 @@ verify(receipts, { keyring?, checkpoint? }):
   for each receipt in seq order:
   3. recompute hash = sha256(JCS(receipt \ chain.hash \ sig.value)); assert == chain.hash
   4. pin sig.kid per agent.id (reject mid-chain key swap)
-  5. if keyring has kid: ed25519_verify(sig.value, digest, pubkey)      -> else can't verify
+  5. signatures, by keyring state:
+       - keyring supplied AND kid known   -> ed25519_verify over the domain-separated preimage
+       - keyring supplied AND kid UNKNOWN -> TAMPERED (no silent TOFU on attacker input)
+       - no keyring at all                -> UNVERIFIED (cannot authenticate; never VALID)
   6. linkage: seq 0 => prevHash null; else prevHash == prev.hash && seq == prev.seq+1
   7. if checkpoint: assert head matches checkpoint (tail-truncation)
-  -> VALID | STRUCTURE_VALID_UNVERIFIED_SIG | TAMPERED | MALFORMED
+  -> VALID | UNVERIFIED | TAMPERED | MALFORMED
 ```
 
-CLI exit codes: `0` VALID · `1` structurally valid but signatures unverified (no keyring) ·
-`2` TAMPERED · `3` MALFORMED · `4` usage. Honest by design: without a keyring, signatures are
-**not** silently treated as valid; without a checkpoint, tail-truncation is reported as an
-explicit warning, never passed silently.
+CLI exit codes: `0` VALID · `1` UNVERIFIED (no keyring supplied) · `2` TAMPERED · `3` MALFORMED
+· `4` usage. **CI rule: treat any non-zero exit as failure** (do not special-case `==2`). Honest
+by design: without a keyring, signatures are reported UNVERIFIED, never VALID; without a
+checkpoint, the verifier emits an explicit tail-truncation warning; and it always emits a
+fork/equivocation caveat (an offline verifier sees only the branch it was given) plus a
+non-monotonic-timestamp warning if `ts` goes backwards.
 
 ---
 

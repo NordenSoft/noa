@@ -14,12 +14,12 @@
   "exports": {
     ".": { "import": "./dist/src/index.js", "types": "./dist/src/index.d.ts" }
   },
-  "files": ["dist", "schema", "docs/receipt-spec.md", "LICENSE", "README.md"],
+  "files": ["dist/src", "schema", "docs/receipt-spec.md", "LICENSE", "README.md", "THREAT-MODEL.md", "SECURITY.md"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "gen:vectors": "node dist/scripts/gen-vectors.js",
     "test": "npm run build && npm run gen:vectors && node --test dist/test/*.test.js",
-    "verify": "node dist/cli.js",
+    "verify": "node dist/src/cli.js verify",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {},

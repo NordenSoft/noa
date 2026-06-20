@@ -25,8 +25,10 @@ const VERDICTS = new Set([
 
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const PARAMS_HASH_RE = /^(sha256|hmac-sha256):[0-9a-f]{64}$/;
+// RFC 3339 §5.6 permits lowercase 't' and 'z' — accept both so a conforming producer using any
+// RFC-3339 library is not falsely flagged MALFORMED (must match schema/noa-receipt-0.1.schema.json).
 const RFC3339_RE =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,9})?(Z|[+-]\d{2}:\d{2})$/;
+  /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
 
 export interface SchemaResult {
   ok: boolean;

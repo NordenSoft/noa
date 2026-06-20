@@ -36,10 +36,11 @@ test("valid chain + keyring + checkpoint -> VALID, tail checked", () => {
   assert.equal(r.tailChecked, true);
 });
 
-test("valid chain WITHOUT keyring -> STRUCTURE_VALID_UNVERIFIED_SIG (honest downgrade)", () => {
+test("valid chain WITHOUT keyring -> UNVERIFIED (honest: signatures not authenticated)", () => {
   const r = verifyChain(load("valid-chain.json"), {});
-  assert.equal(r.status, "STRUCTURE_VALID_UNVERIFIED_SIG");
+  assert.equal(r.status, "UNVERIFIED");
   assert.equal(r.signaturesVerified, false);
+  assert.ok(r.warnings.some((w) => /not authenticated/i.test(w)));
 });
 
 // Every attack vector MUST be rejected. This is the core security property.
@@ -48,6 +49,7 @@ const ATTACKS = [
   "attack/forged-genesis.json",
   "attack/key-swap.json",
   "attack/key-swap-resigned.json",
+  "attack/unknown-kid.json",
   "attack/seq-gap.json",
   "attack/dup-seq.json",
   "attack/wrong-signature.json",
@@ -57,10 +59,18 @@ for (const a of ATTACKS) {
   test(`attack rejected (with keyring): ${a}`, () => {
     const r = verifyChain(load(a), { keyring, checkpoint });
     assert.notEqual(r.status, "VALID", `${a} must not verify as VALID`);
-    assert.notEqual(r.status, "STRUCTURE_VALID_UNVERIFIED_SIG", `${a} must not pass structurally`);
+    assert.notEqual(r.status, "UNVERIFIED", `${a} must not pass as UNVERIFIED`);
     assert.equal(r.status, "TAMPERED", `${a} -> expected TAMPERED, got ${r.status}: ${r.reason}`);
   });
 }
+
+test("unknown-kid: TAMPERED with keyring, UNVERIFIED without (no silent TOFU on attacker input)", () => {
+  const withKey = verifyChain(load("attack/unknown-kid.json"), { keyring });
+  assert.equal(withKey.status, "TAMPERED");
+  assert.match(withKey.reason ?? "", /unknown signing key/);
+  const noKey = verifyChain(load("attack/unknown-kid.json"), {});
+  assert.equal(noKey.status, "UNVERIFIED");
+});
 
 test("key-swap-resigned is caught by key-pinning, not signature presence", () => {
   // attacker controls a real keypair; pinning per agent.id still rejects.
@@ -76,9 +86,9 @@ test("relinked is caught by linkage check (hash + sig are internally valid)", ()
 });
 
 test("wrong-signature requires a keyring to detect", () => {
-  // without keyring, sig can't be verified → structurally valid (honest)
+  // without keyring, sig can't be authenticated → UNVERIFIED (honest)
   const noKey = verifyChain(load("attack/wrong-signature.json"), {});
-  assert.equal(noKey.status, "STRUCTURE_VALID_UNVERIFIED_SIG");
+  assert.equal(noKey.status, "UNVERIFIED");
   // with keyring → TAMPERED
   const withKey = verifyChain(load("attack/wrong-signature.json"), { keyring });
   assert.equal(withKey.status, "TAMPERED");
@@ -110,6 +120,11 @@ test("malformed: trailing garbage rejected by safeParse", () => {
 });
 test("malformed: deep nesting rejected by safeParse", () => {
   assert.throws(() => safeParse(raw("malformed/deep-nest.json")));
+});
+test("malformed: unpaired surrogates rejected by safeParse (forgery channel closed)", () => {
+  assert.throws(() => safeParse(raw("malformed/lone-high-surrogate.json")));
+  assert.throws(() => safeParse(raw("malformed/lone-low-surrogate.json")));
+  assert.throws(() => safeParse(raw("malformed/reversed-surrogate-pair.json")));
 });
 test("malformed: pii-smuggle (unknown field) -> MALFORMED at verify", () => {
   const parsed = safeParse(raw("malformed/pii-smuggle.json"));

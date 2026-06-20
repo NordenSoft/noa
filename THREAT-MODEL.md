@@ -29,10 +29,18 @@ truth or safety.
 | T4 | Strip signature, alter, re-sign with new key | `sig.kid` is inside the hash → breaks linkage | `attack/key-swap` |
 | T5 | Re-sign with a real adversary key | key pinned per `agent.id` → rejected | `attack/key-swap-resigned` |
 | T6 | Present a corrupted/forged signature | Ed25519 verify against keyring | `attack/wrong-signature` |
+| T6b | Unknown signing key while a keyring is supplied | treated as TAMPERED (no silent TOFU on attacker input) | `attack/unknown-kid` |
 | T7 | Number-serialization / canonicalization disagreement | integer-only JCS, frozen rules, pinned vectors | `jcs.test`, conformance |
+| T7b | Unpaired-surrogate hash collision (collapse to U+FFFD) | reject non-well-formed Unicode in canonicalizer + parser | `jcs.test`, `safe-json.test`, `malformed/*surrogate*` |
 | T8 | Duplicate-key parser divergence | strict parser rejects duplicate keys | `safe-json.test` |
-| T9 | Smuggle PII/data in an unknown field | `additionalProperties:false` everywhere | `schema.test`, `malformed/pii-smuggle` |
+| T9 | Smuggle PII/data in an **unknown** field | `additionalProperties:false` everywhere | `schema.test`, `malformed/pii-smuggle` |
 | T10 | Malicious input → verifier DoS/pollution | depth/size bounds, `__proto__` reject, no eval/network | `safe-json.test`, `malformed/deep-nest` |
+| T11 | Cross-protocol signature reuse | domain-separated signing preimage (`NOA-Receipt-v0.1-sig:`) | `roundtrip.test`, conformance |
+
+> Note on T9: this stops PII in **unknown** fields. It does NOT stop a caller putting PII in a
+> **known** opaque string (e.g. `approval.by`, `agent.model`). Those fields are opaque by
+> contract and MUST NOT carry PII — the format cannot enforce that. Don't read "PII-free" as a
+> guarantee about caller-supplied identifiers.
 
 ## Threats NOT fully addressed in v0.1 (stated honestly)
 
@@ -60,8 +68,9 @@ internals. Concretely, the OSS surface accepts and emits **only** generic action
 enums (riskClass, verdict, mode, principal), opaque ids/handles, and hashes. It contains:
 
 - **No** cognition, memory, planning, or model-routing logic.
-- **No** tenant data, customer data, secrets, or private keys (the conformance key is a
-  published test fixture, clearly marked).
+- **No** tenant data, customer data, secrets, or private keys (the conformance keypairs — a
+  chain signing key plus a second adversary key for the key-pinning vector — are published
+  test fixtures, clearly marked).
 - **No** proprietary policy content — *policy decisions enter as a verdict enum*, not as the
   engine that produced them.
 

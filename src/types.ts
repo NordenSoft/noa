@@ -35,7 +35,7 @@ export interface ReceiptScope {
 
 export interface ReceiptAgent {
   id: string;
-  /** model-agnostic free string, e.g. "anthropic/claude-opus-4" — or null if unknown. */
+  /** model-agnostic free string, e.g. "vendor/model-v1" — or null if unknown. Opaque: MUST NOT carry PII. */
   model?: string | null;
   principal: Principal;
 }
@@ -71,7 +71,10 @@ export interface ReceiptChain {
 export interface ReceiptSig {
   alg: "ed25519";
   kid: string; // key id, resolved against a keyring; pinned per agent.id within a chain
-  value: string; // base64 ed25519 signature over the 32-byte digest of chain.hash
+  // base64 ed25519 signature over the DOMAIN-SEPARATED preimage:
+  //   "NOA-Receipt-v0.1-sig:" ++ sha256(JCS(receipt without chain.hash and sig.value))
+  // (the domain tag prevents cross-protocol signature reuse). See src/signing.ts.
+  value: string;
 }
 
 export interface Receipt {

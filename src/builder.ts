@@ -1,8 +1,9 @@
 import type { Receipt, ReceiptScope, ReceiptAgent, ReceiptAction, ReceiptGovernance, Checkpoint } from "./types.js";
 import { RECEIPT_SPEC } from "./types.js";
 import { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
-import { sha256Hex, sha256Digest } from "./hash.js";
+import { sha256Hex } from "./hash.js";
 import { signEd25519 } from "./keys.js";
+import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
 
 export interface Signer {
   kid: string;
@@ -42,7 +43,7 @@ export function buildReceipt(input: BuildInput, prev: Receipt | null, signer: Si
 
   const hashInput = receiptHashInput(draft);
   draft.chain.hash = "sha256:" + sha256Hex(hashInput);
-  draft.sig.value = signEd25519(signer.privateKey, sha256Digest(hashInput));
+  draft.sig.value = signEd25519(signer.privateKey, signingMessage(RECEIPT_SIG_DOMAIN, hashInput));
   return draft;
 }
 
@@ -57,6 +58,6 @@ export function buildCheckpoint(head: Receipt, ts: string, signer: Signer): Chec
     sig: { alg: "ed25519", kid: signer.kid, value: "" },
   };
   const hashInput = checkpointHashInput(draft);
-  draft.sig.value = signEd25519(signer.privateKey, sha256Digest(hashInput));
+  draft.sig.value = signEd25519(signer.privateKey, signingMessage(CHECKPOINT_SIG_DOMAIN, hashInput));
   return draft;
 }

@@ -4,11 +4,13 @@
  *
  * Offline receipt-chain verifier. No network, no NOA cloud. Deterministic exit codes so it
  * drops straight into CI:
- *   0  VALID                            (structure + chain + signatures verified)
- *   1  STRUCTURE_VALID_UNVERIFIED_SIG   (chain ok, but no keyring to verify signatures)
- *   2  TAMPERED                         (an integrity check failed)
- *   3  MALFORMED                        (not a well-formed receipt chain / bad input)
- *   4  USAGE                            (bad arguments / unreadable file)
+ *   0  VALID        (structure + chain + signatures verified against the keyring)
+ *   1  UNVERIFIED   (chain ok, but NO keyring supplied so signatures were not authenticated)
+ *   2  TAMPERED     (an integrity check failed)
+ *   3  MALFORMED    (not a well-formed receipt chain / bad input)
+ *   4  USAGE        (bad arguments / unreadable file)
+ *
+ * CI rule: treat ANY non-zero exit as failure. Do not special-case "==2".
  *
  * Hostile-input hardened: input is read with a size cap and parsed by the strict safeParse
  * (duplicate-key reject, depth bound, prototype-pollution guard, float reject).
@@ -91,7 +93,7 @@ function main(argv: string[]): number {
   switch (result.status) {
     case "VALID":
       return EXIT.VALID;
-    case "STRUCTURE_VALID_UNVERIFIED_SIG":
+    case "UNVERIFIED":
       return EXIT.UNVERIFIED;
     case "TAMPERED":
       return EXIT.TAMPERED;

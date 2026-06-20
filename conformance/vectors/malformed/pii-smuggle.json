@@ -35,7 +35,7 @@
     "sig": {
       "alg": "ed25519",
       "kid": "noa-test-key-2026",
-      "value": "TCibus269lGrVgp/+SJD6OxSd7aQ32YgY0JqLm/wXSACWVQAshTF/1NofTKwdCiAIrOKEkp7ZcGZPiG+fpQ3Bw=="
+      "value": "4GNNIxJdII+ExLhh4jIOXUugv+ygJTN7thF2q3HxS/q7J0hdLVWZs8S+lJa9QGk8Hu/C2+aphCHquKwnKfQQCg=="
     },
     "customerEmail": "victim@example.com"
   },
@@ -78,7 +78,7 @@
     "sig": {
       "alg": "ed25519",
       "kid": "noa-test-key-2026",
-      "value": "rwToLY6cd2Tac3IEFvRAvohnXaEe2weVcnd2wC5NrXcjNSlVS/JyxfncBHRaEUKzEN+asYqyTfbpTQiryynEDw=="
+      "value": "zqYZxQm6P1SYbACwTkgTrZqR4omdKW6tY9Ih7pF945udJr0o9eRM7fxQlUlSVxDHo9Kne9mVKg7beykkjU5MAw=="
     }
   },
   {
@@ -117,7 +117,7 @@
     "sig": {
       "alg": "ed25519",
       "kid": "noa-test-key-2026",
-      "value": "jmiq23JEr5u4QWwYBIcA3AJnkHEjWUUX4ULk4zVDMkOHRNuMDtxbsoAL8Wmkojb00cXmGN9kFPI/9HyHLdFQCA=="
+      "value": "DxfU9x09ZL0LR5bPy/zztjSF0NT5Ldbf31Vt7778DHIGMT6A8ptGzSSysup6Oq4m2y7N7SVpfZPlGQetZFF7Aw=="
     }
   }
 ]

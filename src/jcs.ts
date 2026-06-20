@@ -79,6 +79,13 @@ function serialize(v: unknown, depth: number): string {
 }
 
 function serializeString(s: string): string {
+  // Reject unpaired surrogates. They are not well-formed Unicode: the UTF-8 hashing step
+  // (Buffer.from(s,'utf8')) would silently map EVERY lone surrogate to U+FFFD, collapsing
+  // 2048 distinct code points to one hash bucket — a forgery channel (a tampered field could
+  // share a hash with the original). RFC 8785 / I-JSON require well-formed output, and a Rust
+  // producer cannot even represent a lone surrogate, so rejecting here also preserves
+  // cross-language conformance.
+  if (!s.isWellFormed()) throw new JcsError("unpaired surrogate in string not allowed");
   let out = '"';
   // Iterate by code point; emit non-control characters literally (UTF-8 preserved).
   for (const ch of s) {

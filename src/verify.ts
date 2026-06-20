@@ -1,16 +1,18 @@
 import type { Receipt, Checkpoint } from "./types.js";
 import { validateReceiptShape } from "./schema.js";
 import { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
-import { sha256Hex, sha256Digest } from "./hash.js";
+import { sha256Hex } from "./hash.js";
 import { verifyEd25519, type Keyring } from "./keys.js";
+import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
 
 export type VerifyStatus =
-  | "VALID" // structure + hash-chain + signatures all verified
-  | "STRUCTURE_VALID_UNVERIFIED_SIG" // hash-chain ok, but no keyring (or unknown kid) to verify signatures
-  | "TAMPERED" // an integrity check failed
+  | "VALID" // structure + hash-chain + signatures all verified against the supplied keyring
+  | "UNVERIFIED" // hash-chain ok, but NO keyring supplied so signatures were not authenticated
+  | "TAMPERED" // an integrity check failed (incl. an unknown signing key when a keyring IS supplied)
   | "MALFORMED"; // not a well-formed receipt chain
 
 export interface VerifyOptions {
+  /** Trust root: kid -> base64 SPKI public key. Supply it to authenticate signatures. */
   keyring?: Keyring;
   /** Signed checkpoint asserting the expected head — enables tail-truncation detection. */
   checkpoint?: Checkpoint;
@@ -24,16 +26,20 @@ export interface VerifyResult {
   count: number;
   signaturesVerified: boolean;
   tailChecked: boolean;
-  /** seq at which the first problem was found (for TAMPERED/MALFORMED). */
   badSeq?: number;
   reason?: string;
-  /** Honest caveats the caller should surface (e.g. tail-truncation not checked). */
   warnings: string[];
 }
 
 const DEFAULT_MAX_RECEIPTS = 1_000_000;
 
-function fail(status: VerifyStatus, reason: string, chain: string | null, count: number, badSeq?: number): VerifyResult {
+function fail(
+  status: VerifyStatus,
+  reason: string,
+  chain: string | null,
+  count: number,
+  badSeq?: number,
+): VerifyResult {
   const r: VerifyResult = { status, chain, count, signaturesVerified: false, tailChecked: false, reason, warnings: [] };
   if (badSeq !== undefined) r.badSeq = badSeq;
   return r;
@@ -42,11 +48,15 @@ function fail(status: VerifyStatus, reason: string, chain: string | null, count:
 /**
  * Verify a NOA receipt chain. Pure, offline, deterministic — no network, no NOA cloud.
  *
- * Trust model (be honest):
- *  - With a keyring, signatures are verified and a key is PINNED per (agent.id): a mid-chain
- *    key swap is rejected. The keyring is the trust root — obtain genesis keys out-of-band.
- *  - Without a checkpoint, TAIL-TRUNCATION (deleting the most recent receipts) cannot be
- *    detected offline. This is reported in `warnings`, never silently passed.
+ * Trust model (stated honestly; see THREAT-MODEL.md):
+ *  - The supplied keyring is the trust root. With it, every signature is authenticated and a
+ *    key is held continuous per (agent.id): a mid-chain key swap is rejected, and an unknown
+ *    kid is treated as TAMPERED (not silently accepted — that would be TOFU on attacker input).
+ *  - Without a keyring, signatures cannot be authenticated → status UNVERIFIED (never VALID).
+ *  - Without a checkpoint, TAIL-TRUNCATION cannot be detected offline (reported in warnings).
+ *  - FORK / EQUIVOCATION: an offline verifier only sees the branch it is given; it cannot know
+ *    the signer also signed a different history at the same seq. Detecting that needs an
+ *    external witness / transparency log (v1.0). Reported in warnings.
  */
 export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): VerifyResult {
   const maxReceipts = opts.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
@@ -55,7 +65,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   if (receipts.length === 0) return fail("MALFORMED", "empty receipt array", null, 0);
   if (receipts.length > maxReceipts) return fail("MALFORMED", `too many receipts (>${maxReceipts})`, null, receipts.length);
 
-  // 1. Structural validation of every element.
+  // 1. Structural validation of every element (runs BEFORE any hashing).
   for (let idx = 0; idx < receipts.length; idx++) {
     const res = validateReceiptShape(receipts[idx]);
     if (!res.ok) {
@@ -85,11 +95,12 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     ordered.push(r);
   }
 
-  // 4. Walk the chain: hash, signature, linkage, key-pinning.
-  const pinnedKid = new Map<string, string>(); // agent.id -> kid
-  const keyring = opts.keyring;
-  let allSigsVerified = true;
-  let anySigUnverifiable = false;
+  const haveKeyring = opts.keyring !== undefined;
+  const keyring = opts.keyring ?? {};
+  const warnings: string[] = [];
+
+  // 4. Walk the chain: hash, key-pinning, signature, linkage, timestamp monotonicity.
+  const pinnedKid = new Map<string, string>(); // agent.id -> kid (key continuity)
   let prev: Receipt | null = null;
 
   for (const r of ordered) {
@@ -102,30 +113,34 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       return fail("TAMPERED", "hash mismatch (content altered)", chainId, list.length, seq);
     }
 
-    // 4b. Key pinning per agent.id.
+    // 4b. Key continuity per agent.id (rejects mid-chain key swap).
     const pinned = pinnedKid.get(r.agent.id);
-    if (pinned === undefined) {
-      pinnedKid.set(r.agent.id, r.sig.kid);
-    } else if (pinned !== r.sig.kid) {
+    if (pinned === undefined) pinnedKid.set(r.agent.id, r.sig.kid);
+    else if (pinned !== r.sig.kid) {
       return fail("TAMPERED", `key swap for agent "${r.agent.id}" (kid ${pinned} -> ${r.sig.kid})`, chainId, list.length, seq);
     }
 
-    // 4c. Signature.
-    const pub = keyring?.[r.sig.kid];
-    if (pub) {
-      const ok = verifyEd25519(pub, sha256Digest(hashInput), r.sig.value);
+    // 4c. Signature. With a keyring, an unknown kid is TAMPERED, not a soft pass.
+    if (haveKeyring) {
+      const pub = keyring[r.sig.kid];
+      if (!pub) return fail("TAMPERED", `unknown signing key "${r.sig.kid}" not in keyring`, chainId, list.length, seq);
+      const ok = verifyEd25519(pub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), r.sig.value);
       if (!ok) return fail("TAMPERED", `invalid signature (kid ${r.sig.kid})`, chainId, list.length, seq);
-    } else {
-      allSigsVerified = false;
-      anySigUnverifiable = true;
     }
 
     // 4d. Linkage.
     if (seq === 0) {
       if (r.chain.prevHash !== null) return fail("TAMPERED", "genesis prevHash must be null", chainId, list.length, 0);
-    } else {
-      if (r.chain.prevHash !== prev!.chain.hash) {
-        return fail("TAMPERED", `broken linkage at seq ${seq}`, chainId, list.length, seq);
+    } else if (r.chain.prevHash !== prev!.chain.hash) {
+      return fail("TAMPERED", `broken linkage at seq ${seq}`, chainId, list.length, seq);
+    }
+
+    // 4e. Timestamp monotonicity (soft — clocks are not a security primitive, but a regression is suspicious).
+    if (prev) {
+      const a = Date.parse(prev.ts);
+      const b = Date.parse(r.ts);
+      if (!Number.isNaN(a) && !Number.isNaN(b) && b < a) {
+        warnings.push(`non-monotonic timestamp at seq ${seq} (ts went backwards)`);
       }
     }
     prev = r;
@@ -134,11 +149,10 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   // 5. Tail-truncation check (only possible with a checkpoint).
   const head = ordered[ordered.length - 1]!;
   let tailChecked = false;
-  const warnings: string[] = [];
   if (opts.checkpoint) {
     const cp = opts.checkpoint;
-    const cpVerify = verifyCheckpoint(cp, keyring);
-    if (cpVerify !== "ok" && cpVerify !== "unverified") {
+    const cpVerify = verifyCheckpoint(cp, opts.keyring);
+    if (cpVerify === "bad checkpoint signature" || cpVerify === "bad spec" || cpVerify === "malformed checkpoint") {
       return fail("TAMPERED", `checkpoint invalid: ${cpVerify}`, chainId, list.length);
     }
     if (cp.chain !== chainId) return fail("TAMPERED", "checkpoint chain mismatch", chainId, list.length);
@@ -146,35 +160,32 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       return fail("TAMPERED", "chain head does not match checkpoint (tail truncated/extended)", chainId, list.length, head.chain.seq);
     }
     tailChecked = true;
-    if (cpVerify === "unverified") warnings.push("checkpoint signature not verified (kid not in keyring)");
+    if (cpVerify === "unverified") warnings.push("checkpoint signature not authenticated (no keyring / unknown kid)");
   } else {
     warnings.push("no checkpoint supplied: tail-truncation (deleting most-recent receipts) cannot be detected offline");
   }
 
-  if (anySigUnverifiable) {
-    warnings.push("one or more signatures could not be verified (no keyring or unknown kid)");
+  // 6. Equivocation/fork is fundamentally undetectable offline from a single branch.
+  warnings.push("fork/equivocation is not detectable offline: this verifies the branch you were given, not that the signer signed no other history at the same seq (needs an external witness — v1.0)");
+
+  if (!haveKeyring) {
+    warnings.push("no keyring supplied: signatures were NOT authenticated (status UNVERIFIED, not VALID)");
   }
 
-  const status: VerifyStatus = allSigsVerified ? "VALID" : "STRUCTURE_VALID_UNVERIFIED_SIG";
-  return {
-    status,
-    chain: chainId,
-    count: list.length,
-    signaturesVerified: allSigsVerified,
-    tailChecked,
-    warnings,
-  };
+  const status: VerifyStatus = haveKeyring ? "VALID" : "UNVERIFIED";
+  return { status, chain: chainId, count: list.length, signaturesVerified: haveKeyring, tailChecked, warnings };
 }
 
-type CheckpointVerdict = "ok" | "unverified" | string;
+type CheckpointVerdict = "ok" | "unverified" | "bad spec" | "malformed checkpoint" | "bad checkpoint signature";
 
 export function verifyCheckpoint(cp: Checkpoint, keyring?: Keyring): CheckpointVerdict {
   if (cp.spec !== "noa.checkpoint/0.1") return "bad spec";
   if (typeof cp.chain !== "string" || typeof cp.headHash !== "string" || typeof cp.highestSeq !== "number") {
     return "malformed checkpoint";
   }
-  const pub = keyring?.[cp.sig?.kid];
+  if (!cp.sig || typeof cp.sig.kid !== "string" || typeof cp.sig.value !== "string") return "malformed checkpoint";
+  const pub = keyring?.[cp.sig.kid];
   if (!pub) return "unverified";
-  const ok = verifyEd25519(pub, sha256Digest(checkpointHashInput(cp)), cp.sig.value);
+  const ok = verifyEd25519(pub, signingMessage(CHECKPOINT_SIG_DOMAIN, checkpointHashInput(cp)), cp.sig.value);
   return ok ? "ok" : "bad checkpoint signature";
 }

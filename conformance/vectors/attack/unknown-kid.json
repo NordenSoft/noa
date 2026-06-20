@@ -29,13 +29,13 @@
     },
     "chain": {
       "seq": 0,
-      "prevHash": "sha256:f7322b5a17b32c06fdf0efec777c4f1497b317be250d08515979c92adbd9ce6c",
-      "hash": "sha256:6dc86a3a720ac7fe3a8e17a0ea8da642ab826cc9442d1d45724d82f1b52f3d35"
+      "prevHash": null,
+      "hash": "sha256:98bb2287599b187e7227aca68aa84933ff34272c2ac597932a9563f9266f6c59"
     },
     "sig": {
       "alg": "ed25519",
-      "kid": "noa-test-key-2026",
-      "value": "Br1WeYi96wK+Q9TGnf7K1WhOfaBt2g37NuLyCwLff6CPgQcNwKPDaevadWPWULxt1tc83NjJZVXDA6zPhbjCDw=="
+      "kid": "kid-attacker",
+      "value": "CvtJM3J0C7chqiwD+vXIH6XJc/WDyVh/CHvyVyadgtIoh3RUmOMrva+NKYRbp6ojaHiPXGWHFonshEvgTt1zDw=="
     }
   },
   {
@@ -71,13 +71,13 @@
     },
     "chain": {
       "seq": 1,
-      "prevHash": "sha256:588d3e9e6bb450408323ae0648c410a0b5725294c4a4e789add87a719e3a9248",
-      "hash": "sha256:f8a6d2ed82a990793c515e8599ad915943002a86a3684cc8ec9ce09b1a44a125"
+      "prevHash": "sha256:98bb2287599b187e7227aca68aa84933ff34272c2ac597932a9563f9266f6c59",
+      "hash": "sha256:ec73d6805dc086e4d69bfd235a6ee007c53eb8c826d3552b5c368f6c3bccfde6"
     },
     "sig": {
       "alg": "ed25519",
-      "kid": "noa-test-key-2026",
-      "value": "zqYZxQm6P1SYbACwTkgTrZqR4omdKW6tY9Ih7pF945udJr0o9eRM7fxQlUlSVxDHo9Kne9mVKg7beykkjU5MAw=="
+      "kid": "kid-attacker",
+      "value": "Jum8eR2mK6RBGxbaxEo1cinleFF4hESKEbRyTParofEpY3/q4qrJhTTBMsTVnkvWcVltWuN/QRbh8SmUc50zCA=="
     }
   },
   {
@@ -110,13 +110,13 @@
     },
     "chain": {
       "seq": 2,
-      "prevHash": "sha256:f8a6d2ed82a990793c515e8599ad915943002a86a3684cc8ec9ce09b1a44a125",
-      "hash": "sha256:b919085ee106273a3eecd9b4a759626984476e73172c4cfdef8d4f98a31d04d7"
+      "prevHash": "sha256:ec73d6805dc086e4d69bfd235a6ee007c53eb8c826d3552b5c368f6c3bccfde6",
+      "hash": "sha256:c11ec860b2a22639cec8a56b5b28ff04886efbc91762c40390b8820c9b24f706"
     },
     "sig": {
       "alg": "ed25519",
-      "kid": "noa-test-key-2026",
-      "value": "DxfU9x09ZL0LR5bPy/zztjSF0NT5Ldbf31Vt7778DHIGMT6A8ptGzSSysup6Oq4m2y7N7SVpfZPlGQetZFF7Aw=="
+      "kid": "kid-attacker",
+      "value": "WzOmd8/Mai7T6OIXjVesEqbngPCMkdfBd8n407SrQewGCfgHLgumHdB1MTmREEuMAJ4gNZsobdpPwzAJNNmEDA=="
     }
   }
 ]

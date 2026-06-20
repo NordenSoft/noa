@@ -10,17 +10,19 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildReceipt, buildCheckpoint, type Signer } from "../src/builder.js";
-import { sha256Prefixed, sha256Hex, sha256Digest } from "../src/hash.js";
+import { sha256Prefixed, sha256Hex } from "../src/hash.js";
 import { receiptHashInput } from "../src/canonicalize.js";
 import { signEd25519 } from "../src/keys.js";
+import { signingMessage, RECEIPT_SIG_DOMAIN } from "../src/signing.js";
 import type { Receipt, BuildInput } from "../src/index.js";
 
-/** Re-hash + re-sign a hand-mutated receipt so it is self-consistent (valid hash + sig).
- *  Used to test the linkage/pinning branches in isolation (not just the hash check). */
+/** Re-hash + re-sign a hand-mutated receipt so it is self-consistent (valid hash + sig under
+ *  the domain-separated scheme). Used to test the linkage/pinning/genesis branches in
+ *  isolation — the receipt is internally valid, so only the intended check can reject it. */
 function reseal(r: Receipt, privateKey: string): Receipt {
   const hi = receiptHashInput(r);
   r.chain.hash = "sha256:" + sha256Hex(hi);
-  r.sig.value = signEd25519(privateKey, sha256Digest(hi));
+  r.sig.value = signEd25519(privateKey, signingMessage(RECEIPT_SIG_DOMAIN, hi));
   return r;
 }
 
@@ -132,6 +134,19 @@ keyswapResigned[2]!.sig.kid = ATTACKER_KID;
 reseal(keyswapResigned[2]!, ATTACKER_PRIVATE_KEY);
 write("attack/key-swap-resigned.json", keyswapResigned);
 
+// 4c. unknown signing key: a fully self-consistent chain signed by an adversary key whose kid
+//     is NOT in the trusted keyring. Internally valid (hash+sig+pinning all consistent) but
+//     unauthenticated → TAMPERED when a keyring is supplied, UNVERIFIED when none is.
+const attackerSigner: Signer = { kid: ATTACKER_KID, privateKey: ATTACKER_PRIVATE_KEY };
+const unknownKid: Receipt[] = [];
+let pAtk: Receipt | null = null;
+for (const inp of inputs) {
+  const r = buildReceipt(inp, pAtk, attackerSigner);
+  unknownKid.push(r);
+  pAtk = r;
+}
+write("attack/unknown-kid.json", unknownKid);
+
 // 5. seq gap (missing middle)
 write("attack/seq-gap.json", [clone(chain[0]!), clone(chain[2]!)]);
 
@@ -174,5 +189,9 @@ write("malformed/trailing-garbage.json", "[]trailing\n");
 let deep = "0";
 for (let i = 0; i < 200; i++) deep = "[" + deep + "]";
 write("malformed/deep-nest.json", deep + "\n");
+// unpaired surrogates (forgery channel — must be rejected, not collapsed to U+FFFD)
+write("malformed/lone-high-surrogate.json", '["transfer\\ud800"]\n');
+write("malformed/lone-low-surrogate.json", '["transfer\\udfff"]\n');
+write("malformed/reversed-surrogate-pair.json", '["x\\udc00\\ud800y"]\n');
 
-process.stdout.write(`generated ${chain.length}-receipt chain + checkpoint + 9 attack + 6 malformed vectors -> ${OUT}\n`);
+process.stdout.write(`generated ${chain.length}-receipt chain + checkpoint + 10 attack + 6 malformed vectors -> ${OUT}\n`);

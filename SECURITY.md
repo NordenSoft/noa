@@ -19,9 +19,13 @@ This is a **trust layer**, so it is built to be boring and hostile-input-safe:
 - **Strict schema.** Unknown fields are rejected everywhere (`additionalProperties:false`).
 - **Mandatory signatures.** Ed25519 signatures are required; the signing key id is bound into
   the hash; keys are pinned per `agent.id` within a chain.
-- **Honest verdicts.** The verifier never silently upgrades trust: no keyring ⇒
-  `STRUCTURE_VALID_UNVERIFIED_SIG` (exit 1), not `VALID`; no checkpoint ⇒ an explicit
-  tail-truncation warning.
+- **Honest verdicts.** The verifier never silently upgrades trust: no keyring ⇒ `UNVERIFIED`
+  (exit 1), not `VALID`; an unknown `kid` while a keyring **is** supplied ⇒ `TAMPERED` (no
+  silent trust-on-first-use of attacker input); no checkpoint ⇒ an explicit tail-truncation
+  warning; plus an always-on fork/equivocation caveat and a non-monotonic-timestamp warning.
+- **Well-formed Unicode required.** Unpaired UTF-16 surrogates are rejected by both the
+  canonicalizer and the parser (they would otherwise collapse to U+FFFD at the UTF-8 hashing
+  step — a hash-collision / forgery channel).
 
 ## Known limits (see THREAT-MODEL.md)
 
@@ -36,5 +40,6 @@ This is a **trust layer**, so it is built to be boring and hostile-input-safe:
 
 - Hash: SHA-256. Signatures: Ed25519 (`node:crypto`). Canonicalization: RFC 8785 (JCS),
   hardened to integer-only. Conformance vectors pin exact bytes across implementations.
-- The keypair under `conformance/` is a **test-only fixture** — its private key is public on
-  purpose and must never be used for anything real.
+- The keypairs under `conformance/` are **test-only fixtures** (a chain signing key plus a
+  second "adversary" key used to build the key-pinning attack vector) — their private keys are
+  public on purpose and must never be used for anything real.

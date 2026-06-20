@@ -34,7 +34,8 @@ happen **before** it runs, and leaves an independently verifiable proof.
 
 A small, append-only, hash-chained record: *which agent, what action, under which policy,
 what verdict, reversible-how* — link-hashed to the previous one, so altering any past record
-breaks the chain. PII-free by design (only hashes of params).
+breaks the chain. Params are never carried raw — only their hash. (Caller-supplied identifiers
+are opaque and must not contain PII; the format can't enforce that — see THREAT-MODEL.)
 
 ```json
 {
@@ -52,7 +53,7 @@ the signing key is bound into the hash, and verification runs **offline** — no
 
 ```bash
 npm install          # zero runtime dependencies (Node ≥ 20 stdlib only)
-npm test             # build + generate conformance vectors + run 49 tests
+npm test             # build + generate conformance vectors + run 54 tests
 
 # verify a signed chain against a keyring + checkpoint
 node dist/src/cli.js verify conformance/vectors/valid-chain.json \
@@ -77,7 +78,7 @@ import { buildReceipt, verifyChain, generateKeyPair } from "@noa/receipt";
 
 - ✅ **Receipt spec (v0.1)** — mandatory Ed25519, key-pinning, genesis + tail-truncation rules.
 - ✅ **Offline verifier** — library + `noa verify` CLI, zero runtime deps, hostile-input hardened.
-- ✅ **JSON-Schema + conformance suite** — 49 tests, 9 attack + 6 malformed vectors, all rejected.
+- ✅ **JSON-Schema + conformance suite** — 54 tests, 10 attack + 9 malformed vectors, all rejected.
 - 🚧 **SDK `noa.guard()` · MCP proxy · hosted control-plane** — examples in [`examples/`](examples), hardening in progress.
 - This is **early access**, and it is **one organ** of NOA — not the whole brain. The full
   agent-cognition platform (cognition, memory, BYO-agent hosting) is separate and proprietary.

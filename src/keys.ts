@@ -44,11 +44,14 @@ export function signEd25519(privateKeyB64: string, message: Buffer): string {
 /** Verify an Ed25519 signature. Never throws — malformed key/sig returns false. */
 export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB64: string): boolean {
   try {
-    const key = createPublicKey({
-      key: Buffer.from(publicKeyB64, "base64"),
-      format: "der",
-      type: "spki",
-    });
+    const der = Buffer.from(publicKeyB64, "base64");
+    const key = createPublicKey({ key: der, format: "der", type: "spki" });
+    // Reject NON-CANONICAL SPKI (e.g. valid key + trailing garbage): OpenSSL's DER parser
+    // accepts trailing bytes, so one logical key could have many encodings. A trust layer must
+    // treat a key's encoding as canonical, so any future key-bytes-based logic (fingerprints,
+    // dedup, byte-pinning) cannot be bypassed by re-encoding. Re-export and require byte-equality.
+    const canonical = key.export({ type: "spki", format: "der" }) as Buffer;
+    if (!canonical.equals(der)) return false;
     return cryptoVerify(null, message, key, Buffer.from(signatureB64, "base64"));
   } catch {
     return false;

@@ -35,7 +35,7 @@
     "sig": {
       "alg": "ed25519",
       "kid": "noa-test-key-2026",
-      "value": "TCibus269lGrVgp/+SJD6OxSd7aQ32YgY0JqLm/wXSACWVQAshTF/1NofTKwdCiAIrOKEkp7ZcGZPiG+fpQ3Bw=="
+      "value": "4GNNIxJdII+ExLhh4jIOXUugv+ygJTN7thF2q3HxS/q7J0hdLVWZs8S+lJa9QGk8Hu/C2+aphCHquKwnKfQQCg=="
     }
   },
   {
@@ -77,7 +77,7 @@
     "sig": {
       "alg": "ed25519",
       "kid": "noa-test-key-2026",
-      "value": "rwToLY6cd2Tac3IEFvRAvohnXaEe2weVcnd2wC5NrXcjNSlVS/JyxfncBHRaEUKzEN+asYqyTfbpTQiryynEDw=="
+      "value": "zqYZxQm6P1SYbACwTkgTrZqR4omdKW6tY9Ih7pF945udJr0o9eRM7fxQlUlSVxDHo9Kne9mVKg7beykkjU5MAw=="
     }
   }
 ]
