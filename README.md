@@ -10,6 +10,9 @@
 
 **The receipt every AI action leaves behind. Verifiable by anyone. Owned by no one.**
 
+> *Tamper-**evident** provenance: it proves a record was produced under the stated rules and
+> wasn't altered — not that the action was right, and not proof-of-action. [Honest limits →](THREAT-MODEL.md)*
+
 ---
 
 ## The organ, concretely
