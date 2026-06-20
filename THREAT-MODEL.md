@@ -1,0 +1,69 @@
+# NOA Receipt — Threat Model
+
+This document is deliberately blunt. A trust layer that overstates what it proves is worse
+than none. Here is exactly what a NOA Receipt defends against, what it does not, and why.
+
+## What a receipt proves
+
+A verified chain proves: **each record was produced under the stated governance rules,
+signed by the pinned key, and the sequence has not been edited or re-ordered in the middle.**
+That is the whole claim. It is a verifiable, tamper-evident provenance log — not an oracle of
+truth or safety.
+
+## Assets & trust boundary
+
+- **Trusted:** the signing key(s) and the keyring used to verify them. The keyring is the
+  trust root; obtain genesis public keys out-of-band (TOFU or distribution). Compromise of a
+  private key lets the holder author valid receipts — protect keys accordingly (HSM/KMS in
+  production; `kid` rotation in v0.2).
+- **Untrusted:** the receipt bytes themselves (attacker-controlled input to the verifier),
+  storage/transport, and any party downstream of the signer.
+
+## Threats addressed (with the mechanism)
+
+| # | Threat | Defense | Tested by |
+|---|--------|---------|-----------|
+| T1 | Edit a past record's content | hash over JCS bytes; mismatch detected | `attack/tampered-content` |
+| T2 | Re-order / drop a middle record | seq contiguity + prevHash linkage | `attack/seq-gap`, `attack/relinked` |
+| T3 | Forge a fresh genesis | genesis must have `prevHash:null`, signed | `attack/forged-genesis` |
+| T4 | Strip signature, alter, re-sign with new key | `sig.kid` is inside the hash → breaks linkage | `attack/key-swap` |
+| T5 | Re-sign with a real adversary key | key pinned per `agent.id` → rejected | `attack/key-swap-resigned` |
+| T6 | Present a corrupted/forged signature | Ed25519 verify against keyring | `attack/wrong-signature` |
+| T7 | Number-serialization / canonicalization disagreement | integer-only JCS, frozen rules, pinned vectors | `jcs.test`, conformance |
+| T8 | Duplicate-key parser divergence | strict parser rejects duplicate keys | `safe-json.test` |
+| T9 | Smuggle PII/data in an unknown field | `additionalProperties:false` everywhere | `schema.test`, `malformed/pii-smuggle` |
+| T10 | Malicious input → verifier DoS/pollution | depth/size bounds, `__proto__` reject, no eval/network | `safe-json.test`, `malformed/deep-nest` |
+
+## Threats NOT fully addressed in v0.1 (stated honestly)
+
+- **Tail-truncation (T-tail):** deleting the most-recent receipts leaves a valid prefix.
+  *Mitigation now:* signed **checkpoints** (§6 of the spec) detect it when supplied; the
+  verifier **warns** when no checkpoint is given. *Full fix:* external anchor / transparency
+  log in v1.0. Without an anchor, offline verification cannot distinguish "nothing happened
+  after seq N" from "records after seq N were deleted."
+- **Private-key compromise:** out of scope of the format. Use KMS/HSM; rotate via `kid`.
+- **paramsHash correlation / brute-force:** plain `sha256` of low-entropy params (an amount,
+  an id, a boolean) is guessable and identical across tenants → cross-tenant correlation.
+  *Mitigation:* use `hmac-sha256` with a tenant-scoped key. The offline verifier then cannot
+  recompute the params hash (it has no key) — but it still verifies the chain, because
+  `paramsHash` is covered by the receipt hash. This tradeoff is intentional and documented.
+- **Truthfulness of the action:** a receipt records *what was authorized and decided*, not
+  that the downstream system actually did it. Pair with the receiving system's own logs for
+  end-to-end assurance (receiver-attestation is a v1.0 goal).
+- **Enforcement bypass:** see SECURITY.md — `noa.guard()` is advisory unless placed at the
+  credential/write boundary; the MCP proxy must fail-closed.
+
+## Clean-room / scope boundary (why this is safe to open-source)
+
+This repository is the **governance/receipt organ only**. It must never contain NOA-brain
+internals. Concretely, the OSS surface accepts and emits **only** generic action envelopes:
+enums (riskClass, verdict, mode, principal), opaque ids/handles, and hashes. It contains:
+
+- **No** cognition, memory, planning, or model-routing logic.
+- **No** tenant data, customer data, secrets, or private keys (the conformance key is a
+  published test fixture, clearly marked).
+- **No** proprietary policy content — *policy decisions enter as a verdict enum*, not as the
+  engine that produced them.
+
+A contribution that would pull brain internals across this line is rejected on principle, not
+just on review. The receipt is a format and a verifier; the brain is the product.

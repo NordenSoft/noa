@@ -1,0 +1,30 @@
+{
+  "name": "@noa/receipt",
+  "version": "0.1.0",
+  "description": "NOA Agent Action Receipt — open, offline-verifiable provenance for AI-agent actions. The governance/receipt organ only; the NOA brain is separate and proprietary.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "homepage": "https://noatrust.com",
+  "repository": { "type": "git", "url": "https://github.com/NordenSoft/noa.git" },
+  "keywords": ["ai-agent", "governance", "audit", "receipt", "hash-chain", "provenance", "mcp", "eu-ai-act"],
+  "engines": { "node": ">=20" },
+  "bin": { "noa": "dist/src/cli.js" },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": { "import": "./dist/src/index.js", "types": "./dist/src/index.d.ts" }
+  },
+  "files": ["dist", "schema", "docs/receipt-spec.md", "LICENSE", "README.md"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "gen:vectors": "node dist/scripts/gen-vectors.js",
+    "test": "npm run build && npm run gen:vectors && node --test dist/test/*.test.js",
+    "verify": "node dist/cli.js",
+    "prepublishOnly": "npm run build"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}

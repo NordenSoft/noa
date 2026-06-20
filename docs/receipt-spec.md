@@ -1,143 +1,180 @@
-# NOA Receipt — Specification v0.1 (DRAFT)
-### An open, verifiable format for AI-agent action provenance
+# NOA Receipt — Specification v0.1
 
-> **Status:** Draft v0.1 (2026-06-20). Foundation for the open standard (Faz-A). Apache-2.0.
-> **Scope:** This spec defines the *receipt format + hash-chain + verification*. It is deliberately small and honest: **tamper-EVIDENT (hash-chained), not tamper-PROOF.** Cryptographic signatures are OPTIONAL in v0.1 (MUST-support in v1.0). Grounded in what the NOA kernel already emits (`BrainActionReceipt`, hash-chain, `BrainDecision`).
+### An open, offline-verifiable format for AI-agent action provenance
+
+> **Status:** v0.1 (2026-06-20). Apache-2.0. This is the normative spec for the OPEN
+> governance/receipt **organ**. The NOA agent-cognition brain is separate and proprietary.
+>
+> **What changed from the early draft (after adversarial multi-model review):** signatures
+> are now **MANDATORY**, the signing-key identity is **bound into the hash** (key-swap
+> defense), **genesis** and **tail-truncation** are defined explicitly, and the
+> canonicalization rules are frozen and integer-only. An unsigned hash chain is just a
+> checksum — it proves nothing against a party that can write the log — so v0.1 requires
+> signatures from the start.
 
 ---
 
 ## 1. What a NOA Receipt is
 
-A **NOA Receipt** is a signed-or-hashed, append-only record asserting:
+A **NOA Receipt** is a signed, hash-chained, append-only record asserting:
 
-> *"Agent **A**, acting for principal-scope **S**, attempted action **X** with parameters hashed to **P**, under policy-mode **M**; the governance verdict was **V**; this is reversible via **R**; and this record is link-hashed to the previous one (**prevHash**)."*
+> *Agent **A**, acting for principal **P**, attempted action **X** (params hashed to **H**),
+> under governance mode **M**; the verdict was **V**; reversible via **R**; and this record
+> is link-hashed to the previous one (**prevHash**) and signed by key **kid**.*
 
-One **action lifecycle** emits one or more receipts (proposed → verdict → executed/blocked/deferred → approved/rejected → rolled_back). Receipts for a given scope form a **hash-chain** — altering any past receipt breaks every subsequent hash.
+One action lifecycle emits one or more receipts (proposed → verdict → executed/blocked/
+deferred → approved/rejected → rolled_back). Receipts for one `scope.chain` form a
+**hash-chain**: altering any past receipt breaks every later hash.
 
-It answers the auditor's only question — *"prove what happened when an agent acted"* — and the EU AI Act Art-12 requirement that logging be **designed-in, not bolted-on**.
+**What it proves / does not prove (be precise):**
+- ✅ Proves: *this exact record was produced under these rules and signed by this key, and
+  the sequence has not been edited in the middle.*
+- ❌ Does NOT prove: that the real-world action actually succeeded, that it was *wise*, that
+  the agent didn't hallucinate the intent, or (without a checkpoint, §6) that recent records
+  weren't **deleted from the tail**. See [THREAT-MODEL.md](../THREAT-MODEL.md).
 
 ---
 
-## 2. Receipt object (JSON)
+## 2. Receipt object
 
-Canonicalized per **RFC 8785 (JCS)** before hashing/signing.
+Canonicalized per **RFC 8785 (JCS)** — with NOA hardening (§4) — before hashing/signing.
 
 ```json
 {
   "spec": "noa.receipt/0.1",
-  "id": "rcpt_01J...",                      // unique, sortable (ULID/UUIDv7)
-  "ts": "2026-06-20T07:30:54.123Z",         // RFC 3339 UTC
-  "scope": {
-    "tenant": "store_cuid|org_id",          // isolation boundary (server-derived, never client)
-    "chain": "store_cuid"                    // hash-chain partition key
-  },
-  "agent": {
-    "id": "agent-handle",                    // caller agent identity
-    "model": "<provider/model-id>|null",     // model-agnostic, free string; null if unknown
-    "principal": "HUMAN|SERVICE|POLICY|SANDBOX_SIM"  // who/what authorized
-  },
-  "action": {
-    "id": "payment.refund",                  // raw action id
-    "canonical": "payment.refund",           // normalized risk-table key
-    "riskClass": "LOW|MEDIUM|HIGH|CRITICAL|IRREVERSIBLE",
-    "paramsHash": "sha256:...",              // hash of params (PII-free: never raw params)
-    "reversible": false,
-    "rollbackRef": "snap_...|null"           // how to revert, if reversible
-  },
-  "governance": {
-    "mode": "off|shadow|approvals_on|on",    // posture at decision time
-    "verdict": "ALLOWED|BLOCKED|DEFERRED|EXECUTED|FAILED|ROLLED_BACK|SIMULATED",
-    "ruleId": "creation-gate|reflex|approval-request|...|null",
-    "approval": {                            // present iff an approval occurred
-      "by": "HUMAN:email|SERVICE:tag|SANDBOX_SIM:..",
-      "at": "2026-06-20T07:31:10Z"
-    },
-    "sandboxed": false                       // true = simulated, zero real-world effect
-  },
-  "chain": {
-    "seq": 42,                               // monotonic per scope.chain
-    "prevHash": "sha256:...|null",           // previous receipt's hash (null = genesis)
-    "hash": "sha256:..."                     // sha256(JCS(this-without-hash-and-sig))
-  },
-  "sig": {                                   // OPTIONAL in v0.1, REQUIRED in v1.0
-    "alg": "ed25519",
-    "kid": "noa-key-2026",
-    "value": "base64..."                     // sign(hash) by issuer key
-  }
+  "id": "rcpt_01J...",
+  "ts": "2026-06-20T07:30:54.123Z",
+  "scope":   { "tenant": "store_or_org", "chain": "chain-partition-key" },
+  "agent":   { "id": "agent-handle", "model": "vendor/model|null", "principal": "HUMAN|SERVICE|POLICY|SANDBOX_SIM" },
+  "action":  { "id": "payment.refund", "canonical": "payment.refund",
+               "riskClass": "LOW|MEDIUM|HIGH|CRITICAL|IRREVERSIBLE",
+               "paramsHash": "sha256:…|hmac-sha256:…", "reversible": false, "rollbackRef": "snap_…|null" },
+  "governance": { "mode": "off|shadow|approvals_on|on",
+                  "verdict": "ALLOWED|BLOCKED|DEFERRED|EXECUTED|FAILED|ROLLED_BACK|SIMULATED",
+                  "ruleId": "…|null", "approval": { "by": "…", "at": "…" } , "sandboxed": false },
+  "chain":   { "seq": 42, "prevHash": "sha256:…|null", "hash": "sha256:…" },
+  "sig":     { "alg": "ed25519", "kid": "noa-key-2026", "value": "base64…" }
 }
 ```
 
-### Field rules (v0.1)
-- **Mandatory:** `spec, id, ts, scope.chain, agent.principal, action.{id,canonical,riskClass,paramsHash,reversible}, governance.{mode,verdict}, chain.{seq,prevHash,hash}`.
-- **PII-free invariant:** never embed raw params, customer data, secrets, or free text — only `paramsHash` (sha256) + enum/id fields. (Mirrors the kernel's PII-free audit rule.)
-- **`hash`** = `sha256( JCS(receipt without chain.hash and sig) )`.
-- **`prevHash`** = the immediately-preceding receipt's `chain.hash` for the same `scope.chain`. Genesis = `null`.
+### Field rules
+
+- **Mandatory:** `spec, id, ts, scope.chain, agent.id, agent.principal,
+  action.{id,canonical,riskClass,paramsHash,reversible}, governance.{mode,verdict,sandboxed},
+  chain.{seq,prevHash,hash}, sig.{alg,kid,value}`.
+- **Unknown fields are REJECTED** at every level (`additionalProperties:false`). This is a
+  security control: it closes the "smuggle PII / data in an unrecognized field" channel and
+  keeps the hashed surface exactly the documented surface.
+- **PII-free invariant:** never embed raw params, customer data, secrets, or free text — only
+  `paramsHash` and enum/id fields.
+- **Integer-only:** all numbers are JSON integers in the safe range. Floats/exponents are
+  rejected (removes number-serialization ambiguity entirely).
+- **`paramsHash`** is `sha256:<hex>` or, recommended for low-entropy params,
+  `hmac-sha256:<hex>` with a tenant-scoped key (plain SHA-256 of an amount/id/bool is
+  brute-forceable and identical across tenants → correlation; see THREAT-MODEL §params).
+
+### Hashing rule (frozen)
+
+```
+hash = sha256( JCS( receipt WITHOUT chain.hash AND WITHOUT sig.value ) )
+```
+
+`sig.alg` and `sig.kid` **are inside** the hashed bytes. Therefore an attacker cannot strip
+the signature, swap to another key, and re-sign: changing `sig.kid` changes the hash, which
+breaks linkage. `chain.hash = "sha256:" + hash`. The **signature** is Ed25519 over the raw
+32-byte digest whose hex is `chain.hash`.
 
 ---
 
-## 3. Hash-chain (tamper-evidence)
+## 3. Hash-chain & key-pinning
 
 For each `scope.chain`, receipts form an append-only chain:
 
 ```
-R0(prevHash=null) -> R1(prevHash=H(R0)) -> R2(prevHash=H(R1)) -> ...
+R0(seq=0, prevHash=null) -> R1(prevHash=H(R0)) -> R2(prevHash=H(R1)) -> …
 ```
 
-Editing any `Ri` changes `H(Ri)`, which mismatches `Ri+1.prevHash` → the chain **fails verification at i+1**. This is **tamper-evident**: you cannot silently rewrite history; you can only detect that it was rewritten. (True tamper-PROOF needs an external anchor — see §6, Faz-C/D.)
+- **Genesis** is `seq == 0` with `prevHash == null`. A non-null genesis prevHash is rejected.
+  The genesis receipt is signed; obtain its key out-of-band (the keyring is the trust root).
+- **Key-pinning:** the first receipt for a given `agent.id` pins its `sig.kid`. A later
+  receipt for the same `agent.id` under a **different** `kid` is rejected — a mid-chain key
+  swap cannot pass even if the attacker holds a valid keypair.
+- Editing any `Ri` changes `H(Ri)` → mismatches `R(i+1).prevHash`. **Tamper-evident.**
 
 ---
 
-## 4. Verification algorithm (the open verifier)
+## 4. Canonicalization (NOA-hardened JCS)
 
-Anyone — operator, auditor, receiving service, regulator — can verify a chain **offline**, with no NOA service:
+RFC 8785 with these frozen, test-pinned rules (see `conformance/`):
+
+1. Object keys sorted by UTF-16 code units.
+2. No whitespace.
+3. Strings: escape `" \ \b \f \n \r \t` and control chars `< U+0020` as `\u00XX`; **all other
+   code points emitted literally as UTF-8** (no `\u` escaping of non-control chars, **no
+   Unicode normalization** — inputs MUST already be NFC).
+4. Numbers: **integers only**, safe range; `-0` serializes as `0`; floats/NaN/Infinity/bigint
+   rejected.
+5. On parse (verifier side): **duplicate object keys are rejected** (no silent last-wins);
+   `__proto__`/`constructor`/`prototype` keys rejected; depth and size bounded.
+
+Conformance test vectors pin the exact bytes so a Rust producer and a TypeScript verifier
+cannot disagree.
+
+---
+
+## 5. Verification (the open verifier)
+
+Anyone — operator, auditor, receiving service, regulator — verifies a chain **offline**, no
+NOA service, via `noa verify` (or the library `verifyChain`):
 
 ```
-verify(receipts[] sorted by chain.seq):
-  for each R:
-    1. recompute h = sha256(JCS(R without chain.hash, sig)); assert h == R.chain.hash
-    2. if R.sig present: assert ed25519_verify(R.sig.value, R.chain.hash, pubkey[R.sig.kid])
-    3. if R.chain.seq == 0: assert R.chain.prevHash == null
-       else: assert R.chain.prevHash == prev.chain.hash AND R.chain.seq == prev.chain.seq + 1
-    4. schema-validate (reject PII-shaped/unknown fields)
-  -> VALID | TAMPERED(at seq=i, reason)
+verify(receipts, { keyring?, checkpoint? }):
+  1. structural validate each receipt (strict; reject unknown fields)   -> else MALFORMED
+  2. single chain partition; seqs contiguous 0..n-1, unique             -> else TAMPERED
+  for each receipt in seq order:
+  3. recompute hash = sha256(JCS(receipt \ chain.hash \ sig.value)); assert == chain.hash
+  4. pin sig.kid per agent.id (reject mid-chain key swap)
+  5. if keyring has kid: ed25519_verify(sig.value, digest, pubkey)      -> else can't verify
+  6. linkage: seq 0 => prevHash null; else prevHash == prev.hash && seq == prev.seq+1
+  7. if checkpoint: assert head matches checkpoint (tail-truncation)
+  -> VALID | STRUCTURE_VALID_UNVERIFIED_SIG | TAMPERED | MALFORMED
 ```
 
-Ships as: **`noa verify <receipts.json>`** (open CLI) + a JSON-Schema + a public conformance test-suite. **No dependency on NOA cloud** (non-negotiable: a trust layer must be independently verifiable).
+CLI exit codes: `0` VALID · `1` structurally valid but signatures unverified (no keyring) ·
+`2` TAMPERED · `3` MALFORMED · `4` usage. Honest by design: without a keyring, signatures are
+**not** silently treated as valid; without a checkpoint, tail-truncation is reported as an
+explicit warning, never passed silently.
 
 ---
 
-## 5. Lifecycle -> receipts
+## 6. Tail-truncation & checkpoints
 
-| Transition | verdict | Notes |
-|---|---|---|
-| Agent proposes action | (none yet, or `SIMULATED` if sandbox) | — |
-| Policy auto-allows low-risk | `ALLOWED` -> `EXECUTED` | receipted execution |
-| Policy blocks governance-class | `BLOCKED` | no execution; forced conscious |
-| Deferred to human | `DEFERRED` | approval-request opened |
-| Human approves | `EXECUTED` (+ `approval`) | post-approval execution |
-| Human rejects | `FAILED`/`BLOCKED` (+ `approval`) | no execution |
-| Reversible action undone | `ROLLED_BACK` (+ `rollbackRef`) | restore receipt |
-| Sandbox (zero-effect) | `SIMULATED` (`sandboxed:true`) | no real effect |
+`prevHash` catches mid-chain edits but **not** deletion of the most-recent receipts (an
+attacker drops the tail; the prefix still validates). A signed **checkpoint** closes this:
 
-Each transition appends one receipt to the scope's chain.
+```json
+{ "spec": "noa.checkpoint/0.1", "chain": "…", "highestSeq": 42, "headHash": "sha256:…",
+  "ts": "…", "sig": { "alg": "ed25519", "kid": "…", "value": "base64…" } }
+```
 
----
-
-## 6. Roadmap beyond v0.1 (honesty about what's NOT yet here)
-
-- **v0.1 (now):** format + hash-chain + offline verifier + JSON-Schema. Signatures OPTIONAL.
-- **v0.2:** signatures REQUIRED (Ed25519); key-rotation (`kid`); MCP-proxy reference emitter.
-- **v1.0:** external anchor (transparency-log / receiver-attestation, cf. arXiv Sello) -> tamper-PROOF; neutral-foundation governance (LF Agentic AI Foundation).
-- **Non-goals (v0.x):** does NOT claim to detect hallucination, does NOT claim true rollback of irreversible real-world effects (it *gates before* them), does NOT replace your model.
+A verifier given a checkpoint asserts the chain head equals `{highestSeq, headHash}` →
+truncation/extension is detected. Without a checkpoint the verifier **warns** that
+tail-truncation is undetectable offline. True tamper-*proof* (vs evident) needs an external
+anchor — transparency log / receiver-attestation — which is **v1.0** (§7).
 
 ---
 
-## 7. Why this format wins (vs. ad-hoc logs / IETF draft / Sello)
+## 7. Roadmap & non-goals
 
-- **vs. observability logs (Langfuse/AgentOps):** those record *what happened*; a NOA Receipt records *what was authorized + whether it should* + is independently verifiable + reversible-linked.
-- **vs. IETF `draft-sharif-agent-audit-trail`:** that's a log format (no ratified impl, no product); NOA Receipt ships with a working emitter (the kernel), an offline verifier, and a conformance suite — **adopted, not just published.**
-- **vs. Sello/receiver-attestation (arXiv 2606.04193):** Sello needs the *receiving service* to sign (cold-start: "services have no incentive"). NOA Receipt delivers **single-player value first** (the operator gets audit/verify/rollback even if the receiver knows nothing), then optionally upgrades to receiver-attestation in v1.0.
+- **v0.1 (now):** format + hardened JCS + mandatory Ed25519 + key-pinning + offline verifier
+  + checkpoints + JSON-Schema + conformance suite.
+- **v0.2:** key-rotation policy; MCP-proxy reference emitter; HMAC params profile.
+- **v1.0:** external anchor (transparency log / receiver-attestation) → tamper-PROOF;
+  neutral-foundation governance.
+- **Non-goals (v0.x):** does NOT detect hallucination; does NOT undo irreversible real-world
+  effects (it *gates before* them); does NOT replace your model or your framework.
 
 ---
 
-*Companion: `docs/research/2026-06-20-NOA-Global-Adoption-Strategy-Roadmap.md` (Faz-A). Reference emitter: NOA kernel `BrainActionReceiptService` (hash-chain live in prod, PR #220). Memory: [[noa-global-adoption-strategy]].*
+*Reference implementation + conformance vectors: this repository (`src/`, `conformance/`).
+Companion: [README](../README.md) · [THREAT-MODEL](../THREAT-MODEL.md) · [SECURITY](../SECURITY.md).*

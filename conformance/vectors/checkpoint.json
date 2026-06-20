@@ -1,0 +1,12 @@
+{
+  "spec": "noa.checkpoint/0.1",
+  "chain": "store_demo_chain",
+  "highestSeq": 2,
+  "headHash": "sha256:b919085ee106273a3eecd9b4a759626984476e73172c4cfdef8d4f98a31d04d7",
+  "ts": "2026-06-20T07:46:00.000Z",
+  "sig": {
+    "alg": "ed25519",
+    "kid": "noa-test-key-2026",
+    "value": "OLntJHRWC/kMXxclfy898DMdHj73hL0jnbevyl6ESQNRMMXl/zOpG7jX43AaQtU1sYepeNDt7Ov9TPRWPgOKAQ=="
+  }
+}

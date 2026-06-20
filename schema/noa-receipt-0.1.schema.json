@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-receipt-0.1.schema.json",
+  "title": "NOA Receipt v0.1",
+  "description": "Open, offline-verifiable provenance record for an AI-agent action. PII-free by design: only hashes and enums, never raw params or customer data.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "id", "ts", "scope", "agent", "action", "governance", "chain", "sig"],
+  "properties": {
+    "spec": { "const": "noa.receipt/0.1" },
+    "id": { "type": "string", "minLength": 1, "maxLength": 128 },
+    "ts": { "type": "string", "format": "date-time" },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["chain"],
+      "properties": {
+        "tenant": { "type": "string" },
+        "chain": { "type": "string", "minLength": 1 }
+      }
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "principal"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "model": { "type": ["string", "null"] },
+        "principal": { "enum": ["HUMAN", "SERVICE", "POLICY", "SANDBOX_SIM"] }
+      }
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "canonical", "riskClass", "paramsHash", "reversible"],
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "canonical": { "type": "string", "minLength": 1 },
+        "riskClass": { "enum": ["LOW", "MEDIUM", "HIGH", "CRITICAL", "IRREVERSIBLE"] },
+        "paramsHash": { "type": "string", "pattern": "^(sha256|hmac-sha256):[0-9a-f]{64}$" },
+        "reversible": { "type": "boolean" },
+        "rollbackRef": { "type": ["string", "null"] }
+      }
+    },
+    "governance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "verdict", "sandboxed"],
+      "properties": {
+        "mode": { "enum": ["off", "shadow", "approvals_on", "on"] },
+        "verdict": {
+          "enum": ["ALLOWED", "BLOCKED", "DEFERRED", "EXECUTED", "FAILED", "ROLLED_BACK", "SIMULATED"]
+        },
+        "ruleId": { "type": ["string", "null"] },
+        "sandboxed": { "type": "boolean" },
+        "approval": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["by", "at"],
+          "properties": {
+            "by": { "type": "string" },
+            "at": { "type": "string", "format": "date-time" }
+          }
+        }
+      }
+    },
+    "chain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seq", "prevHash", "hash"],
+      "properties": {
+        "seq": { "type": "integer", "minimum": 0 },
+        "prevHash": { "type": ["string", "null"], "pattern": "^sha256:[0-9a-f]{64}$" },
+        "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "minLength": 1 },
+        "value": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}

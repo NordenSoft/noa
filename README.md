@@ -45,12 +45,40 @@ breaks the chain. PII-free by design (only hashes of params).
 }
 ```
 
-Full format: [`docs/receipt-spec.md`](docs/receipt-spec.md). Verify a chain offline — no account, no network.
+Full format: [`docs/receipt-spec.md`](docs/receipt-spec.md). Signatures are **mandatory** (Ed25519),
+the signing key is bound into the hash, and verification runs **offline** — no account, no network.
+
+## Verify a chain offline (no account, no network)
+
+```bash
+npm install          # zero runtime dependencies (Node ≥ 20 stdlib only)
+npm test             # build + generate conformance vectors + run 49 tests
+
+# verify a signed chain against a keyring + checkpoint
+node dist/src/cli.js verify conformance/vectors/valid-chain.json \
+  --keyring conformance/vectors/keyring.json \
+  --checkpoint conformance/vectors/checkpoint.json
+# -> { "status": "VALID", "signaturesVerified": true, "tailChecked": true, ... }   exit 0
+```
+
+Exit codes are CI-ready: `0` VALID · `1` unverified-sig (no keyring) · `2` TAMPERED · `3`
+MALFORMED · `4` usage. Every tampered/forged/truncated/key-swapped vector under
+[`conformance/`](conformance/vectors) is rejected — and the verifier is honest: without a
+keyring it will **not** claim VALID, and without a checkpoint it **warns** that tail-truncation
+can't be detected offline.
+
+In code:
+
+```ts
+import { buildReceipt, verifyChain, generateKeyPair } from "@noa/receipt";
+```
 
 ## Status (honest)
 
-- ✅ **Receipt format spec (v0.1)** — in this repo.
-- 🚧 **Kernel organ · SDK · MCP proxy · offline verifier CLI** — opening incrementally. Star/watch to follow.
+- ✅ **Receipt spec (v0.1)** — mandatory Ed25519, key-pinning, genesis + tail-truncation rules.
+- ✅ **Offline verifier** — library + `noa verify` CLI, zero runtime deps, hostile-input hardened.
+- ✅ **JSON-Schema + conformance suite** — 49 tests, 9 attack + 6 malformed vectors, all rejected.
+- 🚧 **SDK `noa.guard()` · MCP proxy · hosted control-plane** — examples in [`examples/`](examples), hardening in progress.
 - This is **early access**, and it is **one organ** of NOA — not the whole brain. The full
   agent-cognition platform (cognition, memory, BYO-agent hosting) is separate and proprietary.
 

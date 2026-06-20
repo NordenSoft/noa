@@ -1,0 +1,40 @@
+# Security Policy
+
+## Reporting a vulnerability
+
+Email **security@noatrust.com** (or hello@ordeliya.com) with details and a proof-of-concept
+if you have one. Please do not open a public issue for a security report. We aim to acknowledge
+within 72 hours. This is an early-access project; coordinated disclosure is appreciated.
+
+## Design stance
+
+This is a **trust layer**, so it is built to be boring and hostile-input-safe:
+
+- **Zero runtime dependencies.** The verifier and library use only the Node standard library
+  (`node:crypto`). Nothing is pulled from the network at verify time. Smaller supply chain =
+  smaller attack surface.
+- **Strict parser.** Receipts are parsed by a hardened JSON parser that rejects duplicate
+  keys, `__proto__`/`constructor`/`prototype` keys, floats/exponents, and over-deep or
+  over-large input. Standard `JSON.parse` is **not** used for untrusted input.
+- **Strict schema.** Unknown fields are rejected everywhere (`additionalProperties:false`).
+- **Mandatory signatures.** Ed25519 signatures are required; the signing key id is bound into
+  the hash; keys are pinned per `agent.id` within a chain.
+- **Honest verdicts.** The verifier never silently upgrades trust: no keyring ⇒
+  `STRUCTURE_VALID_UNVERIFIED_SIG` (exit 1), not `VALID`; no checkpoint ⇒ an explicit
+  tail-truncation warning.
+
+## Known limits (see THREAT-MODEL.md)
+
+- Tail-truncation is only detectable with a signed checkpoint (full fix = external anchor,
+  v1.0).
+- `noa.guard()` is **advisory** unless installed where the action's credentials/write
+  authority actually live; the MCP proxy is designed to **fail-closed**. Unmanaged tools are
+  outside the trust boundary — document which tools are governed.
+- Private-key custody is the operator's responsibility (use KMS/HSM in production).
+
+## Cryptography
+
+- Hash: SHA-256. Signatures: Ed25519 (`node:crypto`). Canonicalization: RFC 8785 (JCS),
+  hardened to integer-only. Conformance vectors pin exact bytes across implementations.
+- The keypair under `conformance/` is a **test-only fixture** — its private key is public on
+  purpose and must never be used for anything real.
