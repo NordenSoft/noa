@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyChain } from "../src/verify.js";
+import { verifyChain, verifyChainText } from "../src/verify.js";
 import { safeParse } from "../src/safe-json.js";
 import type { Keyring, Checkpoint } from "../src/index.js";
 
@@ -51,6 +51,8 @@ const ATTACKS = [
   "attack/key-swap-resigned.json",
   "attack/unknown-kid.json",
   "attack/seq-gap.json",
+  "attack/head-truncated.json",
+  "attack/cross-chain-splice.json",
   "attack/dup-seq.json",
   "attack/wrong-signature.json",
   "attack/relinked.json",
@@ -70,6 +72,15 @@ test("unknown-kid: TAMPERED with keyring, UNVERIFIED without (no silent TOFU on 
   assert.match(withKey.reason ?? "", /unknown signing key/);
   const noKey = verifyChain(load("attack/unknown-kid.json"), {});
   assert.equal(noKey.status, "UNVERIFIED");
+});
+
+test("signed body commits to seq + scope.chain: head-truncation and cross-chain splice are caught", () => {
+  const ht = verifyChain(load("attack/head-truncated.json"), { keyring });
+  assert.equal(ht.status, "TAMPERED");
+  assert.match(ht.reason ?? "", /seq|genesis/i);
+  const xc = verifyChain(load("attack/cross-chain-splice.json"), { keyring });
+  assert.equal(xc.status, "TAMPERED");
+  assert.match(xc.reason ?? "", /chain partition|duplicate seq/i);
 });
 
 test("key-swap-resigned is caught by key-pinning, not signature presence", () => {
@@ -151,6 +162,14 @@ test("malformed: pii-smuggle (unknown field) -> MALFORMED at verify", () => {
   const r = verifyChain(parsed, { keyring });
   assert.equal(r.status, "MALFORMED");
   assert.match(r.reason ?? "", /unknown field/);
+});
+
+test("verifyChainText routes through the strict parser: duplicate keys -> MALFORMED at the library level", () => {
+  // the strict-parse guarantee (dup-key reject) is a property of verifyChainText, not just the CLI
+  const dup = raw("malformed/duplicate-key.json");
+  assert.equal(verifyChainText(dup).status, "MALFORMED");
+  // and a valid chain text verifies
+  assert.equal(verifyChainText(raw("valid-chain.json"), { keyring }).status, "VALID");
 });
 
 test("non-array input -> MALFORMED", () => {

@@ -4,6 +4,7 @@ import { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
 import { verifyEd25519, type Keyring } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
+import { safeParse } from "./safe-json.js";
 
 export type VerifyStatus =
   | "VALID" // structure + hash-chain + signatures all verified against the supplied keyring
@@ -193,6 +194,23 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
 
   const status: VerifyStatus = haveKeyring ? "VALID" : "UNVERIFIED";
   return { status, chain: chainId, count: list.length, signaturesVerified: haveKeyring, tailChecked, warnings };
+}
+
+/**
+ * Verify a chain from its RAW JSON text, parsed by the hardened safeParse (duplicate-key /
+ * __proto__ / float / depth / size / surrogate rejection). Prefer this over
+ * `verifyChain(JSON.parse(text))` for untrusted input: the strict-parse guarantees are a
+ * property of THIS entry point, not of a caller's own `JSON.parse` (which silently accepts
+ * duplicate keys). Returns MALFORMED instead of throwing on bad input.
+ */
+export function verifyChainText(text: string, opts: VerifyOptions = {}): VerifyResult {
+  let parsed: unknown;
+  try {
+    parsed = safeParse(text);
+  } catch (e) {
+    return { status: "MALFORMED", chain: null, count: 0, signaturesVerified: false, tailChecked: false, reason: (e as Error).message, warnings: [] };
+  }
+  return verifyChain(parsed, opts);
 }
 
 type CheckpointVerdict = "ok" | "unverified" | "bad spec" | "malformed checkpoint" | "bad checkpoint signature";

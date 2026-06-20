@@ -39,6 +39,7 @@ export {
 export { buildReceipt, buildCheckpoint, type Signer, type BuildInput } from "./builder.js";
 export {
   verifyChain,
+  verifyChainText,
   verifyCheckpoint,
   type VerifyOptions,
   type VerifyResult,

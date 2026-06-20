@@ -26,8 +26,12 @@ jobs:
         run: npm test
       - name: Conformance vectors are reproducible (no drift)
         run: |
-          git diff --exit-code conformance/ \
-            || (echo "::error::conformance vectors changed — regenerate with 'npm run gen:vectors' and commit" && exit 1)
+          # catches modified AND newly-generated (untracked) vector files
+          if [ -n "$(git status --porcelain conformance/)" ]; then
+            echo "::error::conformance vectors changed/added — regenerate with 'npm run gen:vectors' and commit"
+            git status --porcelain conformance/
+            exit 1
+          fi
       - name: Self-check the CLI exit-code contract
         run: |
           set -e

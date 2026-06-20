@@ -49,7 +49,32 @@ truth or safety.
   verifier **warns** when no checkpoint is given. *Full fix:* external anchor / transparency
   log in v1.0. Without an anchor, offline verification cannot distinguish "nothing happened
   after seq N" from "records after seq N were deleted."
-- **Private-key compromise:** out of scope of the format. Use KMS/HSM; rotate via `kid`.
+- **Private-key compromise / no revocation / no forward-security:** a leaked private key lets
+  the holder retroactively re-sign an entirely fabricated history (bounded only by an external
+  checkpoint/anchor someone already holds). v0.1 has **no revocation list and no key-evolution**.
+  Use KMS/HSM; rotate via `kid`. Cryptographic *attribution* is provided; key-exfiltration
+  prevention is not.
+- **Replay / freshness / liveness:** a wholly-valid chain, head, or checkpoint can be re-presented
+  later as if current. The format carries no nonce/epoch/expiry. **Freshness is the caller's
+  responsibility** — pin an expected chain id + head hash from a fresh, trusted channel; do not
+  treat "VALID" as "current".
+- **Namespace / context binding:** a signature proves "this key signed this receipt graph", not
+  "this graph belongs to *your* deployment/customer/task" unless the caller checks `scope.chain`
+  (and any agreed `tenant`/subject) against what it expected. `scope.chain` IS in the signed body
+  (cross-chain splice is rejected), but matching it to *your* context is policy you must apply.
+- **Omission ≠ tampering:** this proves the integrity of the receipts that EXIST. An agent that
+  simply never emits a receipt for a bad action leaves no trace to detect. It is log-integrity,
+  not a guarantee of behavioral honesty.
+- **Signer-asserted timestamps:** `ts` is set by the signer and is therefore backdatable. The
+  verifier only warns on non-monotonic `ts`; do not treat timestamps as trusted wall-clock.
+- **Keyring is the root of trust:** every guarantee collapses if the verifier's keyring is
+  wrong. Distributing/securing/updating the keyring is out of band and out of scope for v0.1.
+- **Unknown `kid` is reported `TAMPERED` (fail-closed tradeoff):** when a keyring is supplied, a
+  signature by a key not in it (receipt OR checkpoint) is `TAMPERED`. This is deliberate
+  (no silent trust-on-first-use of attacker input). The cost: a *legitimately rotated* key looks
+  `TAMPERED` until verifiers update their keyring — so treat a `TAMPERED` "unknown key" reason as
+  "update the keyring if this key rotated; otherwise it's a forgery." (A distinct `UNTRUSTED`
+  status is a v0.2 consideration.)
 - **paramsHash correlation / brute-force:** plain `sha256` of low-entropy params (an amount,
   an id, a boolean) is guessable and identical across tenants → cross-tenant correlation.
   *Mitigation:* use `hmac-sha256` with a tenant-scoped key. The offline verifier then cannot

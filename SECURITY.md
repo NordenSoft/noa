@@ -13,9 +13,12 @@ This is a **trust layer**, so it is built to be boring and hostile-input-safe:
 - **Zero runtime dependencies.** The verifier and library use only the Node standard library
   (`node:crypto`). Nothing is pulled from the network at verify time. Smaller supply chain =
   smaller attack surface.
-- **Strict parser.** Receipts are parsed by a hardened JSON parser that rejects duplicate
-  keys, `__proto__`/`constructor`/`prototype` keys, floats/exponents, and over-deep or
-  over-large input. Standard `JSON.parse` is **not** used for untrusted input.
+- **Strict parser.** Receipts are parsed by a hardened JSON parser (`safeParse`) that rejects
+  duplicate keys, `__proto__`/`constructor`/`prototype` keys, floats/exponents, unpaired
+  surrogates, and over-deep or over-large input. The `noa verify` CLI and the `verifyChainText()`
+  library entry use it. ⚠️ If you call `verifyChain(value)` with a **pre-parsed** object, the
+  strict-parse guarantees are yours to uphold — use `safeParse`/`verifyChainText`, not a bare
+  `JSON.parse`, on untrusted input (`JSON.parse` silently accepts duplicate keys).
 - **Strict schema.** Unknown fields are rejected everywhere (`additionalProperties:false`).
 - **Mandatory signatures.** Ed25519 signatures are required; the signing key id is bound into
   the hash; keys are pinned per `agent.id` within a chain.

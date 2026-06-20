@@ -39,6 +39,11 @@ function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+/** Own-property check (matches the hasher's Object.keys view; avoids prototype-chain reads). */
+function has(obj: object, k: string): boolean {
+  return Object.prototype.hasOwnProperty.call(obj, k);
+}
+
 function checkExactKeys(
   obj: Record<string, unknown>,
   required: string[],
@@ -51,7 +56,7 @@ function checkExactKeys(
     if (!allowed.has(k)) errors.push(`${path}: unknown field "${k}"`);
   }
   for (const k of required) {
-    if (!(k in obj)) errors.push(`${path}: missing required field "${k}"`);
+    if (!has(obj, k)) errors.push(`${path}: missing required field "${k}"`);
   }
 }
 
@@ -85,7 +90,7 @@ export function validateReceiptShape(value: unknown): SchemaResult {
   if (isPlainObject(r.scope)) {
     checkExactKeys(r.scope, ["chain"], ["tenant"], "receipt.scope", errors);
     if (!str(r.scope.chain) || r.scope.chain.length === 0) errors.push("receipt.scope.chain: non-empty string");
-    if ("tenant" in r.scope && !str(r.scope.tenant)) errors.push("receipt.scope.tenant: string");
+    if (has(r.scope, "tenant") && !str(r.scope.tenant)) errors.push("receipt.scope.tenant: string");
   } else errors.push("receipt.scope: object required");
 
   // agent
@@ -93,7 +98,7 @@ export function validateReceiptShape(value: unknown): SchemaResult {
     checkExactKeys(r.agent, ["id", "principal"], ["model"], "receipt.agent", errors);
     if (!str(r.agent.id) || r.agent.id.length === 0) errors.push("receipt.agent.id: non-empty string");
     if (!PRINCIPALS.has(r.agent.principal as string)) errors.push("receipt.agent.principal: invalid enum");
-    if ("model" in r.agent && r.agent.model !== null && !str(r.agent.model))
+    if (has(r.agent, "model") && r.agent.model !== null && !str(r.agent.model))
       errors.push("receipt.agent.model: string or null");
   } else errors.push("receipt.agent: object required");
 
@@ -113,7 +118,7 @@ export function validateReceiptShape(value: unknown): SchemaResult {
     if (!str(r.action.paramsHash) || !PARAMS_HASH_RE.test(r.action.paramsHash))
       errors.push("receipt.action.paramsHash: must match (sha256|hmac-sha256):<64 hex>");
     if (typeof r.action.reversible !== "boolean") errors.push("receipt.action.reversible: boolean");
-    if ("rollbackRef" in r.action && r.action.rollbackRef !== null && !str(r.action.rollbackRef))
+    if (has(r.action, "rollbackRef") && r.action.rollbackRef !== null && !str(r.action.rollbackRef))
       errors.push("receipt.action.rollbackRef: string or null");
   } else errors.push("receipt.action: object required");
 
@@ -129,9 +134,9 @@ export function validateReceiptShape(value: unknown): SchemaResult {
     if (!MODES.has(r.governance.mode as string)) errors.push("receipt.governance.mode: invalid enum");
     if (!VERDICTS.has(r.governance.verdict as string)) errors.push("receipt.governance.verdict: invalid enum");
     if (typeof r.governance.sandboxed !== "boolean") errors.push("receipt.governance.sandboxed: boolean");
-    if ("ruleId" in r.governance && r.governance.ruleId !== null && !str(r.governance.ruleId))
+    if (has(r.governance, "ruleId") && r.governance.ruleId !== null && !str(r.governance.ruleId))
       errors.push("receipt.governance.ruleId: string or null");
-    if ("approval" in r.governance && r.governance.approval !== null) {
+    if (has(r.governance, "approval") && r.governance.approval !== null) {
       if (isPlainObject(r.governance.approval)) {
         checkExactKeys(r.governance.approval, ["by", "at"], [], "receipt.governance.approval", errors);
         if (!str(r.governance.approval.by)) errors.push("receipt.governance.approval.by: string");

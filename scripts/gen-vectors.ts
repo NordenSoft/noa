@@ -150,6 +150,19 @@ write("attack/unknown-kid.json", unknownKid);
 // 5. seq gap (missing middle)
 write("attack/seq-gap.json", [clone(chain[0]!), clone(chain[2]!)]);
 
+// 5b. head truncation: drop the GENESIS receipt and present seq 1.. as the whole chain.
+//     Caught because seq is in the signed body and the verifier requires contiguous 0..n-1.
+write("attack/head-truncated.json", clone(chain).slice(1));
+
+// 5c. cross-chain splice: a receipt from a DIFFERENT chain lifted into this input.
+//     Caught because scope.chain is in the signed body (single-chain-partition check).
+const otherGenesis = buildReceipt(
+  { ...inputs[0]!, id: "rcpt_other_genesis", scope: { tenant: "store_other", chain: "store_other_chain" } },
+  null,
+  signer,
+);
+write("attack/cross-chain-splice.json", [clone(chain[0]!), otherGenesis]);
+
 // 6. duplicate seq
 const dupseq = clone(chain);
 dupseq[2]!.chain.seq = 1;
