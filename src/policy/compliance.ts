@@ -19,6 +19,14 @@
  * + Ed25519 signature are then verified BEFORE the L2 check; a non-authentic carrier ⇒ ok:false), or call
  * `verifyChain([...], { keyring })` and require VALID first. Never report "compliant" off a carrier you
  * have not authenticated. Never throws (fail-closed).
+ *
+ * ATTRIBUTION (round-17 #1): `{ keyring }` carrier-auth is KID-LEVEL — it proves "a keyring-trusted key
+ * signed this carrier", NOT "THIS agent.id signed it". In a multi-key keyring a co-trusted key can sign a
+ * receipt claiming `agent.id=victim` and still pass carrier-auth (ok:true), exactly the cross-agent
+ * impersonation `verifyChain` rejects as UNTRUSTED only when given an identityManifest. To get the same
+ * attribution guarantee here, ALSO pass `{ identityManifest }`: the carrier's `(agent.id, sig.kid)` pairing
+ * is then required to be authorized (mirrors verify.ts 4c-bis) — an unauthorized pairing ⇒ ok:false. Without
+ * an identityManifest, L2 attribution stays kid-level (the weaker, documented guarantee).
  */
 import type { Receipt } from "../types.js";
 import type { Policy, InputSnapshot } from "./dsl.js";
@@ -28,7 +36,7 @@ import { canonicalize } from "../jcs.js";
 import { sha256Prefixed, sha256Hex } from "../hash.js";
 import { validateReceiptShape } from "../schema.js";
 import { receiptHashInput } from "../canonicalize.js";
-import { verifyEd25519, type Keyring } from "../keys.js";
+import { verifyEd25519, type Keyring, type IdentityManifest } from "../keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../signing.js";
 
 export interface ComplianceCommit {
@@ -71,8 +79,19 @@ export interface VerifyComplianceOptions {
    * Ed25519 signature is verified against the keyring. A non-authentic carrier (bad shape / hash / unknown
    * kid / bad signature) ⇒ ok:false. Omit it ONLY when the caller has already authenticated the carrier
    * via `verifyChain([...], { keyring })` → VALID (see the module-level authenticity note).
+   *
+   * NOTE: keyring carrier-auth is KID-LEVEL (a keyring-trusted key signed), NOT agent-level. To bind WHICH
+   * agent.id signed, ALSO pass `identityManifest` below.
    */
   keyring?: Keyring;
+  /**
+   * Optional `agent.id -> authorized kid(s)` binding (the SAME trust class as the keyring). Meaningful ONLY
+   * alongside `keyring` (it gates an AUTHENTICATED carrier). When supplied, after carrier-auth succeeds, a
+   * carrier whose `(agent.id, sig.kid)` pairing is not authorized is rejected (ok:false) — upgrading L2
+   * attribution from "a keyring-trusted key signed" to "THIS agent.id signed" (mirrors verify.ts 4c-bis /
+   * the UNTRUSTED verdict). Omit it to keep kid-level attribution (the weaker, documented guarantee).
+   */
+  identityManifest?: IdentityManifest;
 }
 
 /**
@@ -83,6 +102,10 @@ export interface VerifyComplianceOptions {
  * Pass `{ keyring }` to ALSO authenticate the carrier here (recommended); otherwise this presumes the
  * caller already authenticated the carrier (verifyChain → VALID). Without that, ok:true says nothing about
  * the receipt being genuine — only that the committed block is internally policy-consistent.
+ *
+ * Pass `{ keyring, identityManifest }` to ALSO bind WHICH agent.id signed (round-17 #1): after carrier-auth,
+ * an unauthorized `(agent.id, sig.kid)` pairing ⇒ ok:false. Without an identityManifest, attribution is
+ * kid-level (a keyring-trusted key signed, not necessarily THIS agent.id).
  */
 export function verifyReceiptCompliance(
   receipt: Receipt,
@@ -128,6 +151,36 @@ export function verifyReceiptCompliance(
       if (!pub) return { ok: false, reason: `carrier receipt signing key "${snap.sig.kid}" not in keyring` };
       if (!verifyEd25519(pub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), snap.sig.value)) {
         return { ok: false, reason: "carrier receipt signature not authenticated" };
+      }
+      // IDENTITY BINDING (round-17 #1): the signature is now AUTHENTICATED, so — exactly like verify.ts
+      // 4c-bis — when an identityManifest is supplied, require the carrier's (agent.id, sig.kid) pairing to
+      // be authorized. Without this, keyring carrier-auth is kid-level: a co-trusted key could sign a receipt
+      // claiming agent.id=victim and pass (ok:true) while verifyChain([...],{keyring,identityManifest}) returns
+      // UNTRUSTED on the SAME receipt. Read the manifest via the SAME read-once snapshot discipline (Map copy,
+      // arrays sliced by value) so a flipping accessor cannot split validation from enforcement; read agent.id
+      // / sig.kid from the read-once `snap`, never the live receipt. (Inside the outer try ⇒ a throwing manifest
+      // accessor fails closed.)
+      if (opts.identityManifest !== undefined) {
+        const live = opts.identityManifest;
+        if (typeof live !== "object" || live === null || Array.isArray(live)) {
+          return { ok: false, reason: "identityManifest must be an object (agent.id -> kid[])" };
+        }
+        const manifest = new Map<string, string[]>();
+        for (const aid of Object.getOwnPropertyNames(live)) {
+          const kidsLive = (live as Record<string, unknown>)[aid]; // ONE read of the entry
+          if (!Array.isArray(kidsLive)) {
+            return { ok: false, reason: `identityManifest["${aid}"] must be an array of kid strings` };
+          }
+          const kids = Array.prototype.slice.call(kidsLive) as unknown[]; // copy by value
+          if (!kids.every((k) => typeof k === "string")) {
+            return { ok: false, reason: `identityManifest["${aid}"] must be an array of kid strings` };
+          }
+          manifest.set(aid, kids as string[]);
+        }
+        const allowed = manifest.get(snap.agent.id);
+        if (allowed === undefined || !allowed.includes(snap.sig.kid)) {
+          return { ok: false, reason: `agent "${snap.agent.id}" not authorized for signing key "${snap.sig.kid}" (identity manifest)` };
+        }
       }
     }
     if (policyHash(policySnap) !== c.policyHash) return { ok: false, reason: "policyHash mismatch — supplied policy is not the committed one" };

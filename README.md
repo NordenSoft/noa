@@ -74,7 +74,7 @@ node dist/src/cli.js verify conformance/vectors/valid-chain.json \
 ```
 
 Exit codes are CI-ready: `0` VALID · `1` unverified-sig (no keyring) · `2` TAMPERED · `3`
-MALFORMED · `4` usage. Every tampered/forged/truncated/key-swapped vector under
+MALFORMED · `4` usage · `5` UNTRUSTED (identity binding failed). Every tampered/forged/truncated/key-swapped vector under
 [`conformance/`](conformance/vectors) is rejected — and the verifier is honest: without a
 keyring it will **not** claim VALID, and without a checkpoint it **warns** that tail-truncation
 can't be detected offline.

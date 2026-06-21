@@ -189,3 +189,29 @@ test("ROUND-16 #5: a non-object keyring (null / array / non-object) ⇒ clean ok
   assert.equal(coseSign1Verify(cose, { k: kp.publicKey }).ok, true);
   assert.equal(receiptFromCose(wrapped, { [kp.kid]: kp.publicKey }).ok, true);
 });
+
+test("round-17 #5: receiptFromCose with a throwing-accessor identityManifest → clean ok:false, never throws", () => {
+  const kp = generateKeyPair("k");
+  const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
+  const wrapped = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
+  const keyring = { [kp.kid]: kp.publicKey };
+
+  // a manifest whose ENTRY getter throws — pre-fix the COSE path had no try/catch, so it escaped as a raw
+  // throw (unlike verifyChain). The guard makes it a clean ok:false.
+  const evilEntry: Record<string, unknown> = {};
+  Object.defineProperty(evilEntry, "a1", { enumerable: true, configurable: true, get() { throw new Error("boom"); } });
+  let r1!: ReturnType<typeof receiptFromCose>;
+  assert.doesNotThrow(() => { r1 = receiptFromCose(wrapped, keyring, evilEntry as never); });
+  assert.equal(r1.ok, false);
+
+  // a manifest entry that IS an array but whose element getter throws — same fail-closed contract.
+  const arr: string[] = [];
+  Object.defineProperty(arr, "0", { enumerable: true, configurable: true, get() { throw new Error("boom"); } });
+  arr.length = 1;
+  let r2!: ReturnType<typeof receiptFromCose>;
+  assert.doesNotThrow(() => { r2 = receiptFromCose(wrapped, keyring, { a1: arr } as never); });
+  assert.equal(r2.ok, false);
+
+  // sanity: a genuine manifest still binds (no regression) — a1 authorized for k.
+  assert.equal(receiptFromCose(wrapped, keyring, { a1: ["k"] }).ok, true);
+});

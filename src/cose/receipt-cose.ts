@@ -59,16 +59,24 @@ export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityMan
     if (typeof identityManifest !== "object" || identityManifest === null || Array.isArray(identityManifest)) {
       return { ok: false, kid: null, receipt: null, reason: "identityManifest must be an object (agent.id -> kid[])", warnings: [] };
     }
-    for (const aid of Object.getOwnPropertyNames(identityManifest)) {
-      const kidsLive = (identityManifest as Record<string, unknown>)[aid]; // ONE read of the entry
-      if (!Array.isArray(kidsLive)) {
-        return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
+    // GUARD the manifest read in try/catch (round-17 #5): the entries / array elements are caller-supplied LIVE
+    // values, so a hostile accessor (`get someAgent(){throw}` or a throwing element getter) must yield a clean
+    // ok:false here, never escape as a RAW throw — mirroring verify.ts's manifest-validation guard. (verifyChain
+    // wraps this in its own try; this COSE entry point needs its own, since it has no outer guard.)
+    try {
+      for (const aid of Object.getOwnPropertyNames(identityManifest)) {
+        const kidsLive = (identityManifest as Record<string, unknown>)[aid]; // ONE read of the entry
+        if (!Array.isArray(kidsLive)) {
+          return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
+        }
+        const kids = Array.prototype.slice.call(kidsLive) as unknown[]; // copy by value
+        if (!kids.every((k) => typeof k === "string")) {
+          return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
+        }
+        manifest.set(aid, kids as string[]);
       }
-      const kids = Array.prototype.slice.call(kidsLive) as unknown[]; // copy by value
-      if (!kids.every((k) => typeof k === "string")) {
-        return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
-      }
-      manifest.set(aid, kids as string[]);
+    } catch {
+      return { ok: false, kid: null, receipt: null, reason: "identityManifest threw during validation (hostile accessor)", warnings: [] };
     }
   }
   const r = coseSign1Verify(coseBytes, keyring);

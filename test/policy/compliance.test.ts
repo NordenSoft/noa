@@ -213,3 +213,70 @@ test("round-16 #6: a flipping `inputs` getter cannot split inputsHash from the r
   // Direct positive control: snapshot defeats the split → the hash that matched (4200) is the one evaluated.
   assert.equal(reads <= 1, true, "the flipping getter must fire at most once (snapshot reads inputs exactly once)");
 });
+
+// ── round-17 #1 (HIGH): L2 carrier-auth via { keyring } is KID-LEVEL — it proves "a keyring-trusted key
+// signed", NOT "THIS agent.id signed". In a multi-key keyring a co-trusted key can sign a receipt claiming
+// agent.id=victim and pass carrier-auth (ok:true) while verifyChain([...],{keyring,identityManifest}) returns
+// UNTRUSTED on the SAME receipt. Passing { keyring, identityManifest } binds the signer to the agent. ──────
+{
+  // Two co-trusted keys: alice's own key + bob's key. The L2 keyring trusts BOTH (the multi-key precondition).
+  const aliceK = generateKeyPair("alice-key");
+  const bobK = generateKeyPair("bob-key");
+  const bothKr = { [aliceK.kid]: aliceK.publicKey, [bobK.kid]: bobK.publicKey };
+  const manifest = { alice: ["alice-key"], bob: ["bob-key"] };
+
+  // Build a compliance-bearing receipt for a GIVEN agent.id signed by a GIVEN key (the impersonation primitive).
+  function compReceiptFor(agentId: string, signer: { kid: string; privateKey: string }): ReturnType<typeof buildReceipt> {
+    const inputs = { action: "payment.refund", amountMinor: 4200 };
+    const input: BuildInput = {
+      id: "rc_id_0", ts: "2026-06-21T10:00:00.000Z", scope: { tenant: "t", chain: "c1" },
+      agent: { id: agentId, model: null, principal: "POLICY" },
+      action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: sha256Prefixed("x"), reversible: false, rollbackRef: null },
+      governance: { mode: "on", verdict: "EXECUTED", ruleId: "allow-small", approval: null, sandboxed: false, compliance: complianceCommit(POLICY, inputs as never) },
+    };
+    return buildReceipt(input, null, signer);
+  }
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+
+  test("round-17 #1: AUTHORIZED (agent.id, kid) pairing → ok:true with { keyring, identityManifest }", () => {
+    const r = compReceiptFor("alice", { kid: aliceK.kid, privateKey: aliceK.privateKey });
+    const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring: bothKr, identityManifest: manifest });
+    assert.equal(res.ok, true, res.reason);
+    assert.equal(res.policyVerdict, "ALLOW");
+  });
+
+  test("round-17 #1: IMPERSONATION — agent.id=alice signed by bob → ok:false with identityManifest (verifyChain agrees: UNTRUSTED)", () => {
+    // bob (a co-trusted key) signs a receipt claiming agent.id=alice. The carrier is genuine + bob-key is in
+    // the keyring → carrier-auth ALONE (kid-level) passes. That is exactly the gap.
+    const imp = compReceiptFor("alice", { kid: bobK.kid, privateKey: bobK.privateKey });
+
+    // disclosed weaker guarantee: { keyring } only → carrier-auth passes (kid-level attribution).
+    assert.equal(verifyReceiptCompliance(imp, POLICY, inputs, { keyring: bothKr }).ok, true);
+
+    // with the manifest → the impersonation is rejected (alice not authorized for bob-key).
+    const bound = verifyReceiptCompliance(imp, POLICY, inputs, { keyring: bothKr, identityManifest: manifest });
+    assert.equal(bound.ok, false);
+    assert.match(bound.reason ?? "", /not authorized for signing key.*identity manifest/);
+
+    // PARITY: verifyChain on the SAME receipt with the SAME trust inputs returns UNTRUSTED — the two surfaces
+    // now give the SAME attribution verdict (the over-claim this finding closes).
+    const vc = verifyChain([imp], { keyring: bothKr, identityManifest: manifest });
+    assert.equal(vc.status, "UNTRUSTED");
+  });
+
+  test("round-17 #1: identityManifest WITHOUT keyring is a no-op (binding gates an AUTHENTICATED carrier only)", () => {
+    // No keyring ⇒ no carrier-auth ⇒ the identity binding does not run; the L2 hashes still line up → ok:true
+    // (kid-level, exactly as before). This documents that the manifest gates an authenticated carrier, never a
+    // standalone agent-claim on an un-authenticated receipt.
+    const imp = compReceiptFor("alice", { kid: bobK.kid, privateKey: bobK.privateKey });
+    assert.equal(verifyReceiptCompliance(imp, POLICY, inputs, { identityManifest: manifest }).ok, true);
+  });
+
+  test("round-17 #1: a malformed identityManifest is fail-closed (ok:false), never silently ignored", () => {
+    const r = compReceiptFor("alice", { kid: aliceK.kid, privateKey: aliceK.privateKey });
+    // not an object
+    assert.equal(verifyReceiptCompliance(r, POLICY, inputs, { keyring: bothKr, identityManifest: ["alice-key"] as never }).ok, false);
+    // value not a string[]
+    assert.equal(verifyReceiptCompliance(r, POLICY, inputs, { keyring: bothKr, identityManifest: { alice: "alice-key" } as never }).ok, false);
+  });
+}

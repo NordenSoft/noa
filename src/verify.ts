@@ -72,48 +72,58 @@ function fail(
  *    external witness / transparency log (v1.0). Reported in warnings.
  */
 export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): VerifyResult {
-  // Fail-closed on a null/garbage opts (round-16 #4): a default-param only fills in a MISSING arg, not an
-  // explicit `null` / number / string. verifyChain(receipts, null) would read opts.maxReceipts off `null` and
-  // throw a raw TypeError — violating the "never throws" public-API contract (and verifyChainText forwards
-  // opts, so it inherits the throw). Normalize a non-object opts to no-options here, BEFORE the first read.
-  if (opts === null || typeof opts !== "object") opts = {};
-  const maxReceipts = opts.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
+  // SNAPSHOT THE ENTIRE opts ONCE (round-17 #2/#4 — class-killer). Every opts.* field (maxReceipts, keyring,
+  // checkpoint, identityManifest) is caller-supplied and was read directly off the LIVE `opts` at scattered
+  // points: a throwing/Proxy getter (e.g. `get maxReceipts(){throw}`) OR a non-cloneable / Symbol-typed value
+  // escaped as a RAW TypeError, violating the "never throws" public-API contract (and verifyChainText forwards
+  // opts, inheriting the throw). structuredClone deep-copies opts ONCE into plain, accessor-free data — firing
+  // every getter exactly once and throwing on a non-cloneable value (Symbol, function, etc.) → MALFORMED. A
+  // null/undefined opts normalizes to `{}` (a default-param only fills a MISSING arg, not an explicit null).
+  // EVERYTHING downstream reads ONLY from `o`, never the live `opts`, so no hostile accessor can split a
+  // validate-then-enforce window or leak a throw. (verifyChainText/CLI/Python consume parse output — no
+  // accessors — so are immune; this guards the in-process object API.)
+  let o: VerifyOptions;
+  try {
+    o = (opts === null || opts === undefined) ? {} : structuredClone(opts);
+  } catch {
+    return fail("MALFORMED", "options not structured-cloneable (hostile accessor / non-cloneable value)", null, 0);
+  }
+  const maxReceipts = o.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
 
   if (!Array.isArray(receipts)) return fail("MALFORMED", "input is not an array of receipts", null, 0);
   if (receipts.length === 0) return fail("MALFORMED", "empty receipt array", null, 0);
   if (receipts.length > maxReceipts) return fail("MALFORMED", `too many receipts (>${maxReceipts})`, null, receipts.length);
 
-  // SNAPSHOT-ONCE the caller-supplied LIVE objects (round-15 #2 HIGH / #5 MEDIUM / #9 LOW). The in-process
-  // JS API reads the same object multiple times — receipts in structural validation AND in the chain walk
-  // (4b/4c/4c-bis re-read r.agent.id / r.sig.kid → #9), and the checkpoint in verifyCheckpoint (validation +
-  // sig-preimage) AND in the tail-match / §5b genesis-binding (cp.chain/highestSeq/headHash/sig.kid → #2). A
-  // flipping accessor that returns one value to authentication and another to enforcement splits the two,
-  // e.g. authenticating the legit head but enforcing a truncated one → VALID+tailChecked over an erased tail.
-  // structuredClone deep-copies to plain, accessor-free data ONCE (here, AFTER the length check so we never
-  // clone a >maxReceipts array), and EVERYTHING downstream reads only the clones — closing every TOCTOU
-  // window at the root. structuredClone also throws on non-cloneable input (functions, etc.) → MALFORMED.
-  // (verifyChainText/CLI/Python are immune — they consume safeParse/JSON.parse output with no accessors.)
+  // SNAPSHOT-ONCE the caller-supplied LIVE receipts array (round-15 #2 HIGH / #5 MEDIUM / #9 LOW). The
+  // in-process JS API reads the same object multiple times — receipts in structural validation AND in the
+  // chain walk (4b/4c/4c-bis re-read r.agent.id / r.sig.kid → #9). A flipping accessor that returns one value
+  // to authentication and another to enforcement splits the two, e.g. authenticating the legit head but
+  // enforcing a truncated one → VALID+tailChecked over an erased tail. structuredClone deep-copies to plain,
+  // accessor-free data ONCE (here, AFTER the length check so we never clone a >maxReceipts array), and
+  // EVERYTHING downstream reads only the clone — closing every TOCTOU window at the root. structuredClone also
+  // throws on non-cloneable input (functions, etc.) → MALFORMED. (The checkpoint/keyring/identityManifest are
+  // ALREADY accessor-free here: `o` is a deep structuredClone of opts — round-17 #2 — so they need no separate
+  // clone. verifyChainText/CLI/Python are immune — they consume safeParse/JSON.parse output with no accessors.)
   let receiptsSnap: unknown[];
-  let checkpointSnap: Checkpoint | undefined;
   try {
     receiptsSnap = structuredClone(receipts);
-    checkpointSnap = opts.checkpoint === undefined ? undefined : structuredClone(opts.checkpoint);
   } catch {
     return fail("MALFORMED", "input is not structured-cloneable (live accessor/non-cloneable value)", null, receipts.length);
   }
+  const checkpointSnap: Checkpoint | undefined = o.checkpoint;
 
   // Validate the optional identity manifest (a trust input) AND SNAPSHOT it. Fail-closed: a malformed
   // manifest is an operator error, never silently ignored (that would re-open the very impersonation gap
   // it closes).
   //
-  // TOCTOU (round-11 HIGH): the live caller object is read once here (validation) and again at every
-  // enforcement point. An accessor (getter) entry — or an array whose element getter flips on second read —
-  // could return ['alice-key'] to the validator and ['bob-key'] to enforcement, "authorizing" a cross-agent
-  // impersonation that should be UNTRUSTED. Defense: read each entry EXACTLY ONCE into a plain Map, copying
-  // the array with Array.prototype.slice.call (capturing element VALUES at copy time, so element getters fire
-  // here and only here), validate the COPY, then have ALL enforcement points read ONLY from this snapshot —
-  // never the live manifest. (CLI/Python are immune: they consume JSON.parse output, which has no accessors.)
-  const haveManifest = opts.identityManifest !== undefined;
+  // TOCTOU (round-11 HIGH): read once here (validation) and again at every enforcement point. (round-17 #2:
+  // `o.identityManifest` is already an accessor-free deep clone of opts.identityManifest, so the live-flipping
+  // window is closed at the opts snapshot; the per-entry Map copy below is retained for defense-in-depth and so
+  // a re-implementer reproduces the invariant.) Read each entry EXACTLY ONCE into a plain Map, copying the
+  // array with Array.prototype.slice.call (capturing element VALUES at copy time), validate the COPY, then have
+  // ALL enforcement points read ONLY from this snapshot — never the live manifest. (CLI/Python are immune: they
+  // consume JSON.parse output, which has no accessors.)
+  const haveManifest = o.identityManifest !== undefined;
   const manifest = new Map<string, string[]>();
   // ROBUSTNESS (round-13 #8): the manifest, the array elements, and receipt fields below are all
   // caller-supplied LIVE objects. A throwing/side-effecting accessor must yield MALFORMED, never escape
@@ -124,7 +134,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   let ordered!: Receipt[];
   try {
     if (haveManifest) {
-      const live = opts.identityManifest;
+      const live = o.identityManifest;
       if (typeof live !== "object" || live === null || Array.isArray(live)) {
         return fail("MALFORMED", "identityManifest must be an object (agent.id -> kid[])", null, 0);
       }
@@ -181,30 +191,22 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     return fail("MALFORMED", "input object threw during validation/ordering", null, receipts.length);
   }
 
-  const haveKeyring = opts.keyring !== undefined;
+  const haveKeyring = o.keyring !== undefined;
   // Fail-closed on a non-object keyring (round-15 #7): the keyring is a trust input (kid -> base64 SPKI). A
   // null / array / non-object keyring is an operator error, not "an empty trust root" — silently treating it
   // as `{}` would index `keyring[kid]` to undefined → an unknown-kid TAMPERED, diverging from the Python
   // verifier (which already returns MALFORMED on a non-dict keyring, round-13 #6). Reject it as MALFORMED so
   // both impls agree on the SAME verdict class for the SAME malformed trust file.
-  if (haveKeyring && (typeof opts.keyring !== "object" || opts.keyring === null || Array.isArray(opts.keyring))) {
+  if (haveKeyring && (typeof o.keyring !== "object" || o.keyring === null || Array.isArray(o.keyring))) {
     return fail("MALFORMED", "keyring must be an object (kid -> base64 SPKI)", chainId, list.length);
   }
-  // SNAPSHOT-ONCE the keyring (round-16 #1 HIGH). The keyring is read LIVE by TWO authenticated surfaces — the
-  // chain walk (`keyring[r.sig.kid]`) AND verifyCheckpoint(cp, keyring) — so a flipping `keyring[kid]` getter
-  // could return the REAL pubkey to the walk (the legit prefix receipts authenticate) and an ATTACKER pubkey
-  // to the checkpoint check (a forged checkpoint over a truncated head, labeled with the SAME kid, then
-  // authenticates) → VALID + tailChecked over an ERASED tail, key-continuity pin satisfied. structuredClone
-  // deep-copies to plain, accessor-free data ONCE (here, AFTER the non-object guard above so we only clone a
-  // validated object), and BOTH the walk below and verifyCheckpoint read this SAME snapshot — never opts.keyring.
-  // structuredClone throws on non-cloneable input (functions, etc.) → MALFORMED. (CLI/Python are immune — they
-  // consume JSON.parse/strict-load output with no accessors.)
-  let keyring: Keyring;
-  try {
-    keyring = opts.keyring === undefined ? {} : structuredClone(opts.keyring);
-  } catch {
-    return fail("MALFORMED", "keyring is not structured-cloneable (live accessor/non-cloneable value)", chainId, list.length);
-  }
+  // The keyring is read by TWO authenticated surfaces — the chain walk (`keyring[r.sig.kid]`) AND
+  // verifyCheckpoint(cp, keyring) — so both MUST see the SAME accessor-free bytes (round-16 #1 HIGH: a flipping
+  // `keyring[kid]` getter could give the REAL pubkey to the walk and an ATTACKER pubkey to the checkpoint check
+  // → VALID+tailChecked over an erased tail). `o.keyring` is already a deep structuredClone of opts (round-17
+  // #2), so it is accessor-free and shared by both surfaces — no separate clone needed; the non-object guard
+  // above runs first, so a non-cloneable keyring already failed at the opts snapshot → MALFORMED.
+  const keyring: Keyring = o.keyring === undefined ? {} : o.keyring;
   const warnings: string[] = [];
 
   // 4. Walk the chain: hash, key-pinning, signature, linkage, timestamp monotonicity.
@@ -286,6 +288,16 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   const head = ordered[ordered.length - 1]!;
   let tailChecked = false;
   if (checkpointSnap !== undefined) {
+    // A non-object checkpoint (null / array / primitive) is STRUCTURALLY malformed, not a "bad checkpoint
+    // statement" → MALFORMED, mirroring the Python CLI (round-17 #3). The Python _main guard returns MALFORMED
+    // (exit 3) on a non-dict checkpoint BEFORE routing into _verify_checkpoint; the TS verifyChain used to route
+    // it straight into verifyCheckpoint → "malformed checkpoint" → TAMPERED (exit 2), splitting the cross-impl
+    // verdict on the SAME malformed input. Reject it here as MALFORMED so both impls agree. (`checkpoint:null`
+    // already reached MALFORMED-class via this path historically per the round-15 test; this makes array /
+    // number / string explicit and canonical too.)
+    if (typeof checkpointSnap !== "object" || checkpointSnap === null || Array.isArray(checkpointSnap)) {
+      return fail("MALFORMED", "checkpoint must be an object", chainId, list.length);
+    }
     // Read the cloned checkpoint EVERYWHERE (round-15 #2 HIGH): verifyCheckpoint validates + reconstructs the
     // sig-preimage from it, and the tail-match / §5b below re-read cp.chain/highestSeq/headHash/sig.kid. A
     // flipping accessor on the live checkpoint could present the legit head to the signature check and the

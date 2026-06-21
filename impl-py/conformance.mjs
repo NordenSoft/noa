@@ -426,11 +426,34 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
   const nullCpPath = join(dir, "checkpoint-null.json");
   writeFileSync(nullCpPath, "null");
   const tsNullCp = verifyChain(chain, { keyring, checkpoint: null }).status;
-  // checkpoint:null → opts.checkpoint !== undefined is TRUE → snapshot+verifyCheckpoint → "malformed checkpoint" → TAMPERED.
-  const tsNullCpOk = tsNullCp === "TAMPERED" || tsNullCp === "MALFORMED";
-  console.log(`${tsNullCpOk ? "✓" : "✗"} reject (checkpoint provided as null) [TS verifyChain]: ${tsNullCp} (want TAMPERED/MALFORMED)`);
+  // checkpoint:null → opts.checkpoint !== undefined is TRUE → the non-object guard (round-17 #3) → MALFORMED.
+  const tsNullCpOk = tsNullCp === "MALFORMED";
+  console.log(`${tsNullCpOk ? "✓" : "✗"} MALFORMED (checkpoint provided as null) [TS verifyChain]: ${tsNullCp} (want MALFORMED)`);
   if (!tsNullCpOk) failures++;
   expect("MALFORMED (checkpoint file = null) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", nullCpPath]).code, 3);
+}
+
+// round-17 #3 — a NON-OBJECT (but valid-JSON) checkpoint: a JSON array / number / string. TS used to route it
+// into verifyCheckpoint → "malformed checkpoint" → TAMPERED (exit 2); Python's _main returns MALFORMED (exit 3)
+// on a non-dict checkpoint. A non-object checkpoint is STRUCTURALLY malformed → MALFORMED is canonical. Both
+// impls must now agree on MALFORMED for the SAME malformed input. (null is covered just above; this pins the
+// array/number/string shapes.)
+{
+  const arrCpPath = join(dir, "checkpoint-array.json");
+  writeFileSync(arrCpPath, "[]");
+  const tsArrCp = verifyChain(chain, { keyring, checkpoint: [] }).status;
+  const tsArrCpOk = tsArrCp === "MALFORMED";
+  console.log(`${tsArrCpOk ? "✓" : "✗"} MALFORMED (checkpoint is a JSON array, not an object) [TS verifyChain]: ${tsArrCp} (want MALFORMED)`);
+  if (!tsArrCpOk) failures++;
+  expect("MALFORMED (checkpoint is a JSON array) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", arrCpPath]).code, 3);
+
+  const numCpPath = join(dir, "checkpoint-number.json");
+  writeFileSync(numCpPath, "7");
+  const tsNumCp = verifyChain(chain, { keyring, checkpoint: 7 }).status;
+  const tsNumCpOk = tsNumCp === "MALFORMED";
+  console.log(`${tsNumCpOk ? "✓" : "✗"} MALFORMED (checkpoint is a JSON number, not an object) [TS verifyChain]: ${tsNumCp} (want MALFORMED)`);
+  if (!tsNumCpOk) failures++;
+  expect("MALFORMED (checkpoint is a JSON number) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", numCpPath]).code, 3);
 }
 
 // round-16 #2/#3 — a TRAILING `--checkpoint` / `--identity` with NO following path. Silently dropping the

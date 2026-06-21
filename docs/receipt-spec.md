@@ -284,10 +284,20 @@ carrier's own `chain.hash` + Ed25519 signature first; a non-authentic carrier �
 `verifyChain([...], { keyring })` and requiring `VALID` first. Reporting "compliant" off an un-authenticated
 carrier is a conformance violation.
 
+**ATTRIBUTION — KID-LEVEL vs AGENT-LEVEL (round-17 #1):** `{ keyring }` carrier-auth is *kid-level* — it
+proves "a keyring-trusted key signed this carrier", NOT "THIS `agent.id` signed it". In a multi-key keyring a
+co-trusted key can sign a receipt claiming `agent.id=victim` and still pass carrier-auth, which is exactly the
+cross-agent impersonation `verifyChain` rejects as `UNTRUSTED` *only* when also given an identityManifest. To
+bind WHICH agent, pass `verifyReceiptCompliance(receipt, policy, inputs, { keyring, identityManifest })`: after
+carrier-auth, an unauthorized `(agent.id, sig.kid)` pairing ⇒ `ok:false` (mirroring verify.ts §5 / the
+`UNTRUSTED` verdict). Without an identityManifest, L2 attribution stays kid-level.
+
 **Honesty razor (normative):** this proves *"policy P, re-run over the RECORDED inputs I, yields verdict
 V, and V equals the decision the receipt recorded, on an authenticated carrier"* — it is
 substitution-resistant (a receipt cannot commit DENY-inputs while claiming ALLOW), but it is NOT proof the
 policy was in force at decision time, nor that I is true or complete, nor that P is a *good* rule, nor that
 the recorded inputs reflect external ground truth (the oracle/input-authenticity limit — a lying agent can
-emit a fully-valid receipt over inputs it fabricated). The reference policy DSL is integer-only / pure-logic;
-policies using non-deterministic elements are out of scope for replay.
+emit a fully-valid receipt over inputs it fabricated). Carrier-auth via `{ keyring }` alone is *kid-level*:
+it does NOT prove THIS `agent.id` signed — pass `{ keyring, identityManifest }` to bind the signer to the
+agent (see "ATTRIBUTION" above). The reference policy DSL is integer-only / pure-logic; policies using
+non-deterministic elements are out of scope for replay.

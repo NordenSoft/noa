@@ -372,3 +372,45 @@ test("round-16 #4: verifyChain / verifyChainText with null (or garbage) opts do 
   // sanity: a genuine opts object still works (no regression)
   assert.equal(verifyChain(load("valid-chain.json"), { keyring }).status, "VALID");
 });
+
+test("round-17 #2/#4: a throwing-getter opts OR a Symbol maxReceipts → MALFORMED (never a raw throw)", () => {
+  // #2: a hostile accessor on ANY opts field (read before/outside the old guarded clones) used to escape as a
+  // raw TypeError. The whole-opts snapshot fires every getter once into accessor-free data → MALFORMED.
+  for (const field of ["maxReceipts", "keyring", "checkpoint", "identityManifest"] as const) {
+    const evil: Record<string, unknown> = {};
+    Object.defineProperty(evil, field, { enumerable: true, configurable: true, get() { throw new Error("boom"); } });
+    let r!: ReturnType<typeof verifyChain>;
+    assert.doesNotThrow(() => { r = verifyChain(load("valid-chain.json"), evil as never); }, `opts.${field} throwing getter must not escape`);
+    assert.equal(r.status, "MALFORMED", `opts.${field} throwing getter → MALFORMED`);
+    // verifyChainText forwards opts, so it inherits the fix.
+    let rt!: ReturnType<typeof verifyChainText>;
+    assert.doesNotThrow(() => { rt = verifyChainText(raw("valid-chain.json"), evil as never); });
+    assert.equal(rt.status, "MALFORMED", `verifyChainText opts.${field} throwing getter → MALFORMED`);
+  }
+
+  // #4: a Symbol-typed maxReceipts is NON-CLONEABLE → structuredClone(opts) throws → caught → MALFORMED
+  // (the round-16 #4 fix normalized null/non-object opts, but a Symbol VALUE inside an object opts still
+  // escaped as a raw TypeError before the blanket snapshot).
+  let rSym!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { rSym = verifyChain(load("valid-chain.json"), { maxReceipts: Symbol("x") } as never); });
+  assert.equal(rSym.status, "MALFORMED");
+
+  // sanity: a numeric maxReceipts still bounds normally (no regression).
+  assert.equal(verifyChain(load("valid-chain.json"), { keyring, maxReceipts: 1 }).status, "MALFORMED"); // 3 receipts > 1
+  assert.equal(verifyChain(load("valid-chain.json"), { keyring, maxReceipts: 10 }).status, "VALID");
+});
+
+test("round-17 #3: a non-object checkpoint → MALFORMED (parity with the Python CLI, not TAMPERED)", () => {
+  // TS used to route a non-object checkpoint into verifyCheckpoint → 'malformed checkpoint' → TAMPERED (exit 2),
+  // while the Python _main guard returns MALFORMED (exit 3) — a cross-impl split on the SAME malformed input.
+  // verifyChain now rejects a non-object checkpoint as MALFORMED BEFORE routing, mirroring Python.
+  for (const bad of [null, [], 5, "x"]) {
+    const r = verifyChain(load("valid-chain.json"), { keyring, checkpoint: bad as never });
+    assert.equal(r.status, "MALFORMED", `checkpoint=${JSON.stringify(bad)} → MALFORMED`);
+    assert.match(r.reason ?? "", /checkpoint must be an object/);
+  }
+  // sanity: the legit checkpoint still VALID + tailChecked (no regression).
+  const good = verifyChain(load("valid-chain.json"), { keyring, checkpoint });
+  assert.equal(good.status, "VALID", good.reason);
+  assert.equal(good.tailChecked, true);
+});
