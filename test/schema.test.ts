@@ -59,3 +59,22 @@ test("REJECTS non-ed25519 sig alg", () => {
   (bad.sig as Record<string, unknown>)["alg"] = "rsa";
   assert.equal(validateReceiptShape(bad).ok, false);
 });
+
+// ── round-18 #1: id length is bounded in CODE POINTS, not UTF-16 code units (cross-impl with Python len()). ──
+// An astral character is 1 code point but 2 UTF-16 units. `r.id.length` (units) would falsely reject an id at
+// the boundary that the Python verifier (len() = code points) + the normative schema (maxLength = code points)
+// accept — a consensus split on identical signed bytes. [...r.id].length (code points) makes all three agree.
+test("round-18 #1: id of 128 astral chars (= 128 code points, 256 UTF-16 units) is ACCEPTED (code-point cap)", () => {
+  const r = loadValidReceipt();
+  r.id = "😀".repeat(128); // 128 code points (≤128), but .length === 256
+  assert.equal("😀".repeat(128).length, 256); // sanity: UTF-16 unit count would over-count
+  assert.equal(validateReceiptShape(r).ok, true, "128 code points must pass the ≤128 cap");
+});
+
+test("round-18 #1: id of 129 astral chars (= 129 code points) is REJECTED at the boundary", () => {
+  const r = loadValidReceipt();
+  r.id = "😀".repeat(129); // 129 code points (>128)
+  const res = validateReceiptShape(r);
+  assert.equal(res.ok, false);
+  assert.match(res.errors.join(" "), /receipt\.id/);
+});

@@ -39,11 +39,23 @@ truth or safety.
 | T12 | "Compliant" claimed off a **forged** carrier (L2) | `verifyReceiptCompliance(…, { keyring })` authenticates the carrier (own-hash + Ed25519) BEFORE the L2 check; or require `verifyChain → VALID` first | `policy/compliance.test` (round-12 #1) |
 | T13 | L2 verdict the receipt **never re-derives** | committed `verdict` (ALLOW\|DENY) is reconciled against a re-run of the evaluator → `ok:false` on mismatch | `policy/compliance.test` (round-11) |
 | T14 | Ed25519 signature malleability (`S' = S+L`) | both reference verifiers reject non-canonical `S ≥ L` and non-canonical point/base64 encodings | `conformance` (round-12 #2/#3) |
+| T15 | Low-order / non-canonical **public key** consensus split (cofactored OpenSSL accepts a small-subgroup key the strict RFC-8032 equation rejects → `VALID` in one impl, `TAMPERED` in the other on identical signed bytes) | both reference verifiers reject the 8 canonical small-order point encodings (torsion subgroup of order dividing 8) AND any non-canonical `y ≥ q` public-key encoding, decoding `A` with identical strictness | `keys.test`, `conformance` (round-18 #2) |
 
 > Note on T9: this stops PII in **unknown** fields. It does NOT stop a caller putting PII in a
 > **known** opaque string (e.g. `approval.by`, `agent.model`). Those fields are opaque by
 > contract and MUST NOT carry PII — the format cannot enforce that. Don't read "PII-free" as a
 > guarantee about caller-supplied identifiers.
+
+> Note on T15 (chosen convention, stated precisely): the normative rule is **"reject the 8 canonical
+> small-order public-key encodings AND any non-canonical `y ≥ q` public-key encoding."** This is the
+> minimal pin that makes the two reference verifiers agree on the public key `A`; it is **not** a claim of
+> full ZIP-215 semantics. All *other* malformed/non-canonical encodings are rejected by each verifier's
+> normal decoding rules, and the cross-impl conformance suite asserts no split on the low-order vectors.
+> The signature's `R` point is **not** separately blocklisted: `R` is bound by the verification equation
+> `[S]B = R + [h]A`, which both stacks enforce, so a low-order/non-canonical `R` (absent a crafted matching
+> `S`/`h`) fails the equation in **both** impls — no verify-`true` split. A third-party verifier that does
+> not adopt this same public-key rule will diverge from NOA on a low-order key; conformance vectors are
+> versioned so the rule is testable.
 
 ## Threats NOT fully addressed in v0.1 (stated honestly)
 

@@ -86,7 +86,7 @@ The COSE_Sign1 payload is the RFC 8785 (JCS) canonical serialization of:
   "agent":  { "id": "<agent id>", "model": "<vendor/model|null>",
               "principal": "HUMAN|SERVICE|POLICY|SANDBOX_SIM" },
   "action": { "id": "<tool/action>", "canonical": "<risk-table key>",
-              "riskClass": "LOW|MEDIUM|HIGH|CRITICAL",
+              "riskClass": "LOW|MEDIUM|HIGH|CRITICAL|IRREVERSIBLE",
               "paramsHash": "sha256:<hex>", "reversible": <bool>,
               "rollbackRef": "<id|null>" },
   "governance": { "mode": "<...>", "verdict": "EXECUTED|BLOCKED|...",

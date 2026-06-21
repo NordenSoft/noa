@@ -213,6 +213,21 @@ test("round-12 #10: verifyChain on a receipt with a throwing accessor → MALFOR
   assert.equal(res.status, "MALFORMED");
 });
 
+test("round-18 #3: an array-like with a throwing `length` getter → MALFORMED (never throws out)", () => {
+  // The early length/maxReceipts bounds read receipts.length on the LIVE array BEFORE the structuredClone
+  // snapshot. Array.isArray() sees THROUGH a Proxy to its array target (so it returns true here), but the
+  // Proxy's `length` get-trap throws — so a raw Error would escape before the snapshot could neutralize it.
+  // The guarded one-shot capture must yield MALFORMED instead. (A real array's own `length` is non-configurable,
+  // so a Proxy is the faithful way to model a hostile array-like that still passes Array.isArray.)
+  const hostile = new Proxy([] as unknown[], {
+    get(t, k, r) { if (k === "length") throw new Error("boom"); return Reflect.get(t, k, r); },
+  });
+  let res!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { res = verifyChain(hostile, { keyring }); });
+  assert.equal(res.status, "MALFORMED");
+  assert.match(res.reason ?? "", /length is not readable/);
+});
+
 test("round-13 #4: checkpoint sig sub-object is strict (extra field / bad alg → malformed)", () => {
   const sigExtra = { ...checkpoint, sig: { ...checkpoint.sig, smuggled: "ssn=123" } } as unknown as Checkpoint;
   assert.equal(verifyCheckpoint(sigExtra, keyring), "malformed checkpoint"); // additionalProperties on sig

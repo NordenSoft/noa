@@ -22,6 +22,29 @@ export interface KeyPair {
   privateKey: string;
 }
 
+/**
+ * The 8 canonical small-order Ed25519 public-key encodings (the torsion subgroup of order dividing 8:
+ * identity, the order-2 point, the two order-4 points, the four order-8 points), as 32-byte
+ * little-endian point encodings. CROSS-IMPL CONSENSUS (round-18 #2): node:crypto/OpenSSL verify is
+ * *cofactored* and ACCEPTS a low-order public key (a small-subgroup key passes createPublicKey + the
+ * curve-type pin + canonical-SPKI round-trip), whereas the independent strict-equation Python reference
+ * can REJECT it — the SAME signed bytes then split VALID(TS) / TAMPERED(PY), breaking the "two
+ * independent verifiers agree" guarantee. We reject these encodings in BOTH impls so they agree. A
+ * legitimate signing key is NEVER a low-order point (key generation samples a full-order point), so this
+ * changes no valid behavior. (Mirrors libsodium's has_small_order / ZIP-215's small-order rejection;
+ * the chosen convention is documented in THREAT-MODEL.md T15 + the spec verification section.)
+ */
+const SMALL_ORDER_PUBKEYS: ReadonlySet<string> = new Set([
+  "0100000000000000000000000000000000000000000000000000000000000000", // order 1 (identity)
+  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // order 2
+  "0000000000000000000000000000000000000000000000000000000000000000", // order 4
+  "0000000000000000000000000000000000000000000000000000000000000080", // order 4
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05", // order 8
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85", // order 8
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", // order 8
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa", // order 8
+]);
+
 export function generateKeyPair(kid: string): KeyPair {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
   return {
@@ -65,6 +88,26 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // dedup, byte-pinning) cannot be bypassed by re-encoding. Re-export and require byte-equality.
     const canonical = key.export({ type: "spki", format: "der" }) as Buffer;
     if (!canonical.equals(der)) return false;
+    // CROSS-IMPL CONSENSUS on the PUBLIC KEY (round-18 #2). node:crypto/OpenSSL verify is COFACTORED and
+    // accepts public keys the independent strict-equation Python reference rejects — splitting VALID(TS) /
+    // TAMPERED(PY) on identical signed bytes. Two divergent classes, BOTH closed here so A is decoded with
+    // the SAME strictness Python's _decodepoint enforces:
+    //   (a) NON-CANONICAL y (y >= q): the low 255 bits of the encoding (bit 255 is the x sign bit) MUST be a
+    //       canonical field element y < q. OpenSSL accepts a y >= q encoding AND re-exports it unchanged (so
+    //       the canonical-SPKI round-trip above does NOT catch it); Python's _decodepoint raises "y >= q".
+    //       Reject it so both agree. (RFC 8032: the y-coordinate MUST be canonical.)
+    //   (b) SMALL-ORDER points: a key in the order-dividing-8 torsion subgroup. After (a), the only remaining
+    //       encodings of those points are the 8 canonical ones in SMALL_ORDER_PUBKEYS → exact-byte reject.
+    const raw = canonical.subarray(12); // 12-byte Ed25519 SPKI prefix -> trailing 32 raw key bytes
+    // (a) y < q: zero bit 255 (sign), then require the resulting 255-bit little-endian integer < q.
+    const yBytes = Buffer.from(raw);
+    yBytes[31] = yBytes[31]! & 0x7f;
+    const Q = (1n << 255n) - 19n;
+    let y = 0n;
+    for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(yBytes[i]!);
+    if (y >= Q) return false;
+    // (b) small-order torsion subgroup (the canonical encodings; non-canonical variants already rejected by (a)).
+    if (SMALL_ORDER_PUBKEYS.has(raw.toString("hex"))) return false;
     // STRICT, CANONICAL base64 for the signature. sig.value is NOT covered by the receipt hash, so its
     // exact byte string is unconstrained by the chain — only the decoded 64 bytes matter cryptographically.
     // node's Buffer.from(…, "base64") is LENIENT (silently ignores embedded whitespace, missing '='

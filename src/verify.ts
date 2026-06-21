@@ -91,8 +91,20 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   const maxReceipts = o.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
 
   if (!Array.isArray(receipts)) return fail("MALFORMED", "input is not an array of receipts", null, 0);
-  if (receipts.length === 0) return fail("MALFORMED", "empty receipt array", null, 0);
-  if (receipts.length > maxReceipts) return fail("MALFORMED", `too many receipts (>${maxReceipts})`, null, receipts.length);
+  // Read receipts.length ONCE behind a guard, BEFORE the structuredClone snapshot below (round-18 #3). These
+  // early length/maxReceipts bounds run on the LIVE caller array, so an array-like with a hostile `length`
+  // getter (`get length(){ throw }`) would escape as a RAW Error here — violating the "never throws" public-API
+  // contract — before the snapshot could neutralize it. Capturing it in try/catch (and keeping the bounds reading
+  // this one captured value) preserves the "don't clone a >maxReceipts array" DoS optimization while staying
+  // fail-closed. (verifyChainText/CLI/Python consume parse output — no accessors — so are immune.)
+  let n: number;
+  try {
+    n = receipts.length;
+  } catch {
+    return fail("MALFORMED", "input array length is not readable (hostile accessor)", null, 0);
+  }
+  if (n === 0) return fail("MALFORMED", "empty receipt array", null, 0);
+  if (n > maxReceipts) return fail("MALFORMED", `too many receipts (>${maxReceipts})`, null, n);
 
   // SNAPSHOT-ONCE the caller-supplied LIVE receipts array (round-15 #2 HIGH / #5 MEDIUM / #9 LOW). The
   // in-process JS API reads the same object multiple times — receipts in structural validation AND in the
@@ -108,7 +120,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   try {
     receiptsSnap = structuredClone(receipts);
   } catch {
-    return fail("MALFORMED", "input is not structured-cloneable (live accessor/non-cloneable value)", null, receipts.length);
+    return fail("MALFORMED", "input is not structured-cloneable (live accessor/non-cloneable value)", null, n);
   }
   const checkpointSnap: Checkpoint | undefined = o.checkpoint;
 

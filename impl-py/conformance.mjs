@@ -465,5 +465,79 @@ expect("USAGE (trailing --identity, no path) [PY verifier]", pyVerify([chainPath
 expect("USAGE (--checkpoint is the last token, no keyring) [PY verifier]", pyVerify([chainPath, "--checkpoint"]).code, 4);
 expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerify([chainPath, "--identity"]).code, 4);
 
+// ── round-18 #1: id length is bounded in CODE POINTS, not UTF-16 code units. An astral char is 1 code point
+// but 2 UTF-16 units. The TS schema used to read r.id.length (units), falsely rejecting an astral id at the
+// boundary that the Python verifier (len() = code points) + the normative schema (maxLength = code points)
+// accept — a consensus split on identical SIGNED bytes. Now BOTH measure code points. reseal keeps it genuine.
+{
+  const EMOJI = String.fromCodePoint(0x1f600);
+  // 128 astral chars = 128 code points (≤128) but 256 UTF-16 units → must be VALID in BOTH (the bug would have
+  // made TS MALFORMED here while Python stayed VALID).
+  const ok128 = JSON.parse(JSON.stringify(r0));
+  ok128.id = EMOJI.repeat(128);
+  reseal(ok128);
+  const ok128Path = join(dir, "astral-id-128.json");
+  writeFileSync(ok128Path, JSON.stringify([ok128]));
+  const tsOk128 = verifyChain([ok128], { keyring }).status;
+  const tsOk128Ok = tsOk128 === "VALID";
+  console.log(`${tsOk128Ok ? "✓" : "✗"} VALID    (id = 128 astral chars = 128 code points, code-point cap) [TS verifyChain]: ${tsOk128} (want VALID)`);
+  if (!tsOk128Ok) failures++;
+  expect("VALID    (id = 128 astral chars, code-point cap) [PY verifier]", pyVerify([ok128Path, keyringPath]).code, 0);
+
+  // 129 astral chars = 129 code points (>128) → MALFORMED in BOTH (the cap still bites, measured consistently).
+  const bad129 = JSON.parse(JSON.stringify(r0));
+  bad129.id = EMOJI.repeat(129);
+  reseal(bad129);
+  const bad129Path = join(dir, "astral-id-129.json");
+  writeFileSync(bad129Path, JSON.stringify([bad129]));
+  const tsBad129 = verifyChain([bad129], { keyring }).status;
+  const tsBad129Ok = tsBad129 === "MALFORMED";
+  console.log(`${tsBad129Ok ? "✓" : "✗"} MALFORMED (id = 129 astral chars = 129 code points, over cap) [TS verifyChain]: ${tsBad129} (want MALFORMED)`);
+  if (!tsBad129Ok) failures++;
+  expect("MALFORMED (id = 129 astral chars, over cap) [PY verifier]", pyVerify([bad129Path, keyringPath]).code, 3);
+}
+
+// ── round-18 #2: low-order / non-canonical PUBLIC KEY consensus pin. node:crypto/OpenSSL verify is cofactored
+// and ACCEPTS a small-subgroup public key; the independent strict-equation Python reference can reject it →
+// VALID(TS)/TAMPERED(PY) on identical signed bytes. Both impls now reject the 8 canonical small-order point
+// encodings AND any non-canonical y ≥ q encoding. A keyring whose pubkey is a low-order point → both TAMPERED
+// (the receipt is genuinely structured/hashed; only the keyring key is a low-order point → signature unauthable).
+{
+  const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
+  const rawToSpkiB64 = (rawHex) => Buffer.concat([ED25519_SPKI_PREFIX, Buffer.from(rawHex, "hex")]).toString("base64");
+  const SMALL_ORDER_RAW = [
+    "0100000000000000000000000000000000000000000000000000000000000000", // order 1
+    "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // order 2
+    "0000000000000000000000000000000000000000000000000000000000000000", // order 4
+    "0000000000000000000000000000000000000000000000000000000000000080", // order 4
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05", // order 8
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85", // order 8
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", // order 8
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa", // order 8
+  ];
+  SMALL_ORDER_RAW.forEach((rawHex, i) => {
+    // keyring maps the chain's REAL kid to a LOW-ORDER pubkey: the receipt is genuine, only the trusted key is
+    // a low-order point → the signature cannot authenticate under it → TAMPERED in both impls (never VALID).
+    const loKr = { [kp.kid]: rawToSpkiB64(rawHex) };
+    const loKrPath = join(dir, `keyring-low-order-${i}.json`);
+    writeFileSync(loKrPath, JSON.stringify(loKr));
+    const tsLo = verifyChain(chain, { keyring: loKr }).status;
+    const tsLoOk = tsLo === "TAMPERED";
+    console.log(`${tsLoOk ? "✓" : "✗"} TAMPERED (low-order pubkey #${i} in keyring) [TS verifyChain]: ${tsLo} (want TAMPERED)`);
+    if (!tsLoOk) failures++;
+    expect(`TAMPERED (low-order pubkey #${i} in keyring) [PY verifier]`, pyVerify([chainPath, loKrPath]).code, 2);
+  });
+  // non-canonical (y ≥ q) encoding of a low-order point: OpenSSL accepts + re-exports unchanged (canonical-SPKI
+  // round-trip misses it); the y < q strict check now rejects it in BOTH, matching Python's _decodepoint guard.
+  const ncLoKr = { [kp.kid]: rawToSpkiB64("eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f") };
+  const ncLoKrPath = join(dir, "keyring-noncanon-low-order.json");
+  writeFileSync(ncLoKrPath, JSON.stringify(ncLoKr));
+  const tsNcLo = verifyChain(chain, { keyring: ncLoKr }).status;
+  const tsNcLoOk = tsNcLo === "TAMPERED";
+  console.log(`${tsNcLoOk ? "✓" : "✗"} TAMPERED (non-canonical y≥q low-order pubkey in keyring) [TS verifyChain]: ${tsNcLo} (want TAMPERED)`);
+  if (!tsNcLoOk) failures++;
+  expect("TAMPERED (non-canonical y≥q low-order pubkey in keyring) [PY verifier]", pyVerify([chainPath, ncLoKrPath]).code, 2);
+}
+
 if (failures) { console.error(`\nCROSS-IMPL CONFORMANCE FAILED: ${failures} mismatch(es)`); process.exit(1); }
 console.log("\nCROSS-IMPL CONFORMANCE PASS: the independent Python verifier agrees with the TS reference on every vector (incl. impersonation/truncation/dup-key security verdicts).");

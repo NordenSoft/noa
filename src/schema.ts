@@ -86,7 +86,13 @@ export function validateReceiptShape(value: unknown): SchemaResult {
   );
 
   if (r.spec !== RECEIPT_SPEC) errors.push(`receipt.spec: must be "${RECEIPT_SPEC}"`);
-  if (!str(r.id) || r.id.length === 0 || r.id.length > 128) errors.push("receipt.id: non-empty string ≤128 chars");
+  // id length is bounded in CODE POINTS, not UTF-16 code units. `r.id.length` counts code UNITS, so an id of
+  // astral characters (each 2 units) would be falsely rejected here while the Python verifier (len() = code
+  // points) and the normative schema (maxLength on RFC-8259/JSON characters = code points) accept it — a
+  // cross-impl consensus split on identical signed bytes (an astral id of 65 emoji = 65 code points = 130
+  // units → TS MALFORMED, Python VALID). [...r.id].length iterates by code point, matching both. (Only true
+  // char-count CAPS need this; non-empty `length===0` checks elsewhere are unit-vs-point-agnostic.)
+  if (!str(r.id) || r.id.length === 0 || [...r.id].length > 128) errors.push("receipt.id: non-empty string ≤128 chars");
   if (!str(r.ts) || !RFC3339_RE.test(r.ts)) errors.push("receipt.ts: must be RFC 3339 UTC timestamp");
 
   // scope

@@ -35,7 +35,7 @@ cross-agent **impersonation** under an `--identity` manifest, **MALFORMED** on a
 (strict parse), and **MALFORMED** on receipts that are **structurally invalid yet crypto-consistent**
 (a smuggled unknown field carrying fake PII, an out-of-spec enum, `sig.alg="rsa"`, a wrong `spec` — each
 re-hashed and re-signed so the signature is genuine and only the *structure* is out-of-spec). The two
-independent stacks agree on all of them.
+independent stacks reach the same verdict across this conformance corpus.
 
 ## Self-test
 
@@ -44,14 +44,18 @@ single byte) — so the crypto is verified against the standard, not just agains
 
 ## Scope
 
-This is a **verifier** (the security-critical, must-be-independent half), now **verdict-equivalent** to
-the TS reference on the core controls: **structural validation** (`validate_receipt_shape`, run before
-hashing — exact-keys/`additionalProperties:false`, enums, `spec`, `id`-length, RFC-3339 `ts`, hash
-formats, `sig.alg=="ed25519"`, and the optional B4 `governance.compliance` block, matching
-`validateReceiptShape`), hash-chain, Ed25519 signature, key-continuity, **identity binding**
-(`--identity` → `UNTRUSTED` on an unauthorized `(agent.id, kid)` pairing), **checkpoint tail-truncation**
-(`--checkpoint`, incl. the §5b checkpoint-identity binding), and a **strict parse** (duplicate-key / float
-/ prototype-key rejection, matching `safeParse`). It intentionally does **not** re-implement the *signer*,
-the *COSE_Sign1* envelope, or the *policy evaluator* yet — those extend the conformance corpus next, and
-are the documented gaps (a deployer using this as their independent verifier gets full verdict parity on
-the receipt-chain trust surface today).
+This is a **verifier** (the security-critical, must-be-independent half), holding **verdict parity** with
+the TS reference across the conformance corpus and the documented controls: **structural validation**
+(`validate_receipt_shape`, run before hashing — exact-keys/`additionalProperties:false`, enums, `spec`,
+`id`-length **measured in code points**, RFC-3339 `ts`, hash formats, `sig.alg=="ed25519"`, and the
+optional B4 `governance.compliance` block, matching `validateReceiptShape`), hash-chain, Ed25519 signature
+(incl. **small-order / non-canonical public-key rejection**, so a cofactored OpenSSL verify and this
+strict RFC-8032 path agree on the key), key-continuity, **identity binding** (`--identity` → `UNTRUSTED`
+on an unauthorized `(agent.id, kid)` pairing), **checkpoint tail-truncation** (`--checkpoint`, incl. the
+§5b checkpoint-identity binding), and a **strict parse** (duplicate-key / float / prototype-key rejection,
+matching `safeParse`). It intentionally does **not** re-implement the *signer*, the *COSE_Sign1* envelope,
+or the *policy evaluator* yet — those extend the conformance corpus next, and are the documented gaps. A
+deployer using this as their independent verifier gets verdict parity on the receipt-chain trust surface
+across the conformance corpus + the documented controls; parity is **not** an absolute claim over all
+possible inputs — it is continuously hardened via the cross-impl conformance suite (each audit round adds
+adversarial vectors and pins the verdict).
