@@ -38,6 +38,9 @@ export function signEd25519(privateKeyB64: string, message: Buffer): string {
     format: "der",
     type: "pkcs8",
   });
+  // Pin the curve: cryptoSign(null, …) dispatches on the KEY type, so an Ed448/EC/RSA key would
+  // silently produce a non-Ed25519 signature under a receipt that declares sig.alg="ed25519".
+  if (key.asymmetricKeyType !== "ed25519") throw new Error("signEd25519: key is not an Ed25519 key");
   return cryptoSign(null, message, key).toString("base64");
 }
 
@@ -46,6 +49,12 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
   try {
     const der = Buffer.from(publicKeyB64, "base64");
     const key = createPublicKey({ key: der, format: "der", type: "spki" });
+    // PIN THE CURVE. cryptoVerify(null, …) dispatches the verification algorithm on the KEY's type,
+    // NOT on a fixed Ed25519. Without this, an Ed448 (or any verify(null)-compatible) public key in
+    // the keyring + a genuine signature under it verifies TRUE even though the receipt declares
+    // sig.alg="ed25519" — algorithm/key confusion (CWE-347). The EdDSA COSE alg (-8) also admits
+    // Ed448, so this single key-type pin is the durable defense on BOTH verifyChain and COSE paths.
+    if (key.asymmetricKeyType !== "ed25519") return false;
     // Reject NON-CANONICAL SPKI (e.g. valid key + trailing garbage): OpenSSL's DER parser
     // accepts trailing bytes, so one logical key could have many encodings. A trust layer must
     // treat a key's encoding as canonical, so any future key-bytes-based logic (fingerprints,

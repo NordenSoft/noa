@@ -63,7 +63,7 @@ the signing key is bound into the hash, and verification runs **offline** — no
 ## Verify a chain offline (no account, no network)
 
 ```bash
-npm install          # zero runtime dependencies (Node ≥ 20 stdlib only)
+npm install          # zero runtime deps (Node ≥ 20 stdlib only; @types/node is type-only)
 npm test             # build + generate conformance vectors + run the full conformance suite
 
 # verify a signed chain against a keyring + checkpoint
