@@ -151,6 +151,21 @@ test("ROUND-2: additionalProperties:false — an extra key anywhere ⇒ policy-i
   assert.equal(validatePolicy(extraOnPolicy).ok, false);
 });
 
+test("ROUND-3: a throwing-getter / exotic input ⇒ fail-closed DENY (evaluate never throws)", () => {
+  const evil: Record<string, unknown> = { action: "payment.refund" };
+  Object.defineProperty(evil, "amountMinor", { enumerable: true, get() { throw new Error("boom"); } });
+  const r = evaluate(REFUND_POLICY, evil as never);
+  assert.equal(r.verdict, "DENY");
+  assert.equal(r.ruleFired, "eval-error"); // not an uncaught Error
+});
+
+test("ROUND-3: required-absent is checked BEFORE scalar well-formedness (pinned ruleFired order)", () => {
+  // amountMinor is required AND absent; another field is a float → must report required-absent, not eval-error
+  const r = evaluate(REFUND_POLICY, { action: "payment.refund", other: 1.5 } as never);
+  assert.equal(r.verdict, "DENY");
+  assert.match(r.ruleFired ?? "", /required-input-absent:amountMinor/);
+});
+
 test("ROUND-2: readSetHash type-confusion closed — string requiredPaths ≠ char-array", () => {
   const asStr = { spec: "noa.policy/0.2", id: "p", requiredPaths: "ab", rules: [] } as unknown as Policy;
   const asArr = { spec: "noa.policy/0.2", id: "p", requiredPaths: ["a", "b"], rules: [] } as unknown as Policy;

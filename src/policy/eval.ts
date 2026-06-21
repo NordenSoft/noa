@@ -113,15 +113,17 @@ export function evaluate(policy: Policy, inputs: InputSnapshot): EvalResult {
     return { verdict: "DENY", ruleFired: "input-invalid", engine: REF_EVAL_VERSION };
   }
   try {
-    // validate inputs are integer-only scalars (no float leakage into the hashed surface)
-    for (const key of Object.keys(inputs)) assertScalar(inputs[key], `input.${key}`);
-
-    // closed-world: a required path absent ⇒ DENY by construction (not by operator assertion)
+    // NORMATIVE ORDER (pinned for cross-impl ruleFired determinism): (1) required-path PRESENCE,
+    // then (2) input scalar well-formedness, then (3) rule matching. Presence is checked before
+    // well-formedness so a missing required path always reports `required-input-absent`, never a
+    // value-shape error from some other field.
     for (const p of policy.requiredPaths) {
       if (!Object.prototype.hasOwnProperty.call(inputs, p)) {
         return { verdict: "DENY", ruleFired: `required-input-absent:${p}`, engine: REF_EVAL_VERSION };
       }
     }
+    // integer-only scalars (no float leakage into the hashed surface)
+    for (const key of Object.keys(inputs)) assertScalar(inputs[key], `input.${key}`);
 
     for (const rule of policy.rules) {
       if (match(rule.when, inputs)) {
@@ -129,10 +131,9 @@ export function evaluate(policy: Policy, inputs: InputSnapshot): EvalResult {
       }
     }
     return { verdict: DEFAULT_VERDICT, ruleFired: null, engine: REF_EVAL_VERSION };
-  } catch (e) {
-    if (e instanceof PolicyError) {
-      return { verdict: "DENY", ruleFired: "eval-error", engine: REF_EVAL_VERSION };
-    }
-    throw e;
+  } catch {
+    // ALWAYS fail-closed: ANY error (PolicyError, a throwing getter, a Proxy trap, …) ⇒ DENY.
+    // evaluate() never throws — every result is a reproducible verdict object.
+    return { verdict: "DENY", ruleFired: "eval-error", engine: REF_EVAL_VERSION };
   }
 }

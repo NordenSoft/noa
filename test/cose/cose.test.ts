@@ -4,7 +4,7 @@ import { generateKeyPair } from "../../src/keys.js";
 import { buildReceipt, type BuildInput, type Signer } from "../../src/builder.js";
 import { receiptToCose, receiptFromCose } from "../../src/cose/receipt-cose.js";
 import { coseSign1, coseSign1Verify } from "../../src/cose/cose-sign1.js";
-import { encInt, encBstr, encTstr, encArray, encMap, decode } from "../../src/cose/cbor.js";
+import { encInt, encBstr, encTstr, encArray, encMap, decode, CborError } from "../../src/cose/cbor.js";
 import { sha256Prefixed } from "../../src/hash.js";
 import { canonicalize } from "../../src/jcs.js";
 
@@ -74,6 +74,19 @@ test("COSE_Sign1: unknown kid / no keyring entry ⇒ not verified (never throws)
 test("COSE_Sign1: malformed CBOR ⇒ ok:false, no throw", () => {
   assert.equal(coseSign1Verify(Buffer.from([0xff, 0x00, 0x13]), { k: "x" }).ok, false);
   assert.equal(coseSign1Verify(Buffer.from([0x80]), { k: "x" }).ok, false); // empty array, not tag 18
+});
+
+test("ROUND-3: decoder REJECTS non-canonical CBOR (shortest-form + sorted/unique map keys)", () => {
+  // non-minimal int heads (a strict COSE/SCITT verifier rejects these; so must NOA)
+  assert.throws(() => decode(Buffer.from([0x19, 0x00, 0x05])), CborError); // 5 in 2 bytes
+  assert.throws(() => decode(Buffer.from([0x18, 0x05])), CborError); // 5 in 1 byte
+  assert.throws(() => decode(Buffer.from([0x1a, 0x00, 0x00, 0x00, 0x05])), CborError); // 5 in 4 bytes
+  // duplicate + out-of-order map keys
+  assert.throws(() => decode(Buffer.from([0xa2, 0x01, 0x00, 0x01, 0x01])), CborError); // dup key 1
+  assert.throws(() => decode(Buffer.from([0xa2, 0x02, 0x00, 0x01, 0x00])), CborError); // keys 2,1 out of order
+  // canonical forms still decode
+  assert.equal((decode(Buffer.from([0x05])) as { v: number }).v, 5);
+  assert.equal((decode(Buffer.from([0xa2, 0x01, 0x00, 0x02, 0x00])) as { t: string }).t, "map"); // 1,2 sorted
 });
 
 test("alg-confusion: a COSE_Sign1 whose protected header isn't {alg:EdDSA} is rejected", () => {

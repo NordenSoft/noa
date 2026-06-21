@@ -82,19 +82,26 @@ function readHead(c: Cur): { major: number; n: number } {
   const major = ib >> 5;
   const ai = ib & 0x1f;
   let n: number;
+  // RFC 8949 §4.2.1 core-deterministic: heads MUST be shortest-form. Reject non-minimal encodings
+  // so the decoder accepts ONLY canonical CBOR (a strict COSE/SCITT verifier does the same) — closes
+  // the reverse-direction malleability gap (two byte-different encodings of one logical statement).
   if (ai < 24) n = ai;
   else if (ai === 24) {
     n = c.buf[c.i]!;
     c.i += 1;
+    if (n < 24) throw new CborError("non-canonical: 1-byte head < 24");
   } else if (ai === 25) {
     n = c.buf.readUInt16BE(c.i);
     c.i += 2;
+    if (n < 0x100) throw new CborError("non-canonical: 2-byte head < 256");
   } else if (ai === 26) {
     n = c.buf.readUInt32BE(c.i);
     c.i += 4;
+    if (n < 0x10000) throw new CborError("non-canonical: 4-byte head < 65536");
   } else if (ai === 27) {
     const big = c.buf.readBigUInt64BE(c.i);
     c.i += 8;
+    if (big < 0x100000000n) throw new CborError("non-canonical: 8-byte head < 2^32");
     if (big > BigInt(Number.MAX_SAFE_INTEGER)) throw new CborError("integer too large");
     n = Number(big);
   } else throw new CborError("indefinite/unsupported length");
@@ -128,7 +135,21 @@ function decodeAt(c: Cur, depth: number): CborValue {
     }
     case 5: {
       const m: Array<[CborValue, CborValue]> = [];
-      for (let k = 0; k < n; k++) m.push([decodeAt(c, depth + 1), decodeAt(c, depth + 1)]);
+      let prevKeyBytes: Buffer | null = null;
+      for (let k = 0; k < n; k++) {
+        const keyStart = c.i;
+        const key = decodeAt(c, depth + 1);
+        const keyBytes = Buffer.from(c.buf.subarray(keyStart, c.i));
+        // canonical map: keys MUST be strictly increasing by encoded bytes (sorted, no duplicates)
+        if (prevKeyBytes !== null) {
+          const cmp = Buffer.compare(prevKeyBytes, keyBytes);
+          if (cmp === 0) throw new CborError("non-canonical: duplicate map key");
+          if (cmp > 0) throw new CborError("non-canonical: map keys not in canonical order");
+        }
+        prevKeyBytes = keyBytes;
+        const val = decodeAt(c, depth + 1);
+        m.push([key, val]);
+      }
       return { t: "map", v: m };
     }
     case 6:
