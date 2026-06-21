@@ -9,3 +9,9 @@ dist/
 # Python
 __pycache__/
 *.pyc
+
+# Scratch / repro artifacts (audit agents write these to the repo root; never ship them)
+_*.mjs
+_*.ts
+_repro_*
+_probe*
