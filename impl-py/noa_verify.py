@@ -162,9 +162,21 @@ def _strict_pairs(pairs):
 
 def _reject_float(_s): raise ValueError("float not allowed (integers only)")
 
+def _reject_constant(s): raise ValueError(f"non-finite JSON literal not allowed: {s}")
+
+def _strict_int(s):
+    # parity with TS safeParse: reject any integer outside Number.isSafeInteger (> 2^53-1). json default
+    # parse_int accepts unbounded ints, which would diverge from the TS parser (round-14 #2).
+    v = int(s)
+    if abs(v) > (1 << 53) - 1: raise ValueError("integer outside safe range")
+    return v
+
 def strict_load_text(text):
-    """Parse receipt JSON like the TS safeParse: dup keys, floats, and proto keys are rejected."""
-    return json.loads(text, object_pairs_hook=_strict_pairs, parse_float=_reject_float)
+    """Parse receipt JSON like the TS safeParse: dup keys, floats, OVERSIZED ints (> 2^53-1), the JS-ism
+    constants NaN/Infinity/-Infinity (which go through parse_constant, NOT parse_float), and prototype keys
+    are ALL rejected (round-14 #2 parity — json's defaults would otherwise over-accept vs safeParse)."""
+    return json.loads(text, object_pairs_hook=_strict_pairs, parse_float=_reject_float,
+                      parse_int=_strict_int, parse_constant=_reject_constant)
 
 # ── Structural validation — STRICT, mirrors src/schema.ts validateReceiptShape ─
 # Step 1 of the TS verifyChain runs validateReceiptShape BEFORE any hashing. Without this layer
@@ -181,6 +193,10 @@ _MODES = frozenset(["off", "shadow", "approvals_on", "on"])
 _VERDICTS = frozenset(["ALLOWED", "BLOCKED", "DEFERRED", "EXECUTED", "FAILED", "ROLLED_BACK", "SIMULATED"])
 
 import re as _re
+# NOTE: every use of these is `.fullmatch()`, NOT `.match()` (round-14 #1). Python's `re` `$` also matches
+# just before a SINGLE trailing newline, so `.match()` would accept e.g. "sha256:<hex>\n" — which JS regex
+# `$` (end-of-input) and the JSON-Schema `pattern` dialect REJECT, splitting the cross-impl verdict on
+# opaque fields. `.fullmatch()` requires the whole string, matching the TS reference + normative schema.
 _HASH_RE = _re.compile(r"^sha256:[0-9a-f]{64}$")
 _PARAMS_HASH_RE = _re.compile(r"^(sha256|hmac-sha256):[0-9a-f]{64}$")
 # RFC 3339 §5.6 — accept lowercase 't'/'z' too (must match schema/noa-receipt-0.1.schema.json + src/schema.ts).
@@ -244,7 +260,7 @@ def validate_receipt_shape(value):
         if not _is_str(rid) or len(rid) == 0 or len(rid) > 128:
             errors.append("receipt.id: non-empty string <=128 chars")
         ts = r.get("ts")
-        if not _is_str(ts) or not _RFC3339_RE.match(ts):
+        if not _is_str(ts) or not _RFC3339_RE.fullmatch(ts):
             errors.append("receipt.ts: must be RFC 3339 UTC timestamp")
 
         # scope
@@ -292,7 +308,7 @@ def validate_receipt_shape(value):
             if action.get("riskClass") not in _RISK_CLASSES:
                 errors.append("receipt.action.riskClass: invalid enum")
             ph = action.get("paramsHash")
-            if not _is_str(ph) or not _PARAMS_HASH_RE.match(ph):
+            if not _is_str(ph) or not _PARAMS_HASH_RE.fullmatch(ph):
                 errors.append("receipt.action.paramsHash: must match (sha256|hmac-sha256):<64 hex>")
             if not _is_bool(action.get("reversible")):
                 errors.append("receipt.action.reversible: boolean")
@@ -326,7 +342,7 @@ def validate_receipt_shape(value):
                     if not _is_str(ap.get("by")):
                         errors.append("receipt.governance.approval.by: string")
                     at = ap.get("at")
-                    if not _is_str(at) or not _RFC3339_RE.match(at):
+                    if not _is_str(at) or not _RFC3339_RE.fullmatch(at):
                         errors.append("receipt.governance.approval.at: RFC 3339 UTC")
                 else:
                     errors.append("receipt.governance.approval: object or null")
@@ -338,7 +354,7 @@ def validate_receipt_shape(value):
                     _check_exact_keys(c, ["policyHash", "readSetHash", "inputsHash"], ["verdict"], "receipt.governance.compliance", errors)
                     for k in ("policyHash", "readSetHash", "inputsHash"):
                         cv = c.get(k)
-                        if not _is_str(cv) or not _HASH_RE.match(cv):
+                        if not _is_str(cv) or not _HASH_RE.fullmatch(cv):
                             errors.append("receipt.governance.compliance.%s: sha256:<64 hex>" % k)
                     # Optional + additive: when present the recorded decision MUST be ALLOW|DENY.
                     if "verdict" in c and c.get("verdict") not in ("ALLOW", "DENY"):
@@ -356,10 +372,10 @@ def validate_receipt_shape(value):
             if not _is_int(seq) or seq < 0 or seq > _SAFE_INT_MAX:
                 errors.append("receipt.chain.seq: non-negative safe integer")
             pv = ch.get("prevHash")
-            if pv is not None and (not _is_str(pv) or not _HASH_RE.match(pv)):
+            if pv is not None and (not _is_str(pv) or not _HASH_RE.fullmatch(pv)):
                 errors.append("receipt.chain.prevHash: sha256:<64 hex> or null")
             hv = ch.get("hash")
-            if not _is_str(hv) or not _HASH_RE.match(hv):
+            if not _is_str(hv) or not _HASH_RE.fullmatch(hv):
                 errors.append("receipt.chain.hash: sha256:<64 hex>")
         else:
             errors.append("receipt.chain: object required")
@@ -412,8 +428,8 @@ def _verify_checkpoint(cp, keyring):
     if not isinstance(cp.get("chain"), str) or not cp.get("chain"): return "bad"
     hs = cp.get("highestSeq")
     if not isinstance(hs, int) or isinstance(hs, bool) or hs < 0 or hs > _SAFE_INT_MAX: return "bad"
-    if not isinstance(cp.get("headHash"), str) or not _HASH_RE.match(cp.get("headHash")): return "bad"
-    if not isinstance(cp.get("ts"), str) or not _RFC3339_RE.match(cp.get("ts")): return "bad"
+    if not isinstance(cp.get("headHash"), str) or not _HASH_RE.fullmatch(cp.get("headHash")): return "bad"
+    if not isinstance(cp.get("ts"), str) or not _RFC3339_RE.fullmatch(cp.get("ts")): return "bad"
     sig = cp.get("sig")
     # sig sub-object is ALSO strict (round-13 #4): exactly {alg,kid,value}, alg="ed25519" — closes a
     # smuggled-field channel inside the SIGNED surface + an unvalidated alg, parity with src/verify.ts.

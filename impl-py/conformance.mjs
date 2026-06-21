@@ -15,7 +15,7 @@ import { buildReceipt, buildCheckpoint } from "../dist/src/builder.js";
 import { sha256Prefixed, sha256Hex } from "../dist/src/hash.js";
 import { receiptHashInput } from "../dist/src/canonicalize.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../dist/src/signing.js";
-import { verifyChain, complianceCommit } from "../dist/src/index.js";
+import { verifyChain, verifyChainText, complianceCommit } from "../dist/src/index.js";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,6 +212,11 @@ structParity("MALFORMED (bad enum: action.riskClass)", (m) => { m.action.riskCla
 structParity('MALFORMED (sig.alg="rsa")', (m) => { m.sig.alg = "rsa"; });
 // 11. Wrong spec string.
 structParity("MALFORMED (wrong spec)", (m) => { m.spec = "noa.receipt/9.9"; });
+// 12. round-14 #1 — trailing-newline in an OPAQUE regex-validated field. Python's re `$` matched before a
+// single trailing \n (.match), accepting "value\n" that TS + the JSON Schema reject → VALID(PY)/MALFORMED(TS)
+// on identical SIGNED bytes. .fullmatch now makes both reject. (reseal keeps the receipt crypto-genuine.)
+structParity("MALFORMED (trailing-newline paramsHash, regex fullmatch)", (m) => { m.action.paramsHash = sha256Prefixed("z") + "\n"; });
+structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts = "2026-06-21T10:00:00.000Z\n"; });
 
 // ── B4 on-receipt compliance WITH verdict (round-12 #5/#8): a receipt carrying governance.compliance
 // (incl. the optional `verdict`) is NOA's OWN B4 output. Both verifiers MUST accept it. Before the port fix
@@ -307,6 +312,29 @@ structParity("MALFORMED (wrong spec)", (m) => { m.spec = "noa.receipt/9.9"; });
   } else {
     console.log("⚠ (skipped trailing-bits vector: no same-bytes base64 variant for this signature)");
   }
+}
+
+// ── round-14 #2: strict_load_text parity with safeParse — oversized ints (> 2^53-1) + NaN/Infinity. Python's
+// json defaults parsed these (then graded TAMPERED); TS safeParse rejects (MALFORMED). Both must now reach
+// the SAME verdict class (MALFORMED) at the parser. ──
+{
+  const bigText = JSON.stringify([r0]).replace('"seq":0', '"seq":9007199254740993');
+  const bigPath = join(dir, "oversized-int.json");
+  writeFileSync(bigPath, bigText);
+  const tsBig = verifyChainText(bigText, { keyring }).status;
+  const tsBigOk = tsBig === "MALFORMED";
+  console.log(`${tsBigOk ? "✓" : "✗"} MALFORMED (oversized int > 2^53-1, strict parse) [TS verifyChainText]: ${tsBig} (want MALFORMED)`);
+  if (!tsBigOk) failures++;
+  expect("MALFORMED (oversized int > 2^53-1, strict parse) [PY verifier]", pyVerify([bigPath, keyringPath]).code, 3);
+
+  const nanText = JSON.stringify([r0]).replace('"seq":0', '"seq":NaN');
+  const nanPath = join(dir, "nan-literal.json");
+  writeFileSync(nanPath, nanText);
+  const tsNan = verifyChainText(nanText, { keyring }).status;
+  const tsNanOk = tsNan === "MALFORMED";
+  console.log(`${tsNanOk ? "✓" : "✗"} MALFORMED (NaN literal, strict parse) [TS verifyChainText]: ${tsNan} (want MALFORMED)`);
+  if (!tsNanOk) failures++;
+  expect("MALFORMED (NaN literal, strict parse) [PY verifier]", pyVerify([nanPath, keyringPath]).code, 3);
 }
 
 if (failures) { console.error(`\nCROSS-IMPL CONFORMANCE FAILED: ${failures} mismatch(es)`); process.exit(1); }
