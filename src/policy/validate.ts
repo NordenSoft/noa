@@ -12,6 +12,7 @@
 
 import type { Policy, Condition, Scalar } from "./dsl.js";
 import { POLICY_SPEC } from "./dsl.js";
+import { canonicalize, MAX_DEPTH } from "../jcs.js";
 
 const CMP_OPS = new Set(["eq", "ne", "lt", "le", "gt", "ge"]);
 
@@ -39,7 +40,7 @@ function noExtraKeys(obj: Record<string, unknown>, allowed: string[], path: stri
 }
 
 function validateCondition(c: unknown, path: string, errors: string[], depth: number): void {
-  if (depth > 64) {
+  if (depth > MAX_DEPTH) {
     errors.push(`${path}: condition nesting too deep`);
     return;
   }
@@ -127,6 +128,19 @@ export function validatePolicy(p: unknown): PolicyValidation {
       if (rule.then !== "ALLOW" && rule.then !== "DENY") errors.push(`policy.rules[${i}].then: must be exactly "ALLOW" or "DENY"`);
       validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);
     });
+  }
+  // Identity-hash safety (round-4 audit): a policy this validator ACCEPTS must be canonicalizable,
+  // so policyHash()/readSetHash() (both route through canonicalize) can never throw on an accepted
+  // policy. The per-condition depth cap above counts condition nesting only; canonicalize also counts
+  // the policy→rules→[i]→when wrapper AND the extra array level inside every `and`/`or`, so the two
+  // limits can drift (validator accepts what policyHash cannot hash). Assert the authoritative limit
+  // here once, arithmetic-free, so `ok === true` ⇒ the policy is hashable. Fail-closed: any throw ⇒ invalid.
+  if (errors.length === 0) {
+    try {
+      canonicalize(p);
+    } catch {
+      errors.push(`policy: not canonicalizable (exceeds the depth-${MAX_DEPTH} identity-hash limit)`);
+    }
   }
   return { ok: errors.length === 0, errors };
 }

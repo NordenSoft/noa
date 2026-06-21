@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { evaluate, REF_EVAL_VERSION } from "../../src/policy/eval.js";
 import { validatePolicy } from "../../src/policy/validate.js";
-import { policyHash, readSet, readSetHash, type Policy } from "../../src/policy/dsl.js";
+import { policyHash, readSet, readSetHash, type Policy, type Condition } from "../../src/policy/dsl.js";
 
 // A refund policy: block >= 1,000,000.00 DKK (in øre), allow smaller refunds, default deny.
 const REFUND_POLICY: Policy = {
@@ -178,4 +178,29 @@ test("policyHash + readSet are stable + statically extracted", () => {
   assert.equal(policyHash(REFUND_POLICY), policyHash(structuredClone(REFUND_POLICY)));
   assert.deepEqual(readSet(REFUND_POLICY), ["action", "amountMinor"]);
   assert.match(readSetHash(REFUND_POLICY), /^sha256:[0-9a-f]{64}$/);
+});
+
+// ── ROUND-4 deep-audit regression ───────────────────────────────────────────
+test("ROUND-4: a policy too deep to canonicalize is REJECTED by validatePolicy (no accept-but-unhashable window)", () => {
+  // nestNot(N) = N `not` layers around {op:'exists'}. The per-condition depth cap counts condition
+  // nesting only; canonicalize counts the policy→rules→[i]→when wrapper too, so depth ~61-64 used to be
+  // validatePolicy().ok===true YET policyHash() threw an uncaught JcsError (and readSetHash did NOT —
+  // divergent depth tolerances on two hash-pinned identities). The validator now asserts canonicalizability.
+  const nestNot = (n: number): Condition => {
+    let c: Condition = { op: "exists", path: "a" };
+    for (let i = 0; i < n; i++) c = { op: "not", clause: c };
+    return c;
+  };
+  const deep = { spec: "noa.policy/0.2", id: "d", requiredPaths: [], rules: [{ id: "r", when: nestNot(61), then: "ALLOW" }] } as unknown as Policy;
+  const v = validatePolicy(deep);
+  assert.equal(v.ok, false); // was true → the accept-but-can't-hash window is closed
+  assert.match(v.errors.join(" "), /not canonicalizable/);
+  // evaluate() validates first ⇒ fail-closed DENY instead of running an unhashable policy
+  assert.equal(evaluate(deep, { a: 1 }).verdict, "DENY");
+  assert.equal(evaluate(deep, { a: 1 }).ruleFired, "policy-invalid");
+  // a shallow policy still validates + hashes fine (no false-positive rejection)
+  const ok = { spec: "noa.policy/0.2", id: "s", requiredPaths: [], rules: [{ id: "r", when: nestNot(5), then: "ALLOW" }] } as unknown as Policy;
+  assert.equal(validatePolicy(ok).ok, true);
+  assert.match(policyHash(ok), /^sha256:[0-9a-f]{64}$/);
+  assert.match(readSetHash(ok), /^sha256:[0-9a-f]{64}$/);
 });

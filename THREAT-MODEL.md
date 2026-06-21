@@ -27,7 +27,7 @@ truth or safety.
 | T2 | Re-order / drop a middle record | seq contiguity + prevHash linkage | `attack/seq-gap`, `attack/relinked` |
 | T3 | Forge a fresh genesis | genesis must have `prevHash:null`, signed | `attack/forged-genesis` |
 | T4 | Strip signature, alter, re-sign with new key | `sig.kid` is inside the hash → breaks linkage | `attack/key-swap` |
-| T5 | Re-sign with a real adversary key | key pinned per `agent.id` → rejected | `attack/key-swap-resigned` |
+| T5 | Re-sign a record **mid-chain** with a different trusted key | `sig.kid` pinned per `agent.id` *within a chain* → mid-chain key-swap rejected (does **not** stop a fresh forged chain — see cross-agent impersonation below) | `attack/key-swap-resigned` |
 | T6 | Present a corrupted/forged signature | Ed25519 verify against keyring | `attack/wrong-signature` |
 | T6b | Unknown signing key while a keyring is supplied | treated as TAMPERED (no silent TOFU on attacker input) | `attack/unknown-kid` |
 | T7 | Number-serialization / canonicalization disagreement | integer-only JCS, frozen rules, pinned vectors | `jcs.test`, conformance |
@@ -52,8 +52,19 @@ truth or safety.
 - **Private-key compromise / no revocation / no forward-security:** a leaked private key lets
   the holder retroactively re-sign an entirely fabricated history (bounded only by an external
   checkpoint/anchor someone already holds). v0.1 has **no revocation list and no key-evolution**.
-  Use KMS/HSM; rotate via `kid`. Cryptographic *attribution* is provided; key-exfiltration
-  prevention is not.
+  Use KMS/HSM; rotate via `kid`. Cryptographic *attribution to a keyring-trusted key* is provided;
+  binding that key to a specific `agent.id` is **not** (see cross-agent impersonation below), and
+  key-exfiltration prevention is not.
+- **Cross-agent impersonation among co-trusted keys:** the trust root is the keyring (`kid → public
+  key`) only — there is **no** authenticated `agent.id → allowed-kid` binding. The per-`agent.id` `kid`
+  pin (T5) enforces *continuity within one chain*, not *who may open a chain*. So in a keyring holding
+  more than one trusted key, the holder of ANY trusted private key can author a fully **VALID** chain
+  that asserts ANY other `agent.id` (PoC: a low-privilege signer emits a `payment.refund` / CRITICAL
+  chain under a high-privilege `agent.id` and it verifies VALID). A VALID receipt therefore proves
+  *"a keyring-trusted key signed this"*, **not** *"this specific `agent.id` acted"* — the `agent.id` is
+  a signer-asserted label, authenticated only at the `kid` level. **Single-key keyrings are unaffected.**
+  *Full fix (v0.2):* a signed identity manifest binding `agent.id → authorized kid(s)`, enforced in
+  `verifyChain` (plus a distinct `UNTRUSTED` verdict for unrecognized keys).
 - **Replay / freshness / liveness:** a wholly-valid chain, head, or checkpoint can be re-presented
   later as if current. The format carries no nonce/epoch/expiry. **Freshness is the caller's
   responsibility** — pin an expected chain id + head hash from a fresh, trusted channel; do not

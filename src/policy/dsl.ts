@@ -50,7 +50,11 @@ export interface Policy {
 export const POLICY_SPEC = "noa.policy/0.2" as const;
 export const DEFAULT_VERDICT: Verdict = "DENY";
 
-/** sha256:<hex> over the canonical (JCS) policy — the published, hash-pinned identity. */
+/** sha256:<hex> over the canonical (JCS) policy — the published, hash-pinned identity.
+ *  PRECONDITION: `p` must be a `validatePolicy`-accepted policy. The validator now asserts
+ *  canonicalizability (round-4 audit), so for any accepted policy this never throws; on a
+ *  non-canonicalizable policy (e.g. nested past depth `MAX_DEPTH`) it fail-closes with a typed
+ *  `JcsError` rather than returning a hash — a refusal, never a wrong identity. */
 export function policyHash(p: Policy): string {
   return sha256Prefixed(canonicalize(p as unknown));
 }

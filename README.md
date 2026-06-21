@@ -35,8 +35,10 @@ happen **before** it runs, and leaves an independently verifiable provenance rec
 
 > **What it is, precisely:** tamper-*evident* provenance — it proves a record was produced under
 > the stated rules and not edited mid-chain. It is **not** proof-of-action, non-repudiation, or a
-> freshness guarantee, and it can't detect an action for which no receipt was emitted. The honest
-> limits (replay, key compromise, fork/equivocation, tail-truncation) are written down in
+> freshness guarantee, and it can't detect an action for which no receipt was emitted. In a keyring
+> with more than one trusted key it proves *a trusted key signed this*, not *which `agent.id` acted*.
+> The honest limits (replay, key compromise, fork/equivocation, tail-truncation, cross-agent
+> attribution in multi-key keyrings) are written down in
 > [THREAT-MODEL.md](THREAT-MODEL.md) — read them before you rely on this.
 
 ## The Receipt

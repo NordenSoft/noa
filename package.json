@@ -41,6 +41,7 @@
     "schema",
     "docs/receipt-spec.md",
     "LICENSE",
+    "NOTICE",
     "README.md",
     "THREAT-MODEL.md",
     "SECURITY.md"
