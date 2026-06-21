@@ -261,16 +261,23 @@ exact recorded inputs WITHOUT carrying raw inputs (which may be PII) — only th
 "governance": { …, "compliance": {
   "policyHash":   "sha256:…",   // JCS-canonical policy identity
   "readSetHash":  "sha256:…",   // the policy's closed input read-set
-  "inputsHash":   "sha256:…"    // JCS-canonical recorded decision inputs (hash only — no raw PII)
+  "inputsHash":   "sha256:…",   // JCS-canonical recorded decision inputs (hash only — no raw PII)
+  "verdict":      "ALLOW|DENY"  // OPTIONAL: the recorded decision (re-run at commit time)
 }}
 ```
 
 `verifyReceiptCompliance(receipt, policy, inputs)` is the OFFLINE L2 proof: given the policy + the
 recorded inputs out-of-band, it confirms the three committed hashes authenticate exactly that policy +
-those inputs, then **re-runs the deterministic evaluator** to reproduce the verdict. It is fail-closed
-(any hash mismatch / non-canonicalizable input ⇒ `ok:false`) and never throws. A substituted policy
-(policyHash mismatch — anti policy-swap) or substituted inputs (inputsHash mismatch) is rejected.
+those inputs, then **re-runs the deterministic evaluator** to reproduce the verdict. When the commitment
+also records a `verdict`, the verifier **REQUIRES the re-run verdict to equal the recorded one** — so a
+receipt that commits inputs evaluating to DENY while recording ALLOW is rejected (`ok:false`). It is
+fail-closed (any hash mismatch / verdict mismatch / non-canonicalizable input ⇒ `ok:false`) and never
+throws. A substituted policy (policyHash mismatch — anti policy-swap) or substituted inputs (inputsHash
+mismatch) is rejected. The `verdict` field is OPTIONAL and additive: a commitment without it stays
+backward-compatible (no reconciliation; the verifier just returns the re-run verdict).
 
 **Honesty razor (normative):** this proves *"policy P, re-run over the RECORDED inputs I, yields verdict
-V"* — NOT that I is true or complete, nor that P is a *good* rule. The reference policy DSL is
-integer-only / pure-logic; policies using non-deterministic elements are out of scope for replay.
+V, and V equals the decision the receipt recorded"* — it is substitution-resistant (a receipt cannot
+commit DENY-inputs while claiming ALLOW), but it is NOT proof the policy was in force at decision time,
+nor that I is true or complete, nor that P is a *good* rule. The reference policy DSL is integer-only /
+pure-logic; policies using non-deterministic elements are out of scope for replay.

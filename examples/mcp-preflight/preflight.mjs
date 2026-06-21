@@ -96,9 +96,10 @@ function main() {
   const v = verifyChain(chain, { keyring });
   ok(`receipt chain VALID (offline, ${v.count} receipts)`, v.status === "VALID");
 
-  // THE MOAT (B4 on-receipt): each receipt COMMITS the policy + inputs by hash; verifyReceiptCompliance
-  // authenticates that commitment + re-runs the deterministic evaluator → the reproduced verdict matches
-  // the recorded decision. Offline, no NOA service. (Decision-only competitors cannot do this.)
+  // THE MOAT (B4 on-receipt): each receipt COMMITS the policy + inputs by hash AND the recorded verdict;
+  // verifyReceiptCompliance authenticates that commitment + re-runs the deterministic evaluator AND
+  // requires the re-run verdict to equal the committed one → the reproduced verdict matches the recorded
+  // decision. Offline, no NOA service. (Decision-only competitors cannot do this.)
   for (let i = 0; i < results.length; i++) {
     const cc = verifyReceiptCompliance(chain[i], POLICY, results[i].evidence.inputs);
     const recorded = chain[i].governance.verdict === "EXECUTED" ? "ALLOW" : "DENY";
@@ -111,6 +112,12 @@ function main() {
   // Tamper: a verifier handed DIFFERENT inputs than were recorded must FAIL the inputsHash bind.
   const tampered = verifyReceiptCompliance(chain[0], POLICY, { action: "payment.refund", amountMinor: 999_999 });
   ok("on-receipt compliance REJECTS substituted inputs (inputsHash bind)", tampered.ok === false);
+
+  // Tamper: a receipt that COMMITS the OPPOSITE verdict (DENY) while its recorded inputs evaluate to
+  // ALLOW must FAIL verdict reconciliation (round-11) — the recorded decision itself must reproduce.
+  const forged = { ...chain[0], governance: { ...chain[0].governance, compliance: { ...chain[0].governance.compliance, verdict: "DENY" } } };
+  const vr = verifyReceiptCompliance(forged, POLICY, results[0].evidence.inputs);
+  ok("on-receipt compliance REJECTS a committed verdict that does not reproduce (verdict bind)", vr.ok === false && /verdict mismatch/.test(vr.reason ?? ""));
 
   if (fail) { console.error(`\nMCP PRE-FLIGHT REFERENCE FAILED: ${fail} assertion(s)`); process.exit(1); }
   console.log("\nMCP PRE-FLIGHT REFERENCE PASS: every tool-call decision emitted a signed, offline-verifiable, REPLAYABLE receipt.");

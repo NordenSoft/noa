@@ -73,6 +73,33 @@ test("B4: a substituted POLICY is rejected (policyHash bind — anti policy-swap
   assert.match(res.reason ?? "", /policyHash mismatch/);
 });
 
+test("B4: complianceCommit RECORDS the re-run verdict (ALLOW + DENY)", () => {
+  assert.equal(complianceCommit(POLICY, { action: "payment.refund", amountMinor: 4200 }).verdict, "ALLOW");
+  assert.equal(complianceCommit(POLICY, { action: "payment.refund", amountMinor: 100_000_000 }).verdict, "DENY");
+});
+
+test("B4: a receipt committing the OPPOSITE verdict is REJECTED (verdict reconciliation — round-11 MEDIUM)", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 }; // re-runs to ALLOW
+  const r = receiptWith(inputs, "EXECUTED");
+  assert.equal(r.governance.compliance?.verdict, "ALLOW"); // commit recorded the true decision
+  // Forge: claim DENY on-receipt while the recorded inputs actually evaluate to ALLOW.
+  const forged = { ...r, governance: { ...r.governance, compliance: { ...r.governance.compliance!, verdict: "DENY" as const } } };
+  const res = verifyReceiptCompliance(forged, POLICY, inputs);
+  assert.equal(res.ok, false);
+  assert.match(res.reason ?? "", /verdict mismatch/);
+  assert.equal(res.policyVerdict, "ALLOW"); // still surfaces the true re-run verdict
+});
+
+test("B4: backward-compat — a commitment WITHOUT a verdict still verifies (reconciliation skipped)", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED");
+  const c = r.governance.compliance!;
+  const legacy = { ...r, governance: { ...r.governance, compliance: { policyHash: c.policyHash, readSetHash: c.readSetHash, inputsHash: c.inputsHash } } };
+  const res = verifyReceiptCompliance(legacy, POLICY, inputs);
+  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.policyVerdict, "ALLOW");
+});
+
 test("B4: a receipt with NO compliance block → ok:false (nothing to prove)", () => {
   const input: BuildInput = {
     id: "rc_n", ts: "2026-06-21T10:00:00.000Z", scope: { tenant: "t", chain: "c1" },

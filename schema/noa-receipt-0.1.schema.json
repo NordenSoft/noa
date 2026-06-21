@@ -69,7 +69,8 @@
           "properties": {
             "policyHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
             "readSetHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-            "inputsHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+            "inputsHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "verdict": { "enum": ["ALLOW", "DENY"] }
           }
         }
       }

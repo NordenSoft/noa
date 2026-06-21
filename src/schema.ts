@@ -147,10 +147,14 @@ export function validateReceiptShape(value: unknown): SchemaResult {
     if (has(r.governance, "compliance") && r.governance.compliance !== null) {
       const c = r.governance.compliance;
       if (isPlainObject(c)) {
-        checkExactKeys(c, ["policyHash", "readSetHash", "inputsHash"], [], "receipt.governance.compliance", errors);
+        checkExactKeys(c, ["policyHash", "readSetHash", "inputsHash"], ["verdict"], "receipt.governance.compliance", errors);
         for (const k of ["policyHash", "readSetHash", "inputsHash"] as const) {
           if (!str(c[k]) || !HASH_RE.test(c[k] as string)) errors.push(`receipt.governance.compliance.${k}: sha256:<64 hex>`);
         }
+        // Optional + additive: the recorded policy decision. When present it MUST be ALLOW|DENY so
+        // verifyReceiptCompliance can reconcile a re-run verdict against it (spec §9).
+        if (has(c, "verdict") && c.verdict !== "ALLOW" && c.verdict !== "DENY")
+          errors.push('receipt.governance.compliance.verdict: must be "ALLOW" or "DENY"');
       } else errors.push("receipt.governance.compliance: object or null");
     }
   } else errors.push("receipt.governance: object required");

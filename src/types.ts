@@ -65,6 +65,14 @@ export interface ReceiptCompliance {
   policyHash: string; // sha256:<hex> of the JCS-canonical policy (its published identity)
   readSetHash: string; // sha256:<hex> of the policy's closed read-set (the input surface)
   inputsHash: string; // sha256:<hex> of the JCS-canonical recorded decision inputs (no raw PII on-receipt)
+  /**
+   * Optional + additive: the policy decision the receipt RECORDS ("ALLOW" | "DENY"). When present,
+   * verifyReceiptCompliance re-runs the evaluator and REQUIRES the reproduced verdict to equal this —
+   * making the spec §9 claim ("re-runs and confirms the committed verdict reproduces") literally true and
+   * substitution-resistant against a receipt that commits inputs which evaluate to the OPPOSITE verdict.
+   * A commitment WITHOUT it stays backward-compatible (no reconciliation, just the re-run verdict).
+   */
+  verdict?: "ALLOW" | "DENY";
 }
 
 export interface ReceiptGovernance {
