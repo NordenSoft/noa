@@ -175,3 +175,41 @@ test("round-13 #3/#7: fail-closed — null / undefined / throwing-accessor recei
   assert.doesNotThrow(() => { res = verifyReceiptCompliance(evil as never, POLICY, { action: "x", amountMinor: 1 }); });
   assert.equal(res.ok, false);
 });
+
+// ── round-16 #6 (MEDIUM): the `inputs` argument is read TWICE — by the inputsHash check (canonicalize) AND
+// by the evaluate() re-run. A flipping `amountMinor` getter could present the COMMITTED value to the hash
+// check (so inputsHash matches) and a DIFFERENT value to evaluate (so the re-run produces a verdict the
+// receipt never committed) → a false COMPLIANT. Snapshotting inputs ONCE reads each getter exactly once, so
+// the hashed inputs and the evaluated inputs are byte-identical → no split. ──────────────────────────────
+test("round-16 #6: a flipping `inputs` getter cannot split inputsHash from the re-run (snapshot reads once)", () => {
+  // Honest receipt: commits ALLOW-inputs (amountMinor 4200 → ALLOW), records verdict ALLOW.
+  const committed = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(committed, "EXECUTED");
+  assert.equal(r.governance.compliance?.verdict, "ALLOW");
+
+  // Attacker presents inputs whose amountMinor FLIPS: read #1 → the committed 4200 (inputsHash matches),
+  // a later read → 100_000_000 (which alone would re-run to DENY, contradicting the recorded ALLOW). Pre-fix,
+  // the hash check (read #1) passes while evaluate (read #2) sees the DENY value → a SPLIT. With the snapshot
+  // each getter fires once, so both surfaces see the SAME amountMinor → no false ok:true off a split.
+  let reads = 0;
+  const flip: Record<string, unknown> = { action: "payment.refund" };
+  Object.defineProperty(flip, "amountMinor", {
+    enumerable: true, configurable: true,
+    get() { return ++reads === 1 ? 4200 : 100_000_000; },
+  });
+
+  const res = verifyReceiptCompliance(r, POLICY, flip as never);
+  // The KEY property: NOT a false COMPLIANT produced by reading two different amounts. Either the snapshot's
+  // single read keeps hash+evaluate consistent (ok with a reproduced ALLOW), or the hash never matched — but
+  // never an ok:true synthesized from a 4200-hash + a 100M-evaluate split.
+  if (res.ok) {
+    assert.equal(res.policyVerdict, "ALLOW", "a COMPLIANT result must reflect the SAME (snapshotted) inputs, not a split");
+    assert.ok(reads <= 1, `inputs.amountMinor must be read at most once before snapshot (got ${reads})`);
+  } else {
+    // a non-match is also acceptable (fail-closed) — what is NOT acceptable is a split-derived green
+    assert.notEqual(res.policyVerdict, "DENY");
+  }
+
+  // Direct positive control: snapshot defeats the split → the hash that matched (4200) is the one evaluated.
+  assert.equal(reads <= 1, true, "the flipping getter must fire at most once (snapshot reads inputs exactly once)");
+});

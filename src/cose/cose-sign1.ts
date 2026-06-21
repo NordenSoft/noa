@@ -61,6 +61,13 @@ function isEdDSAProtected(protectedBytes: Buffer): boolean {
 
 /** Verify a COSE_Sign1: structure, EdDSA alg, kid→keyring, signature. Never throws. */
 export function coseSign1Verify(coseBytes: Buffer, keyring: Keyring): CoseVerifyResult {
+  // Fail-closed on a non-object keyring (round-16 #5): mirrors verifyChain's round-15 #7 guard, which the
+  // round-15 fix did NOT propagate to the COSE path. A null keyring would throw a raw TypeError on
+  // `keyring[kid]` below (violating "never throws"); an array / non-object is an operator error, not an empty
+  // trust root. Reject cleanly as ok:false with the same "keyring must be an object" reason as verify.ts.
+  if (keyring === null || typeof keyring !== "object" || Array.isArray(keyring)) {
+    return { ok: false, kid: null, payload: null, reason: "keyring must be an object (kid -> base64 SPKI)" };
+  }
   let v: CborValue;
   try {
     v = decode(coseBytes);

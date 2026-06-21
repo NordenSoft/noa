@@ -40,6 +40,13 @@ export interface ReceiptCoseResult {
  * (agent.id, kid) pairing fails (ok:false) — mirroring the `UNTRUSTED` verdict.
  */
 export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityManifest?: IdentityManifest): ReceiptCoseResult {
+  // Fail-closed on a non-object keyring (round-16 #5): mirror verifyChain's round-15 #7 guard at the COSE
+  // entry too, BEFORE any manifest work, so a null/array/non-object keyring is a clean ok:false here (not a
+  // raw throw on a later `keyring[kid]`). coseSign1Verify guards as well; this keeps THIS entry point's own
+  // contract fail-closed with a consistent reason.
+  if (keyring === null || typeof keyring !== "object" || Array.isArray(keyring)) {
+    return { ok: false, kid: null, receipt: null, reason: "keyring must be an object (kid -> base64 SPKI)", warnings: [] };
+  }
   // Validate the optional manifest AND SNAPSHOT it (fail-closed; matches verifyChain). Round-11 HIGH:
   // read each entry EXACTLY ONCE into a plain Map, copying the array by value (slice captures element
   // values at copy time) so a getter entry / element-getter cannot return one value to this validation

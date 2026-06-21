@@ -104,6 +104,16 @@ export function verifyReceiptCompliance(
     const snap = structuredClone(receipt) as Receipt;
     const c = snap.governance?.compliance;
     if (!c) return { ok: false, reason: "receipt carries no governance.compliance commitment" };
+    // SNAPSHOT THE POLICY + INPUTS ONCE (round-16 #6 MEDIUM TOCTOU). Both arguments are caller-supplied LIVE
+    // objects read MORE THAN ONCE: `policy` by policyHash + readSetHash + evaluate; `inputs` by the inputsHash
+    // check + evaluate. A flipping accessor (a getter that returns one value on read#1 and another on read#2)
+    // could split the hash check from the re-run — e.g. present ALLOW-inputs to inputsHash and DENY-inputs to
+    // evaluate (or vice-versa) → a false COMPLIANT (ok:true) that the receipt never actually committed to.
+    // structuredClone fires every accessor EXACTLY ONCE into plain, accessor-free data; ALL reads below
+    // (hash checks AND evaluate) use these snapshots, never the live args. Inside the try ⇒ a throwing accessor
+    // / non-cloneable arg fails closed (ok:false), honoring the "never throws" contract.
+    const policySnap = structuredClone(policy) as Policy;
+    const inputsSnap = structuredClone(inputs) as InputSnapshot;
     // CARRIER AUTHENTICATION (round-12 HIGH): when a keyring is supplied, prove the receipt itself is
     // genuine BEFORE trusting its compliance block — otherwise a forged/tampered receipt (verifyChain ⇒
     // TAMPERED) would still get a green "compliant" signal off its attacker-mutable governance.compliance.
@@ -120,10 +130,10 @@ export function verifyReceiptCompliance(
         return { ok: false, reason: "carrier receipt signature not authenticated" };
       }
     }
-    if (policyHash(policy) !== c.policyHash) return { ok: false, reason: "policyHash mismatch — supplied policy is not the committed one" };
-    if (readSetHash(policy) !== c.readSetHash) return { ok: false, reason: "readSetHash mismatch" };
-    if (sha256Prefixed(canonicalize(inputs)) !== c.inputsHash) return { ok: false, reason: "inputsHash mismatch — supplied inputs are not the recorded ones" };
-    const ev = evaluate(policy, inputs);
+    if (policyHash(policySnap) !== c.policyHash) return { ok: false, reason: "policyHash mismatch — supplied policy is not the committed one" };
+    if (readSetHash(policySnap) !== c.readSetHash) return { ok: false, reason: "readSetHash mismatch" };
+    if (sha256Prefixed(canonicalize(inputsSnap)) !== c.inputsHash) return { ok: false, reason: "inputsHash mismatch — supplied inputs are not the recorded ones" };
+    const ev = evaluate(policySnap, inputsSnap);
     // Verdict RECONCILIATION (round-11 MEDIUM): when the commitment records a verdict, the re-run MUST
     // reproduce it. This is what makes spec §9's "re-runs and confirms the committed verdict reproduces"
     // literally true: a receipt that commits inputs which evaluate to DENY while recording ALLOW is

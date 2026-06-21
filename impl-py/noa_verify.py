@@ -585,17 +585,26 @@ def _main(argv):
     args = argv[1:]
     receipts_path = keyring_path = identity_path = checkpoint_path = None
     i = 0
+    usage = "usage: noa_verify.py <receipts.json> [keyring.json] [--identity <m.json>] [--checkpoint <cp.json>]\n"
     while i < len(args):
         a = args[i]
-        if a == "--identity": i += 1; identity_path = args[i] if i < len(args) else None
-        elif a == "--checkpoint": i += 1; checkpoint_path = args[i] if i < len(args) else None
+        # A TRAILING --identity/--checkpoint with NO following path (round-16 #2/#3): silently setting the path
+        # to None would DROP the security control (the manifest / tail-truncation check) and the verifier would
+        # return VALID (exit 0) — a fail-OPEN where the TS CLI returns usage (exit 4). Emit usage + exit 4 to
+        # match the TS CLI: a malformed invocation never silently weakens enforcement.
+        if a == "--identity":
+            if i + 1 >= len(args): sys.stderr.write(usage); return 4
+            i += 1; identity_path = args[i]
+        elif a == "--checkpoint":
+            if i + 1 >= len(args): sys.stderr.write(usage); return 4
+            i += 1; checkpoint_path = args[i]
         elif a.startswith("--"): sys.stderr.write(f"unknown flag: {a}\n"); return 4
         elif receipts_path is None: receipts_path = a
         elif keyring_path is None: keyring_path = a
         else: sys.stderr.write(f"unexpected arg: {a}\n"); return 4
         i += 1
     if receipts_path is None:
-        sys.stderr.write("usage: noa_verify.py <receipts.json> [keyring.json] [--identity <m.json>] [--checkpoint <cp.json>]\n"); return 4
+        sys.stderr.write(usage); return 4
     try:
         # ALL input files (incl. the auxiliary trust files) go through the strict parser — parity with the
         # TS CLI (src/cli.ts readJsonFile -> safeParse). Plain json.load silently accepts duplicate keys

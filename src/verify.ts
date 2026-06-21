@@ -72,6 +72,11 @@ function fail(
  *    external witness / transparency log (v1.0). Reported in warnings.
  */
 export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): VerifyResult {
+  // Fail-closed on a null/garbage opts (round-16 #4): a default-param only fills in a MISSING arg, not an
+  // explicit `null` / number / string. verifyChain(receipts, null) would read opts.maxReceipts off `null` and
+  // throw a raw TypeError — violating the "never throws" public-API contract (and verifyChainText forwards
+  // opts, so it inherits the throw). Normalize a non-object opts to no-options here, BEFORE the first read.
+  if (opts === null || typeof opts !== "object") opts = {};
   const maxReceipts = opts.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
 
   if (!Array.isArray(receipts)) return fail("MALFORMED", "input is not an array of receipts", null, 0);
@@ -185,7 +190,21 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   if (haveKeyring && (typeof opts.keyring !== "object" || opts.keyring === null || Array.isArray(opts.keyring))) {
     return fail("MALFORMED", "keyring must be an object (kid -> base64 SPKI)", chainId, list.length);
   }
-  const keyring = opts.keyring ?? {};
+  // SNAPSHOT-ONCE the keyring (round-16 #1 HIGH). The keyring is read LIVE by TWO authenticated surfaces — the
+  // chain walk (`keyring[r.sig.kid]`) AND verifyCheckpoint(cp, keyring) — so a flipping `keyring[kid]` getter
+  // could return the REAL pubkey to the walk (the legit prefix receipts authenticate) and an ATTACKER pubkey
+  // to the checkpoint check (a forged checkpoint over a truncated head, labeled with the SAME kid, then
+  // authenticates) → VALID + tailChecked over an ERASED tail, key-continuity pin satisfied. structuredClone
+  // deep-copies to plain, accessor-free data ONCE (here, AFTER the non-object guard above so we only clone a
+  // validated object), and BOTH the walk below and verifyCheckpoint read this SAME snapshot — never opts.keyring.
+  // structuredClone throws on non-cloneable input (functions, etc.) → MALFORMED. (CLI/Python are immune — they
+  // consume JSON.parse/strict-load output with no accessors.)
+  let keyring: Keyring;
+  try {
+    keyring = opts.keyring === undefined ? {} : structuredClone(opts.keyring);
+  } catch {
+    return fail("MALFORMED", "keyring is not structured-cloneable (live accessor/non-cloneable value)", chainId, list.length);
+  }
   const warnings: string[] = [];
 
   // 4. Walk the chain: hash, key-pinning, signature, linkage, timestamp monotonicity.
@@ -273,7 +292,9 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     // truncated head to the tail-match → VALID+tailChecked over an erased tail. The snapshot makes both reads
     // see identical, accessor-free bytes.
     const cp = checkpointSnap;
-    const cpVerify = verifyCheckpoint(cp, opts.keyring);
+    // Pass the SNAPSHOT keyring (round-16 #1 HIGH), NOT opts.keyring — both this checkpoint authentication and
+    // the receipt walk above read the SAME read-once trust root, so a flipping keyring cannot split them.
+    const cpVerify = verifyCheckpoint(cp, keyring);
     if (cpVerify === "bad spec" || cpVerify === "malformed checkpoint") {
       return fail("TAMPERED", `checkpoint invalid: ${cpVerify}`, chainId, list.length);
     }

@@ -5,6 +5,9 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyChain, verifyChainText, verifyCheckpoint } from "../src/verify.js";
 import { safeParse } from "../src/safe-json.js";
+import { generateKeyPair } from "../src/keys.js";
+import { buildReceipt, buildCheckpoint, type BuildInput } from "../src/builder.js";
+import { sha256Prefixed } from "../src/hash.js";
 import type { Keyring, Checkpoint } from "../src/index.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -298,5 +301,74 @@ test("round-15 #7: a non-object keyring (array / null) → MALFORMED (parity wit
   assert.equal(nullKr.status, "MALFORMED");
   assert.match(nullKr.reason ?? "", /keyring must be an object/);
   // sanity: a genuine keyring still verifies VALID (no regression on the happy path)
+  assert.equal(verifyChain(load("valid-chain.json"), { keyring }).status, "VALID");
+});
+
+// ── round-16 audit regressions ───────────────────────────────────────────────
+test("round-16 #1 (HIGH): a flipping keyring getter cannot authenticate the walk with one key and a forged checkpoint with another (snapshot defeats it)", () => {
+  // Real signed material: a 3-receipt chain signed by the LEGIT key. An attacker truncates the tail (keeps
+  // the legit prefix, intact + legit-signed), then forges a checkpoint over the TRUNCATED head signed by its
+  // OWN (attacker) key but LABELED with the legit kid. A flipping `keyring[legitKid]` getter returns the legit
+  // pubkey to the receipt walk (the prefix authenticates) and the attacker pubkey to verifyCheckpoint (the
+  // forged checkpoint authenticates) → VALID + tailChecked over an ERASED tail, key-continuity pin satisfied.
+  // Reading the keyring ONCE (snapshot) means the SAME pubkey serves both → the forged checkpoint cannot pass.
+  const legitKid = "legit-key";
+  const legit = generateKeyPair(legitKid);
+  const attacker = generateKeyPair("attacker-key"); // different keypair, SAME kid label used in the checkpoint
+
+  const mk = (id: string, seqAmount: number, prev: ReturnType<typeof buildReceipt> | null) => {
+    const input: BuildInput = {
+      id, ts: "2026-06-21T10:00:0" + seqAmount + ".000Z", scope: { tenant: "t", chain: "c16" },
+      agent: { id: "agent-1", model: null, principal: "SERVICE" },
+      action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: sha256Prefixed("p" + seqAmount), reversible: false, rollbackRef: null },
+      governance: { mode: "on", verdict: "EXECUTED", ruleId: "r", approval: null, sandboxed: false },
+    };
+    return buildReceipt(input, prev, { kid: legitKid, privateKey: legit.privateKey });
+  };
+  const r0 = mk("rc16_0", 0, null);
+  const r1 = mk("rc16_1", 1, r0);
+  const r2 = mk("rc16_2", 2, r1);
+  const full = [r0, r1, r2];
+  const truncated = [r0, r1]; // attacker drops r2 (the incriminating tail); head is now r1
+
+  // Forge a checkpoint over the truncated head (r1), signed by the ATTACKER key, labeled with the legit kid.
+  const forgedCp = buildCheckpoint(truncated[truncated.length - 1]!, "2026-06-21T11:00:00.000Z", { kid: legitKid, privateKey: attacker.privateKey });
+
+  // Flipping keyring: read #1..N (the receipt walk over the 2-receipt prefix) → legit pubkey; the NEXT read
+  // (verifyCheckpoint) → attacker pubkey. The walk reads keyring[legitKid] once per receipt (2 reads here),
+  // then verifyCheckpoint reads it once more (read #3) — flip on the 3rd read.
+  let reads = 0;
+  const flipKeyring: Record<string, string> = {};
+  Object.defineProperty(flipKeyring, legitKid, {
+    enumerable: true, configurable: true,
+    get() { return ++reads <= truncated.length ? legit.publicKey : attacker.publicKey; },
+  });
+
+  const res = verifyChain(truncated, { keyring: flipKeyring as unknown as Keyring, checkpoint: forgedCp });
+  assert.notEqual(res.status, "VALID", `flipping keyring must not authenticate a forged checkpoint over a truncated tail (got ${res.status})`);
+  assert.equal(res.tailChecked, false, "the erased tail must NOT be reported as checked");
+
+  // Controls: the full legit chain + a genuinely legit checkpoint still verify VALID + tailChecked (no
+  // happy-path regression from the snapshot).
+  const legitKeyring = { [legitKid]: legit.publicKey };
+  const legitCp = buildCheckpoint(full[full.length - 1]!, "2026-06-21T11:00:00.000Z", { kid: legitKid, privateKey: legit.privateKey });
+  const good = verifyChain(full, { keyring: legitKeyring, checkpoint: legitCp });
+  assert.equal(good.status, "VALID", good.reason);
+  assert.equal(good.tailChecked, true);
+});
+
+test("round-16 #4: verifyChain / verifyChainText with null (or garbage) opts do not throw — treated as no-options", () => {
+  // A default-param only fills a MISSING arg, not an explicit null/garbage → reading opts.maxReceipts off null
+  // used to raise a raw TypeError (and verifyChainText forwards opts, inheriting the throw).
+  let r1!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { r1 = verifyChain(load("valid-chain.json"), null as never); });
+  assert.equal(r1.status, "UNVERIFIED"); // no keyring (null opts) → honest UNVERIFIED, never a crash
+  let r2!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { r2 = verifyChain(load("valid-chain.json"), 5 as never); });
+  assert.equal(r2.status, "UNVERIFIED");
+  let r3!: ReturnType<typeof verifyChainText>;
+  assert.doesNotThrow(() => { r3 = verifyChainText(raw("valid-chain.json"), null as never); });
+  assert.equal(r3.status, "UNVERIFIED");
+  // sanity: a genuine opts object still works (no regression)
   assert.equal(verifyChain(load("valid-chain.json"), { keyring }).status, "VALID");
 });

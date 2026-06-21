@@ -433,5 +433,14 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
   expect("MALFORMED (checkpoint file = null) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", nullCpPath]).code, 3);
 }
 
+// round-16 #2/#3 — a TRAILING `--checkpoint` / `--identity` with NO following path. Silently dropping the
+// control would FAIL-OPEN (the verifier returns VALID/exit 0 over an unchecked tail / unbound identity),
+// whereas the TS CLI returns usage (exit 4). The Python _main must mirror the TS CLI: emit usage + exit 4.
+expect("USAGE (trailing --checkpoint, no path) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint"]).code, 4);
+expect("USAGE (trailing --identity, no path) [PY verifier]", pyVerify([chainPath, keyringPath, "--identity"]).code, 4);
+// the flag as the SOLE trailing token (no keyring either) must also be usage, never a silent VALID.
+expect("USAGE (--checkpoint is the last token, no keyring) [PY verifier]", pyVerify([chainPath, "--checkpoint"]).code, 4);
+expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerify([chainPath, "--identity"]).code, 4);
+
 if (failures) { console.error(`\nCROSS-IMPL CONFORMANCE FAILED: ${failures} mismatch(es)`); process.exit(1); }
 console.log("\nCROSS-IMPL CONFORMANCE PASS: the independent Python verifier agrees with the TS reference on every vector (incl. impersonation/truncation/dup-key security verdicts).");

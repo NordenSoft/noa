@@ -162,3 +162,30 @@ test("ROUND-11 HIGH: receiptFromCose identity binding is TOCTOU-safe — a flipp
   assert.match(r.reason ?? "", /not authorized for signing key/);
   assert.equal(reads, 1, "the COSE-path manifest entry must be read EXACTLY ONCE (snapshot)");
 });
+
+test("ROUND-16 #5: a non-object keyring (null / array / non-object) ⇒ clean ok:false, never throws (COSE path)", () => {
+  const kp = generateKeyPair("k");
+  const cose = coseSign1(Buffer.from("x"), { kid: "k", privateKey: kp.privateKey });
+
+  // coseSign1Verify: null / array / non-object keyring → clean ok:false, doesNotThrow (round-15 #7 parity)
+  for (const bad of [null, [], "x", 5]) {
+    let r!: ReturnType<typeof coseSign1Verify>;
+    assert.doesNotThrow(() => { r = coseSign1Verify(cose, bad as never); });
+    assert.equal(r.ok, false, `coseSign1Verify must fail-closed on keyring=${JSON.stringify(bad)}`);
+    assert.match(r.reason ?? "", /keyring must be an object/);
+  }
+
+  // receiptFromCose: same guard at its own entry, before any manifest work
+  const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
+  const wrapped = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
+  for (const bad of [null, [], "x"]) {
+    let r!: ReturnType<typeof receiptFromCose>;
+    assert.doesNotThrow(() => { r = receiptFromCose(wrapped, bad as never); });
+    assert.equal(r.ok, false, `receiptFromCose must fail-closed on keyring=${JSON.stringify(bad)}`);
+    assert.match(r.reason ?? "", /keyring must be an object/);
+  }
+
+  // sanity: a genuine keyring still verifies (no happy-path regression)
+  assert.equal(coseSign1Verify(cose, { k: kp.publicKey }).ok, true);
+  assert.equal(receiptFromCose(wrapped, { [kp.kid]: kp.publicKey }).ok, true);
+});
