@@ -23,9 +23,12 @@ python3 impl-py/noa_verify.py receipts.json keyring.json
 npm run build && node impl-py/conformance.mjs
 ```
 
-`conformance.mjs` asserts the Python verifier returns **VALID** on a genuine TS-signed chain (incl. a
-non-ASCII + astral-character note that exercises the JCS string + UTF-16 key-sort paths), **UNVERIFIED**
-with no keyring, and **TAMPERED** on both a content edit and a wrong-pubkey signature.
+`conformance.mjs` asserts the Python verifier matches the TS reference's **security verdicts**, not just
+the happy path: **VALID** on a genuine TS-signed chain (incl. a non-ASCII + astral-character note that
+exercises the JCS string + UTF-16 key-sort paths), **UNVERIFIED** with no keyring, **TAMPERED** on a
+content edit / a wrong-pubkey signature / a checkpoint-detected **tail-truncation**, **UNTRUSTED** on a
+cross-agent **impersonation** under an `--identity` manifest, and **MALFORMED** on a duplicate-key receipt
+(strict parse). The two independent stacks agree on all of them.
 
 ## Self-test
 
@@ -34,5 +37,11 @@ single byte) — so the crypto is verified against the standard, not just agains
 
 ## Scope
 
-This is a **verifier** (the security-critical, must-be-independent half). It intentionally does not
-re-implement signing, COSE, or the policy evaluator yet; those extend the conformance corpus next.
+This is a **verifier** (the security-critical, must-be-independent half), now **verdict-equivalent** to
+the TS reference on the core controls: hash-chain, Ed25519 signature, key-continuity, **identity binding**
+(`--identity` → `UNTRUSTED` on an unauthorized `(agent.id, kid)` pairing), **checkpoint tail-truncation**
+(`--checkpoint`, incl. the §5b checkpoint-identity binding), and a **strict parse** (duplicate-key / float
+/ prototype-key rejection, matching `safeParse`). It intentionally does **not** re-implement the *signer*,
+the *COSE_Sign1* envelope, or the *policy evaluator* yet — those extend the conformance corpus next, and
+are the documented gaps (a deployer using this as their independent verifier gets full verdict parity on
+the receipt-chain trust surface today).

@@ -110,3 +110,27 @@ test("ROUND-6: a truncated multi-byte CBOR head throws typed CborError (not raw 
   assert.throws(() => decode(Buffer.from([0x81, 0x19, 0x00])), CborError);
   assert.throws(() => decode(Buffer.from([0xd2, 0x84, 0x5a, 0x00, 0x00])), CborError);
 });
+
+test("ROUND-8: receiptFromCose identity binding — impersonation on the COSE path is caught + kid-level warned", () => {
+  const alice = generateKeyPair("alice-key");
+  const bob = generateKeyPair("bob-key");
+  const keyring = { [alice.kid]: alice.publicKey, [bob.kid]: bob.publicKey };
+  const manifest = { alice: ["alice-key"], bob: ["bob-key"] };
+  // impersonation: agent.id=alice, signed by bob
+  const input: BuildInput = {
+    id: "rcpt_imp", ts: "2026-06-21T10:00:00.000Z", scope: { tenant: "t", chain: "c1" },
+    agent: { id: "alice", model: null, principal: "SERVICE" },
+    action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: sha256Prefixed("x"), reversible: false, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "r", approval: null, sandboxed: false },
+  };
+  const imp = buildReceipt(input, null, { kid: bob.kid, privateKey: bob.privateKey });
+  const cose = receiptToCose(imp, { kid: bob.kid, privateKey: bob.privateKey });
+  // no manifest → ok:true (COSE sig valid) BUT an explicit kid-level-attribution warning (no longer silent)
+  const weak = receiptFromCose(cose, keyring);
+  assert.equal(weak.ok, true);
+  assert.ok(weak.warnings.some((w) => /attribution is kid-level/.test(w)));
+  // with manifest → impersonation rejected (alice not authorized for bob-key)
+  const strong = receiptFromCose(cose, keyring, manifest);
+  assert.equal(strong.ok, false);
+  assert.match(strong.reason ?? "", /not authorized for signing key/);
+});

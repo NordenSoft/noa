@@ -11,7 +11,7 @@
  * Run: node impl-py/conformance.mjs   (after `npm run build`)
  */
 import { generateKeyPair } from "../dist/src/keys.js";
-import { buildReceipt } from "../dist/src/builder.js";
+import { buildReceipt, buildCheckpoint } from "../dist/src/builder.js";
 import { sha256Prefixed } from "../dist/src/hash.js";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -77,5 +77,37 @@ const otherKp = generateKeyPair("agent-key-1"); // same kid, different key
 writeFileSync(join(dir, "wrong-keyring.json"), JSON.stringify({ [kp.kid]: otherKp.publicKey }));
 expect("TAMPERED (sig fails under wrong pubkey)", pyVerify([chainPath, join(dir, "wrong-keyring.json")]).code, 2);
 
+// ── Attack vectors: Python must match the TS reference's SECURITY verdicts, not just the happy path ──
+// 5. Cross-agent impersonation: agent.id=alice signed by bob → UNTRUSTED with a manifest (exit 5).
+const bob = generateKeyPair("agent-key-2");
+const imp = buildReceipt({
+  id: "imp_0", ts: "2026-06-21T10:00:00.000Z", scope: { tenant: "acme", chain: "chain-1" },
+  agent: { id: "alice", model: null, principal: "SERVICE" },
+  action: { id: "payment.refund", canonical: "payment.refund", riskClass: "CRITICAL", paramsHash: sha256Prefixed("x"), reversible: false, rollbackRef: null },
+  governance: { mode: "on", verdict: "EXECUTED", ruleId: "r", approval: null, sandboxed: false },
+}, null, { kid: bob.kid, privateKey: bob.privateKey });
+const impPath = join(dir, "imp.json");
+const krBoth = join(dir, "kr-both.json");
+const manPath = join(dir, "manifest.json");
+writeFileSync(impPath, JSON.stringify([imp]));
+writeFileSync(krBoth, JSON.stringify({ [kp.kid]: kp.publicKey, [bob.kid]: bob.publicKey, "alice-key": kp.publicKey }));
+writeFileSync(manPath, JSON.stringify({ alice: ["alice-key"], "agent-key-2": ["agent-key-2"] }));
+expect("UNTRUSTED (impersonation, with identity manifest)", pyVerify([impPath, krBoth, "--identity", manPath]).code, 5);
+expect("VALID    (impersonation, NO manifest — kid-level, matches TS)", pyVerify([impPath, krBoth]).code, 0);
+
+// 6. Tail-truncation: checkpoint asserts head=seq1, but only [seq0] is presented → TAMPERED (exit 2).
+const cp = buildCheckpoint(r1, "2026-06-21T11:00:00.000Z", { kid: kp.kid, privateKey: kp.privateKey });
+const truncPath = join(dir, "trunc.json");
+const cpPath = join(dir, "cp.json");
+writeFileSync(truncPath, JSON.stringify([r0]));
+writeFileSync(cpPath, JSON.stringify(cp));
+expect("TAMPERED (tail-truncation, checkpoint detects)", pyVerify([truncPath, keyringPath, "--checkpoint", cpPath]).code, 2);
+
+// 7. Duplicate-key receipt (raw text) → MALFORMED via strict parse (exit 3).
+const dupText = JSON.stringify([r0]).replace('"agent":', '"agent":' + JSON.stringify(r0.agent) + ',"agent":');
+const dupPath = join(dir, "dup.json");
+writeFileSync(dupPath, dupText);
+expect("MALFORMED (duplicate JSON key, strict parse)", pyVerify([dupPath, keyringPath]).code, 3);
+
 if (failures) { console.error(`\nCROSS-IMPL CONFORMANCE FAILED: ${failures} mismatch(es)`); process.exit(1); }
-console.log("\nCROSS-IMPL CONFORMANCE PASS: the independent Python verifier agrees with the TS reference on every vector.");
+console.log("\nCROSS-IMPL CONFORMANCE PASS: the independent Python verifier agrees with the TS reference on every vector (incl. impersonation/truncation/dup-key security verdicts).");
