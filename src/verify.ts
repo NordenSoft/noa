@@ -91,57 +91,68 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   // never the live manifest. (CLI/Python are immune: they consume JSON.parse output, which has no accessors.)
   const haveManifest = opts.identityManifest !== undefined;
   const manifest = new Map<string, string[]>();
-  if (haveManifest) {
-    const live = opts.identityManifest;
-    if (typeof live !== "object" || live === null || Array.isArray(live)) {
-      return fail("MALFORMED", "identityManifest must be an object (agent.id -> kid[])", null, 0);
-    }
-    // Validate over the SAME own-property view the enforcement points read (own names — includes
-    // NON-ENUMERABLE own props). Object.entries() only sees enumerable own props, so a non-enumerable
-    // own entry would escape validation yet authorize a binding.
-    for (const aid of Object.getOwnPropertyNames(live)) {
-      const kidsLive = (live as Record<string, unknown>)[aid]; // ONE read of the entry (fires an entry getter once)
-      if (!Array.isArray(kidsLive)) {
-        return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
+  // ROBUSTNESS (round-13 #8): the manifest, the array elements, and receipt fields below are all
+  // caller-supplied LIVE objects. A throwing/side-effecting accessor must yield MALFORMED, never escape
+  // as a raw throw. (verifyChainText/CLI/Python are immune — parse output has no accessors.) The chain
+  // walk further down has its own guard; this one covers manifest validation + structural/partition/seq.
+  let list!: Receipt[];
+  let chainId!: string;
+  let ordered!: Receipt[];
+  try {
+    if (haveManifest) {
+      const live = opts.identityManifest;
+      if (typeof live !== "object" || live === null || Array.isArray(live)) {
+        return fail("MALFORMED", "identityManifest must be an object (agent.id -> kid[])", null, 0);
       }
-      // Copy by VALUE: slice materializes each element once. A later read of the live array (or its
-      // element getters) cannot change what we validated/enforce against.
-      const kids = Array.prototype.slice.call(kidsLive) as unknown[];
-      if (!kids.every((k) => typeof k === "string")) {
-        return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
+      // Validate over the SAME own-property view the enforcement points read (own names — includes
+      // NON-ENUMERABLE own props). Object.entries() only sees enumerable own props, so a non-enumerable
+      // own entry would escape validation yet authorize a binding.
+      for (const aid of Object.getOwnPropertyNames(live)) {
+        const kidsLive = (live as Record<string, unknown>)[aid]; // ONE read of the entry (fires an entry getter once)
+        if (!Array.isArray(kidsLive)) {
+          return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
+        }
+        // Copy by VALUE: slice materializes each element once. A later read of the live array (or its
+        // element getters) cannot change what we validated/enforce against.
+        const kids = Array.prototype.slice.call(kidsLive) as unknown[];
+        if (!kids.every((k) => typeof k === "string")) {
+          return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
+        }
+        manifest.set(aid, kids as string[]);
       }
-      manifest.set(aid, kids as string[]);
     }
-  }
 
-  // 1. Structural validation of every element (runs BEFORE any hashing).
-  for (let idx = 0; idx < receipts.length; idx++) {
-    const res = validateReceiptShape(receipts[idx]);
-    if (!res.ok) {
-      return fail("MALFORMED", `receipt[${idx}]: ${res.errors.join("; ")}`, null, receipts.length, idx);
+    // 1. Structural validation of every element (runs BEFORE any hashing).
+    for (let idx = 0; idx < receipts.length; idx++) {
+      const res = validateReceiptShape(receipts[idx]);
+      if (!res.ok) {
+        return fail("MALFORMED", `receipt[${idx}]: ${res.errors.join("; ")}`, null, receipts.length, idx);
+      }
     }
-  }
-  const list = receipts as Receipt[];
+    list = receipts as Receipt[];
 
-  // 2. Single chain partition.
-  const chainId = list[0]!.scope.chain;
-  for (const r of list) {
-    if (r.scope.chain !== chainId) {
-      return fail("TAMPERED", "multiple chain partitions in one input", chainId, list.length);
+    // 2. Single chain partition.
+    chainId = list[0]!.scope.chain;
+    for (const r of list) {
+      if (r.scope.chain !== chainId) {
+        return fail("TAMPERED", "multiple chain partitions in one input", chainId, list.length);
+      }
     }
-  }
 
-  // 3. Order by seq; require contiguous 0..n-1, unique.
-  const bySeq = new Map<number, Receipt>();
-  for (const r of list) {
-    if (bySeq.has(r.chain.seq)) return fail("TAMPERED", `duplicate seq ${r.chain.seq}`, chainId, list.length, r.chain.seq);
-    bySeq.set(r.chain.seq, r);
-  }
-  const ordered: Receipt[] = [];
-  for (let s = 0; s < list.length; s++) {
-    const r = bySeq.get(s);
-    if (!r) return fail("TAMPERED", `seq gap: missing seq ${s}`, chainId, list.length, s);
-    ordered.push(r);
+    // 3. Order by seq; require contiguous 0..n-1, unique.
+    const bySeq = new Map<number, Receipt>();
+    for (const r of list) {
+      if (bySeq.has(r.chain.seq)) return fail("TAMPERED", `duplicate seq ${r.chain.seq}`, chainId, list.length, r.chain.seq);
+      bySeq.set(r.chain.seq, r);
+    }
+    ordered = [];
+    for (let s = 0; s < list.length; s++) {
+      const r = bySeq.get(s);
+      if (!r) return fail("TAMPERED", `seq gap: missing seq ${s}`, chainId, list.length, s);
+      ordered.push(r);
+    }
+  } catch {
+    return fail("MALFORMED", "input object threw during validation/ordering", null, receipts.length);
   }
 
   const haveKeyring = opts.keyring !== undefined;
@@ -341,7 +352,13 @@ export function verifyCheckpoint(cp: Checkpoint, keyring?: Keyring): CheckpointV
   if (typeof c.headHash !== "string" || !CP_HASH_RE.test(c.headHash)) return "malformed checkpoint";
   if (typeof c.ts !== "string" || !CP_RFC3339_RE.test(c.ts)) return "malformed checkpoint";
   const sig = c.sig as Record<string, unknown> | undefined;
-  if (!sig || typeof sig !== "object" || typeof sig.kid !== "string" || sig.kid.length === 0 || typeof sig.value !== "string" || sig.value.length === 0) {
+  // sig sub-object is ALSO strict (round-12 #11 only covered the top level; round-13 #4): exactly
+  // {alg,kid,value}, alg="ed25519" — closes a smuggled-field channel inside the SIGNED surface + an
+  // unvalidated alg, symmetric with the receipt sig discipline (schema.ts).
+  if (!sig || typeof sig !== "object" || Array.isArray(sig)) return "malformed checkpoint";
+  for (const k of Object.keys(sig)) { if (k !== "alg" && k !== "kid" && k !== "value") return "malformed checkpoint"; }
+  if (sig.alg !== "ed25519") return "malformed checkpoint";
+  if (typeof sig.kid !== "string" || sig.kid.length === 0 || typeof sig.value !== "string" || sig.value.length === 0) {
     return "malformed checkpoint";
   }
   const pub = keyring?.[sig.kid];

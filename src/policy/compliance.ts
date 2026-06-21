@@ -90,22 +90,33 @@ export function verifyReceiptCompliance(
   inputs: InputSnapshot,
   opts: VerifyComplianceOptions = {},
 ): ComplianceResult {
-  const c = receipt.governance?.compliance;
-  if (!c) return { ok: false, reason: "receipt carries no governance.compliance commitment" };
   try {
+    if (typeof receipt !== "object" || receipt === null) {
+      return { ok: false, reason: "receipt is not an object" };
+    }
+    // SNAPSHOT THE CARRIER ONCE (round-13 HIGH TOCTOU): a LIVE receipt with a flipping accessor could
+    // return an EVIL governance.compliance on the first read (the comparison source) and the REAL signed
+    // block on later reads (carrier auth) — authenticating one block while comparing another → a false
+    // "compliant" green on an authenticated carrier. structuredClone fires every accessor EXACTLY ONCE,
+    // producing accessor-free data; ALL reads below (carrier auth AND the L2 compare) use this ONE snapshot.
+    // (Mirrors the round-11 identityManifest read-once snapshot + round-12 #10 accessor hardening.) Reading
+    // INSIDE the try also honors the "never throws" contract for null / throwing-accessor receipts (#3/#7).
+    const snap = structuredClone(receipt) as Receipt;
+    const c = snap.governance?.compliance;
+    if (!c) return { ok: false, reason: "receipt carries no governance.compliance commitment" };
     // CARRIER AUTHENTICATION (round-12 HIGH): when a keyring is supplied, prove the receipt itself is
     // genuine BEFORE trusting its compliance block — otherwise a forged/tampered receipt (verifyChain ⇒
     // TAMPERED) would still get a green "compliant" signal off its attacker-mutable governance.compliance.
     if (opts.keyring) {
-      const shape = validateReceiptShape(receipt);
+      const shape = validateReceiptShape(snap);
       if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
-      const hashInput = receiptHashInput(receipt);
-      if ("sha256:" + sha256Hex(hashInput) !== receipt.chain.hash) {
+      const hashInput = receiptHashInput(snap);
+      if ("sha256:" + sha256Hex(hashInput) !== snap.chain.hash) {
         return { ok: false, reason: "carrier receipt hash mismatch — not authentic" };
       }
-      const pub = opts.keyring[receipt.sig.kid];
-      if (!pub) return { ok: false, reason: `carrier receipt signing key "${receipt.sig.kid}" not in keyring` };
-      if (!verifyEd25519(pub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), receipt.sig.value)) {
+      const pub = opts.keyring[snap.sig.kid];
+      if (!pub) return { ok: false, reason: `carrier receipt signing key "${snap.sig.kid}" not in keyring` };
+      if (!verifyEd25519(pub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), snap.sig.value)) {
         return { ok: false, reason: "carrier receipt signature not authenticated" };
       }
     }

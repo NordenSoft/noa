@@ -209,3 +209,23 @@ test("round-12 #10: verifyChain on a receipt with a throwing accessor → MALFOR
   assert.doesNotThrow(() => { res = verifyChain([{ get spec() { throw new Error("boom"); } }], { keyring }); });
   assert.equal(res.status, "MALFORMED");
 });
+
+test("round-13 #4: checkpoint sig sub-object is strict (extra field / bad alg → malformed)", () => {
+  const sigExtra = { ...checkpoint, sig: { ...checkpoint.sig, smuggled: "ssn=123" } } as unknown as Checkpoint;
+  assert.equal(verifyCheckpoint(sigExtra, keyring), "malformed checkpoint"); // additionalProperties on sig
+  const badAlg = { ...checkpoint, sig: { ...checkpoint.sig, alg: "rsa" } } as unknown as Checkpoint;
+  assert.equal(verifyCheckpoint(badAlg, keyring), "malformed checkpoint"); // unvalidated alg closed
+});
+
+test("round-13 #8: throwing identityManifest / array-element accessors → MALFORMED (never throws)", () => {
+  const arr: unknown[] = [];
+  Object.defineProperty(arr, "0", { enumerable: true, configurable: true, get() { throw new Error("boom"); } });
+  let r1!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { r1 = verifyChain(arr, { keyring }); });
+  assert.equal(r1.status, "MALFORMED");
+  const man: Record<string, unknown> = {};
+  Object.defineProperty(man, "a1", { enumerable: true, configurable: true, get() { throw new Error("boom"); } });
+  let r2!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { r2 = verifyChain(load("valid-chain.json"), { keyring, identityManifest: man as never }); });
+  assert.equal(r2.status, "MALFORMED");
+});

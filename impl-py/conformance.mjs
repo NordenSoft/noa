@@ -265,5 +265,49 @@ structParity("MALFORMED (wrong spec)", (m) => { m.spec = "noa.receipt/9.9"; });
   expect("TAMPERED (non-canonical base64 sig) [PY verifier]", pyVerify([ncPath, keyringPath]).code, 2);
 }
 
+// ── round-13 cross-impl parity: base64 canonicality (sig + key) + non-object keyring ──
+{
+  // #6 keyring as a JSON list (non-object) → MALFORMED in both, never a crash/traceback.
+  const listKrPath = join(dir, "keyring-list.json");
+  writeFileSync(listKrPath, JSON.stringify([kp.publicKey]));
+  expect("MALFORMED (keyring is a JSON list, not an object) [PY verifier]", pyVerify([chainPath, listKrPath]).code, 3);
+
+  // #5 non-canonical keyring SPKI base64 (embedded space): decodes leniently to the same key, but is not
+  // canonical → both reject (was TS-VALID / PY-TAMPERED divergence).
+  const ncKr = { [kp.kid]: kp.publicKey.slice(0, 4) + " " + kp.publicKey.slice(4) };
+  const ncKrPath = join(dir, "keyring-noncanon.json");
+  writeFileSync(ncKrPath, JSON.stringify(ncKr));
+  const tsNcKr = verifyChain(chain, { keyring: ncKr }).status;
+  const tsNcKrOk = tsNcKr === "TAMPERED";
+  console.log(`${tsNcKrOk ? "✓" : "✗"} TAMPERED (non-canonical keyring SPKI base64) [TS verifyChain]: ${tsNcKr} (want TAMPERED)`);
+  if (!tsNcKrOk) failures++;
+  expect("TAMPERED (non-canonical keyring SPKI base64) [PY verifier]", pyVerify([chainPath, ncKrPath]).code, 2);
+
+  // #2 trailing-bits non-canonical signature: a base64 string that decodes to the SAME 64 bytes but is not
+  // canonical (the final data char carries unused bits). Python's b64decode(validate=True) ACCEPTED these
+  // (consensus break + sig malleability); now both reject via canonical round-trip.
+  const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  const sigBytes = Buffer.from(r0.sig.value, "base64");
+  const ci = r0.sig.value.length - 3; // final data char (before "==")
+  let trailing = null;
+  for (const ch of ALPHA) {
+    const cand = r0.sig.value.slice(0, ci) + ch + r0.sig.value.slice(ci + 1);
+    if (cand !== r0.sig.value && Buffer.from(cand, "base64").equals(sigBytes)) { trailing = cand; break; }
+  }
+  if (trailing) {
+    const tb = JSON.parse(JSON.stringify(r0));
+    tb.sig.value = trailing;
+    const tbPath = join(dir, "trailing-bits-sig.json");
+    writeFileSync(tbPath, JSON.stringify([tb]));
+    const tsTb = verifyChain([tb], { keyring }).status;
+    const tsTbOk = tsTb === "TAMPERED";
+    console.log(`${tsTbOk ? "✓" : "✗"} TAMPERED (trailing-bits non-canonical sig base64) [TS verifyChain]: ${tsTb} (want TAMPERED)`);
+    if (!tsTbOk) failures++;
+    expect("TAMPERED (trailing-bits non-canonical sig base64) [PY verifier]", pyVerify([tbPath, keyringPath]).code, 2);
+  } else {
+    console.log("⚠ (skipped trailing-bits vector: no same-bytes base64 variant for this signature)");
+  }
+}
+
 if (failures) { console.error(`\nCROSS-IMPL CONFORMANCE FAILED: ${failures} mismatch(es)`); process.exit(1); }
 console.log("\nCROSS-IMPL CONFORMANCE PASS: the independent Python verifier agrees with the TS reference on every vector (incl. impersonation/truncation/dup-key security verdicts).");

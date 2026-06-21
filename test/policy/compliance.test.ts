@@ -151,3 +151,27 @@ test("round-12 #1: with a keyring, an unknown signing kid is REJECTED", () => {
   assert.equal(res.ok, false);
   assert.match(res.reason ?? "", /not in keyring/);
 });
+
+// ── round-13 ───────────────────────────────────────────────────────────────
+test("round-13 #1 (HIGH): a FLIPPING governance.compliance accessor cannot beat carrier auth (TOCTOU snapshot)", () => {
+  const inputs = { action: "payment.refund", amountMinor: 100_000_000 }; // POLICY → DENY
+  const r = receiptWith(inputs, "BLOCKED"); // honest signed block: complianceCommit(POLICY,inputs).verdict === DENY
+  const honest = r.governance.compliance!;
+  const permissive: Policy = { spec: "noa.policy/0.2", id: "evil", requiredPaths: [], rules: [{ id: "x", when: { op: "exists", path: "action" }, then: "ALLOW" }] };
+  const evil = complianceCommit(permissive, inputs); // verdict ALLOW
+  let n = 0;
+  const live = { ...r, governance: { ...r.governance } } as Record<string, any>;
+  // read #1 (would be the comparison source) returns the EVIL block; later reads (carrier auth) the REAL one
+  Object.defineProperty(live.governance, "compliance", { enumerable: true, configurable: true, get() { n++; return n === 1 ? evil : honest; } });
+  // snapshot-once neutralises the skew → the authenticated body and the compared body are the SAME → reject
+  assert.equal(verifyReceiptCompliance(live as never, permissive, inputs, { keyring }).ok, false);
+});
+
+test("round-13 #3/#7: fail-closed — null / undefined / throwing-accessor receipts → ok:false, never throws", () => {
+  assert.doesNotThrow(() => assert.equal(verifyReceiptCompliance(null as never, POLICY, { action: "x", amountMinor: 1 }).ok, false));
+  assert.doesNotThrow(() => assert.equal(verifyReceiptCompliance(undefined as never, POLICY, { action: "x", amountMinor: 1 }).ok, false));
+  let res!: ReturnType<typeof verifyReceiptCompliance>;
+  const evil = { get governance() { throw new Error("boom"); } };
+  assert.doesNotThrow(() => { res = verifyReceiptCompliance(evil as never, POLICY, { action: "x", amountMinor: 1 }); });
+  assert.equal(res.ok, false);
+});

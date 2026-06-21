@@ -133,8 +133,20 @@ def ed25519_verify(public32, message, signature):
 # ── SPKI (base64 DER) -> raw 32-byte Ed25519 public key ──────────────────────
 _SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")  # AlgorithmIdentifier{1.3.101.112} + BIT STRING
 
+def _strict_b64decode(s):
+    """Strict CANONICAL base64: reject non-alphabet chars (validate=True) AND non-canonical encodings
+    (trailing non-zero bits, padding/whitespace/URL-safe variants) by requiring the decoded bytes to
+    RE-ENCODE to exactly the input. Parity with the TS reference's canonical round-trip so both verifiers
+    agree byte-for-byte on sig.value / keyring bytes (round-13 #2/#5)."""
+    if not isinstance(s, str):
+        raise ValueError("base64 input must be a string")
+    raw = base64.b64decode(s, validate=True)
+    if base64.b64encode(raw).decode("ascii") != s:
+        raise ValueError("non-canonical base64")
+    return raw
+
 def spki_to_raw(pub_b64):
-    der = base64.b64decode(pub_b64, validate=True)
+    der = _strict_b64decode(pub_b64)
     if len(der) != 44 or der[:12] != _SPKI_PREFIX:
         raise ValueError("not a canonical Ed25519 SPKI")
     return der[12:]
@@ -403,12 +415,17 @@ def _verify_checkpoint(cp, keyring):
     if not isinstance(cp.get("headHash"), str) or not _HASH_RE.match(cp.get("headHash")): return "bad"
     if not isinstance(cp.get("ts"), str) or not _RFC3339_RE.match(cp.get("ts")): return "bad"
     sig = cp.get("sig")
-    if not isinstance(sig, dict) or not isinstance(sig.get("kid"), str) or not sig.get("kid") or not isinstance(sig.get("value"), str) or not sig.get("value"): return "bad"
+    # sig sub-object is ALSO strict (round-13 #4): exactly {alg,kid,value}, alg="ed25519" — closes a
+    # smuggled-field channel inside the SIGNED surface + an unvalidated alg, parity with src/verify.ts.
+    if not isinstance(sig, dict): return "bad"
+    if any(k not in ("alg", "kid", "value") for k in sig.keys()): return "bad"
+    if sig.get("alg") != "ed25519": return "bad"
+    if not isinstance(sig.get("kid"), str) or not sig.get("kid") or not isinstance(sig.get("value"), str) or not sig.get("value"): return "bad"
     pub = (keyring or {}).get(sig["kid"])
     if not pub: return "unverified"
     try:
         msg = _CHECKPOINT_DOMAIN + hashlib.sha256(checkpoint_hash_input(cp).encode("utf-8")).digest()
-        return "ok" if ed25519_verify(spki_to_raw(pub), msg, base64.b64decode(sig["value"], validate=True)) else "bad"
+        return "ok" if ed25519_verify(spki_to_raw(pub), msg, _strict_b64decode(sig["value"])) else "bad"
     except Exception:
         return "bad"
 
@@ -421,6 +438,9 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
     (UNTRUSTED), and checkpoint tail-truncation + §5b checkpoint identity binding."""
     if not isinstance(receipts, list) or not receipts:
         return "MALFORMED", "input is not a non-empty array"
+    # Fail-closed on a non-object keyring (JSON list/number/string) — never crash with a traceback (round-13 #6).
+    if keyring is not None and not isinstance(keyring, dict):
+        return "MALFORMED", "keyring must be an object (kid -> base64 SPKI)"
     if identity_manifest is not None:
         if not isinstance(identity_manifest, dict):
             return "MALFORMED", "identityManifest must be an object (agent.id -> kid[])"
@@ -467,7 +487,7 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
             if not pub: return "TAMPERED", f"unknown kid {kid} at seq {s}"
             msg = _RECEIPT_DOMAIN + hashlib.sha256(hi.encode("utf-8")).digest()
             try:
-                sig = base64.b64decode(r["sig"].get("value", ""), validate=True)
+                sig = _strict_b64decode(r["sig"].get("value", ""))  # canonical base64 only (round-13 #2)
                 pub_raw = spki_to_raw(pub)  # a malformed keyring SPKI must fail-closed (TAMPERED), never raise
             except Exception:
                 return "TAMPERED", f"bad signature/key encoding at seq {s}"

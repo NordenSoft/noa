@@ -48,6 +48,10 @@ export function signEd25519(privateKeyB64: string, message: Buffer): string {
 export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB64: string): boolean {
   try {
     const der = Buffer.from(publicKeyB64, "base64");
+    // Canonical base64 for the keyring public key too (round-13 #5): node's Buffer.from is lenient
+    // (whitespace / URL-safe / missing padding), so a non-canonical key STRING would verify VALID in TS
+    // while the strict Python reference rejects it — a consensus divergence on a logically-identical key.
+    if (der.toString("base64") !== publicKeyB64) return false;
     const key = createPublicKey({ key: der, format: "der", type: "spki" });
     // PIN THE CURVE. cryptoVerify(null, …) dispatches the verification algorithm on the KEY's type,
     // NOT on a fixed Ed25519. Without this, an Ed448 (or any verify(null)-compatible) public key in
