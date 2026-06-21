@@ -117,13 +117,45 @@ test("validatePolicy: accepts well-formed, flags malformed `then`/op", () => {
   assert.equal(validatePolicy(bad).ok, false);
 });
 
-test("UTF-8 byte-order string comparison is deterministic + locale-free", () => {
+test("UTF-16 code-unit ordering (matches JCS/RFC-8785) — single canonical order, locale-free", () => {
   const p: Policy = {
     spec: "noa.policy/0.2", id: "o", requiredPaths: ["k"],
     rules: [{ id: "x", when: { op: "lt", path: "k", value: "b" }, then: "ALLOW" }],
   };
   assert.equal(evaluate(p, { k: "a" }).verdict, "ALLOW");
   assert.equal(evaluate(p, { k: "c" }).verdict, "DENY");
+  // eval cmp ordering must agree with readSet's JCS sort (same total order across the surface)
+  const probe: Policy = {
+    spec: "noa.policy/0.2", id: "ord", requiredPaths: ["\u{1F600}z", "z"],
+    rules: [{ id: "x", when: { op: "exists", path: "z" }, then: "ALLOW" }],
+  };
+  const rs = readSet(probe); // JCS UTF-16 sort
+  const sorted = [...rs].sort(); // JS default = UTF-16 code-unit — must equal rs
+  assert.deepEqual(rs, sorted);
+});
+
+// ── ROUND-2 deep-audit regressions ──────────────────────────────────────────
+test("ROUND-2: null/non-object input ⇒ fail-closed DENY (never an uncaught TypeError)", () => {
+  assert.equal(evaluate(REFUND_POLICY, null as never).verdict, "DENY");
+  assert.equal(evaluate(REFUND_POLICY, null as never).ruleFired, "input-invalid");
+  assert.equal(evaluate(REFUND_POLICY, [] as never).verdict, "DENY");
+  assert.equal(evaluate(REFUND_POLICY, "x" as never).verdict, "DENY");
+});
+
+test("ROUND-2: additionalProperties:false — an extra key anywhere ⇒ policy-invalid", () => {
+  const extraOnRule = { ...REFUND_POLICY, rules: [{ id: "r", when: { op: "eq", path: "a", value: 1 }, then: "ALLOW", evil: 1 }] } as unknown as Policy;
+  assert.equal(validatePolicy(extraOnRule).ok, false);
+  const extraOnCond = { spec: "noa.policy/0.2", id: "p", requiredPaths: [], rules: [{ id: "r", when: { op: "eq", path: "a", value: 1, evil: 2 }, then: "DENY" }] } as unknown as Policy;
+  assert.equal(validatePolicy(extraOnCond).ok, false);
+  const extraOnPolicy = { ...REFUND_POLICY, backdoor: true } as unknown as Policy;
+  assert.equal(validatePolicy(extraOnPolicy).ok, false);
+});
+
+test("ROUND-2: readSetHash type-confusion closed — string requiredPaths ≠ char-array", () => {
+  const asStr = { spec: "noa.policy/0.2", id: "p", requiredPaths: "ab", rules: [] } as unknown as Policy;
+  const asArr = { spec: "noa.policy/0.2", id: "p", requiredPaths: ["a", "b"], rules: [] } as unknown as Policy;
+  assert.notEqual(readSetHash(asStr), readSetHash(asArr)); // was an identical-hash collision
+  assert.equal(validatePolicy(asStr).ok, false); // and a string requiredPaths is rejected outright
 });
 
 test("policyHash + readSet are stable + statically extracted", () => {

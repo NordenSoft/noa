@@ -55,15 +55,18 @@ export function policyHash(p: Policy): string {
   return sha256Prefixed(canonicalize(p as unknown));
 }
 
-/** Statically extract every input path the policy reads — the closed-world read-set. */
+/** Statically extract every input path the policy reads — the closed-world read-set.
+ *  Guards `requiredPaths` with Array.isArray: a STRING would be iterated into its characters by
+ *  `new Set("ab")` → ["a","b"], colliding with `new Set(["a","b"])`. A type-confused policy is
+ *  malformed (validatePolicy rejects it); here we still fail safe — a non-array seeds nothing. */
 export function readSet(p: Policy): string[] {
-  const s = new Set<string>(p.requiredPaths);
+  const s = new Set<string>(Array.isArray(p.requiredPaths) ? p.requiredPaths : []);
   const walk = (c: Condition): void => {
     if ("clauses" in c) c.clauses.forEach(walk);
     else if ("clause" in c) walk(c.clause);
-    else s.add(c.path);
+    else if (typeof c.path === "string") s.add(c.path);
   };
-  for (const r of p.rules) walk(r.when);
+  if (Array.isArray(p.rules)) for (const r of p.rules) if (r && typeof r === "object" && "when" in r) walk(r.when);
   return [...s].sort();
 }
 

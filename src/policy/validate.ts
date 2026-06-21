@@ -31,6 +31,13 @@ function scalarType(v: Scalar): string {
   return typeof v;
 }
 
+/** additionalProperties:false — reject any key outside the closed grammar for this node. */
+function noExtraKeys(obj: Record<string, unknown>, allowed: string[], path: string, errors: string[]): void {
+  for (const k of Object.keys(obj)) {
+    if (!allowed.includes(k)) errors.push(`${path}: unknown key "${k}" (closed grammar)`);
+  }
+}
+
 function validateCondition(c: unknown, path: string, errors: string[], depth: number): void {
   if (depth > 64) {
     errors.push(`${path}: condition nesting too deep`);
@@ -47,20 +54,24 @@ function validateCondition(c: unknown, path: string, errors: string[], depth: nu
   }
   const cond = c as Record<string, unknown>;
   if (op === "and" || op === "or") {
+    noExtraKeys(cond, ["op", "clauses"], `${path}.${op}`, errors);
     const cl = cond.clauses;
     if (!Array.isArray(cl) || cl.length === 0) errors.push(`${path}.${op}: clauses must be a non-empty array`);
     else cl.forEach((x, i) => validateCondition(x, `${path}.${op}[${i}]`, errors, depth + 1));
     return;
   }
   if (op === "not") {
+    noExtraKeys(cond, ["op", "clause"], `${path}.not`, errors);
     validateCondition(cond.clause, `${path}.not`, errors, depth + 1);
     return;
   }
   if (op === "exists" || op === "absent") {
+    noExtraKeys(cond, ["op", "path"], `${path}.${op}`, errors);
     if (typeof cond.path !== "string" || cond.path.length === 0) errors.push(`${path}.${op}: path must be a non-empty string`);
     return;
   }
   if (op === "in") {
+    noExtraKeys(cond, ["op", "path", "values"], `${path}.in`, errors);
     if (typeof cond.path !== "string" || cond.path.length === 0) errors.push(`${path}.in: path must be a non-empty string`);
     const vals = cond.values;
     if (!Array.isArray(vals) || vals.length === 0) {
@@ -80,6 +91,7 @@ function validateCondition(c: unknown, path: string, errors: string[], depth: nu
     return;
   }
   if (CMP_OPS.has(op)) {
+    noExtraKeys(cond, ["op", "path", "value"], `${path}.${op}`, errors);
     if (typeof cond.path !== "string" || cond.path.length === 0) errors.push(`${path}.${op}: path must be a non-empty string`);
     if (!isScalar(cond.value)) errors.push(`${path}.${op}.value: not an allowed scalar (string|boolean|safe-int)`);
     return;
@@ -92,6 +104,7 @@ export function validatePolicy(p: unknown): PolicyValidation {
   const errors: string[] = [];
   if (typeof p !== "object" || p === null) return { ok: false, errors: ["policy: not an object"] };
   const pol = p as Record<string, unknown>;
+  noExtraKeys(pol, ["spec", "id", "requiredPaths", "rules"], "policy", errors);
   if (pol.spec !== POLICY_SPEC) errors.push(`policy.spec: must be "${POLICY_SPEC}"`);
   if (typeof pol.id !== "string" || pol.id.length === 0) errors.push("policy.id: non-empty string");
   if (!Array.isArray(pol.requiredPaths) || !pol.requiredPaths.every((x) => typeof x === "string" && x.length > 0)) {
@@ -107,6 +120,7 @@ export function validatePolicy(p: unknown): PolicyValidation {
         return;
       }
       const rule = r as Record<string, unknown>;
+      noExtraKeys(rule, ["id", "when", "then"], `policy.rules[${i}]`, errors);
       if (typeof rule.id !== "string" || rule.id.length === 0) errors.push(`policy.rules[${i}].id: non-empty string`);
       else if (seenIds.has(rule.id)) errors.push(`policy.rules[${i}].id: duplicate rule id "${rule.id}"`);
       else seenIds.add(rule.id);

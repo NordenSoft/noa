@@ -49,9 +49,12 @@ function cmp(a: Scalar, b: Scalar): number {
   if (typeof a !== typeof b) throw new PolicyError("type mismatch in comparison");
   if (typeof a === "number") return a < (b as number) ? -1 : a > (b as number) ? 1 : 0;
   if (typeof a === "boolean") return (a ? 1 : 0) - ((b as boolean) ? 1 : 0);
-  // UTF-8 BYTE order (not UTF-16 code-unit): matches byte-ordering languages (Rust/Go/Python
-  // default) so a future second implementation re-runs to the same verdict. Locale-free.
-  return Buffer.compare(Buffer.from(a as string, "utf8"), Buffer.from(b as string, "utf8"));
+  // UTF-16 code-unit order — the SINGLE canonical string ordering for the whole NOA surface. It is
+  // exactly what RFC 8785 (JCS) uses to sort keys for policyHash/readSetHash/receipt hashing, so eval
+  // comparisons and canonical hashing never diverge. Locale-free (no collation/case-fold); any
+  // RFC-8785-conformant implementation sorts identically.
+  const s = a as string, t = b as string;
+  return s < t ? -1 : s > t ? 1 : 0;
 }
 
 function match(c: Condition, inputs: InputSnapshot): boolean {
@@ -104,6 +107,10 @@ export function evaluate(policy: Policy, inputs: InputSnapshot): EvalResult {
   const pv = validatePolicy(policy);
   if (!pv.ok) {
     return { verdict: "DENY", ruleFired: "policy-invalid", engine: REF_EVAL_VERSION };
+  }
+  // input-shape guard: never throw on null/undefined/non-object/array inputs — fail-closed DENY
+  if (typeof inputs !== "object" || inputs === null || Array.isArray(inputs)) {
+    return { verdict: "DENY", ruleFired: "input-invalid", engine: REF_EVAL_VERSION };
   }
   try {
     // validate inputs are integer-only scalars (no float leakage into the hashed surface)
