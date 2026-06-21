@@ -2,13 +2,14 @@ import type { Receipt, Checkpoint } from "./types.js";
 import { validateReceiptShape } from "./schema.js";
 import { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
-import { verifyEd25519, type Keyring } from "./keys.js";
+import { verifyEd25519, type Keyring, type IdentityManifest } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
 import { safeParse } from "./safe-json.js";
 
 export type VerifyStatus =
   | "VALID" // structure + hash-chain + signatures all verified against the supplied keyring
   | "UNVERIFIED" // hash-chain ok, but NO keyring supplied so signatures were not authenticated
+  | "UNTRUSTED" // signature authenticated, but the (agent.id, sig.kid) pairing is NOT authorized by the supplied identity manifest (cross-agent impersonation)
   | "TAMPERED" // an integrity check failed (incl. an unknown signing key when a keyring IS supplied)
   | "MALFORMED"; // not a well-formed receipt chain
 
@@ -19,6 +20,13 @@ export interface VerifyOptions {
   checkpoint?: Checkpoint;
   /** Hard cap on receipts processed (DoS bound). */
   maxReceipts?: number;
+  /**
+   * Optional `agent.id -> authorized kid(s)` binding (a trust input, like the keyring). When supplied,
+   * a receipt whose `(agent.id, sig.kid)` pairing is not authorized is rejected as UNTRUSTED — this is
+   * what makes a VALID result mean "THIS agent.id signed", not just "a keyring-trusted key signed".
+   * Omit it to keep kid-level attribution (the weaker, documented guarantee).
+   */
+  identityManifest?: IdentityManifest;
 }
 
 export interface VerifyResult {
@@ -54,6 +62,10 @@ function fail(
  *    key is held continuous per (agent.id): a mid-chain key swap is rejected, and an unknown
  *    kid is treated as TAMPERED (not silently accepted — that would be TOFU on attacker input).
  *  - Without a keyring, signatures cannot be authenticated → status UNVERIFIED (never VALID).
+ *  - IDENTITY: with an `identityManifest` (agent.id -> authorized kid(s)), a receipt whose
+ *    (agent.id, sig.kid) pairing is not authorized is UNTRUSTED — this upgrades attribution from
+ *    "a keyring-trusted key signed" to "THIS agent.id signed". Without it, attribution is kid-level:
+ *    in a multi-key keyring any trusted key can assert any agent.id (cross-agent impersonation).
  *  - Without a checkpoint, TAIL-TRUNCATION cannot be detected offline (reported in warnings).
  *  - FORK / EQUIVOCATION: an offline verifier only sees the branch it is given; it cannot know
  *    the signer also signed a different history at the same seq. Detecting that needs an
@@ -65,6 +77,20 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   if (!Array.isArray(receipts)) return fail("MALFORMED", "input is not an array of receipts", null, 0);
   if (receipts.length === 0) return fail("MALFORMED", "empty receipt array", null, 0);
   if (receipts.length > maxReceipts) return fail("MALFORMED", `too many receipts (>${maxReceipts})`, null, receipts.length);
+
+  // Validate the optional identity manifest (a trust input). Fail-closed: a malformed manifest is an
+  // operator error, never silently ignored (that would re-open the very impersonation gap it closes).
+  const manifest = opts.identityManifest;
+  if (manifest !== undefined) {
+    if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
+      return fail("MALFORMED", "identityManifest must be an object (agent.id -> kid[])", null, 0);
+    }
+    for (const [aid, kids] of Object.entries(manifest)) {
+      if (!Array.isArray(kids) || !kids.every((k) => typeof k === "string")) {
+        return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
+      }
+    }
+  }
 
   // 1. Structural validation of every element (runs BEFORE any hashing).
   for (let idx = 0; idx < receipts.length; idx++) {
@@ -136,6 +162,17 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       if (!ok) return fail("TAMPERED", `invalid signature (kid ${r.sig.kid})`, chainId, list.length, seq);
     }
 
+    // 4c-bis. Identity binding (only when a manifest is supplied). Authenticating the signature proves
+    // "a keyring-trusted key signed this"; this proves "that key is AUTHORIZED to speak for THIS
+    // agent.id". An authenticated-but-unauthorized pairing is exactly cross-agent impersonation → reject
+    // as UNTRUSTED (distinct from TAMPERED: the bytes are intact + the key is real, the BINDING is not).
+    if (manifest !== undefined) {
+      const allowed = Object.prototype.hasOwnProperty.call(manifest, r.agent.id) ? manifest[r.agent.id]! : undefined;
+      if (allowed === undefined || !allowed.includes(r.sig.kid)) {
+        return fail("UNTRUSTED", `agent "${r.agent.id}" is not authorized for signing key "${r.sig.kid}" (identity manifest)`, chainId, list.length, seq);
+      }
+    }
+
     // 4d. Linkage.
     if (seq === 0) {
       if (r.chain.prevHash !== null) return fail("TAMPERED", "genesis prevHash must be null", chainId, list.length, 0);
@@ -190,6 +227,9 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
 
   if (!haveKeyring) {
     warnings.push("no keyring supplied: signatures were NOT authenticated (status UNVERIFIED, not VALID)");
+  }
+  if (manifest === undefined) {
+    warnings.push("no identityManifest supplied: attribution is kid-level — a VALID result proves a keyring-trusted key signed, NOT which agent.id (cross-agent impersonation undefended in a multi-key keyring)");
   }
 
   const status: VerifyStatus = haveKeyring ? "VALID" : "UNVERIFIED";

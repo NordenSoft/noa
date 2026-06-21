@@ -69,3 +69,14 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
 
 /** A keyring maps a key id (`kid`) to its base64 SPKI public key. */
 export type Keyring = Record<string, string>;
+
+/**
+ * Optional identity binding: `agent.id` -> the `kid`(s) authorized to sign for it. Supplied
+ * out-of-band by the verifier (the SAME trust class as the keyring). When passed to `verifyChain`,
+ * a receipt whose `(agent.id, sig.kid)` pairing is not listed here is rejected as `UNTRUSTED` — this
+ * is what upgrades attribution from "a keyring-trusted key signed this" to "THIS agent.id signed this",
+ * closing cross-agent impersonation in a multi-key keyring. When omitted, attribution stays kid-level
+ * (the weaker, documented guarantee). The manifest itself is a trust-root the operator vouches for
+ * (like the keyring); distributing it as a SIGNED statement is a deployment concern, not enforced here.
+ */
+export type IdentityManifest = Record<string, string[]>;

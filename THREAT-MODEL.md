@@ -63,8 +63,14 @@ truth or safety.
   chain under a high-privilege `agent.id` and it verifies VALID). A VALID receipt therefore proves
   *"a keyring-trusted key signed this"*, **not** *"this specific `agent.id` acted"* — the `agent.id` is
   a signer-asserted label, authenticated only at the `kid` level. **Single-key keyrings are unaffected.**
-  *Full fix (v0.2):* a signed identity manifest binding `agent.id → authorized kid(s)`, enforced in
-  `verifyChain` (plus a distinct `UNTRUSTED` verdict for unrecognized keys).
+  *Mitigation now (v0.2, shipped):* supply an **`identityManifest`** (`agent.id → authorized kid(s)`) to
+  `verifyChain`. When present, a receipt whose `(agent.id, sig.kid)` pairing is not authorized is rejected
+  as **`UNTRUSTED`** (distinct from `TAMPERED`: the bytes + key are real, the *binding* is not) — this
+  upgrades a `VALID` result from "a keyring-trusted key signed" to "THIS `agent.id` signed". Without a
+  manifest, attribution stays kid-level (and `verifyChain` emits an explicit warning saying so). The
+  manifest is a trust input the operator vouches for (same class as the keyring); distributing it as a
+  *signed* statement is a deployment concern. *Remaining:* in-band rotation-attestation (one endorsed
+  key→key transition) so live chains survive rotation without manual manifest edits.
 - **Replay / freshness / liveness:** a wholly-valid chain, head, or checkpoint can be re-presented
   later as if current. The format carries no nonce/epoch/expiry. **Freshness is the caller's
   responsibility** — pin an expected chain id + head hash from a fresh, trusted channel; do not

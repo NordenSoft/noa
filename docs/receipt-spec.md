@@ -141,7 +141,7 @@ Anyone — operator, auditor, receiving service, regulator — verifies a chain 
 NOA service, via `noa verify` (or the library `verifyChain`):
 
 ```
-verify(receipts, { keyring?, checkpoint? }):
+verify(receipts, { keyring?, checkpoint?, identityManifest? }):
   1. structural validate each receipt (strict; reject unknown fields)   -> else MALFORMED
   2. single chain partition; seqs contiguous 0..n-1, unique             -> else TAMPERED
   for each receipt in seq order:
@@ -149,15 +149,22 @@ verify(receipts, { keyring?, checkpoint? }):
   4. pin sig.kid per agent.id (reject mid-chain key swap)
   5. signatures, by keyring state:
        - keyring supplied AND kid known   -> ed25519_verify over the domain-separated preimage
+                                             (curve-PINNED: a non-Ed25519 key is rejected, no alg-confusion)
        - keyring supplied AND kid UNKNOWN -> TAMPERED (no silent TOFU on attacker input)
        - no keyring at all                -> UNVERIFIED (cannot authenticate; never VALID)
+  5b. identity binding (only if identityManifest supplied):
+       - (agent.id, sig.kid) authorized in the manifest -> ok
+       - else                                           -> UNTRUSTED (cross-agent impersonation:
+                                                           authenticated key, but NOT authorized for
+                                                           this agent.id). No manifest => kid-level
+                                                           attribution + an explicit warning.
   6. linkage: seq 0 => prevHash null; else prevHash == prev.hash && seq == prev.seq+1
   7. if checkpoint: assert head matches checkpoint (tail-truncation)
-  -> VALID | UNVERIFIED | TAMPERED | MALFORMED
+  -> VALID | UNVERIFIED | UNTRUSTED | TAMPERED | MALFORMED
 ```
 
 CLI exit codes: `0` VALID · `1` UNVERIFIED (no keyring supplied) · `2` TAMPERED · `3` MALFORMED
-· `4` usage. **CI rule: treat any non-zero exit as failure** (do not special-case `==2`). Honest
+· `4` usage · `5` UNTRUSTED (identity binding failed). **CI rule: treat any non-zero exit as failure** (do not special-case `==2`). Honest
 by design: without a keyring, signatures are reported UNVERIFIED, never VALID; without a
 checkpoint, the verifier emits an explicit tail-truncation warning; and it always emits a
 fork/equivocation caveat (an offline verifier sees only the branch it was given) plus a
