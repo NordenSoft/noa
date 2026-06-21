@@ -45,3 +45,20 @@ export {
   type VerifyResult,
   type VerifyStatus,
 } from "./verify.js";
+
+// L2 — policy-compliance (deterministic refEval). All fail-closed: a malformed policy or a
+// bad input yields a reproducible DENY verdict, never an exception or a silent permit.
+export {
+  POLICY_SPEC,
+  policyHash,
+  readSet,
+  readSetHash,
+  type Policy,
+  type Rule,
+  type Condition,
+  type Verdict as PolicyVerdict,
+  type Scalar,
+  type InputSnapshot,
+} from "./policy/dsl.js";
+export { evaluate, PolicyError, REF_EVAL_VERSION, type EvalResult } from "./policy/eval.js";
+export { validatePolicy, assertValidPolicy, type PolicyValidation } from "./policy/validate.js";

@@ -12,6 +12,7 @@
 
 import type { Policy, Condition, InputSnapshot, Verdict, Scalar } from "./dsl.js";
 import { DEFAULT_VERDICT } from "./dsl.js";
+import { validatePolicy } from "./validate.js";
 
 export const REF_EVAL_VERSION = "noa-refeval/0.2" as const;
 
@@ -48,8 +49,9 @@ function cmp(a: Scalar, b: Scalar): number {
   if (typeof a !== typeof b) throw new PolicyError("type mismatch in comparison");
   if (typeof a === "number") return a < (b as number) ? -1 : a > (b as number) ? 1 : 0;
   if (typeof a === "boolean") return (a ? 1 : 0) - ((b as boolean) ? 1 : 0);
-  const s = a as string, t = b as string; // UTF-16 code-unit order, locale-free
-  return s < t ? -1 : s > t ? 1 : 0;
+  // UTF-8 BYTE order (not UTF-16 code-unit): matches byte-ordering languages (Rust/Go/Python
+  // default) so a future second implementation re-runs to the same verdict. Locale-free.
+  return Buffer.compare(Buffer.from(a as string, "utf8"), Buffer.from(b as string, "utf8"));
 }
 
 function match(c: Condition, inputs: InputSnapshot): boolean {
@@ -89,22 +91,41 @@ function match(c: Condition, inputs: InputSnapshot): boolean {
   }
 }
 
-/** Evaluate a policy against an input snapshot. Deterministic + pure. */
+/**
+ * Evaluate a policy against an input snapshot. Deterministic, pure, and ALWAYS FAIL-CLOSED:
+ * it never throws and always returns a reproducible verdict object.
+ *   - malformed policy (unknown op, bad `then`, mixed-type `in`, …) ⇒ DENY "policy-invalid"
+ *   - any internal comparison error (e.g. input type ≠ policy value type) ⇒ DENY "eval-error"
+ *   - required path absent ⇒ DENY "required-input-absent:<path>"
+ * `then` is guaranteed ALLOW|DENY by the up-front validator, so a typo'd verdict can never
+ * become a silent permit downstream (closes the round-1 default-DENY bypass).
+ */
 export function evaluate(policy: Policy, inputs: InputSnapshot): EvalResult {
-  // validate inputs are integer-only scalars (no float leakage into the hashed surface)
-  for (const key of Object.keys(inputs)) assertScalar(inputs[key], `input.${key}`);
-
-  // closed-world: a required path absent ⇒ DENY by construction (not by operator assertion)
-  for (const p of policy.requiredPaths) {
-    if (!Object.prototype.hasOwnProperty.call(inputs, p)) {
-      return { verdict: "DENY", ruleFired: `required-input-absent:${p}`, engine: REF_EVAL_VERSION };
-    }
+  const pv = validatePolicy(policy);
+  if (!pv.ok) {
+    return { verdict: "DENY", ruleFired: "policy-invalid", engine: REF_EVAL_VERSION };
   }
+  try {
+    // validate inputs are integer-only scalars (no float leakage into the hashed surface)
+    for (const key of Object.keys(inputs)) assertScalar(inputs[key], `input.${key}`);
 
-  for (const rule of policy.rules) {
-    if (match(rule.when, inputs)) {
-      return { verdict: rule.then, ruleFired: rule.id, engine: REF_EVAL_VERSION };
+    // closed-world: a required path absent ⇒ DENY by construction (not by operator assertion)
+    for (const p of policy.requiredPaths) {
+      if (!Object.prototype.hasOwnProperty.call(inputs, p)) {
+        return { verdict: "DENY", ruleFired: `required-input-absent:${p}`, engine: REF_EVAL_VERSION };
+      }
     }
+
+    for (const rule of policy.rules) {
+      if (match(rule.when, inputs)) {
+        return { verdict: rule.then, ruleFired: rule.id, engine: REF_EVAL_VERSION };
+      }
+    }
+    return { verdict: DEFAULT_VERDICT, ruleFired: null, engine: REF_EVAL_VERSION };
+  } catch (e) {
+    if (e instanceof PolicyError) {
+      return { verdict: "DENY", ruleFired: "eval-error", engine: REF_EVAL_VERSION };
+    }
+    throw e;
   }
-  return { verdict: DEFAULT_VERDICT, ruleFired: null, engine: REF_EVAL_VERSION };
 }
