@@ -200,3 +200,27 @@ anchor — transparency log / receiver-attestation — which is **v1.0** (§7).
 
 *Reference implementation + conformance vectors: this repository (`src/`, `conformance/`).
 Companion: [README](../README.md) · [THREAT-MODEL](../THREAT-MODEL.md) · [SECURITY](../SECURITY.md).*
+
+---
+
+## 8. The universal envelope — COSE_Sign1 / SCITT profile
+
+A NOA Receipt is also expressible as a **COSE_Sign1** (RFC 9052) so it verifies in **any** conforming
+COSE implementation — every language, hardware (TPM/FIDO), cloud KMS, RATS/EAT — **without NOA's code**.
+That is what makes it universal rather than bespoke.
+
+- **Algorithm:** EdDSA (COSE alg `-8`), protected header `{1: -8}` (and nothing else — a verifier MUST
+  reject any other protected header to prevent algorithm confusion).
+- **kid:** carried in the unprotected header (label `4`), resolved against the verifier's keyring.
+- **Payload:** the JCS-canonical NOA receipt bytes (§2/§4). So a standard COSE verify authenticates the
+  receipt; a NOA-native consumer then parses the payload and runs the hash-chain / policy checks (§3–§6).
+- **Sig_structure:** the RFC 9052 `["Signature1", protected, external_aad(empty), payload]`, Ed25519-signed.
+- **CBOR:** core-deterministic (RFC 8949 §4.2) — shortest-form heads, map keys sorted by encoded bytes.
+
+**SCITT:** the same COSE_Sign1 is a **SCITT Signed Statement**. Registering it in a SCITT transparency
+log yields a registration **receipt** + an append-only, witness-cosigned anchor — which supplies the
+external non-equivocation / tail-truncation defense the self-signed hash-chain (§6) cannot give alone.
+
+**Conformance:** NOA ships its own zero-dependency COSE_Sign1 producer/verifier, and its output is
+verified by an **independent** implementation (an off-the-shelf CBOR library + a separate Ed25519 path)
+in the conformance suite — universality is proven, not asserted.
