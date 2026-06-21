@@ -146,6 +146,220 @@ def strict_load_text(text):
     """Parse receipt JSON like the TS safeParse: dup keys, floats, and proto keys are rejected."""
     return json.loads(text, object_pairs_hook=_strict_pairs, parse_float=_reject_float)
 
+# ── Structural validation — STRICT, mirrors src/schema.ts validateReceiptShape ─
+# Step 1 of the TS verifyChain runs validateReceiptShape BEFORE any hashing. Without this layer
+# the hashed surface (which covers ALL fields) makes a smuggled unknown field / out-of-spec enum /
+# wrong spec / sig.alg!="ed25519" / over-long id / bad ts a *crypto-consistent but MALFORMED* receipt:
+# a keyring-trusted producer could sign it and this verifier would (wrongly) return VALID while the
+# TS reference returns MALFORMED. Rejecting unknown fields (additionalProperties:false at every level)
+# is a security control — it closes the "smuggle PII / extra data in an unrecognized field" channel
+# and keeps the hashed surface exactly the documented surface.
+_RECEIPT_SPEC = "noa.receipt/0.1"
+_RISK_CLASSES = frozenset(["LOW", "MEDIUM", "HIGH", "CRITICAL", "IRREVERSIBLE"])
+_PRINCIPALS = frozenset(["HUMAN", "SERVICE", "POLICY", "SANDBOX_SIM"])
+_MODES = frozenset(["off", "shadow", "approvals_on", "on"])
+_VERDICTS = frozenset(["ALLOWED", "BLOCKED", "DEFERRED", "EXECUTED", "FAILED", "ROLLED_BACK", "SIMULATED"])
+
+import re as _re
+_HASH_RE = _re.compile(r"^sha256:[0-9a-f]{64}$")
+_PARAMS_HASH_RE = _re.compile(r"^(sha256|hmac-sha256):[0-9a-f]{64}$")
+# RFC 3339 §5.6 — accept lowercase 't'/'z' too (must match schema/noa-receipt-0.1.schema.json + src/schema.ts).
+_RFC3339_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$")
+
+# JS Number.isSafeInteger upper bound — chain.seq must be a non-negative safe integer (parity with schema maximum).
+_SAFE_INT_MAX = 2**53 - 1
+
+
+def _is_obj(v):
+    """Plain JSON object (dict), not a list/None. Mirrors TS isPlainObject."""
+    return isinstance(v, dict)
+
+
+def _is_str(v):
+    """A str. (Python's json yields well-formed str — the TS isWellFormed() check guards lone UTF-16
+    surrogates which cannot occur after a successful json.loads, so a type check is the faithful mirror.)"""
+    return isinstance(v, str)
+
+
+def _is_bool(v):
+    return isinstance(v, bool)
+
+
+def _is_int(v):
+    # In Python, bool is a subclass of int — exclude it so reversible:true never satisfies seq.
+    return isinstance(v, int) and not isinstance(v, bool)
+
+
+def _check_exact_keys(obj, required, optional, path, errors):
+    """additionalProperties:false + required presence at this level. Mirrors TS checkExactKeys."""
+    allowed = set(required) | set(optional)
+    for k in obj.keys():
+        if k not in allowed:
+            errors.append('%s: unknown field "%s"' % (path, k))
+    for k in required:
+        if k not in obj:
+            errors.append('%s: missing required field "%s"' % (path, k))
+
+
+def validate_receipt_shape(value):
+    """Strict structural validator for a single NOA Receipt v0.1. Returns (ok, [errors]).
+    Mirrors src/schema.ts validateReceiptShape EXACTLY. NEVER throws (fail-closed)."""
+    errors = []
+    try:
+        if not _is_obj(value):
+            return False, ["receipt: not an object"]
+        r = value
+
+        _check_exact_keys(
+            r,
+            ["spec", "id", "ts", "scope", "agent", "action", "governance", "chain", "sig"],
+            [],
+            "receipt",
+            errors,
+        )
+
+        if r.get("spec") != _RECEIPT_SPEC:
+            errors.append('receipt.spec: must be "%s"' % _RECEIPT_SPEC)
+        rid = r.get("id")
+        if not _is_str(rid) or len(rid) == 0 or len(rid) > 128:
+            errors.append("receipt.id: non-empty string <=128 chars")
+        ts = r.get("ts")
+        if not _is_str(ts) or not _RFC3339_RE.match(ts):
+            errors.append("receipt.ts: must be RFC 3339 UTC timestamp")
+
+        # scope
+        scope = r.get("scope")
+        if _is_obj(scope):
+            _check_exact_keys(scope, ["chain"], ["tenant"], "receipt.scope", errors)
+            sc = scope.get("chain")
+            if not _is_str(sc) or len(sc) == 0:
+                errors.append("receipt.scope.chain: non-empty string")
+            if "tenant" in scope and not _is_str(scope.get("tenant")):
+                errors.append("receipt.scope.tenant: string")
+        else:
+            errors.append("receipt.scope: object required")
+
+        # agent
+        agent = r.get("agent")
+        if _is_obj(agent):
+            _check_exact_keys(agent, ["id", "principal"], ["model"], "receipt.agent", errors)
+            aid = agent.get("id")
+            if not _is_str(aid) or len(aid) == 0:
+                errors.append("receipt.agent.id: non-empty string")
+            if agent.get("principal") not in _PRINCIPALS:
+                errors.append("receipt.agent.principal: invalid enum")
+            if "model" in agent and agent.get("model") is not None and not _is_str(agent.get("model")):
+                errors.append("receipt.agent.model: string or null")
+        else:
+            errors.append("receipt.agent: object required")
+
+        # action
+        action = r.get("action")
+        if _is_obj(action):
+            _check_exact_keys(
+                action,
+                ["id", "canonical", "riskClass", "paramsHash", "reversible"],
+                ["rollbackRef"],
+                "receipt.action",
+                errors,
+            )
+            acid = action.get("id")
+            if not _is_str(acid) or len(acid) == 0:
+                errors.append("receipt.action.id: non-empty string")
+            can = action.get("canonical")
+            if not _is_str(can) or len(can) == 0:
+                errors.append("receipt.action.canonical: non-empty string")
+            if action.get("riskClass") not in _RISK_CLASSES:
+                errors.append("receipt.action.riskClass: invalid enum")
+            ph = action.get("paramsHash")
+            if not _is_str(ph) or not _PARAMS_HASH_RE.match(ph):
+                errors.append("receipt.action.paramsHash: must match (sha256|hmac-sha256):<64 hex>")
+            if not _is_bool(action.get("reversible")):
+                errors.append("receipt.action.reversible: boolean")
+            if "rollbackRef" in action and action.get("rollbackRef") is not None and not _is_str(action.get("rollbackRef")):
+                errors.append("receipt.action.rollbackRef: string or null")
+        else:
+            errors.append("receipt.action: object required")
+
+        # governance
+        gov = r.get("governance")
+        if _is_obj(gov):
+            _check_exact_keys(
+                gov,
+                ["mode", "verdict", "sandboxed"],
+                ["ruleId", "approval", "compliance"],
+                "receipt.governance",
+                errors,
+            )
+            if gov.get("mode") not in _MODES:
+                errors.append("receipt.governance.mode: invalid enum")
+            if gov.get("verdict") not in _VERDICTS:
+                errors.append("receipt.governance.verdict: invalid enum")
+            if not _is_bool(gov.get("sandboxed")):
+                errors.append("receipt.governance.sandboxed: boolean")
+            if "ruleId" in gov and gov.get("ruleId") is not None and not _is_str(gov.get("ruleId")):
+                errors.append("receipt.governance.ruleId: string or null")
+            if "approval" in gov and gov.get("approval") is not None:
+                ap = gov.get("approval")
+                if _is_obj(ap):
+                    _check_exact_keys(ap, ["by", "at"], [], "receipt.governance.approval", errors)
+                    if not _is_str(ap.get("by")):
+                        errors.append("receipt.governance.approval.by: string")
+                    at = ap.get("at")
+                    if not _is_str(at) or not _RFC3339_RE.match(at):
+                        errors.append("receipt.governance.approval.at: RFC 3339 UTC")
+                else:
+                    errors.append("receipt.governance.approval: object or null")
+            # B4 optional governance.compliance ({policyHash, readSetHash, inputsHash}, each sha256:<64hex>).
+            if "compliance" in gov and gov.get("compliance") is not None:
+                c = gov.get("compliance")
+                if _is_obj(c):
+                    _check_exact_keys(c, ["policyHash", "readSetHash", "inputsHash"], [], "receipt.governance.compliance", errors)
+                    for k in ("policyHash", "readSetHash", "inputsHash"):
+                        cv = c.get(k)
+                        if not _is_str(cv) or not _HASH_RE.match(cv):
+                            errors.append("receipt.governance.compliance.%s: sha256:<64 hex>" % k)
+                else:
+                    errors.append("receipt.governance.compliance: object or null")
+        else:
+            errors.append("receipt.governance: object required")
+
+        # chain
+        ch = r.get("chain")
+        if _is_obj(ch):
+            _check_exact_keys(ch, ["seq", "prevHash", "hash"], [], "receipt.chain", errors)
+            seq = ch.get("seq")
+            if not _is_int(seq) or seq < 0 or seq > _SAFE_INT_MAX:
+                errors.append("receipt.chain.seq: non-negative safe integer")
+            pv = ch.get("prevHash")
+            if pv is not None and (not _is_str(pv) or not _HASH_RE.match(pv)):
+                errors.append("receipt.chain.prevHash: sha256:<64 hex> or null")
+            hv = ch.get("hash")
+            if not _is_str(hv) or not _HASH_RE.match(hv):
+                errors.append("receipt.chain.hash: sha256:<64 hex>")
+        else:
+            errors.append("receipt.chain: object required")
+
+        # sig (mandatory)
+        sig = r.get("sig")
+        if _is_obj(sig):
+            _check_exact_keys(sig, ["alg", "kid", "value"], [], "receipt.sig", errors)
+            if sig.get("alg") != "ed25519":
+                errors.append('receipt.sig.alg: must be "ed25519"')
+            kid = sig.get("kid")
+            if not _is_str(kid) or len(kid) == 0:
+                errors.append("receipt.sig.kid: non-empty string")
+            val = sig.get("value")
+            if not _is_str(val) or len(val) == 0:
+                errors.append("receipt.sig.value: non-empty string")
+        else:
+            errors.append("receipt.sig: object required (signatures are mandatory in v0.1)")
+    except Exception as e:  # fail-closed: never throw out of the verifier
+        return False, ["receipt: structural-validation error: %s" % e]
+
+    return (len(errors) == 0), errors
+
+
 # ── Receipt chain verification ───────────────────────────────────────────────
 _RECEIPT_DOMAIN = b"NOA-Receipt-v0.1-sig:"
 _CHECKPOINT_DOMAIN = b"NOA-Checkpoint-v0.1-sig:"
@@ -191,6 +405,14 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
         for aid, kids in identity_manifest.items():
             if not isinstance(kids, list) or not all(isinstance(k, str) for k in kids):
                 return "MALFORMED", f'identityManifest["{aid}"] must be an array of kid strings'
+    # Step 1 (parity with src/schema.ts via verify.ts): STRUCTURAL validation of every element,
+    # BEFORE any hashing. The hashed surface covers all fields, so a smuggled unknown field /
+    # out-of-spec enum / wrong spec / sig.alg!="ed25519" / over-long id / bad ts can be signed by a
+    # keyring-trusted producer and would otherwise pass — TS returns MALFORMED, so must this verifier.
+    for idx, r in enumerate(receipts):
+        ok, errs = validate_receipt_shape(r)
+        if not ok:
+            return "MALFORMED", f"receipt[{idx}]: " + "; ".join(errs)
     have_keyring = keyring is not None
     chain_id = receipts[0].get("scope", {}).get("chain")
     by_seq = {}

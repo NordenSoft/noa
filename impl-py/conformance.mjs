@@ -10,9 +10,12 @@
  * Asserts: VALID (with keyring, exit 0) · UNVERIFIED (no keyring, exit 1) · TAMPERED (flip a byte, exit 2).
  * Run: node impl-py/conformance.mjs   (after `npm run build`)
  */
-import { generateKeyPair } from "../dist/src/keys.js";
+import { generateKeyPair, signEd25519 } from "../dist/src/keys.js";
 import { buildReceipt, buildCheckpoint } from "../dist/src/builder.js";
-import { sha256Prefixed } from "../dist/src/hash.js";
+import { sha256Prefixed, sha256Hex } from "../dist/src/hash.js";
+import { receiptHashInput } from "../dist/src/canonicalize.js";
+import { signingMessage, RECEIPT_SIG_DOMAIN } from "../dist/src/signing.js";
+import { verifyChain } from "../dist/src/index.js";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -108,6 +111,42 @@ const dupText = JSON.stringify([r0]).replace('"agent":', '"agent":' + JSON.strin
 const dupPath = join(dir, "dup.json");
 writeFileSync(dupPath, dupText);
 expect("MALFORMED (duplicate JSON key, strict parse)", pyVerify([dupPath, keyringPath]).code, 3);
+
+// ── STRUCTURAL parity (round-9 audit): receipts that are STRUCTURALLY-INVALID but CRYPTO-CONSISTENT ──
+// The hashed surface covers ALL fields, so a keyring-trusted producer can sign a receipt with a
+// smuggled field / bad enum / sig.alg!="ed25519" / wrong spec. The TS reference runs validateReceiptShape
+// as step 1 of verifyChain → MALFORMED. The independent Python verifier MUST agree (was VALID before the
+// port — the divergence this audit closes). Each vector mutates a VALID receipt, then re-hashes + re-signs
+// so chain integrity + Ed25519 signature stay GENUINE (only the STRUCTURE is out-of-spec).
+function reseal(obj) {
+  // RE-COMPUTE chain.hash and RE-SIGN over the canonical hash-input so the receipt is crypto-consistent.
+  obj.chain.hash = "sha256:" + sha256Hex(receiptHashInput(obj));
+  obj.sig.value = signEd25519(kp.privateKey, signingMessage(RECEIPT_SIG_DOMAIN, receiptHashInput(obj)));
+  return obj;
+}
+function structParity(label, mutate) {
+  const m = JSON.parse(JSON.stringify(r0)); // a genuine, valid base receipt at seq 0 (genesis)
+  mutate(m);
+  reseal(m);
+  const p = join(dir, `struct-${label.replace(/[^a-z0-9]+/gi, "-")}.json`);
+  writeFileSync(p, JSON.stringify([m]));
+  // TS reference must call it MALFORMED…
+  const tsStatus = verifyChain([m], { keyring }).status;
+  const tsOk = tsStatus === "MALFORMED";
+  console.log(`${tsOk ? "✓" : "✗"} ${label} [TS verifyChain]: ${tsStatus} (want MALFORMED)`);
+  if (!tsOk) failures++;
+  // …and the independent Python verifier must exit 3 (MALFORMED) — the parity this port establishes.
+  expect(`${label} [PY verifier]`, pyVerify([p, keyringPath]).code, 3);
+}
+
+// 8. Smuggled unknown field carrying fake PII (the "smuggle PII in an unrecognized field" channel).
+structParity("MALFORMED (smuggled unknown field w/ fake PII)", (m) => { m.note = "ssn=123-45-6789"; });
+// 9. Out-of-spec enum (riskClass not in the frozen set).
+structParity("MALFORMED (bad enum: action.riskClass)", (m) => { m.action.riskClass = "ULTRA"; });
+// 10. sig.alg != "ed25519" (algorithm-confusion surface — must be rejected structurally).
+structParity('MALFORMED (sig.alg="rsa")', (m) => { m.sig.alg = "rsa"; });
+// 11. Wrong spec string.
+structParity("MALFORMED (wrong spec)", (m) => { m.spec = "noa.receipt/9.9"; });
 
 if (failures) { console.error(`\nCROSS-IMPL CONFORMANCE FAILED: ${failures} mismatch(es)`); process.exit(1); }
 console.log("\nCROSS-IMPL CONFORMANCE PASS: the independent Python verifier agrees with the TS reference on every vector (incl. impersonation/truncation/dup-key security verdicts).");

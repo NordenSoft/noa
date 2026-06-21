@@ -8,6 +8,10 @@ This directory exists to prove the NOA receipt format is a **specification, not 
 - its **own** JCS (RFC 8785) canonicalizer,
 - its **own** RFC 8032 Ed25519 verification (pure-Python big-integer field math; the TS reference uses
   `node:crypto` / OpenSSL),
+- its **own** strict structural validator (`validate_receipt_shape`, mirroring `src/schema.ts`
+  `validateReceiptShape`): exact-keys / `additionalProperties:false` at every level, the frozen enum sets,
+  the `spec` / `id`-length / RFC-3339-`ts` / hash-format / `sig.alg=="ed25519"` rules, and the optional
+  B4 `governance.compliance` block — run **before any hashing**, exactly as the TS reference does,
 - its own SPKI parse, hash-chain walk, and verdict mapping.
 
 If two implementations with **independent crypto stacks** agree byte-for-byte on the canonical bytes and
@@ -27,8 +31,11 @@ npm run build && node impl-py/conformance.mjs
 the happy path: **VALID** on a genuine TS-signed chain (incl. a non-ASCII + astral-character note that
 exercises the JCS string + UTF-16 key-sort paths), **UNVERIFIED** with no keyring, **TAMPERED** on a
 content edit / a wrong-pubkey signature / a checkpoint-detected **tail-truncation**, **UNTRUSTED** on a
-cross-agent **impersonation** under an `--identity` manifest, and **MALFORMED** on a duplicate-key receipt
-(strict parse). The two independent stacks agree on all of them.
+cross-agent **impersonation** under an `--identity` manifest, **MALFORMED** on a duplicate-key receipt
+(strict parse), and **MALFORMED** on receipts that are **structurally invalid yet crypto-consistent**
+(a smuggled unknown field carrying fake PII, an out-of-spec enum, `sig.alg="rsa"`, a wrong `spec` — each
+re-hashed and re-signed so the signature is genuine and only the *structure* is out-of-spec). The two
+independent stacks agree on all of them.
 
 ## Self-test
 
@@ -38,7 +45,10 @@ single byte) — so the crypto is verified against the standard, not just agains
 ## Scope
 
 This is a **verifier** (the security-critical, must-be-independent half), now **verdict-equivalent** to
-the TS reference on the core controls: hash-chain, Ed25519 signature, key-continuity, **identity binding**
+the TS reference on the core controls: **structural validation** (`validate_receipt_shape`, run before
+hashing — exact-keys/`additionalProperties:false`, enums, `spec`, `id`-length, RFC-3339 `ts`, hash
+formats, `sig.alg=="ed25519"`, and the optional B4 `governance.compliance` block, matching
+`validateReceiptShape`), hash-chain, Ed25519 signature, key-continuity, **identity binding**
 (`--identity` → `UNTRUSTED` on an unauthorized `(agent.id, kid)` pairing), **checkpoint tail-truncation**
 (`--checkpoint`, incl. the §5b checkpoint-identity binding), and a **strict parse** (duplicate-key / float
 / prototype-key rejection, matching `safeParse`). It intentionally does **not** re-implement the *signer*,
