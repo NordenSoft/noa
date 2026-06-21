@@ -132,6 +132,61 @@ test("B1 (round-10 HIGH fix): RE-HEADING truncation — a co-trusted key appends
   assert.ok(multi.warnings.some((w) => /checkpoint completeness is opener-scoped/.test(w)), "multi-agent checkpoint must warn about opener-scoped completeness");
 });
 
+test("B1 (round-11 HIGH): TOCTOU — an ACCESSOR-property manifest entry that flips between validation and enforcement → UNTRUSTED (read-once snapshot)", () => {
+  // The manifest is read once at the validation pass and again at enforcement (4c-bis). A getter that
+  // returns ['alice-key'] to the validator (so validation passes) and ['bob-key'] to enforcement (so the
+  // bob-signed impersonation is "authorized") would verify VALID pre-fix. With the read-once snapshot the
+  // getter fires exactly once; enforcement reads the validated COPY → UNTRUSTED.
+  const impersonation = [buildReceipt(mkInput("alice"), null, { kid: bob.kid, privateKey: bob.privateKey })];
+  let reads = 0;
+  const manifest: Record<string, string[]> = { bob: ["bob-key"] };
+  Object.defineProperty(manifest, "alice", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      return (++reads === 1 ? ["alice-key"] : ["bob-key"]) as string[];
+    },
+  });
+  const r = verifyChain(impersonation, { keyring, identityManifest: manifest });
+  assert.equal(r.status, "UNTRUSTED", `expected the snapshot to defeat the flipping getter, got ${r.status}`);
+  assert.match(r.reason ?? "", /agent "alice" is not authorized for signing key "bob-key"/);
+  assert.equal(reads, 1, "the entry getter must be read EXACTLY ONCE (snapshot), not at both validation + enforcement");
+});
+
+test("B1 (round-11 HIGH): TOCTOU — an ARRAY-ELEMENT getter that flips between validation and enforcement → UNTRUSTED (slice copies by value)", () => {
+  // Subtler variant: the entry IS an array, but element [0] is a getter that returns 'alice-key' first
+  // (validation: every element is a string ✓) then 'bob-key' (enforcement: includes('bob-key') ✓). The
+  // snapshot copies via Array.prototype.slice, materializing element values at copy time → enforcement
+  // checks the captured 'alice-key', not the flipped 'bob-key'.
+  const impersonation = [buildReceipt(mkInput("alice"), null, { kid: bob.kid, privateKey: bob.privateKey })];
+  let reads = 0;
+  const arr: string[] = [];
+  Object.defineProperty(arr, "0", {
+    enumerable: true,
+    configurable: true,
+    get() {
+      return (++reads === 1 ? "alice-key" : "bob-key") as string;
+    },
+  });
+  arr.length = 1;
+  const manifest = { alice: arr, bob: ["bob-key"] };
+  const r = verifyChain(impersonation, { keyring, identityManifest: manifest });
+  assert.equal(r.status, "UNTRUSTED", `expected slice() to capture element values at copy time, got ${r.status}`);
+  assert.match(r.reason ?? "", /agent "alice" is not authorized for signing key "bob-key"/);
+  // exactly one read: slice() materializes element [0] once; enforcement reads the captured array, not arr
+  assert.equal(reads, 1, "the element getter must be read EXACTLY ONCE (slice copy), not at both validation + enforcement");
+});
+
+test("B1 (round-11): the read-once snapshot does NOT regress the legitimate accessor case — a getter returning a STABLE authorized value still VALID", () => {
+  // A getter that always returns the same authorized value must still pass — the snapshot only removes the
+  // ABILITY TO FLIP, it does not reject accessor-backed manifests.
+  const chain = [buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey })];
+  const manifest: Record<string, string[]> = { bob: ["bob-key"] };
+  Object.defineProperty(manifest, "alice", { enumerable: true, configurable: true, get() { return ["alice-key"]; } });
+  const r = verifyChain(chain, { keyring, identityManifest: manifest });
+  assert.equal(r.status, "VALID", r.reason);
+});
+
 test("B1: a malformed manifest is fail-closed (MALFORMED), never silently ignored", () => {
   const chain = [buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey })];
   // not an object

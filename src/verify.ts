@@ -78,23 +78,39 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   if (receipts.length === 0) return fail("MALFORMED", "empty receipt array", null, 0);
   if (receipts.length > maxReceipts) return fail("MALFORMED", `too many receipts (>${maxReceipts})`, null, receipts.length);
 
-  // Validate the optional identity manifest (a trust input). Fail-closed: a malformed manifest is an
-  // operator error, never silently ignored (that would re-open the very impersonation gap it closes).
-  const manifest = opts.identityManifest;
-  if (manifest !== undefined) {
-    if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
+  // Validate the optional identity manifest (a trust input) AND SNAPSHOT it. Fail-closed: a malformed
+  // manifest is an operator error, never silently ignored (that would re-open the very impersonation gap
+  // it closes).
+  //
+  // TOCTOU (round-11 HIGH): the live caller object is read once here (validation) and again at every
+  // enforcement point. An accessor (getter) entry — or an array whose element getter flips on second read —
+  // could return ['alice-key'] to the validator and ['bob-key'] to enforcement, "authorizing" a cross-agent
+  // impersonation that should be UNTRUSTED. Defense: read each entry EXACTLY ONCE into a plain Map, copying
+  // the array with Array.prototype.slice.call (capturing element VALUES at copy time, so element getters fire
+  // here and only here), validate the COPY, then have ALL enforcement points read ONLY from this snapshot —
+  // never the live manifest. (CLI/Python are immune: they consume JSON.parse output, which has no accessors.)
+  const haveManifest = opts.identityManifest !== undefined;
+  const manifest = new Map<string, string[]>();
+  if (haveManifest) {
+    const live = opts.identityManifest;
+    if (typeof live !== "object" || live === null || Array.isArray(live)) {
       return fail("MALFORMED", "identityManifest must be an object (agent.id -> kid[])", null, 0);
     }
-    // Validate over the SAME own-property view the enforcement points read (hasOwnProperty —
-    // includes NON-ENUMERABLE own props). Object.entries() only sees enumerable own props, so a
-    // non-enumerable own entry (e.g. one set via Object.defineProperty by a non-JSON consumer)
-    // would escape validation yet still be read by 4c-bis/§5b — letting an unvalidated value
-    // authorize an impersonation, or a non-array value throw out of this never-throws API.
-    for (const aid of Object.getOwnPropertyNames(manifest)) {
-      const kids = (manifest as Record<string, unknown>)[aid];
-      if (!Array.isArray(kids) || !kids.every((k) => typeof k === "string")) {
+    // Validate over the SAME own-property view the enforcement points read (own names — includes
+    // NON-ENUMERABLE own props). Object.entries() only sees enumerable own props, so a non-enumerable
+    // own entry would escape validation yet authorize a binding.
+    for (const aid of Object.getOwnPropertyNames(live)) {
+      const kidsLive = (live as Record<string, unknown>)[aid]; // ONE read of the entry (fires an entry getter once)
+      if (!Array.isArray(kidsLive)) {
         return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
       }
+      // Copy by VALUE: slice materializes each element once. A later read of the live array (or its
+      // element getters) cannot change what we validated/enforce against.
+      const kids = Array.prototype.slice.call(kidsLive) as unknown[];
+      if (!kids.every((k) => typeof k === "string")) {
+        return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
+      }
+      manifest.set(aid, kids as string[]);
     }
   }
 
@@ -175,8 +191,8 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     // UNTRUSTED (distinct from TAMPERED: bytes intact + key real, BINDING not). Without a keyring the
     // kid is unauthenticated, so an UNTRUSTED verdict would overclaim authentication never performed —
     // the result stays UNVERIFIED (with a warning) instead.
-    if (haveKeyring && manifest !== undefined) {
-      const allowed = Object.prototype.hasOwnProperty.call(manifest, r.agent.id) ? manifest[r.agent.id]! : undefined;
+    if (haveKeyring && haveManifest) {
+      const allowed = manifest.get(r.agent.id); // snapshot read — immune to live-object TOCTOU
       if (allowed === undefined || !allowed.includes(r.sig.kid)) {
         return fail("UNTRUSTED", `agent "${r.agent.id}" is not authorized for signing key "${r.sig.kid}" (identity manifest)`, chainId, list.length, seq);
       }
@@ -238,9 +254,9 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     // attacker is not), → UNTRUSTED. This strictly subsumes the old head-binding for the round-7 cases:
     // when the opener also heads + checkpoints (the legit case) genesis == head, so a legitimately-opener-
     // signed checkpoint still passes; a foreign key forged over the opener's head is still rejected.
-    if (haveKeyring && manifest !== undefined) {
+    if (haveKeyring && haveManifest) {
       const genesis = ordered[0]!;
-      const allowed = Object.prototype.hasOwnProperty.call(manifest, genesis.agent.id) ? manifest[genesis.agent.id]! : undefined;
+      const allowed = manifest.get(genesis.agent.id); // snapshot read — immune to live-object TOCTOU
       if (allowed === undefined || !allowed.includes(cp.sig.kid)) {
         return fail("UNTRUSTED", `checkpoint signing key "${cp.sig.kid}" is not authorized for chain opener (genesis) agent "${genesis.agent.id}" (identity manifest)`, chainId, list.length, head.chain.seq);
       }
@@ -268,7 +284,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   if (!haveKeyring) {
     warnings.push("no keyring supplied: signatures were NOT authenticated (status UNVERIFIED, not VALID)");
   }
-  if (manifest === undefined) {
+  if (!haveManifest) {
     warnings.push("no identityManifest supplied: attribution is kid-level — a VALID result proves a keyring-trusted key signed, NOT which agent.id (cross-agent impersonation undefended in a multi-key keyring)");
   } else if (!haveKeyring) {
     warnings.push("identityManifest supplied but no keyring: identity NOT bound — signatures are unauthenticated, so the (agent.id, kid) pairing was not enforced (status stays UNVERIFIED, never UNTRUSTED)");

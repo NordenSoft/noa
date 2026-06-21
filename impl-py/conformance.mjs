@@ -81,6 +81,15 @@ writeFileSync(join(dir, "wrong-keyring.json"), JSON.stringify({ [kp.kid]: otherK
 expect("TAMPERED (sig fails under wrong pubkey)", pyVerify([chainPath, join(dir, "wrong-keyring.json")]).code, 2);
 
 // ── Attack vectors: Python must match the TS reference's SECURITY verdicts, not just the happy path ──
+// NOTE (round-11 HIGH, identityManifest TOCTOU): the TS in-process API can be handed a manifest that is a
+// LIVE object with accessor (getter) entries — or an array whose element getter flips on the second read —
+// returning ['alice-key'] to the validation pass and ['bob-key'] to enforcement (cross-agent impersonation
+// that would verify VALID/ok:true). The TS verifier defends this by SNAPSHOTTING the manifest into a plain
+// Map at validation (each entry read EXACTLY ONCE, arrays copied by value via slice) and reading only the
+// snapshot at every enforcement point. This CLI/Python conformance path is IMMUNE BY CONSTRUCTION: the
+// manifest is loaded via JSON.parse from a file, and JSON has no accessors — every value is already a plain,
+// non-flipping array. The read-once invariant therefore only matters for the JS object API; it is documented
+// here so a re-implementer of the in-process library reproduces it (a re-implementer of the CLI need not).
 // 5. Cross-agent impersonation: agent.id=alice signed by bob → UNTRUSTED with a manifest (exit 5).
 const bob = generateKeyPair("agent-key-2");
 const imp = buildReceipt({

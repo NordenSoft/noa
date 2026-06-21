@@ -40,16 +40,28 @@ export interface ReceiptCoseResult {
  * (agent.id, kid) pairing fails (ok:false) — mirroring the `UNTRUSTED` verdict.
  */
 export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityManifest?: IdentityManifest): ReceiptCoseResult {
-  // Validate the optional manifest (fail-closed; matches verifyChain).
-  if (identityManifest !== undefined) {
+  // Validate the optional manifest AND SNAPSHOT it (fail-closed; matches verifyChain). Round-11 HIGH:
+  // read each entry EXACTLY ONCE into a plain Map, copying the array by value (slice captures element
+  // values at copy time) so a getter entry / element-getter cannot return one value to this validation
+  // pass and a different value to the enforcement read below (cross-agent impersonation TOCTOU). All
+  // enforcement reads from the snapshot, never the live object. (CLI/Python consume JSON.parse output —
+  // no accessors — so are immune; this defends the JS in-process API.)
+  const haveManifest = identityManifest !== undefined;
+  const manifest = new Map<string, string[]>();
+  if (haveManifest) {
     if (typeof identityManifest !== "object" || identityManifest === null || Array.isArray(identityManifest)) {
       return { ok: false, kid: null, receipt: null, reason: "identityManifest must be an object (agent.id -> kid[])", warnings: [] };
     }
     for (const aid of Object.getOwnPropertyNames(identityManifest)) {
-      const kids = (identityManifest as Record<string, unknown>)[aid];
-      if (!Array.isArray(kids) || !kids.every((k) => typeof k === "string")) {
+      const kidsLive = (identityManifest as Record<string, unknown>)[aid]; // ONE read of the entry
+      if (!Array.isArray(kidsLive)) {
         return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
       }
+      const kids = Array.prototype.slice.call(kidsLive) as unknown[]; // copy by value
+      if (!kids.every((k) => typeof k === "string")) {
+        return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
+      }
+      manifest.set(aid, kids as string[]);
     }
   }
   const r = coseSign1Verify(coseBytes, keyring);
@@ -65,8 +77,8 @@ export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityMan
   const receipt = parsed as Receipt;
   // Identity binding (mirrors verifyChain 4c-bis). The COSE signature is authenticated (r.ok), so an
   // unauthorized (agent.id, kid) pairing is cross-agent impersonation → reject.
-  if (identityManifest !== undefined) {
-    const allowed = Object.prototype.hasOwnProperty.call(identityManifest, receipt.agent.id) ? identityManifest[receipt.agent.id]! : undefined;
+  if (haveManifest) {
+    const allowed = manifest.get(receipt.agent.id); // snapshot read — immune to live-object TOCTOU
     if (allowed === undefined || r.kid === null || !allowed.includes(r.kid)) {
       return { ok: false, kid: r.kid, receipt: null, reason: `agent "${receipt.agent.id}" is not authorized for signing key "${r.kid}" (identity manifest)`, warnings: [] };
     }

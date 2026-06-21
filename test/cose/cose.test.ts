@@ -134,3 +134,31 @@ test("ROUND-8: receiptFromCose identity binding — impersonation on the COSE pa
   assert.equal(strong.ok, false);
   assert.match(strong.reason ?? "", /not authorized for signing key/);
 });
+
+test("ROUND-11 HIGH: receiptFromCose identity binding is TOCTOU-safe — a flipping accessor manifest entry → ok:false (read-once snapshot)", () => {
+  const alice = generateKeyPair("alice-key");
+  const bob = generateKeyPair("bob-key");
+  const keyring = { [alice.kid]: alice.publicKey, [bob.kid]: bob.publicKey };
+  // impersonation: agent.id=alice signed by bob, wrapped as COSE
+  const input: BuildInput = {
+    id: "rcpt_imp_toctou", ts: "2026-06-21T10:00:00.000Z", scope: { tenant: "t", chain: "c1" },
+    agent: { id: "alice", model: null, principal: "SERVICE" },
+    action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: sha256Prefixed("x"), reversible: false, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "r", approval: null, sandboxed: false },
+  };
+  const imp = buildReceipt(input, null, { kid: bob.kid, privateKey: bob.privateKey });
+  const cose = receiptToCose(imp, { kid: bob.kid, privateKey: bob.privateKey });
+
+  // a getter that returns ['alice-key'] to validation then ['bob-key'] to enforcement would, pre-fix,
+  // "authorize" alice→bob-key (ok:true). The COSE-path snapshot reads the entry exactly once → ok:false.
+  let reads = 0;
+  const manifest: Record<string, string[]> = { bob: ["bob-key"] };
+  Object.defineProperty(manifest, "alice", {
+    enumerable: true, configurable: true,
+    get() { return (++reads === 1 ? ["alice-key"] : ["bob-key"]) as string[]; },
+  });
+  const r = receiptFromCose(cose, keyring, manifest);
+  assert.equal(r.ok, false, "the flipping accessor must not authorize the impersonation");
+  assert.match(r.reason ?? "", /not authorized for signing key/);
+  assert.equal(reads, 1, "the COSE-path manifest entry must be read EXACTLY ONCE (snapshot)");
+});
