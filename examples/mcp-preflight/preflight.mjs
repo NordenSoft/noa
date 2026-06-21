@@ -12,7 +12,7 @@
  * deployment wires `preCheck` into the MCP transport at the tool-credential boundary (complete mediation:
  * "no receipt => no action"). Run:  npm run build  &&  node examples/mcp-preflight/preflight.mjs
  */
-import { buildReceipt, verifyChain, generateKeyPair, evaluate, policyHash } from "../../dist/src/index.js";
+import { buildReceipt, verifyChain, generateKeyPair, evaluate, policyHash, complianceCommit, verifyReceiptCompliance } from "../../dist/src/index.js";
 import { sha256Prefixed } from "../../dist/src/hash.js";
 
 // A deterministic, integer-only policy (noa.policy/0.2): block >= 1,000,000.00 DKK (in oere),
@@ -39,6 +39,10 @@ export function preCheck(toolCall, { signer, prev = null, seq = 0 }) {
   const inputs = { action: toolCall.name, amountMinor: toolCall.args?.amountMinor };
   const ev = evaluate(POLICY, inputs); // ALLOW | DENY, fail-closed, re-runnable
   const decision = ev.verdict === "ALLOW" ? "ALLOW" : "DENY";
+  // Commit the policy+inputs ONLY when the inputs are canonicalizable. Malformed inputs (e.g. a float
+  // amount) → fail-closed DENY with NO compliance block (there is nothing valid to commit/replay).
+  let compliance = null;
+  try { compliance = complianceCommit(POLICY, inputs); } catch { compliance = null; }
   const receipt = buildReceipt(
     {
       id: `rcpt_${seq}`,
@@ -51,8 +55,9 @@ export function preCheck(toolCall, { signer, prev = null, seq = 0 }) {
         paramsHash: sha256Prefixed(JSON.stringify(toolCall.args ?? {})),
         reversible: false, rollbackRef: null,
       },
-      // verdict records the OUTCOME; ruleId records WHICH policy rule fired (offline-replayable via evidence).
-      governance: { mode: "on", verdict: decision === "ALLOW" ? "EXECUTED" : "BLOCKED", ruleId: ev.ruleFired ?? "default-deny", approval: null, sandboxed: false },
+      // verdict records the OUTCOME; ruleId records WHICH policy rule fired; compliance COMMITS the
+      // policy + inputs by hash so the decision is re-checkable ON the receipt (B4), not just out-of-band.
+      governance: { mode: "on", verdict: decision === "ALLOW" ? "EXECUTED" : "BLOCKED", ruleId: ev.ruleFired ?? "default-deny", approval: null, sandboxed: false, compliance },
     },
     prev,
     signer,
@@ -91,14 +96,21 @@ function main() {
   const v = verifyChain(chain, { keyring });
   ok(`receipt chain VALID (offline, ${v.count} receipts)`, v.status === "VALID");
 
-  // THE MOAT: each decision is re-checkable offline — re-run the signed policy over the recorded inputs
-  // and obtain the SAME verdict the receipt recorded. (Decision-only competitors cannot do this.)
+  // THE MOAT (B4 on-receipt): each receipt COMMITS the policy + inputs by hash; verifyReceiptCompliance
+  // authenticates that commitment + re-runs the deterministic evaluator → the reproduced verdict matches
+  // the recorded decision. Offline, no NOA service. (Decision-only competitors cannot do this.)
   for (let i = 0; i < results.length; i++) {
-    const replay = evaluate(POLICY, results[i].evidence.inputs);
+    const cc = verifyReceiptCompliance(chain[i], POLICY, results[i].evidence.inputs);
     const recorded = chain[i].governance.verdict === "EXECUTED" ? "ALLOW" : "DENY";
-    const replayed = replay.verdict === "ALLOW" ? "ALLOW" : "DENY";
-    ok(`call ${i} decision is OFFLINE-REPLAYABLE (recorded ${recorded} === replay ${replayed})`, recorded === replayed);
+    if (chain[i].governance.compliance) {
+      ok(`call ${i} ON-RECEIPT compliance proof ok + verdict matches (${recorded})`, cc.ok && cc.policyVerdict === recorded);
+    } else {
+      ok(`call ${i} malformed inputs → no compliance commitment (fail-closed DENY)`, cc.ok === false && recorded === "DENY");
+    }
   }
+  // Tamper: a verifier handed DIFFERENT inputs than were recorded must FAIL the inputsHash bind.
+  const tampered = verifyReceiptCompliance(chain[0], POLICY, { action: "payment.refund", amountMinor: 999_999 });
+  ok("on-receipt compliance REJECTS substituted inputs (inputsHash bind)", tampered.ok === false);
 
   if (fail) { console.error(`\nMCP PRE-FLIGHT REFERENCE FAILED: ${fail} assertion(s)`); process.exit(1); }
   console.log("\nMCP PRE-FLIGHT REFERENCE PASS: every tool-call decision emitted a signed, offline-verifiable, REPLAYABLE receipt.");

@@ -235,3 +235,28 @@ external non-equivocation / tail-truncation defense the self-signed hash-chain (
 **Conformance:** NOA ships its own zero-dependency COSE_Sign1 producer/verifier, and its output is
 verified by an **independent** implementation (an off-the-shelf CBOR library + a separate Ed25519 path)
 in the conformance suite — universality is proven, not asserted.
+
+---
+
+## 9. L2 policy-compliance (optional, on-receipt)
+
+A receipt MAY commit an `governance.compliance` block binding the decision to the exact policy + the
+exact recorded inputs WITHOUT carrying raw inputs (which may be PII) — only their hashes:
+
+```
+"governance": { …, "compliance": {
+  "policyHash":   "sha256:…",   // JCS-canonical policy identity
+  "readSetHash":  "sha256:…",   // the policy's closed input read-set
+  "inputsHash":   "sha256:…"    // JCS-canonical recorded decision inputs (hash only — no raw PII)
+}}
+```
+
+`verifyReceiptCompliance(receipt, policy, inputs)` is the OFFLINE L2 proof: given the policy + the
+recorded inputs out-of-band, it confirms the three committed hashes authenticate exactly that policy +
+those inputs, then **re-runs the deterministic evaluator** to reproduce the verdict. It is fail-closed
+(any hash mismatch / non-canonicalizable input ⇒ `ok:false`) and never throws. A substituted policy
+(policyHash mismatch — anti policy-swap) or substituted inputs (inputsHash mismatch) is rejected.
+
+**Honesty razor (normative):** this proves *"policy P, re-run over the RECORDED inputs I, yields verdict
+V"* — NOT that I is true or complete, nor that P is a *good* rule. The reference policy DSL is
+integer-only / pure-logic; policies using non-deterministic elements are out of scope for replay.

@@ -54,12 +54,27 @@ export interface ReceiptAction {
   rollbackRef?: string | null;
 }
 
+/**
+ * On-receipt policy-compliance commitment (L2). Binds the decision to the EXACT signed policy + the
+ * EXACT recorded inputs WITHOUT carrying raw inputs (which may be PII) — only their hashes. A verifier
+ * given the policy + inputs out-of-band recomputes these three hashes (must match) and re-runs the
+ * deterministic evaluator to confirm the recorded verdict (see verifyReceiptCompliance). Optional +
+ * additive: receipts without it are unchanged.
+ */
+export interface ReceiptCompliance {
+  policyHash: string; // sha256:<hex> of the JCS-canonical policy (its published identity)
+  readSetHash: string; // sha256:<hex> of the policy's closed read-set (the input surface)
+  inputsHash: string; // sha256:<hex> of the JCS-canonical recorded decision inputs (no raw PII on-receipt)
+}
+
 export interface ReceiptGovernance {
   mode: GovernanceMode;
   verdict: Verdict;
   ruleId?: string | null;
   approval?: ReceiptApproval | null;
   sandboxed: boolean;
+  /** Optional L2 policy-compliance commitment — makes "the policy was satisfied" re-checkable on-receipt. */
+  compliance?: ReceiptCompliance | null;
 }
 
 export interface ReceiptChain {

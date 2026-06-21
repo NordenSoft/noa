@@ -127,7 +127,7 @@ export function validateReceiptShape(value: unknown): SchemaResult {
     checkExactKeys(
       r.governance,
       ["mode", "verdict", "sandboxed"],
-      ["ruleId", "approval"],
+      ["ruleId", "approval", "compliance"],
       "receipt.governance",
       errors,
     );
@@ -143,6 +143,15 @@ export function validateReceiptShape(value: unknown): SchemaResult {
         if (!str(r.governance.approval.at) || !RFC3339_RE.test(r.governance.approval.at as string))
           errors.push("receipt.governance.approval.at: RFC 3339 UTC");
       } else errors.push("receipt.governance.approval: object or null");
+    }
+    if (has(r.governance, "compliance") && r.governance.compliance !== null) {
+      const c = r.governance.compliance;
+      if (isPlainObject(c)) {
+        checkExactKeys(c, ["policyHash", "readSetHash", "inputsHash"], [], "receipt.governance.compliance", errors);
+        for (const k of ["policyHash", "readSetHash", "inputsHash"] as const) {
+          if (!str(c[k]) || !HASH_RE.test(c[k] as string)) errors.push(`receipt.governance.compliance.${k}: sha256:<64 hex>`);
+        }
+      } else errors.push("receipt.governance.compliance: object or null");
     }
   } else errors.push("receipt.governance: object required");
 

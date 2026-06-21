@@ -63,6 +63,10 @@ export {
 } from "./policy/dsl.js";
 export { evaluate, PolicyError, REF_EVAL_VERSION, type EvalResult } from "./policy/eval.js";
 export { validatePolicy, assertValidPolicy, type PolicyValidation } from "./policy/validate.js";
+// L2 on-receipt policy-compliance: commit (policyHash+readSetHash+inputsHash) into a receipt + verify it
+// offline by re-running the deterministic evaluator over the recorded inputs.
+export { complianceCommit, verifyReceiptCompliance, type ComplianceCommit, type ComplianceResult } from "./policy/compliance.js";
+export type { ReceiptCompliance } from "./types.js";
 
 // Universal envelope — the NOA receipt as a COSE_Sign1 (RFC 9052) / SCITT Signed Statement, so it
 // verifies in ANY conforming COSE implementation without NOA's code. Zero runtime deps.
