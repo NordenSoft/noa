@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { verifyChain, verifyChainText } from "../src/verify.js";
+import { verifyChain, verifyChainText, verifyCheckpoint } from "../src/verify.js";
 import { safeParse } from "../src/safe-json.js";
 import type { Keyring, Checkpoint } from "../src/index.js";
 
@@ -177,4 +177,35 @@ test("non-array input -> MALFORMED", () => {
 });
 test("empty array -> MALFORMED", () => {
   assert.equal(verifyChain([]).status, "MALFORMED");
+});
+
+// ── round-12 audit regressions ──────────────────────────────────────────────
+test("round-12 #9: verifyCheckpoint is fail-closed on null/non-object (malformed, never throws)", () => {
+  assert.equal(verifyCheckpoint(null as unknown as Checkpoint, keyring), "malformed checkpoint");
+  assert.equal(verifyCheckpoint(undefined as unknown as Checkpoint, keyring), "malformed checkpoint");
+  assert.equal(verifyCheckpoint("x" as unknown as Checkpoint, keyring), "malformed checkpoint");
+  assert.equal(verifyCheckpoint([] as unknown as Checkpoint, keyring), "malformed checkpoint");
+});
+
+test("round-12 #11: checkpoint is strictly schema-validated (unknown field / bad ts / bad headHash → malformed)", () => {
+  assert.equal(verifyCheckpoint(checkpoint, keyring), "ok"); // genuine checkpoint still authenticates
+  const extra = { ...checkpoint, smuggled: "ssn=123-45-6789" } as unknown as Checkpoint;
+  assert.equal(verifyCheckpoint(extra, keyring), "malformed checkpoint"); // additionalProperties:false even in the SIGNED surface
+  const badTs = { ...checkpoint, ts: 1718000000 } as unknown as Checkpoint;
+  assert.equal(verifyCheckpoint(badTs, keyring), "malformed checkpoint"); // numeric ts rejected
+  const badHead = { ...checkpoint, headHash: "deadbeef" } as unknown as Checkpoint;
+  assert.equal(verifyCheckpoint(badHead, keyring), "malformed checkpoint"); // headHash must be sha256:<64hex>
+});
+
+test("round-12 #3: a non-canonical base64 signature is TAMPERED (sig.value must round-trip to canonical)", () => {
+  const chain = structuredClone(load("valid-chain.json")) as Array<Record<string, any>>;
+  // embedded whitespace: Buffer.from decodes leniently to the SAME 64 bytes, but it is not canonical base64.
+  chain[0]!.sig.value = chain[0]!.sig.value.slice(0, 4) + " " + chain[0]!.sig.value.slice(4);
+  assert.equal(verifyChain(chain, { keyring }).status, "TAMPERED");
+});
+
+test("round-12 #10: verifyChain on a receipt with a throwing accessor → MALFORMED (never throws out)", () => {
+  let res!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { res = verifyChain([{ get spec() { throw new Error("boom"); } }], { keyring }); });
+  assert.equal(res.status, "MALFORMED");
 });

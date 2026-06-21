@@ -11,14 +11,25 @@
  * Honesty razor: this proves "policy P, re-run over the RECORDED inputs I, yields verdict V, and V equals
  * the decision the receipt recorded" — it is substitution-resistant (a receipt cannot commit DENY-inputs
  * while claiming ALLOW). It is NOT proof the policy was in force at decision time, nor that I is
- * true/complete, nor that P is a good rule. Never throws (fail-closed).
+ * true/complete, nor that P is a good rule.
+ *
+ * AUTHENTICITY (round-12): the L2 check operates on the receipt's `governance.compliance` block, which is
+ * attacker-mutable on a NON-authentic receipt. By itself it does NOT establish that the receipt is genuine.
+ * The carrier MUST be independently authenticated — either pass `{ keyring }` here (the carrier's own hash
+ * + Ed25519 signature are then verified BEFORE the L2 check; a non-authentic carrier ⇒ ok:false), or call
+ * `verifyChain([...], { keyring })` and require VALID first. Never report "compliant" off a carrier you
+ * have not authenticated. Never throws (fail-closed).
  */
 import type { Receipt } from "../types.js";
 import type { Policy, InputSnapshot } from "./dsl.js";
 import { policyHash, readSetHash } from "./dsl.js";
 import { evaluate } from "./eval.js";
 import { canonicalize } from "../jcs.js";
-import { sha256Prefixed } from "../hash.js";
+import { sha256Prefixed, sha256Hex } from "../hash.js";
+import { validateReceiptShape } from "../schema.js";
+import { receiptHashInput } from "../canonicalize.js";
+import { verifyEd25519, type Keyring } from "../keys.js";
+import { signingMessage, RECEIPT_SIG_DOMAIN } from "../signing.js";
 
 export interface ComplianceCommit {
   policyHash: string;
@@ -53,15 +64,51 @@ export interface ComplianceResult {
   ruleFired?: string | null;
 }
 
+export interface VerifyComplianceOptions {
+  /**
+   * Trust root (kid -> base64 SPKI). When supplied, the CARRIER receipt is authenticated BEFORE the L2
+   * check: its structure is validated, its `chain.hash` is recomputed from the canonical body, and its
+   * Ed25519 signature is verified against the keyring. A non-authentic carrier (bad shape / hash / unknown
+   * kid / bad signature) ⇒ ok:false. Omit it ONLY when the caller has already authenticated the carrier
+   * via `verifyChain([...], { keyring })` → VALID (see the module-level authenticity note).
+   */
+  keyring?: Keyring;
+}
+
 /**
  * Offline L2 proof. Confirms the receipt's committed (policyHash, readSetHash, inputsHash) authenticate
  * the supplied policy + inputs, then re-runs the deterministic evaluator. ok:true ⇒ "this receipt
  * committed to THIS policy + THESE inputs, and re-running them reproduces policyVerdict". Fail-closed.
+ *
+ * Pass `{ keyring }` to ALSO authenticate the carrier here (recommended); otherwise this presumes the
+ * caller already authenticated the carrier (verifyChain → VALID). Without that, ok:true says nothing about
+ * the receipt being genuine — only that the committed block is internally policy-consistent.
  */
-export function verifyReceiptCompliance(receipt: Receipt, policy: Policy, inputs: InputSnapshot): ComplianceResult {
+export function verifyReceiptCompliance(
+  receipt: Receipt,
+  policy: Policy,
+  inputs: InputSnapshot,
+  opts: VerifyComplianceOptions = {},
+): ComplianceResult {
   const c = receipt.governance?.compliance;
   if (!c) return { ok: false, reason: "receipt carries no governance.compliance commitment" };
   try {
+    // CARRIER AUTHENTICATION (round-12 HIGH): when a keyring is supplied, prove the receipt itself is
+    // genuine BEFORE trusting its compliance block — otherwise a forged/tampered receipt (verifyChain ⇒
+    // TAMPERED) would still get a green "compliant" signal off its attacker-mutable governance.compliance.
+    if (opts.keyring) {
+      const shape = validateReceiptShape(receipt);
+      if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
+      const hashInput = receiptHashInput(receipt);
+      if ("sha256:" + sha256Hex(hashInput) !== receipt.chain.hash) {
+        return { ok: false, reason: "carrier receipt hash mismatch — not authentic" };
+      }
+      const pub = opts.keyring[receipt.sig.kid];
+      if (!pub) return { ok: false, reason: `carrier receipt signing key "${receipt.sig.kid}" not in keyring` };
+      if (!verifyEd25519(pub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), receipt.sig.value)) {
+        return { ok: false, reason: "carrier receipt signature not authenticated" };
+      }
+    }
     if (policyHash(policy) !== c.policyHash) return { ok: false, reason: "policyHash mismatch — supplied policy is not the committed one" };
     if (readSetHash(policy) !== c.readSetHash) return { ok: false, reason: "readSetHash mismatch" };
     if (sha256Prefixed(canonicalize(inputs)) !== c.inputsHash) return { ok: false, reason: "inputsHash mismatch — supplied inputs are not the recorded ones" };

@@ -97,6 +97,9 @@ def _isoncurve(P):
 
 def _decodepoint(s):
     y = sum(2**i * _bit(s, i) for i in range(0, _b - 1))
+    # RFC 8032: the encoded y-coordinate MUST be a canonical field element (y < q). A non-canonical
+    # encoding (q <= y < 2^255) would otherwise admit a second valid byte-string for the same point.
+    if y >= _q: raise ValueError("non-canonical point encoding (y >= q)")
     x = _xrecover(y)
     if x & 1 != _bit(s, _b - 1): x = _q - x
     P = [x, y]
@@ -115,6 +118,11 @@ def ed25519_verify(public32, message, signature):
         R = _decodepoint(signature[:32])
         A = _decodepoint(public32)
         S = _decodeint(signature[32:])
+        # RFC 8032 §5.1.7: REJECT a non-canonical S (S >= L). Because [L]B is the identity, a malleated
+        # signature S' = S + L satisfies the SAME verification equation — without this check the verifier
+        # accepts a second, different valid signature for one message (malleability), diverging from
+        # node:crypto/OpenSSL (which enforces S < L) and breaking cross-impl + signature-uniqueness.
+        if S >= _L: return False
         # h is decoded from the FULL 512-bit SHA-512 digest (RFC 8032 "Hint" reads 2*b bits), NOT just
         # the low 256 — truncating it to 256 bits yields a wrong scalar and rejects valid signatures.
         h = int.from_bytes(_H(_encodepoint(R) + public32 + message), "little")
@@ -310,15 +318,19 @@ def validate_receipt_shape(value):
                         errors.append("receipt.governance.approval.at: RFC 3339 UTC")
                 else:
                     errors.append("receipt.governance.approval: object or null")
-            # B4 optional governance.compliance ({policyHash, readSetHash, inputsHash}, each sha256:<64hex>).
+            # B4 optional governance.compliance ({policyHash, readSetHash, inputsHash}, each sha256:<64hex>,
+            # PLUS an optional recorded verdict ALLOW|DENY — round-11). Mirrors src/schema.ts:147-157.
             if "compliance" in gov and gov.get("compliance") is not None:
                 c = gov.get("compliance")
                 if _is_obj(c):
-                    _check_exact_keys(c, ["policyHash", "readSetHash", "inputsHash"], [], "receipt.governance.compliance", errors)
+                    _check_exact_keys(c, ["policyHash", "readSetHash", "inputsHash"], ["verdict"], "receipt.governance.compliance", errors)
                     for k in ("policyHash", "readSetHash", "inputsHash"):
                         cv = c.get(k)
                         if not _is_str(cv) or not _HASH_RE.match(cv):
                             errors.append("receipt.governance.compliance.%s: sha256:<64 hex>" % k)
+                    # Optional + additive: when present the recorded decision MUST be ALLOW|DENY.
+                    if "verdict" in c and c.get("verdict") not in ("ALLOW", "DENY"):
+                        errors.append('receipt.governance.compliance.verdict: must be "ALLOW" or "DENY"')
                 else:
                     errors.append("receipt.governance.compliance: object or null")
         else:
@@ -377,11 +389,21 @@ def checkpoint_hash_input(cp):
     clone.get("sig", {}).pop("value", None)
     return jcs(clone)
 
+_CHECKPOINT_KEYS = frozenset(["spec", "chain", "highestSeq", "headHash", "ts", "sig"])
+
 def _verify_checkpoint(cp, keyring):
+    # STRICT structural validation, parity with src/verify.ts verifyCheckpoint (round-12): a checkpoint is a
+    # SIGNED trust statement → additionalProperties:false + typed/format fields. Mismatch ⇒ "bad" (TAMPERED).
+    if not isinstance(cp, dict): return "bad"
+    if any(k not in _CHECKPOINT_KEYS for k in cp.keys()): return "bad"
     if cp.get("spec") != "noa.checkpoint/0.1": return "bad"
-    if not isinstance(cp.get("chain"), str) or not isinstance(cp.get("headHash"), str) or not isinstance(cp.get("highestSeq"), int): return "bad"
+    if not isinstance(cp.get("chain"), str) or not cp.get("chain"): return "bad"
+    hs = cp.get("highestSeq")
+    if not isinstance(hs, int) or isinstance(hs, bool) or hs < 0 or hs > _SAFE_INT_MAX: return "bad"
+    if not isinstance(cp.get("headHash"), str) or not _HASH_RE.match(cp.get("headHash")): return "bad"
+    if not isinstance(cp.get("ts"), str) or not _RFC3339_RE.match(cp.get("ts")): return "bad"
     sig = cp.get("sig")
-    if not isinstance(sig, dict) or not isinstance(sig.get("kid"), str) or not isinstance(sig.get("value"), str): return "bad"
+    if not isinstance(sig, dict) or not isinstance(sig.get("kid"), str) or not sig.get("kid") or not isinstance(sig.get("value"), str) or not sig.get("value"): return "bad"
     pub = (keyring or {}).get(sig["kid"])
     if not pub: return "unverified"
     try:
@@ -446,9 +468,10 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
             msg = _RECEIPT_DOMAIN + hashlib.sha256(hi.encode("utf-8")).digest()
             try:
                 sig = base64.b64decode(r["sig"].get("value", ""), validate=True)
+                pub_raw = spki_to_raw(pub)  # a malformed keyring SPKI must fail-closed (TAMPERED), never raise
             except Exception:
-                return "TAMPERED", f"bad signature encoding at seq {s}"
-            if not ed25519_verify(spki_to_raw(pub), msg, sig):
+                return "TAMPERED", f"bad signature/key encoding at seq {s}"
+            if not ed25519_verify(pub_raw, msg, sig):
                 return "TAMPERED", f"invalid signature at seq {s}"
             if identity_manifest is not None and not _authorized(identity_manifest, aid, kid):  # 4c-bis
                 return "UNTRUSTED", f'agent "{aid}" not authorized for kid "{kid}" at seq {s}'
@@ -504,10 +527,14 @@ def _main(argv):
     if receipts_path is None:
         sys.stderr.write("usage: noa_verify.py <receipts.json> [keyring.json] [--identity <m.json>] [--checkpoint <cp.json>]\n"); return 4
     try:
+        # ALL input files (incl. the auxiliary trust files) go through the strict parser — parity with the
+        # TS CLI (src/cli.ts readJsonFile -> safeParse). Plain json.load silently accepts duplicate keys
+        # (last-wins), floats, and NaN/Infinity, which would make the documented T8 dup-key mitigation FALSE
+        # for the keyring/identity/checkpoint and diverge from the TS reference (round-12 audit).
         receipts = strict_load_text(open(receipts_path).read())  # strict: dup-key/float/proto rejected
-        keyring = json.load(open(keyring_path)) if keyring_path else None
-        identity = json.load(open(identity_path)) if identity_path else None
-        checkpoint = json.load(open(checkpoint_path)) if checkpoint_path else None
+        keyring = strict_load_text(open(keyring_path).read()) if keyring_path else None
+        identity = strict_load_text(open(identity_path).read()) if identity_path else None
+        checkpoint = strict_load_text(open(checkpoint_path).read()) if checkpoint_path else None
     except Exception as e:
         print(json.dumps({"status": "MALFORMED", "detail": str(e)})); return _EXIT["MALFORMED"]
     status, detail = verify_chain(receipts, keyring, identity, checkpoint)

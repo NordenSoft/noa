@@ -276,8 +276,18 @@ throws. A substituted policy (policyHash mismatch — anti policy-swap) or subst
 mismatch) is rejected. The `verdict` field is OPTIONAL and additive: a commitment without it stays
 backward-compatible (no reconciliation; the verifier just returns the re-run verdict).
 
+**CARRIER AUTHENTICITY (normative MUST):** the L2 check operates on the receipt's `governance.compliance`
+block, which is attacker-mutable on a NON-authentic receipt — so by itself it does NOT establish that the
+receipt is genuine. A verifier MUST authenticate the carrier before trusting an L2 `ok:true`, by EITHER
+passing the keyring to `verifyReceiptCompliance(receipt, policy, inputs, { keyring })` (it then verifies the
+carrier's own `chain.hash` + Ed25519 signature first; a non-authentic carrier ⇒ `ok:false`) OR calling
+`verifyChain([...], { keyring })` and requiring `VALID` first. Reporting "compliant" off an un-authenticated
+carrier is a conformance violation.
+
 **Honesty razor (normative):** this proves *"policy P, re-run over the RECORDED inputs I, yields verdict
-V, and V equals the decision the receipt recorded"* — it is substitution-resistant (a receipt cannot
-commit DENY-inputs while claiming ALLOW), but it is NOT proof the policy was in force at decision time,
-nor that I is true or complete, nor that P is a *good* rule. The reference policy DSL is integer-only /
-pure-logic; policies using non-deterministic elements are out of scope for replay.
+V, and V equals the decision the receipt recorded, on an authenticated carrier"* — it is
+substitution-resistant (a receipt cannot commit DENY-inputs while claiming ALLOW), but it is NOT proof the
+policy was in force at decision time, nor that I is true or complete, nor that P is a *good* rule, nor that
+the recorded inputs reflect external ground truth (the oracle/input-authenticity limit — a lying agent can
+emit a fully-valid receipt over inputs it fabricated). The reference policy DSL is integer-only / pure-logic;
+policies using non-deterministic elements are out of scope for replay.

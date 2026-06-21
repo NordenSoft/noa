@@ -36,6 +36,9 @@ truth or safety.
 | T9 | Smuggle PII/data in an **unknown** field | `additionalProperties:false` everywhere | `schema.test`, `malformed/pii-smuggle` |
 | T10 | Malicious input → verifier DoS/pollution | depth/size bounds, `__proto__` reject, no eval/network | `safe-json.test`, `malformed/deep-nest` |
 | T11 | Cross-protocol signature reuse | domain-separated signing preimage (`NOA-Receipt-v0.1-sig:`) | `roundtrip.test`, conformance |
+| T12 | "Compliant" claimed off a **forged** carrier (L2) | `verifyReceiptCompliance(…, { keyring })` authenticates the carrier (own-hash + Ed25519) BEFORE the L2 check; or require `verifyChain → VALID` first | `policy/compliance.test` (round-12 #1) |
+| T13 | L2 verdict the receipt **never re-derives** | committed `verdict` (ALLOW\|DENY) is reconciled against a re-run of the evaluator → `ok:false` on mismatch | `policy/compliance.test` (round-11) |
+| T14 | Ed25519 signature malleability (`S' = S+L`) | both reference verifiers reject non-canonical `S ≥ L` and non-canonical point/base64 encodings | `conformance` (round-12 #2/#3) |
 
 > Note on T9: this stops PII in **unknown** fields. It does NOT stop a caller putting PII in a
 > **known** opaque string (e.g. `approval.by`, `agent.model`). Those fields are opaque by
@@ -114,6 +117,12 @@ truth or safety.
 - **Truthfulness of the action:** a receipt records *what was authorized and decided*, not
   that the downstream system actually did it. Pair with the receiving system's own logs for
   end-to-end assurance (receiver-attestation is a v1.0 goal).
+- **L2 input-authenticity / the oracle limit:** `verifyReceiptCompliance` proves the recorded decision
+  re-runs to the recorded verdict over the policy + the RECORDED inputs — it does NOT prove those inputs
+  reflect external ground truth. A compromised or lying agent can emit a fully-valid, fully-verifying
+  receipt over inputs it fabricated (e.g. "balance read = 0"). Closing this needs source/tool
+  co-signatures over the read-set (a v1.0 witnessed-input goal); today L2 certifies *consistency of a
+  self-reported decision on an authenticated carrier*, not the truth of its inputs.
 - **Enforcement bypass:** see SECURITY.md — `noa.guard()` is advisory unless placed at the
   credential/write boundary; the MCP proxy must fail-closed.
 

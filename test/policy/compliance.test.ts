@@ -110,3 +110,44 @@ test("B4: a receipt with NO compliance block → ok:false (nothing to prove)", (
   const r = buildReceipt(input, null, { kid: kp.kid, privateKey: kp.privateKey });
   assert.equal(verifyReceiptCompliance(r, POLICY, { action: "payment.refund", amountMinor: 1 }).ok, false);
 });
+
+// ── round-12 #1 (HIGH): carrier AUTHENTICITY. The L2 proof runs over governance.compliance, which is
+// attacker-mutable on a non-authentic receipt. Passing { keyring } authenticates the carrier first. ──
+test("round-12 #1: with a keyring, an AUTHENTIC carrier passes the L2 proof", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED");
+  const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring });
+  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.policyVerdict, "ALLOW");
+});
+
+test("round-12 #1: with a keyring, a TAMPERED carrier (corrupt signature) is REJECTED — not authentic", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED");
+  const broken = JSON.parse(JSON.stringify(r));
+  broken.sig.value = "AAAA" + broken.sig.value.slice(4); // same 64-byte length, wrong signature
+  assert.equal(verifyChain([broken], { keyring }).status, "TAMPERED"); // the carrier IS forged…
+  const res = verifyReceiptCompliance(broken, POLICY, inputs, { keyring }); // …so L2 must not green-light it
+  assert.equal(res.ok, false);
+  assert.match(res.reason ?? "", /not authenticated|hash mismatch|malformed/);
+});
+
+test("round-12 #1: weaponized — swapping the WHOLE compliance block is caught by carrier auth", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED");
+  const permissive: Policy = { spec: "noa.policy/0.2", id: "evil", requiredPaths: [], rules: [{ id: "x", when: { op: "exists", path: "action" }, then: "ALLOW" }] };
+  const swapped = JSON.parse(JSON.stringify(r));
+  swapped.governance.compliance = complianceCommit(permissive, inputs); // mutates the hashed body, stale chain.hash
+  // WITHOUT a keyring the L2 hashes line up for the swapped policy → false green (documents the gap the fix closes):
+  assert.equal(verifyReceiptCompliance(swapped, permissive, inputs).ok, true);
+  // WITH a keyring the forged carrier is rejected (recomputed hash ≠ the stale signed hash):
+  assert.equal(verifyReceiptCompliance(swapped, permissive, inputs, { keyring }).ok, false);
+});
+
+test("round-12 #1: with a keyring, an unknown signing kid is REJECTED", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED");
+  const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring: {} });
+  assert.equal(res.ok, false);
+  assert.match(res.reason ?? "", /not in keyring/);
+});

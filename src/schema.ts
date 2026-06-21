@@ -74,6 +74,9 @@ export function validateReceiptShape(value: unknown): SchemaResult {
   }
   const r = value;
 
+  // Fail-closed: a caller-supplied LIVE object with a throwing/side-effecting accessor must yield a
+  // structural rejection, never escape as a raw throw (mirrors the fail-closed Python validator) — round-12.
+  try {
   checkExactKeys(
     r,
     ["spec", "id", "ts", "scope", "agent", "action", "governance", "chain", "sig"],
@@ -176,6 +179,9 @@ export function validateReceiptShape(value: unknown): SchemaResult {
     if (!str(r.sig.kid) || r.sig.kid.length === 0) errors.push("receipt.sig.kid: non-empty string");
     if (!str(r.sig.value) || r.sig.value.length === 0) errors.push("receipt.sig.value: non-empty string");
   } else errors.push("receipt.sig: object required (signatures are mandatory in v0.1)");
+  } catch (e) {
+    return { ok: false, errors: [`receipt: structural-validation error: ${(e as Error).message}`] };
+  }
 
   return { ok: errors.length === 0, errors };
 }

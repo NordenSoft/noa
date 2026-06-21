@@ -152,6 +152,10 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   const pinnedKid = new Map<string, string>(); // agent.id -> kid (key continuity)
   let prev: Receipt | null = null;
 
+  // Robustness (round-12): a caller-supplied LIVE receipt object with a throwing/side-effecting accessor
+  // must yield MALFORMED, never escape as a raw throw. verifyChainText/CLI/Python are immune (they consume
+  // safeParse/JSON.parse output, which has no accessors); this guards the direct verifyChain(object) path.
+  try {
   for (const r of ordered) {
     const seq = r.chain.seq;
 
@@ -214,6 +218,9 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       }
     }
     prev = r;
+  }
+  } catch {
+    return fail("MALFORMED", "receipt object threw during chain walk", chainId, list.length);
   }
 
   // 5. Tail-truncation check (only possible with a checkpoint).
@@ -313,13 +320,31 @@ export function verifyChainText(text: string, opts: VerifyOptions = {}): VerifyR
 
 type CheckpointVerdict = "ok" | "unverified" | "bad spec" | "malformed checkpoint" | "bad checkpoint signature";
 
+const CHECKPOINT_KEYS = ["spec", "chain", "highestSeq", "headHash", "ts", "sig"];
+const CP_HASH_RE = /^sha256:[0-9a-f]{64}$/;
+// RFC 3339 (lowercase t/z accepted), matching schema.ts RFC3339_RE.
+const CP_RFC3339_RE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
+
 export function verifyCheckpoint(cp: Checkpoint, keyring?: Keyring): CheckpointVerdict {
-  if (cp.spec !== "noa.checkpoint/0.1") return "bad spec";
-  if (typeof cp.chain !== "string" || typeof cp.headHash !== "string" || typeof cp.highestSeq !== "number") {
+  // STRICT, FAIL-CLOSED structural validation (round-12): a checkpoint is a SIGNED trust statement, so it
+  // gets the same discipline as a receipt — null/non-object, unknown fields (additionalProperties:false,
+  // threat-model T9 "no smuggled field at any level"), and bad-typed/format fields are MALFORMED. Never a
+  // raw throw (round-12 #9: verifyCheckpoint(null) used to TypeError), never silently honored.
+  const c = cp as unknown as Record<string, unknown>;
+  if (typeof c !== "object" || c === null || Array.isArray(c)) return "malformed checkpoint";
+  for (const k of Object.keys(c)) {
+    if (!CHECKPOINT_KEYS.includes(k)) return "malformed checkpoint";
+  }
+  if (c.spec !== "noa.checkpoint/0.1") return "bad spec";
+  if (typeof c.chain !== "string" || c.chain.length === 0) return "malformed checkpoint";
+  if (typeof c.highestSeq !== "number" || !Number.isSafeInteger(c.highestSeq) || c.highestSeq < 0) return "malformed checkpoint";
+  if (typeof c.headHash !== "string" || !CP_HASH_RE.test(c.headHash)) return "malformed checkpoint";
+  if (typeof c.ts !== "string" || !CP_RFC3339_RE.test(c.ts)) return "malformed checkpoint";
+  const sig = c.sig as Record<string, unknown> | undefined;
+  if (!sig || typeof sig !== "object" || typeof sig.kid !== "string" || sig.kid.length === 0 || typeof sig.value !== "string" || sig.value.length === 0) {
     return "malformed checkpoint";
   }
-  if (!cp.sig || typeof cp.sig.kid !== "string" || typeof cp.sig.value !== "string") return "malformed checkpoint";
-  const pub = keyring?.[cp.sig.kid];
+  const pub = keyring?.[sig.kid];
   if (!pub) return "unverified";
   let msg: Buffer;
   try {
@@ -327,6 +352,6 @@ export function verifyCheckpoint(cp: Checkpoint, keyring?: Keyring): CheckpointV
   } catch {
     return "malformed checkpoint";
   }
-  const ok = verifyEd25519(pub, msg, cp.sig.value);
+  const ok = verifyEd25519(pub, msg, sig.value);
   return ok ? "ok" : "bad checkpoint signature";
 }

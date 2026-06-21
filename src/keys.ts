@@ -61,7 +61,16 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // dedup, byte-pinning) cannot be bypassed by re-encoding. Re-export and require byte-equality.
     const canonical = key.export({ type: "spki", format: "der" }) as Buffer;
     if (!canonical.equals(der)) return false;
-    return cryptoVerify(null, message, key, Buffer.from(signatureB64, "base64"));
+    // STRICT, CANONICAL base64 for the signature. sig.value is NOT covered by the receipt hash, so its
+    // exact byte string is unconstrained by the chain — only the decoded 64 bytes matter cryptographically.
+    // node's Buffer.from(…, "base64") is LENIENT (silently ignores embedded whitespace, missing '='
+    // padding, and trailing garbage), so many distinct strings decode to ONE valid 64-byte signature →
+    // sig.value is non-canonical, and a receipt this verifier accepts is rejected (TAMPERED) by the strict
+    // Python reference (base64decode validate=True), breaking the cross-impl consensus bar (round-12).
+    // Require exactly 64 bytes AND that the input round-trips to its own canonical base64 encoding.
+    const sigBytes = Buffer.from(signatureB64, "base64");
+    if (sigBytes.length !== 64 || sigBytes.toString("base64") !== signatureB64) return false;
+    return cryptoVerify(null, message, key, sigBytes);
   } catch {
     return false;
   }

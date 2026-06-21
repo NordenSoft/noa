@@ -15,7 +15,7 @@ import { buildReceipt, buildCheckpoint } from "../dist/src/builder.js";
 import { sha256Prefixed, sha256Hex } from "../dist/src/hash.js";
 import { receiptHashInput } from "../dist/src/canonicalize.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../dist/src/signing.js";
-import { verifyChain } from "../dist/src/index.js";
+import { verifyChain, complianceCommit } from "../dist/src/index.js";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -212,6 +212,58 @@ structParity("MALFORMED (bad enum: action.riskClass)", (m) => { m.action.riskCla
 structParity('MALFORMED (sig.alg="rsa")', (m) => { m.sig.alg = "rsa"; });
 // 11. Wrong spec string.
 structParity("MALFORMED (wrong spec)", (m) => { m.spec = "noa.receipt/9.9"; });
+
+// ── B4 on-receipt compliance WITH verdict (round-12 #5/#8): a receipt carrying governance.compliance
+// (incl. the optional `verdict`) is NOA's OWN B4 output. Both verifiers MUST accept it. Before the port fix
+// the Python validator omitted `verdict` from the optional-key list, so an authentic NOA B4 receipt verified
+// VALID in TS but MALFORMED in Python — a verifier that rejects its own producer's receipts. ──
+{
+  const POLICY = { spec: "noa.policy/0.2", id: "refund-guard-v1", requiredPaths: ["action", "amountMinor"],
+    rules: [{ id: "allow", when: { op: "lt", path: "amountMinor", value: 100000000 }, then: "ALLOW" }] };
+  const cr = buildReceipt({
+    id: "comp_0", ts: "2026-06-21T10:00:00.000Z", scope: { tenant: "acme", chain: "chain-comp" },
+    agent: { id: "agent-7", model: null, principal: "POLICY" },
+    action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: sha256Prefixed("x"), reversible: false, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "allow", approval: null, sandboxed: false, compliance: complianceCommit(POLICY, { action: "payment.refund", amountMinor: 4200 }) },
+  }, null, { kid: kp.kid, privateKey: kp.privateKey });
+  const compPath = join(dir, "compliance.json");
+  writeFileSync(compPath, JSON.stringify([cr]));
+  const tsComp = verifyChain([cr], { keyring }).status;
+  const tsCompOk = tsComp === "VALID";
+  console.log(`${tsCompOk ? "✓" : "✗"} VALID    (B4 compliance receipt w/ verdict) [TS verifyChain]: ${tsComp} (want VALID)`);
+  if (!tsCompOk) failures++;
+  expect("VALID    (B4 compliance receipt w/ verdict) [PY verifier]", pyVerify([compPath, keyringPath]).code, 0);
+}
+
+// ── Signature canonicality (round-12 #2 malleability, #3 non-canonical base64). sig.value is NOT covered by
+// the receipt hash, so these mutate ONLY the signature encoding (hash + content stay intact); both verifiers
+// MUST reject (TAMPERED). Before the fixes the Python verifier accepted a malleated S (no S<L check) and
+// rejected non-canonical base64 that TS accepted — two consensus divergences on identical input bytes. ──
+{
+  const _L = 2n ** 252n + 27742317777372353535851937790883648493n;
+  const sb = Buffer.from(r0.sig.value, "base64"); // 64 bytes: R(32) || S(32, little-endian)
+  let S = 0n; for (let i = 31; i >= 0; i--) S = (S << 8n) | BigInt(sb[32 + i]);
+  let Sp = S + _L; const spb = Buffer.alloc(32); for (let i = 0; i < 32; i++) { spb[i] = Number(Sp & 0xffn); Sp >>= 8n; }
+  const malleated = JSON.parse(JSON.stringify(r0));
+  malleated.sig.value = Buffer.concat([sb.subarray(0, 32), spb]).toString("base64");
+  const malPath = join(dir, "malleated.json");
+  writeFileSync(malPath, JSON.stringify([malleated]));
+  const tsMal = verifyChain([malleated], { keyring }).status;
+  const tsMalOk = tsMal === "TAMPERED";
+  console.log(`${tsMalOk ? "✓" : "✗"} TAMPERED (Ed25519 S-malleability, S+L) [TS verifyChain]: ${tsMal} (want TAMPERED)`);
+  if (!tsMalOk) failures++;
+  expect("TAMPERED (Ed25519 S-malleability, S+L) [PY verifier]", pyVerify([malPath, keyringPath]).code, 2);
+
+  const nc = JSON.parse(JSON.stringify(r0)); // embedded space: decodes leniently to the same 64 bytes, non-canonical
+  nc.sig.value = r0.sig.value.slice(0, 4) + " " + r0.sig.value.slice(4);
+  const ncPath = join(dir, "noncanon-b64.json");
+  writeFileSync(ncPath, JSON.stringify([nc]));
+  const tsNc = verifyChain([nc], { keyring }).status;
+  const tsNcOk = tsNc === "TAMPERED";
+  console.log(`${tsNcOk ? "✓" : "✗"} TAMPERED (non-canonical base64 sig) [TS verifyChain]: ${tsNc} (want TAMPERED)`);
+  if (!tsNcOk) failures++;
+  expect("TAMPERED (non-canonical base64 sig) [PY verifier]", pyVerify([ncPath, keyringPath]).code, 2);
+}
 
 if (failures) { console.error(`\nCROSS-IMPL CONFORMANCE FAILED: ${failures} mismatch(es)`); process.exit(1); }
 console.log("\nCROSS-IMPL CONFORMANCE PASS: the independent Python verifier agrees with the TS reference on every vector (incl. impersonation/truncation/dup-key security verdicts).");
