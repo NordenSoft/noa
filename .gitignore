@@ -5,3 +5,7 @@ dist/
 .venv/
 *.tsbuildinfo
 # generated conformance vectors are committed (deterministic); build output is not
+
+# Python
+__pycache__/
+*.pyc
