@@ -459,6 +459,7 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
             return "TAMPERED", f"broken linkage at seq {s}"
         prev = r
     head = by_seq[len(receipts) - 1]                 # 5 tail-truncation
+    warnings = []
     if checkpoint is not None:
         cpv = _verify_checkpoint(checkpoint, keyring)
         if cpv == "bad": return "TAMPERED", "checkpoint invalid"
@@ -466,9 +467,24 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
         if checkpoint.get("chain") != chain_id: return "TAMPERED", "checkpoint chain mismatch"
         if checkpoint.get("highestSeq") != head["chain"].get("seq") or checkpoint.get("headHash") != head["chain"].get("hash"):
             return "TAMPERED", "chain head does not match checkpoint (tail truncated/extended)"
-        if have_keyring and identity_manifest is not None and not _authorized(identity_manifest, head.get("agent", {}).get("id"), checkpoint["sig"]["kid"]):  # 5b
-            return "UNTRUSTED", "checkpoint kid not authorized for head agent"
-    return ("VALID" if have_keyring else "UNVERIFIED"), f"{len(receipts)} receipts, chain {chain_id}"
+        # 5b checkpoint identity binding — bind to the chain's GENESIS agent (the OPENER, seq 0), NOT the
+        # mutable head. Round-10 audit: a shared scope.chain lets any co-trusted key APPEND its receipt onto
+        # a victim's prefix, become the head, drop the victim's tail, and forge a checkpoint over its OWN
+        # head; head-binding then "validated" the attacker against its OWN authorized id (VALID + erased
+        # tail). The opener cannot be re-written by an appended tail, so genesis-binding rejects the
+        # re-heading attacker's checkpoint as UNTRUSTED while still admitting the legit opener checkpoint.
+        if have_keyring and identity_manifest is not None:
+            genesis = by_seq[0]
+            if not _authorized(identity_manifest, genesis.get("agent", {}).get("id"), checkpoint["sig"]["kid"]):
+                return "UNTRUSTED", "checkpoint kid not authorized for chain opener (genesis) agent"
+            # opener-scoped completeness caveat: a co-agent's tail on the same shared chain is not
+            # separately certified by the opener's checkpoint (the opener dropping it needs the v1.0 anchor).
+            if len({r.get("agent", {}).get("id") for r in receipts}) > 1:
+                warnings.append("checkpoint completeness is opener-scoped: chain has >1 agent.id, a co-agent's tail is NOT separately certified")
+    detail = f"{len(receipts)} receipts, chain {chain_id}"
+    if warnings:
+        detail += " | " + " | ".join(warnings)
+    return ("VALID" if have_keyring else "UNVERIFIED"), detail
 
 _EXIT = {"VALID": 0, "UNVERIFIED": 1, "TAMPERED": 2, "MALFORMED": 3, "UNTRUSTED": 5}
 

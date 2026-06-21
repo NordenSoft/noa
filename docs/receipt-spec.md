@@ -159,7 +159,10 @@ verify(receipts, { keyring?, checkpoint?, identityManifest? }):
                                                            this agent.id). No manifest => kid-level
                                                            attribution + an explicit warning.
   6. linkage: seq 0 => prevHash null; else prevHash == prev.hash && seq == prev.seq+1
-  7. if checkpoint: assert head matches checkpoint (tail-truncation)
+  7. if checkpoint: assert head matches checkpoint (tail-truncation); and (if identityManifest
+       supplied) the checkpoint sig.kid MUST be authorized for the GENESIS agent.id (the chain
+       OPENER, seq 0) — NOT the mutable head — else UNTRUSTED (closes the re-heading attack); warn
+       when the chain has >1 agent.id (opener-scoped completeness)
   -> VALID | UNVERIFIED | UNTRUSTED | TAMPERED | MALFORMED
 ```
 
@@ -188,10 +191,21 @@ receipts**: with a keyring supplied, a checkpoint signed by an unknown `kid` (or
 signature) is `TAMPERED`, and `tailChecked` is set true **only** for an authenticated
 checkpoint — otherwise an attacker could drop the tail and forge a checkpoint over the
 truncated head with their own key. **Identity-bound (when an `identityManifest` is supplied):**
-the checkpoint is held to the SAME per-agent authorization as receipts — its `sig.kid` MUST be
-authorized for the HEAD receipt's `agent.id` (the agent whose tail it certifies), else `UNTRUSTED`.
-Without this a *co-trusted-but-unauthorized* key could truncate one agent's tail and certify it —
-the §5b binding closes that on the anti-truncation control too. Without a checkpoint the verifier **warns** that
+the checkpoint is authorized by the chain **OPENER** — its `sig.kid` MUST be authorized for the
+**GENESIS** receipt's `agent.id` (the `seq == 0` receipt that opened the chain), else `UNTRUSTED`.
+**The authority is the opener, NOT the mutable head** — this is deliberate: a `scope.chain` is a
+*shared* partition with no opener/ownership binding, so any co-trusted key holder can APPEND its own
+receipt onto a victim's prefix, become the head, drop the victim's tail, and forge a checkpoint over
+its OWN head (the **re-heading** attack, round-10 audit). Binding to the head would then check the
+attacker's checkpoint against the attacker's OWN authorized `agent.id` → `VALID` while the victim's
+tail is erased. The opener cannot be re-written by an appended tail, so genesis-binding rejects the
+re-heading checkpoint as `UNTRUSTED` and strictly subsumes the legitimate opener-checkpoint case
+(when the opener also heads, genesis == head). **Multi-agent caveat:** the checkpoint completeness it
+proves is *opener-scoped*. When a chain holds more than one distinct `agent.id`, the verifier **warns**
+that a co-agent's tail is not separately certified by the opener's checkpoint. **Residual (needs the
+v1.0 external anchor):** the opener itself dropping a co-agent's tail, and the no-`identityManifest`
+case (kid-level only — any keyring-trusted key can forge a checkpoint over any head). Without a
+checkpoint the verifier **warns** that
 tail-truncation is undetectable offline. True tamper-*proof* (vs evident) needs an external
 anchor — transparency log / receiver-attestation — which is **v1.0** (§7).
 

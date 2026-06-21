@@ -226,11 +226,30 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     // some OTHER agent) could truncate the tail and forge a checkpoint over the truncated head, defeating
     // the only offline anti-truncation control in exactly the multi-key deployment B1 hardens. When a
     // manifest is supplied (and the signature is authenticated), the checkpoint's kid MUST be authorized
-    // for the HEAD receipt's agent.id — the agent whose tail it certifies.
+    // for the chain's GENESIS agent.id — the chain OPENER — NOT the mutable head.
+    //
+    // Round-10 audit: a scope.chain is a SHARED partition with no opener/ownership binding, so any
+    // co-trusted key holder can APPEND its own receipt onto a victim's prefix, BECOME the head, drop the
+    // victim's incriminating tail, and forge a checkpoint over its OWN head. Binding the checkpoint to the
+    // HEAD agent.id then "validated" the attacker against the attacker's own authorized id → VALID +
+    // tailChecked while the victim's tail was silently erased. Binding to the GENESIS agent (ordered[0],
+    // the receipt that opened the chain) closes this: the opener cannot be re-written by an appended tail,
+    // so a re-heading attacker's checkpoint is checked against the OPENER's authorized kid (which the
+    // attacker is not), → UNTRUSTED. This strictly subsumes the old head-binding for the round-7 cases:
+    // when the opener also heads + checkpoints (the legit case) genesis == head, so a legitimately-opener-
+    // signed checkpoint still passes; a foreign key forged over the opener's head is still rejected.
     if (haveKeyring && manifest !== undefined) {
-      const allowed = Object.prototype.hasOwnProperty.call(manifest, head.agent.id) ? manifest[head.agent.id]! : undefined;
+      const genesis = ordered[0]!;
+      const allowed = Object.prototype.hasOwnProperty.call(manifest, genesis.agent.id) ? manifest[genesis.agent.id]! : undefined;
       if (allowed === undefined || !allowed.includes(cp.sig.kid)) {
-        return fail("UNTRUSTED", `checkpoint signing key "${cp.sig.kid}" is not authorized for head agent "${head.agent.id}" (identity manifest)`, chainId, list.length, head.chain.seq);
+        return fail("UNTRUSTED", `checkpoint signing key "${cp.sig.kid}" is not authorized for chain opener (genesis) agent "${genesis.agent.id}" (identity manifest)`, chainId, list.length, head.chain.seq);
+      }
+      // The checkpoint authority is opener-scoped: it certifies the opener's view of the head, but a
+      // co-agent's tail on the same shared chain is NOT separately certified by it. Surface that the
+      // opener could still have dropped a co-agent's tail (the residual that needs the v1.0 anchor).
+      const distinctAgents = new Set(ordered.map((r) => r.agent.id));
+      if (distinctAgents.size > 1) {
+        warnings.push("checkpoint completeness is opener-scoped: the chain has more than one agent.id, and a co-agent's tail is NOT separately certified by the opener's checkpoint (the opener dropping a co-agent's tail needs the v1.0 external anchor)");
       }
     }
     // tailChecked is true ONLY for an authenticated checkpoint — an unauthenticated head match

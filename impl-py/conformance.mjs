@@ -139,6 +139,62 @@ function structParity(label, mutate) {
   expect(`${label} [PY verifier]`, pyVerify([p, keyringPath]).code, 3);
 }
 
+// 7b. RE-HEADING truncation (round-10 audit): a scope.chain is a SHARED partition with no opener/
+// ownership binding, so a co-trusted key can APPEND its own receipt onto a victim's prefix, BECOME the
+// head, DROP the victim's incriminating tail, and forge a checkpoint over its OWN head. The old §5b
+// head-binding "validated" the attacker against its OWN authorized agent.id → VALID + tailChecked while
+// the victim's tail was erased. Genesis-binding (checkpoint authority = the chain OPENER, seq 0) closes
+// it. Both impls MUST return UNTRUSTED (TS) / exit 5 (Python).
+{
+  const aliceK = generateKeyPair("rh-alice-key");
+  const bobK = generateKeyPair("rh-bob-key");
+  const krRH = { [aliceK.kid]: aliceK.publicKey, [bobK.kid]: bobK.publicKey };
+  const manRH = { "rh-alice": ["rh-alice-key"], "rh-bob": ["rh-bob-key"] };
+  const mkRH = (id, agentId, actId, risk, prev, signer) => buildReceipt({
+    id, ts: "2026-06-21T10:00:00.000Z", scope: { tenant: "acme", chain: "chain-rh" },
+    agent: { id: agentId, model: null, principal: "SERVICE" },
+    action: { id: actId, canonical: actId, riskClass: risk, paramsHash: sha256Prefixed("x"), reversible: false, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "r", approval: null, sandboxed: false },
+  }, prev, signer);
+  const aS = { kid: aliceK.kid, privateKey: aliceK.privateKey };
+  const bS = { kid: bobK.kid, privateKey: bobK.privateKey };
+  const a0 = mkRH("rh_a0", "rh-alice", "login", "LOW", null, aS);
+  mkRH("rh_a1", "rh-alice", "payment.refund", "CRITICAL", a0, aS); // alice's dropped tail (built, not presented)
+  const b1 = mkRH("rh_b1", "rh-bob", "noop", "LOW", a0, bS);       // bob re-heads
+  const bobCp = buildCheckpoint(b1, "2026-06-21T11:00:00.000Z", bS);
+
+  const rhPath = join(dir, "reheading.json");
+  const krRHPath = join(dir, "kr-rh.json");
+  const manRHPath = join(dir, "man-rh.json");
+  const cpRHPath = join(dir, "cp-rh.json");
+  writeFileSync(rhPath, JSON.stringify([a0, b1]));
+  writeFileSync(krRHPath, JSON.stringify(krRH));
+  writeFileSync(manRHPath, JSON.stringify(manRH));
+  writeFileSync(cpRHPath, JSON.stringify(bobCp));
+
+  // TS reference must return UNTRUSTED (not VALID).
+  const tsRH = verifyChain([a0, b1], { keyring: krRH, checkpoint: bobCp, identityManifest: manRH });
+  const tsRHok = tsRH.status === "UNTRUSTED" && tsRH.tailChecked === false;
+  console.log(`${tsRHok ? "✓" : "✗"} UNTRUSTED (re-heading truncation, genesis-binding) [TS verifyChain]: ${tsRH.status} tailChecked=${tsRH.tailChecked} (want UNTRUSTED / false)`);
+  if (!tsRHok) failures++;
+  // independent Python verifier must exit 5 (UNTRUSTED).
+  expect("UNTRUSTED (re-heading truncation, genesis-binding) [PY verifier]", pyVerify([rhPath, krRHPath, "--identity", manRHPath, "--checkpoint", cpRHPath]).code, 5);
+
+  // and the LEGIT opener checkpoint over alice's own chain stays VALID (exit 0) — no false-positive break.
+  const la0 = mkRH("rh_l0", "rh-alice", "login", "LOW", null, aS);
+  const la1 = mkRH("rh_l1", "rh-alice", "payment.refund", "CRITICAL", la0, aS);
+  const goodCp = buildCheckpoint(la1, "2026-06-21T11:00:00.000Z", aS);
+  const legitPath = join(dir, "reheading-legit.json");
+  const goodCpPath = join(dir, "cp-rh-good.json");
+  writeFileSync(legitPath, JSON.stringify([la0, la1]));
+  writeFileSync(goodCpPath, JSON.stringify(goodCp));
+  const tsLegit = verifyChain([la0, la1], { keyring: krRH, checkpoint: goodCp, identityManifest: manRH });
+  const tsLegitOk = tsLegit.status === "VALID" && tsLegit.tailChecked === true;
+  console.log(`${tsLegitOk ? "✓" : "✗"} VALID    (legit opener checkpoint, no false-positive) [TS verifyChain]: ${tsLegit.status} tailChecked=${tsLegit.tailChecked} (want VALID / true)`);
+  if (!tsLegitOk) failures++;
+  expect("VALID    (legit opener checkpoint, no false-positive) [PY verifier]", pyVerify([legitPath, krRHPath, "--identity", manRHPath, "--checkpoint", goodCpPath]).code, 0);
+}
+
 // 8. Smuggled unknown field carrying fake PII (the "smuggle PII in an unrecognized field" channel).
 structParity("MALFORMED (smuggled unknown field w/ fake PII)", (m) => { m.note = "ssn=123-45-6789"; });
 // 9. Out-of-spec enum (riskClass not in the frozen set).

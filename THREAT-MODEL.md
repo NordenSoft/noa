@@ -46,9 +46,23 @@ truth or safety.
 
 - **Tail-truncation (T-tail):** deleting the most-recent receipts leaves a valid prefix.
   *Mitigation now:* signed **checkpoints** (§6 of the spec) detect it when supplied; the
-  verifier **warns** when no checkpoint is given. *Full fix:* external anchor / transparency
+  verifier **warns** when no checkpoint is given. With an `identityManifest`, a checkpoint is
+  authorized by the chain **OPENER** (the genesis `agent.id`), **not** the mutable head — see the
+  re-heading sub-threat below. *Full fix:* external anchor / transparency
   log in v1.0. Without an anchor, offline verification cannot distinguish "nothing happened
   after seq N" from "records after seq N were deleted."
+- **Re-heading truncation among co-trusted keys (T-tail-reheading, round-10 audit):** a `scope.chain`
+  is a *shared* partition with no opener/ownership binding, so a co-trusted key holder can APPEND its
+  own receipt onto a victim's prefix, BECOME the head, DROP the victim's incriminating tail, and forge
+  a checkpoint over its OWN head. Earlier the checkpoint §5b binding checked the kid against the **head**
+  `agent.id` — i.e. the attacker's own authorized id — returning `VALID` + `tailChecked:true` while the
+  victim's tail was silently erased. *Mitigation now (shipped):* the checkpoint authority is bound to the
+  chain **OPENER** (the `seq == 0` `agent.id`), which an appended tail cannot re-write → the re-heading
+  attacker's checkpoint is `UNTRUSTED`; the verifier also **warns** (opener-scoped completeness) whenever
+  a chain holds more than one `agent.id`. *Residual (needs the v1.0 external anchor):* the opener itself
+  dropping a co-agent's tail, and the **no-`identityManifest`** case (kid-level only — any keyring-trusted
+  key can forge a checkpoint over any head). §5b is therefore an *opener-scoped* truncation defense, not a
+  general anti-truncation guarantee against a co-trusted key.
 - **Private-key compromise / no revocation / no forward-security:** a leaked private key lets
   the holder retroactively re-sign an entirely fabricated history (bounded only by an external
   checkpoint/anchor someone already holds). v0.1 has **no revocation list and no key-evolution**.
