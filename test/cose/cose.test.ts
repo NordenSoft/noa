@@ -1,0 +1,88 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { generateKeyPair } from "../../src/keys.js";
+import { buildReceipt, type BuildInput, type Signer } from "../../src/builder.js";
+import { receiptToCose, receiptFromCose } from "../../src/cose/receipt-cose.js";
+import { coseSign1, coseSign1Verify } from "../../src/cose/cose-sign1.js";
+import { encInt, encBstr, encTstr, encArray, encMap, decode } from "../../src/cose/cbor.js";
+import { sha256Prefixed } from "../../src/hash.js";
+import { canonicalize } from "../../src/jcs.js";
+
+function mkReceipt(signer: Signer) {
+  const input: BuildInput = {
+    id: "rcpt_cose_0",
+    ts: "2026-06-21T10:00:00.000Z",
+    scope: { tenant: "t", chain: "c1" },
+    agent: { id: "a1", model: null, principal: "SERVICE" },
+    action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: sha256Prefixed("x"), reversible: false, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "r", approval: null, sandboxed: false },
+  };
+  return buildReceipt(input, null, signer);
+}
+
+test("CBOR: deterministic canonical encoding round-trips (int/bstr/tstr/array/map)", () => {
+  const m = encMap([[encInt(4), encBstr(Buffer.from("kid"))], [encInt(1), encInt(-8)]]);
+  const d = decode(m);
+  assert.equal(d.t, "map");
+  // canonical: key 1 must sort before key 4 regardless of insertion order
+  if (d.t === "map") {
+    const firstKey = d.v[0]![0];
+    assert.equal(firstKey.t === "int" ? firstKey.v : NaN, 1);
+  }
+  assert.deepEqual(decode(encArray([encTstr("Signature1"), encInt(0)])), {
+    t: "array", v: [{ t: "tstr", v: "Signature1" }, { t: "int", v: 0 }],
+  });
+});
+
+test("receipt → COSE_Sign1 → verify round-trips, returns the receipt", () => {
+  const kp = generateKeyPair("noa-key-1");
+  const signer: Signer = { kid: kp.kid, privateKey: kp.privateKey };
+  const keyring = { [kp.kid]: kp.publicKey };
+  const receipt = mkReceipt(signer);
+
+  const cose = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
+  assert.ok(Buffer.isBuffer(cose) && cose.length > 0);
+  assert.equal(cose[0], 0xd2); // CBOR tag 18 (0xc0|18=0xd2) — a real COSE_Sign1 tag
+
+  const r = receiptFromCose(cose, keyring);
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.kid, "noa-key-1");
+  // canonical-equivalence (safeParse yields null-prototype objects; bytes are what matter)
+  assert.equal(canonicalize(r.receipt), canonicalize(receipt));
+});
+
+test("COSE_Sign1: tampered payload fails verification", () => {
+  const kp = generateKeyPair("k");
+  const keyring = { k: kp.publicKey };
+  const cose = coseSign1(Buffer.from("hello", "utf8"), { kid: "k", privateKey: kp.privateKey });
+  assert.equal(coseSign1Verify(cose, keyring).ok, true);
+  const tampered = Buffer.from(cose);
+  // flip a byte inside the payload region (find 'hello')
+  const idx = tampered.indexOf(Buffer.from("hello"));
+  tampered[idx] = tampered[idx]! ^ 0x01;
+  assert.equal(coseSign1Verify(tampered, keyring).ok, false);
+});
+
+test("COSE_Sign1: unknown kid / no keyring entry ⇒ not verified (never throws)", () => {
+  const kp = generateKeyPair("k");
+  const cose = coseSign1(Buffer.from("x"), { kid: "k", privateKey: kp.privateKey });
+  const r = coseSign1Verify(cose, {}); // empty keyring
+  assert.equal(r.ok, false);
+  assert.match(r.reason ?? "", /unknown kid/);
+});
+
+test("COSE_Sign1: malformed CBOR ⇒ ok:false, no throw", () => {
+  assert.equal(coseSign1Verify(Buffer.from([0xff, 0x00, 0x13]), { k: "x" }).ok, false);
+  assert.equal(coseSign1Verify(Buffer.from([0x80]), { k: "x" }).ok, false); // empty array, not tag 18
+});
+
+test("alg-confusion: a COSE_Sign1 whose protected header isn't {alg:EdDSA} is rejected", () => {
+  // hand-build a tag-18 with protected = {1: -7} (ES256, not EdDSA) → must reject
+  const kp = generateKeyPair("k");
+  const badProtected = encMap([[encInt(1), encInt(-7)]]);
+  const body = encArray([encBstr(badProtected), encMap([[encInt(4), encBstr(Buffer.from("k"))]]), encBstr(Buffer.from("x")), encBstr(Buffer.alloc(64))]);
+  const cose = Buffer.concat([Buffer.from([0xd2]), body]);
+  const r = coseSign1Verify(cose, { k: kp.publicKey });
+  assert.equal(r.ok, false);
+  assert.match(r.reason ?? "", /EdDSA/);
+});

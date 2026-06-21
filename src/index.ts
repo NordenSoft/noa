@@ -62,3 +62,9 @@ export {
 } from "./policy/dsl.js";
 export { evaluate, PolicyError, REF_EVAL_VERSION, type EvalResult } from "./policy/eval.js";
 export { validatePolicy, assertValidPolicy, type PolicyValidation } from "./policy/validate.js";
+
+// Universal envelope — the NOA receipt as a COSE_Sign1 (RFC 9052) / SCITT Signed Statement, so it
+// verifies in ANY conforming COSE implementation without NOA's code. Zero runtime deps.
+export { coseSign1, coseSign1Verify, type CoseSigner, type CoseVerifyResult } from "./cose/cose-sign1.js";
+export { receiptToCose, receiptFromCose, type ReceiptCoseResult } from "./cose/receipt-cose.js";
+export { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, CborError, type CborValue } from "./cose/cbor.js";

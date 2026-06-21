@@ -5,17 +5,46 @@
   "license": "Apache-2.0",
   "type": "module",
   "homepage": "https://noatrust.com",
-  "repository": { "type": "git", "url": "https://github.com/NordenSoft/noa.git" },
-  "keywords": ["ai-agent", "governance", "audit", "receipt", "hash-chain", "provenance", "mcp", "eu-ai-act"],
-  "engines": { "node": ">=20" },
-  "bin": { "noa": "dist/src/cli.js" },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NordenSoft/noa.git"
+  },
+  "keywords": [
+    "ai-agent",
+    "governance",
+    "audit",
+    "receipt",
+    "hash-chain",
+    "provenance",
+    "mcp",
+    "eu-ai-act"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "noa": "dist/src/cli.js"
+  },
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
   "exports": {
-    ".": { "import": "./dist/src/index.js", "types": "./dist/src/index.d.ts" }
+    ".": {
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts"
+    }
   },
-  "publishConfig": { "access": "public" },
-  "files": ["dist/src", "schema", "docs/receipt-spec.md", "LICENSE", "README.md", "THREAT-MODEL.md", "SECURITY.md"],
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist/src",
+    "schema",
+    "docs/receipt-spec.md",
+    "LICENSE",
+    "README.md",
+    "THREAT-MODEL.md",
+    "SECURITY.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "gen:vectors": "node dist/scripts/gen-vectors.js",
@@ -24,9 +53,9 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"
   },
-  "dependencies": {},
   "devDependencies": {
-    "typescript": "^5.6.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "cbor2": "^2.3.0",
+    "typescript": "^5.6.0"
   }
 }
