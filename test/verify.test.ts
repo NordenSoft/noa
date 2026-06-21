@@ -229,3 +229,74 @@ test("round-13 #8: throwing identityManifest / array-element accessors → MALFO
   assert.doesNotThrow(() => { r2 = verifyChain(load("valid-chain.json"), { keyring, identityManifest: man as never }); });
   assert.equal(r2.status, "MALFORMED");
 });
+
+// ── round-15 audit regressions (live-object TOCTOU snapshot-once + non-object keyring) ──────────────
+test("round-15 #2: a flipping checkpoint accessor cannot yield VALID over a truncated tail (snapshot defeats it)", () => {
+  // The chain presents seq 0..2; the legit checkpoint asserts head=seq2. A truncating attacker presents a
+  // checkpoint whose highestSeq/headHash FLIP on read: returning the legit head (seq2/realHash) to the
+  // signature/validation path, but the truncated head to the tail-match. Snapshotting the checkpoint ONCE
+  // means both reads see the SAME bytes → no VALID-over-erased-tail.
+  const validChain = load("valid-chain.json") as Array<Record<string, any>>;
+  const truncated = validChain.slice(0, 1); // attacker drops seq 1..2, presents only seq 0
+  const realCp = structuredClone(checkpoint) as any;
+  const truncatedHead = truncated[0]!.chain;
+  let seqReads = 0, hashReads = 0;
+  const flip: any = {
+    spec: realCp.spec, chain: realCp.chain, ts: realCp.ts, sig: realCp.sig,
+    // First read (validation/preimage) returns the legit head; later read (tail-match) returns the truncated head.
+    get highestSeq() { return seqReads++ === 0 ? realCp.highestSeq : truncatedHead.seq; },
+    get headHash() { return hashReads++ === 0 ? realCp.headHash : truncatedHead.hash; },
+  };
+  const res = verifyChain(truncated, { keyring, checkpoint: flip });
+  assert.notEqual(res.status, "VALID", `flipping checkpoint must not verify VALID (got ${res.status})`);
+  assert.equal(res.tailChecked, false, "tail must not be reported as checked over a flipped/truncated head");
+});
+
+test("round-15 #5: verifyCheckpoint with a throwing accessor → 'malformed checkpoint' (never throws a raw Error)", () => {
+  const evil: any = {
+    spec: "noa.checkpoint/0.1", chain: "c", highestSeq: 0, ts: "2026-06-21T10:00:00.000Z",
+    sig: { alg: "ed25519", kid: "k", value: "x" },
+    get headHash(): string { throw new Error("boom"); },
+  };
+  let verdict!: ReturnType<typeof verifyCheckpoint>;
+  assert.doesNotThrow(() => { verdict = verifyCheckpoint(evil as unknown as Checkpoint, keyring); });
+  assert.equal(verdict, "malformed checkpoint");
+});
+
+test("round-15 #9: a flipping agent.id accessor cannot produce a false VALID attribution (snapshot reads once)", () => {
+  // A genuine single-receipt chain whose agent.id FLIPS between reads: returns the real (manifest-authorized)
+  // id to the structural/sig path, but a different id later. structuredClone reads each field exactly once, so
+  // the value enforced is the value validated — no split that could mis-attribute a VALID result.
+  const validChain = load("valid-chain.json") as Array<Record<string, any>>;
+  const r0 = structuredClone(validChain[0]!) as any;
+  const realAgentId = r0.agent.id;
+  let idReads = 0;
+  const agentNoId: any = { model: r0.agent.model, principal: r0.agent.principal };
+  Object.defineProperty(agentNoId, "id", {
+    enumerable: true, configurable: true,
+    get() { return idReads++ === 0 ? realAgentId : "attacker-spoofed"; },
+  });
+  const flipReceipt: any = { ...r0, agent: agentNoId };
+  let res!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { res = verifyChain([flipReceipt], { keyring }); });
+  // After the snapshot, agent.id is a frozen value; the genesis-only single-receipt chain stays internally
+  // consistent. The KEY property: the result is NOT a VALID attribution computed off a mid-flip read.
+  if (res.status === "VALID") {
+    // a VALID result must reflect the SNAPSHOT id, not a post-snapshot flip — re-reading the live getter
+    // would have advanced idReads beyond the snapshot's single read.
+    assert.ok(idReads <= 1, `agent.id must be read at most once before snapshot (got ${idReads} reads)`);
+  } else {
+    assert.equal(res.status, "TAMPERED"); // a flip that breaks the hash is caught — never a false VALID
+  }
+});
+
+test("round-15 #7: a non-object keyring (array / null) → MALFORMED (parity with the Python verifier)", () => {
+  const arrKr = verifyChain(load("valid-chain.json"), { keyring: [] as unknown as Keyring });
+  assert.equal(arrKr.status, "MALFORMED");
+  assert.match(arrKr.reason ?? "", /keyring must be an object/);
+  const nullKr = verifyChain(load("valid-chain.json"), { keyring: null as unknown as Keyring });
+  assert.equal(nullKr.status, "MALFORMED");
+  assert.match(nullKr.reason ?? "", /keyring must be an object/);
+  // sanity: a genuine keyring still verifies VALID (no regression on the happy path)
+  assert.equal(verifyChain(load("valid-chain.json"), { keyring }).status, "VALID");
+});

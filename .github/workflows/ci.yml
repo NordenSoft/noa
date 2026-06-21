@@ -21,9 +21,20 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+      # The cross-impl conformance proof shells out to the independent Python verifier (impl-py/noa_verify.py),
+      # so python3 must be on PATH for that gate to run (round-15 #8).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
       - run: npm ci
       - name: Build + generate vectors + test
         run: npm test
+      - name: Cross-impl conformance (TS reference == independent Python verifier)
+        # Gates the TS↔PY interop bar: a divergence on identical signed bytes FAILS the build (not just the
+        # in-language test). Needs the dist build (npm test already built it) + python3 (set up above).
+        run: |
+          npm run build
+          node impl-py/conformance.mjs
       - name: Conformance vectors are reproducible (no drift)
         run: |
           # catches modified AND newly-generated (untracked) vector files

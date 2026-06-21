@@ -171,12 +171,38 @@ def _strict_int(s):
     if abs(v) > (1 << 53) - 1: raise ValueError("integer outside safe range")
     return v
 
+def _reject_lone_surrogate(v):
+    """Recursively reject any string (dict KEY or VALUE, list item, at ANY depth) that carries a lone
+    UTF-16 surrogate (round-15 #3/#4 cross-impl fix). The TS safeParse rejects an unpaired surrogate in
+    EVERY string of EVERY file via out.isWellFormed() (src/safe-json.ts) — a forgery channel, since a lone
+    surrogate collapses to U+FFFD at the UTF-8 hashing step. Python's json.loads, by contrast, happily
+    decodes a `\\ud800` escape (in a value OR a keyring kid OR an unknown checkpoint field) into a lone-
+    surrogate str: that file then verified lenient/VALID-ish in Python but MALFORMED in the TS reference —
+    a consensus split. `.encode("utf-8")` raises UnicodeEncodeError on a lone surrogate, the faithful mirror
+    of isWellFormed(). Applied to the WHOLE parse result so all files (receipts/keyring/identity/checkpoint)
+    get it, matching TS's per-string check."""
+    if isinstance(v, str):
+        try:
+            v.encode("utf-8")
+        except UnicodeEncodeError:
+            raise ValueError("unpaired surrogate in string")
+    elif isinstance(v, dict):
+        for k, val in v.items():
+            _reject_lone_surrogate(k)
+            _reject_lone_surrogate(val)
+    elif isinstance(v, list):
+        for item in v:
+            _reject_lone_surrogate(item)
+    return v
+
 def strict_load_text(text):
     """Parse receipt JSON like the TS safeParse: dup keys, floats, OVERSIZED ints (> 2^53-1), the JS-ism
-    constants NaN/Infinity/-Infinity (which go through parse_constant, NOT parse_float), and prototype keys
-    are ALL rejected (round-14 #2 parity — json's defaults would otherwise over-accept vs safeParse)."""
-    return json.loads(text, object_pairs_hook=_strict_pairs, parse_float=_reject_float,
-                      parse_int=_strict_int, parse_constant=_reject_constant)
+    constants NaN/Infinity/-Infinity (which go through parse_constant, NOT parse_float), prototype keys, and
+    LONE UTF-16 SURROGATES in any string (round-14 #2 + round-15 #3/#4 parity — json's defaults would
+    otherwise over-accept vs safeParse, splitting the cross-impl verdict)."""
+    return _reject_lone_surrogate(
+        json.loads(text, object_pairs_hook=_strict_pairs, parse_float=_reject_float,
+                   parse_int=_strict_int, parse_constant=_reject_constant))
 
 # ── Structural validation — STRICT, mirrors src/schema.ts validateReceiptShape ─
 # Step 1 of the TS verifyChain runs validateReceiptShape BEFORE any hashing. Without this layer
@@ -200,7 +226,13 @@ import re as _re
 _HASH_RE = _re.compile(r"^sha256:[0-9a-f]{64}$")
 _PARAMS_HASH_RE = _re.compile(r"^(sha256|hmac-sha256):[0-9a-f]{64}$")
 # RFC 3339 §5.6 — accept lowercase 't'/'z' too (must match schema/noa-receipt-0.1.schema.json + src/schema.ts).
-_RFC3339_RE = _re.compile(r"^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$")
+# Digit classes are SPELLED OUT as [0-9], NOT `\d` (round-15 cross-impl fix). Python's `re` `\d` matches the
+# whole Unicode "decimal number" category (Nd) — Arabic-Indic ٢٠٢٦, fullwidth ２０２６, etc. — while JS/ECMA-262
+# `\d` (the dialect the normative JSON-Schema `pattern` uses, and src/schema.ts/verify.ts) is ASCII [0-9] ONLY.
+# With bare `\d`, a crypto-genuine receipt carrying a Unicode-digit `ts`/`approval.at` (or a checkpoint `ts`)
+# verified VALID in Python but MALFORMED/TAMPERED in the TS reference + schema — a consensus split on identical
+# SIGNED bytes (the exact interop bar B2 exists to hold). [0-9] makes Python ASCII-only, matching both.
+_RFC3339_RE = _re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?([Zz]|[+-][0-9]{2}:[0-9]{2})$")
 
 # JS Number.isSafeInteger upper bound — chain.seq must be a non-negative safe integer (parity with schema maximum).
 _SAFE_INT_MAX = 2**53 - 1
@@ -212,8 +244,10 @@ def _is_obj(v):
 
 
 def _is_str(v):
-    """A str. (Python's json yields well-formed str — the TS isWellFormed() check guards lone UTF-16
-    surrogates which cannot occur after a successful json.loads, so a type check is the faithful mirror.)"""
+    """A str. (The TS isWellFormed() lone-surrogate guard is mirrored EARLIER, at the parse boundary, by
+    strict_load_text's _reject_lone_surrogate pass (round-15 #3/#4) — json.loads DOES decode a `\\ud800`
+    escape into a lone surrogate, so the rejection cannot live here; by the time a value reaches this shape
+    check it is already well-formed, making a plain type check the faithful mirror.)"""
     return isinstance(v, str)
 
 
@@ -573,6 +607,18 @@ def _main(argv):
         checkpoint = strict_load_text(open(checkpoint_path).read()) if checkpoint_path else None
     except Exception as e:
         print(json.dumps({"status": "MALFORMED", "detail": str(e)})); return _EXIT["MALFORMED"]
+    # A trust/aux file that was GIVEN but loaded to a non-object (null/list/number/...) is an operator error,
+    # NOT "absent" (round-15 #6/#7). The TS in-process API treats `opts.X !== undefined` as PRESENT, so a
+    # `null` identity/checkpoint there is "present but not a valid object" → MALFORMED (keeps the impersonation
+    # / tail defenses). But the Python CLI loads a `null` file to None, which verify_chain reads as "not
+    # supplied" → it would silently drop the manifest/checkpoint and over-accept (VALID). Mirror TS here: if
+    # the flag/arg was given, its loaded value MUST be a dict, else MALFORMED exit 3.
+    if identity_path is not None and not isinstance(identity, dict):
+        print(json.dumps({"status": "MALFORMED", "detail": "identityManifest must be an object (agent.id -> kid[])"})); return _EXIT["MALFORMED"]
+    if checkpoint_path is not None and not isinstance(checkpoint, dict):
+        print(json.dumps({"status": "MALFORMED", "detail": "checkpoint must be an object"})); return _EXIT["MALFORMED"]
+    if keyring_path is not None and not isinstance(keyring, dict):
+        print(json.dumps({"status": "MALFORMED", "detail": "keyring must be an object (kid -> base64 SPKI)"})); return _EXIT["MALFORMED"]
     status, detail = verify_chain(receipts, keyring, identity, checkpoint)
     print(json.dumps({"status": status, "detail": detail}, indent=2))
     return _EXIT[status]

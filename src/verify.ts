@@ -78,6 +78,25 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   if (receipts.length === 0) return fail("MALFORMED", "empty receipt array", null, 0);
   if (receipts.length > maxReceipts) return fail("MALFORMED", `too many receipts (>${maxReceipts})`, null, receipts.length);
 
+  // SNAPSHOT-ONCE the caller-supplied LIVE objects (round-15 #2 HIGH / #5 MEDIUM / #9 LOW). The in-process
+  // JS API reads the same object multiple times — receipts in structural validation AND in the chain walk
+  // (4b/4c/4c-bis re-read r.agent.id / r.sig.kid → #9), and the checkpoint in verifyCheckpoint (validation +
+  // sig-preimage) AND in the tail-match / §5b genesis-binding (cp.chain/highestSeq/headHash/sig.kid → #2). A
+  // flipping accessor that returns one value to authentication and another to enforcement splits the two,
+  // e.g. authenticating the legit head but enforcing a truncated one → VALID+tailChecked over an erased tail.
+  // structuredClone deep-copies to plain, accessor-free data ONCE (here, AFTER the length check so we never
+  // clone a >maxReceipts array), and EVERYTHING downstream reads only the clones — closing every TOCTOU
+  // window at the root. structuredClone also throws on non-cloneable input (functions, etc.) → MALFORMED.
+  // (verifyChainText/CLI/Python are immune — they consume safeParse/JSON.parse output with no accessors.)
+  let receiptsSnap: unknown[];
+  let checkpointSnap: Checkpoint | undefined;
+  try {
+    receiptsSnap = structuredClone(receipts);
+    checkpointSnap = opts.checkpoint === undefined ? undefined : structuredClone(opts.checkpoint);
+  } catch {
+    return fail("MALFORMED", "input is not structured-cloneable (live accessor/non-cloneable value)", null, receipts.length);
+  }
+
   // Validate the optional identity manifest (a trust input) AND SNAPSHOT it. Fail-closed: a malformed
   // manifest is an operator error, never silently ignored (that would re-open the very impersonation gap
   // it closes).
@@ -122,14 +141,16 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       }
     }
 
-    // 1. Structural validation of every element (runs BEFORE any hashing).
-    for (let idx = 0; idx < receipts.length; idx++) {
-      const res = validateReceiptShape(receipts[idx]);
+    // 1. Structural validation of every element (runs BEFORE any hashing). Reads the SNAPSHOT, not the
+    // live array — downstream (walk/tail-match/§5b) reads the same snapshot, so what we validate is exactly
+    // what we enforce (round-15 #2/#9: closes the live-object TOCTOU at the root).
+    for (let idx = 0; idx < receiptsSnap.length; idx++) {
+      const res = validateReceiptShape(receiptsSnap[idx]);
       if (!res.ok) {
-        return fail("MALFORMED", `receipt[${idx}]: ${res.errors.join("; ")}`, null, receipts.length, idx);
+        return fail("MALFORMED", `receipt[${idx}]: ${res.errors.join("; ")}`, null, receiptsSnap.length, idx);
       }
     }
-    list = receipts as Receipt[];
+    list = receiptsSnap as Receipt[];
 
     // 2. Single chain partition.
     chainId = list[0]!.scope.chain;
@@ -156,6 +177,14 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   }
 
   const haveKeyring = opts.keyring !== undefined;
+  // Fail-closed on a non-object keyring (round-15 #7): the keyring is a trust input (kid -> base64 SPKI). A
+  // null / array / non-object keyring is an operator error, not "an empty trust root" — silently treating it
+  // as `{}` would index `keyring[kid]` to undefined → an unknown-kid TAMPERED, diverging from the Python
+  // verifier (which already returns MALFORMED on a non-dict keyring, round-13 #6). Reject it as MALFORMED so
+  // both impls agree on the SAME verdict class for the SAME malformed trust file.
+  if (haveKeyring && (typeof opts.keyring !== "object" || opts.keyring === null || Array.isArray(opts.keyring))) {
+    return fail("MALFORMED", "keyring must be an object (kid -> base64 SPKI)", chainId, list.length);
+  }
   const keyring = opts.keyring ?? {};
   const warnings: string[] = [];
 
@@ -237,8 +266,13 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   // 5. Tail-truncation check (only possible with a checkpoint).
   const head = ordered[ordered.length - 1]!;
   let tailChecked = false;
-  if (opts.checkpoint) {
-    const cp = opts.checkpoint;
+  if (checkpointSnap !== undefined) {
+    // Read the cloned checkpoint EVERYWHERE (round-15 #2 HIGH): verifyCheckpoint validates + reconstructs the
+    // sig-preimage from it, and the tail-match / §5b below re-read cp.chain/highestSeq/headHash/sig.kid. A
+    // flipping accessor on the live checkpoint could present the legit head to the signature check and the
+    // truncated head to the tail-match → VALID+tailChecked over an erased tail. The snapshot makes both reads
+    // see identical, accessor-free bytes.
+    const cp = checkpointSnap;
     const cpVerify = verifyCheckpoint(cp, opts.keyring);
     if (cpVerify === "bad spec" || cpVerify === "malformed checkpoint") {
       return fail("TAMPERED", `checkpoint invalid: ${cpVerify}`, chainId, list.length);
@@ -337,11 +371,22 @@ const CP_HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const CP_RFC3339_RE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
 
 export function verifyCheckpoint(cp: Checkpoint, keyring?: Keyring): CheckpointVerdict {
+  // SNAPSHOT-ONCE the caller-supplied LIVE checkpoint (round-15 #5 MEDIUM). This is a public export called
+  // directly too, so a throwing/flipping accessor on `cp` must yield "malformed checkpoint", never escape as
+  // a RAW Error (violating the "never throws / fail-closed" invariant) and never split validation from the
+  // sig-preimage read below (checkpointHashInput). structuredClone deep-copies to plain, accessor-free data
+  // ONCE; every read below uses the clone. (verifyChain already passes its own clone; this guards direct use.)
+  let snap: Record<string, unknown>;
+  try {
+    snap = structuredClone(cp) as unknown as Record<string, unknown>;
+  } catch {
+    return "malformed checkpoint";
+  }
   // STRICT, FAIL-CLOSED structural validation (round-12): a checkpoint is a SIGNED trust statement, so it
   // gets the same discipline as a receipt — null/non-object, unknown fields (additionalProperties:false,
   // threat-model T9 "no smuggled field at any level"), and bad-typed/format fields are MALFORMED. Never a
   // raw throw (round-12 #9: verifyCheckpoint(null) used to TypeError), never silently honored.
-  const c = cp as unknown as Record<string, unknown>;
+  const c = snap;
   if (typeof c !== "object" || c === null || Array.isArray(c)) return "malformed checkpoint";
   for (const k of Object.keys(c)) {
     if (!CHECKPOINT_KEYS.includes(k)) return "malformed checkpoint";
@@ -365,7 +410,8 @@ export function verifyCheckpoint(cp: Checkpoint, keyring?: Keyring): CheckpointV
   if (!pub) return "unverified";
   let msg: Buffer;
   try {
-    msg = signingMessage(CHECKPOINT_SIG_DOMAIN, checkpointHashInput(cp));
+    // Hash the SNAPSHOT (round-15 #5), not the live `cp` — same bytes the validation above accepted.
+    msg = signingMessage(CHECKPOINT_SIG_DOMAIN, checkpointHashInput(snap as unknown as Checkpoint));
   } catch {
     return "malformed checkpoint";
   }

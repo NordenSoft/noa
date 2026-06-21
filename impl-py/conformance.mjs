@@ -13,9 +13,10 @@
 import { generateKeyPair, signEd25519 } from "../dist/src/keys.js";
 import { buildReceipt, buildCheckpoint } from "../dist/src/builder.js";
 import { sha256Prefixed, sha256Hex } from "../dist/src/hash.js";
-import { receiptHashInput } from "../dist/src/canonicalize.js";
-import { signingMessage, RECEIPT_SIG_DOMAIN } from "../dist/src/signing.js";
+import { receiptHashInput, checkpointHashInput } from "../dist/src/canonicalize.js";
+import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "../dist/src/signing.js";
 import { verifyChain, verifyChainText, complianceCommit } from "../dist/src/index.js";
+import { safeParse } from "../dist/src/safe-json.js";
 import { writeFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -272,9 +273,16 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
 
 // ── round-13 cross-impl parity: base64 canonicality (sig + key) + non-object keyring ──
 {
-  // #6 keyring as a JSON list (non-object) → MALFORMED in both, never a crash/traceback.
+  // #6 keyring as a JSON list (non-object) → MALFORMED in both. (round-15 #7: this comment used to claim
+  // "in both" while asserting ONLY the Python side — and TS verifyChain did NOT actually validate the keyring;
+  // an array `keyring[kid]` returned undefined → an unknown-kid TAMPERED, NOT MALFORMED. Now TS rejects a
+  // non-object keyring up front (verify.ts), so BOTH reach MALFORMED, and BOTH sides are asserted here.)
   const listKrPath = join(dir, "keyring-list.json");
   writeFileSync(listKrPath, JSON.stringify([kp.publicKey]));
+  const tsListKr = verifyChain(chain, { keyring: [kp.publicKey] }).status;
+  const tsListKrOk = tsListKr === "MALFORMED";
+  console.log(`${tsListKrOk ? "✓" : "✗"} MALFORMED (keyring is a JSON list, not an object) [TS verifyChain]: ${tsListKr} (want MALFORMED)`);
+  if (!tsListKrOk) failures++;
   expect("MALFORMED (keyring is a JSON list, not an object) [PY verifier]", pyVerify([chainPath, listKrPath]).code, 3);
 
   // #5 non-canonical keyring SPKI base64 (embedded space): decodes leniently to the same key, but is not
@@ -335,6 +343,94 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   console.log(`${tsNanOk ? "✓" : "✗"} MALFORMED (NaN literal, strict parse) [TS verifyChainText]: ${tsNan} (want MALFORMED)`);
   if (!tsNanOk) failures++;
   expect("MALFORMED (NaN literal, strict parse) [PY verifier]", pyVerify([nanPath, keyringPath]).code, 3);
+}
+
+// ── round-15: Unicode-digit RFC-3339 regex divergence. The RFC-3339 patterns (ts / approval.at, and the
+// checkpoint ts) used bare `\d`. Python's `re` `\d` matches the ENTIRE Unicode decimal-number category (Nd)
+// — Arabic-Indic ٢٠٢٦, fullwidth ２０２６, etc. — while ECMA-262 `\d` (the dialect the normative JSON-Schema
+// `pattern` uses, and src/schema.ts/verify.ts) is ASCII [0-9] ONLY. A crypto-genuine receipt/checkpoint
+// carrying a Unicode-digit timestamp therefore verified VALID in Python but MALFORMED/TAMPERED in the TS
+// reference — a consensus split on IDENTICAL signed bytes. Spelling the classes as [0-9] in noa_verify.py
+// makes both ASCII-only. reseal() keeps the receipts crypto-genuine, so this exercises the regex, not the hash.
+structParity("MALFORMED (Arabic-Indic digits in ts)", (m) => { m.ts = "٢٠٢٦-06-21T10:00:00.000Z"; });
+structParity("MALFORMED (fullwidth digits in ts frac-seconds)", (m) => { m.ts = "2026-06-21T10:00:00.１２３Z"; });
+structParity("MALFORMED (Arabic-Indic digits in ts tz offset)", (m) => { m.ts = "2026-06-21T10:00:00+٠٢:00"; });
+structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.approval = { by: "u", at: "２０２６-06-21T10:00:00Z" }; });
+{
+  // Checkpoint ts with fullwidth digits: re-sign so the checkpoint is crypto-genuine. TS → TAMPERED
+  // (checkpoint invalid), Python must agree (exit 2), not VALID.
+  const cpU = buildCheckpoint(r1, "2026-06-21T11:00:00.000Z", { kid: kp.kid, privateKey: kp.privateKey });
+  cpU.ts = "２０２６-06-21T11:00:00Z";
+  cpU.sig.value = signEd25519(kp.privateKey, signingMessage(CHECKPOINT_SIG_DOMAIN, checkpointHashInput(cpU)));
+  const cpUPath = join(dir, "cp-unicode-digits.json");
+  writeFileSync(cpUPath, JSON.stringify(cpU));
+  const tsCpU = verifyChain(chain, { keyring, checkpoint: cpU }).status;
+  const tsCpUOk = tsCpU === "TAMPERED";
+  console.log(`${tsCpUOk ? "✓" : "✗"} TAMPERED (Unicode-digit checkpoint ts) [TS verifyChain]: ${tsCpU} (want TAMPERED)`);
+  if (!tsCpUOk) failures++;
+  expect("TAMPERED (Unicode-digit checkpoint ts) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", cpUPath]).code, 2);
+}
+
+// ── round-15 CLASS B: Python over-accepted vs the TS safeParse / in-process API on exotic-but-malformed
+// AUXILIARY trust files (keyring / identity / checkpoint), not just receipts. The TS CLI parses EVERY file
+// with safeParse (lone-surrogate reject) and the in-process API treats `opts.X !== undefined` as PRESENT
+// (so a null identity/checkpoint is "present but not an object" → MALFORMED). Python's json.loads + CLI
+// loaded these leniently. These vectors pin both impls to the SAME verdict at the file/option boundary. ──
+
+// #3 — a LONE UTF-16 surrogate in a keyring KID. TS safeParse rejects an unpaired surrogate in EVERY string
+// of EVERY file (src/safe-json.ts isWellFormed) → CLI MALFORMED; Python json.loads decoded a \uD800 escape
+// into a lone surrogate (over-accept) until strict_load_text's recursive _reject_lone_surrogate pass.
+{
+  // Raw text with a \uD800 escape as a keyring key (a lone high surrogate).
+  const surKrText = '{"\\uD800": ' + JSON.stringify(kp.publicKey) + '}';
+  const surKrPath = join(dir, "keyring-lone-surrogate-kid.json");
+  writeFileSync(surKrPath, surKrText);
+  let tsSurKrThrew = false;
+  try { safeParse(surKrText); } catch { tsSurKrThrew = true; } // TS CLI parses keyring files via safeParse → MALFORMED
+  console.log(`${tsSurKrThrew ? "✓" : "✗"} MALFORMED (lone surrogate in keyring kid) [TS safeParse]: ${tsSurKrThrew ? "rejected" : "accepted"} (want rejected)`);
+  if (!tsSurKrThrew) failures++;
+  expect("MALFORMED (lone surrogate in keyring kid) [PY verifier]", pyVerify([chainPath, surKrPath]).code, 3);
+}
+
+// #4 — a LONE UTF-16 surrogate in an (unknown) CHECKPOINT field. Same boundary: TS safeParse rejects the
+// file; Python must too (recursive surrogate pass), not parse-then-lenient.
+{
+  // Genuine checkpoint object, then inject a 𝄞? no — a LONE low surrogate \uDC00 in an extra field.
+  const cpObj = buildCheckpoint(r1, "2026-06-21T11:00:00.000Z", { kid: kp.kid, privateKey: kp.privateKey });
+  // Serialize then splice in a smuggled field carrying a lone surrogate escape (raw text, like an attacker file).
+  const cpText = JSON.stringify(cpObj).replace(/}$/, ',"x":"\\uDC00"}');
+  const surCpPath = join(dir, "cp-lone-surrogate-field.json");
+  writeFileSync(surCpPath, cpText);
+  let tsSurCpThrew = false;
+  try { safeParse(cpText); } catch { tsSurCpThrew = true; } // TS CLI parses checkpoint files via safeParse → MALFORMED
+  console.log(`${tsSurCpThrew ? "✓" : "✗"} MALFORMED (lone surrogate in checkpoint field) [TS safeParse]: ${tsSurCpThrew ? "rejected" : "accepted"} (want rejected)`);
+  if (!tsSurCpThrew) failures++;
+  expect("MALFORMED (lone surrogate in checkpoint field) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", surCpPath]).code, 3);
+}
+
+// #6 — an identity file that is literally `null` (a valid JSON value, but NOT a manifest object). The TS
+// in-process API treats `opts.identityManifest !== undefined` as PRESENT → null is not an object → MALFORMED
+// (keeps the impersonation defense; a null manifest must NOT silently degrade to "no manifest"). The Python
+// CLI loaded `null` → None → verify_chain read it as "not supplied" → VALID (silent drop) until the _main
+// guard (round-15 #6). Both must now reject a given-but-null identity. (checkpoint=null mirrors this.)
+{
+  const nullIdentPath = join(dir, "identity-null.json");
+  writeFileSync(nullIdentPath, "null");
+  // TS in-process: passing identityManifest:null is "present but not an object" → MALFORMED.
+  const tsNullId = verifyChain(chain, { keyring, identityManifest: null }).status;
+  const tsNullIdOk = tsNullId === "MALFORMED";
+  console.log(`${tsNullIdOk ? "✓" : "✗"} MALFORMED (identity provided as null) [TS verifyChain]: ${tsNullId} (want MALFORMED)`);
+  if (!tsNullIdOk) failures++;
+  expect("MALFORMED (identity file = null) [PY verifier]", pyVerify([chainPath, keyringPath, "--identity", nullIdentPath]).code, 3);
+
+  const nullCpPath = join(dir, "checkpoint-null.json");
+  writeFileSync(nullCpPath, "null");
+  const tsNullCp = verifyChain(chain, { keyring, checkpoint: null }).status;
+  // checkpoint:null → opts.checkpoint !== undefined is TRUE → snapshot+verifyCheckpoint → "malformed checkpoint" → TAMPERED.
+  const tsNullCpOk = tsNullCp === "TAMPERED" || tsNullCp === "MALFORMED";
+  console.log(`${tsNullCpOk ? "✓" : "✗"} reject (checkpoint provided as null) [TS verifyChain]: ${tsNullCp} (want TAMPERED/MALFORMED)`);
+  if (!tsNullCpOk) failures++;
+  expect("MALFORMED (checkpoint file = null) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", nullCpPath]).code, 3);
 }
 
 if (failures) { console.error(`\nCROSS-IMPL CONFORMANCE FAILED: ${failures} mismatch(es)`); process.exit(1); }
