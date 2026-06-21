@@ -1,0 +1,113 @@
+{
+  "spec": "noa.l2-conformance/0.2",
+  "engine": "noa-refeval/0.2",
+  "note": "A conforming refEval MUST reproduce every verdict + ruleFired + the policyHash/readSetHash below.",
+  "policies": [
+    {
+      "policy": {
+        "spec": "noa.policy/0.2",
+        "id": "refund-guard-v1",
+        "requiredPaths": [
+          "action",
+          "amountMinor"
+        ],
+        "rules": [
+          {
+            "id": "block-million",
+            "when": {
+              "op": "ge",
+              "path": "amountMinor",
+              "value": 100000000
+            },
+            "then": "DENY"
+          },
+          {
+            "id": "allow-small-refund",
+            "when": {
+              "op": "and",
+              "clauses": [
+                {
+                  "op": "eq",
+                  "path": "action",
+                  "value": "payment.refund"
+                },
+                {
+                  "op": "lt",
+                  "path": "amountMinor",
+                  "value": 100000000
+                }
+              ]
+            },
+            "then": "ALLOW"
+          }
+        ]
+      },
+      "policyHash": "sha256:0903a28c85b6d51cf303730cda94669e5476b8439a34cd93bcfbcaee4a741417",
+      "readSetHash": "sha256:069445802be337478dae9bb255a58452224150c4124258803a512f6a3e7c7286",
+      "cases": [
+        {
+          "name": "small-refund-allow",
+          "inputs": {
+            "action": "payment.refund",
+            "amountMinor": 4200
+          },
+          "verdict": "ALLOW",
+          "ruleFired": "allow-small-refund"
+        },
+        {
+          "name": "million-refund-block",
+          "inputs": {
+            "action": "payment.refund",
+            "amountMinor": 100000000
+          },
+          "verdict": "DENY",
+          "ruleFired": "block-million"
+        },
+        {
+          "name": "over-million-block",
+          "inputs": {
+            "action": "payment.refund",
+            "amountMinor": 250000000
+          },
+          "verdict": "DENY",
+          "ruleFired": "block-million"
+        },
+        {
+          "name": "non-refund-default-deny",
+          "inputs": {
+            "action": "db.delete",
+            "amountMinor": 1
+          },
+          "verdict": "DENY",
+          "ruleFired": null
+        },
+        {
+          "name": "missing-required-amount",
+          "inputs": {
+            "action": "payment.refund"
+          },
+          "verdict": "DENY",
+          "ruleFired": "required-input-absent:amountMinor"
+        },
+        {
+          "name": "float-amount-fail-closed",
+          "inputs": {
+            "action": "payment.refund",
+            "amountMinor": 1.5
+          },
+          "verdict": "DENY",
+          "ruleFired": "eval-error"
+        },
+        {
+          "name": "type-mismatch-fail-closed",
+          "inputs": {
+            "action": "payment.refund",
+            "amountMinor": "lots"
+          },
+          "verdict": "DENY",
+          "ruleFired": "eval-error"
+        }
+      ]
+    }
+  ]
+}
