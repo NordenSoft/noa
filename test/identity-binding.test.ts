@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair } from "../src/keys.js";
-import { buildReceipt, type BuildInput, type Signer } from "../src/builder.js";
+import { buildReceipt, buildCheckpoint, type BuildInput, type Signer } from "../src/builder.js";
 import { verifyChain } from "../src/verify.js";
 import { sha256Prefixed } from "../src/hash.js";
 
@@ -59,6 +59,34 @@ test("B1: no manifest → VALID + the kid-level-attribution honesty warning (bac
   const r = verifyChain(chain, { keyring });
   assert.equal(r.status, "VALID");
   assert.ok(r.warnings.some((w) => /no identityManifest/.test(w)));
+});
+
+test("B1 (round-7 fix): manifest supplied but NO keyring → UNVERIFIED, not UNTRUSTED (no overclaim of unperformed auth)", () => {
+  // identity binding is meaningless about a key never authenticated. An impersonation chain with a
+  // manifest but no keyring must stay UNVERIFIED (signatures not authenticated) — NOT UNTRUSTED, whose
+  // documented meaning is "authenticated key, binding not authorized".
+  const impersonation = [buildReceipt(mkInput("alice"), null, { kid: bob.kid, privateKey: bob.privateKey })];
+  const r = verifyChain(impersonation, { identityManifest: { alice: ["alice-key"], bob: ["bob-key"] } });
+  assert.equal(r.status, "UNVERIFIED");
+  assert.equal(r.signaturesVerified, false);
+  assert.ok(r.warnings.some((w) => /identityManifest supplied but no keyring/.test(w)));
+});
+
+test("B1 (round-7 HIGH fix): a checkpoint forged by a co-trusted-but-UNauthorized key → UNTRUSTED (tail-truncation defense bound to identity)", () => {
+  // alice's genuine head, but the checkpoint is signed by BOB (a keyring-trusted key NOT authorized for
+  // alice). Pre-fix this verified VALID + tailChecked:true (bob could truncate alice's tail and forge the
+  // checkpoint). With identity binding on the checkpoint, it must be UNTRUSTED.
+  const head = buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey });
+  const manifest = { alice: ["alice-key"], bob: ["bob-key"] };
+  const forgedCp = buildCheckpoint(head, "2026-06-21T11:00:00.000Z", { kid: bob.kid, privateKey: bob.privateKey });
+  const bad = verifyChain([head], { keyring, checkpoint: forgedCp, identityManifest: manifest });
+  assert.equal(bad.status, "UNTRUSTED");
+  assert.match(bad.reason ?? "", /checkpoint signing key .* not authorized for head agent/);
+  // the authorized checkpoint (signed by alice's own key) still verifies + tail-checks
+  const goodCp = buildCheckpoint(head, "2026-06-21T11:00:00.000Z", { kid: alice.kid, privateKey: alice.privateKey });
+  const good = verifyChain([head], { keyring, checkpoint: goodCp, identityManifest: manifest });
+  assert.equal(good.status, "VALID", good.reason);
+  assert.equal(good.tailChecked, true);
 });
 
 test("B1: a malformed manifest is fail-closed (MALFORMED), never silently ignored", () => {

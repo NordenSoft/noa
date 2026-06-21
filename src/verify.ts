@@ -162,11 +162,14 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       if (!ok) return fail("TAMPERED", `invalid signature (kid ${r.sig.kid})`, chainId, list.length, seq);
     }
 
-    // 4c-bis. Identity binding (only when a manifest is supplied). Authenticating the signature proves
-    // "a keyring-trusted key signed this"; this proves "that key is AUTHORIZED to speak for THIS
-    // agent.id". An authenticated-but-unauthorized pairing is exactly cross-agent impersonation → reject
-    // as UNTRUSTED (distinct from TAMPERED: the bytes are intact + the key is real, the BINDING is not).
-    if (manifest !== undefined) {
+    // 4c-bis. Identity binding — ONLY meaningful once the signature is AUTHENTICATED (gated on
+    // haveKeyring, mirroring spec §5b which runs after §5). Authenticating the signature proves "a
+    // keyring-trusted key signed this"; this proves "that key is AUTHORIZED to speak for THIS agent.id".
+    // An authenticated-but-unauthorized pairing is exactly cross-agent impersonation → reject as
+    // UNTRUSTED (distinct from TAMPERED: bytes intact + key real, BINDING not). Without a keyring the
+    // kid is unauthenticated, so an UNTRUSTED verdict would overclaim authentication never performed —
+    // the result stays UNVERIFIED (with a warning) instead.
+    if (haveKeyring && manifest !== undefined) {
       const allowed = Object.prototype.hasOwnProperty.call(manifest, r.agent.id) ? manifest[r.agent.id]! : undefined;
       if (allowed === undefined || !allowed.includes(r.sig.kid)) {
         return fail("UNTRUSTED", `agent "${r.agent.id}" is not authorized for signing key "${r.sig.kid}" (identity manifest)`, chainId, list.length, seq);
@@ -212,6 +215,18 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     if (cp.highestSeq !== head.chain.seq || cp.headHash !== head.chain.hash) {
       return fail("TAMPERED", "chain head does not match checkpoint (tail truncated/extended)", chainId, list.length, head.chain.seq);
     }
+    // 5b. Checkpoint IDENTITY binding (mirrors receipt 4c-bis). Without it, B1's per-agent authorization
+    // would cover receipts but NOT the checkpoint — so a co-trusted-but-unauthorized key (authorized for
+    // some OTHER agent) could truncate the tail and forge a checkpoint over the truncated head, defeating
+    // the only offline anti-truncation control in exactly the multi-key deployment B1 hardens. When a
+    // manifest is supplied (and the signature is authenticated), the checkpoint's kid MUST be authorized
+    // for the HEAD receipt's agent.id — the agent whose tail it certifies.
+    if (haveKeyring && manifest !== undefined) {
+      const allowed = Object.prototype.hasOwnProperty.call(manifest, head.agent.id) ? manifest[head.agent.id]! : undefined;
+      if (allowed === undefined || !allowed.includes(cp.sig.kid)) {
+        return fail("UNTRUSTED", `checkpoint signing key "${cp.sig.kid}" is not authorized for head agent "${head.agent.id}" (identity manifest)`, chainId, list.length, head.chain.seq);
+      }
+    }
     // tailChecked is true ONLY for an authenticated checkpoint — an unauthenticated head match
     // is not a tail check and must not be reported as one.
     tailChecked = cpVerify === "ok";
@@ -230,6 +245,8 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   }
   if (manifest === undefined) {
     warnings.push("no identityManifest supplied: attribution is kid-level — a VALID result proves a keyring-trusted key signed, NOT which agent.id (cross-agent impersonation undefended in a multi-key keyring)");
+  } else if (!haveKeyring) {
+    warnings.push("identityManifest supplied but no keyring: identity NOT bound — signatures are unauthenticated, so the (agent.id, kid) pairing was not enforced (status stays UNVERIFIED, never UNTRUSTED)");
   }
 
   const status: VerifyStatus = haveKeyring ? "VALID" : "UNVERIFIED";

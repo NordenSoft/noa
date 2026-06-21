@@ -187,7 +187,11 @@ truncation/extension is detected. **The checkpoint signature is held to the same
 receipts**: with a keyring supplied, a checkpoint signed by an unknown `kid` (or with a bad
 signature) is `TAMPERED`, and `tailChecked` is set true **only** for an authenticated
 checkpoint — otherwise an attacker could drop the tail and forge a checkpoint over the
-truncated head with their own key. Without a checkpoint the verifier **warns** that
+truncated head with their own key. **Identity-bound (when an `identityManifest` is supplied):**
+the checkpoint is held to the SAME per-agent authorization as receipts — its `sig.kid` MUST be
+authorized for the HEAD receipt's `agent.id` (the agent whose tail it certifies), else `UNTRUSTED`.
+Without this a *co-trusted-but-unauthorized* key could truncate one agent's tail and certify it —
+the §5b binding closes that on the anti-truncation control too. Without a checkpoint the verifier **warns** that
 tail-truncation is undetectable offline. True tamper-*proof* (vs evident) needs an external
 anchor — transparency log / receiver-attestation — which is **v1.0** (§7).
 
