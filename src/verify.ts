@@ -85,7 +85,13 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     if (typeof manifest !== "object" || manifest === null || Array.isArray(manifest)) {
       return fail("MALFORMED", "identityManifest must be an object (agent.id -> kid[])", null, 0);
     }
-    for (const [aid, kids] of Object.entries(manifest)) {
+    // Validate over the SAME own-property view the enforcement points read (hasOwnProperty —
+    // includes NON-ENUMERABLE own props). Object.entries() only sees enumerable own props, so a
+    // non-enumerable own entry (e.g. one set via Object.defineProperty by a non-JSON consumer)
+    // would escape validation yet still be read by 4c-bis/§5b — letting an unvalidated value
+    // authorize an impersonation, or a non-array value throw out of this never-throws API.
+    for (const aid of Object.getOwnPropertyNames(manifest)) {
+      const kids = (manifest as Record<string, unknown>)[aid];
       if (!Array.isArray(kids) || !kids.every((k) => typeof k === "string")) {
         return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
       }
