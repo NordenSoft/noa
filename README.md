@@ -62,7 +62,7 @@ the signing key is bound into the hash, and verification runs **offline** — no
 
 ```bash
 npm install          # zero runtime dependencies (Node ≥ 20 stdlib only)
-npm test             # build + generate conformance vectors + run 60 tests
+npm test             # build + generate conformance vectors + run the full conformance suite
 
 # verify a signed chain against a keyring + checkpoint
 node dist/src/cli.js verify conformance/vectors/valid-chain.json \
@@ -87,7 +87,7 @@ import { buildReceipt, verifyChain, generateKeyPair } from "@noa/receipt";
 
 - ✅ **Receipt spec (v0.1)** — mandatory Ed25519, key-pinning, genesis + tail-truncation rules.
 - ✅ **Offline verifier** — library + `noa verify` CLI, zero runtime deps, hostile-input hardened.
-- ✅ **JSON-Schema + conformance suite** — 60 tests, 14 attack + 9 malformed vectors, all rejected.
+- ✅ **JSON-Schema + conformance suite** — 14 attack + 9 malformed vectors, all rejected.
 - 🚧 **SDK `noa.guard()` · MCP proxy · hosted control-plane** — examples in [`examples/`](examples), hardening in progress.
 - This is **early access**, and it is **one organ** of NOA — not the whole brain. The full
   agent-cognition platform (cognition, memory, BYO-agent hosting) is separate and proprietary.
