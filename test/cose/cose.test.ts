@@ -99,3 +99,14 @@ test("alg-confusion: a COSE_Sign1 whose protected header isn't {alg:EdDSA} is re
   assert.equal(r.ok, false);
   assert.match(r.reason ?? "", /EdDSA/);
 });
+
+test("ROUND-6: a truncated multi-byte CBOR head throws typed CborError (not raw RangeError) — contract + DoS guard", () => {
+  // Every truncated head width must surface the DOCUMENTED CborError, never Node's raw RangeError (which
+  // would crash a contract-following `catch (e) { if (e instanceof CborError) …; throw e }` consumer).
+  for (const b of [[0x18], [0x19, 0x00], [0x1a, 0x00, 0x00], [0x1b, 0, 0, 0, 0, 0, 0, 0], [0x58], [0x78]]) {
+    assert.throws(() => decode(Buffer.from(b)), CborError);
+  }
+  // nested truncation (inside an array / a COSE-shaped prefix) — the RangeError paths the fuzz surfaced
+  assert.throws(() => decode(Buffer.from([0x81, 0x19, 0x00])), CborError);
+  assert.throws(() => decode(Buffer.from([0xd2, 0x84, 0x5a, 0x00, 0x00])), CborError);
+});

@@ -85,20 +85,28 @@ function readHead(c: Cur): { major: number; n: number } {
   // RFC 8949 §4.2.1 core-deterministic: heads MUST be shortest-form. Reject non-minimal encodings
   // so the decoder accepts ONLY canonical CBOR (a strict COSE/SCITT verifier does the same) — closes
   // the reverse-direction malleability gap (two byte-different encodings of one logical statement).
+  // Bounds-check BEFORE every multi-byte read. Without this a truncated head makes Node throw a raw
+  // RangeError (or, for ai===24, yields `undefined` that defeats the `< 24` and downstream overrun
+  // guards) instead of the documented typed CborError — a contract violation + crash-class DoS for any
+  // direct decode() consumer that does `catch (e) { if (e instanceof CborError) … ; throw e }`.
   if (ai < 24) n = ai;
   else if (ai === 24) {
+    if (c.i + 1 > c.buf.length) throw new CborError("unexpected end (1-byte head)");
     n = c.buf[c.i]!;
     c.i += 1;
     if (n < 24) throw new CborError("non-canonical: 1-byte head < 24");
   } else if (ai === 25) {
+    if (c.i + 2 > c.buf.length) throw new CborError("unexpected end (2-byte head)");
     n = c.buf.readUInt16BE(c.i);
     c.i += 2;
     if (n < 0x100) throw new CborError("non-canonical: 2-byte head < 256");
   } else if (ai === 26) {
+    if (c.i + 4 > c.buf.length) throw new CborError("unexpected end (4-byte head)");
     n = c.buf.readUInt32BE(c.i);
     c.i += 4;
     if (n < 0x10000) throw new CborError("non-canonical: 4-byte head < 65536");
   } else if (ai === 27) {
+    if (c.i + 8 > c.buf.length) throw new CborError("unexpected end (8-byte head)");
     const big = c.buf.readBigUInt64BE(c.i);
     c.i += 8;
     if (big < 0x100000000n) throw new CborError("non-canonical: 8-byte head < 2^32");
