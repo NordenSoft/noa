@@ -137,6 +137,18 @@ truth or safety.
   self-reported decision on an authenticated carrier*, not the truth of its inputs.
 - **Enforcement bypass:** see SECURITY.md — `noa.guard()` is advisory unless placed at the
   credential/write boundary; the MCP proxy must fail-closed.
+- **In-process-API hostile-getter residual (declared known-limitation, v0.1):** the documented,
+  deployed verifier surfaces — the CLI, `verifyChainText`, and the independent Python verifier — consume
+  parsed JSON (no accessors) and are immune. The in-process JS object APIs (`verifyChain(obj)`,
+  `verifyCheckpoint(obj)`, `verifyReceiptCompliance(obj)`) accept caller-supplied LIVE objects; v0.1
+  snapshots every such input once (`structuredClone`) and is fail-closed, so all *known* flipping-accessor /
+  throwing-accessor / non-cloneable vectors yield `MALFORMED`, never a wrong VALID and never a raw throw.
+  Because any future property read on a live object is a *potential* new accessor surface, this class is
+  treated as **continuous hardening, not a release blocker**: after 18 adversarial multi-model audit rounds
+  (R1–R18; every confirmed finding fixed in BOTH implementations with a regression probe + cross-impl
+  conformance), the v0.1 correctness surface is **declared hardened**. Callers passing attacker-influenced
+  *live JS objects* directly to the in-process API should pre-parse via `verifyChainText` / `JSON.parse`
+  (the immune path). New same-class in-process-getter findings are tracked and fixed, not gated on.
 
 ## Clean-room / scope boundary (why this is safe to open-source)
 
