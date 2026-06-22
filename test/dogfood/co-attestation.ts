@@ -123,6 +123,14 @@ export interface VerifyCoAttestationContext {
 export interface CoAttestationResult {
   ok: boolean;
   reason?: string;
+  /**
+   * On ok:true, the counterparty key id that was actually verified (= coAtt.sig.kid, resolved in
+   * receiverKeyring). Surfaced so the caller learns WHICH trusted receiver signed without having to
+   * separately trust coAtt.sig.kid — `ok:true` alone only means "a key in receiverKeyring signed",
+   * NOT "the receipt's designated payee signed" (the verifier does not bind to a receipt-payee; put
+   * only the intended counterparty's key in receiverKeyring, or check this field).
+   */
+  kid?: string;
 }
 
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
@@ -251,7 +259,9 @@ export function verifyCoAttestation(
       return { ok: false, reason: `field mismatch — params["${coAtt.field}"] is not the attested value (operator/counterparty disagreement)` };
     }
 
-    return { ok: true };
+    // Surface the verified counterparty kid (it is inside the signed surface) so ok:true is
+    // self-describing about WHO signed — see CoAttestationResult.kid.
+    return { ok: true, kid: coAtt.sig.kid };
   } catch (e) {
     return { ok: false, reason: `co-attestation verify error: ${(e as Error).message}` };
   }

@@ -168,6 +168,29 @@ party who would have had to co-sign the fabrication.
   remains wide open on every uncovered input. Closing it across the read-set is explicitly future,
   separately-governed work (federation-spec §9–§10).
 
+### Scope precision — what the verifier reconciles, and what it does not
+
+A cross-family adversarial review surfaced three honest boundaries that callers must not over-read.
+None is a bug in the intended use (honest in-process fixtures, a receiver keyring holding only the
+intended counterparty, a carrier authenticated either inline or via a prior `verifyChain → VALID`);
+all three are stated here so the PROVES claim is not read as stronger than the mechanism.
+
+- **`currency` is the counterparty's *signed assertion*, not reconciled against the carrier.**
+  Because `currency` is inside the signed surface, the same signature bytes cannot be lifted to a
+  different currency (anti-signature-replay holds). But `verifyCoAttestation` does **not** check
+  `coAtt.currency` against any currency on the carrier receipt or its params. `ISO4217_RE` is a
+  shape check only (`^[A-Z]{3}$` accepts unassigned codes). The proof is *"C signed value V in
+  currency X for field F"* — not *"the receipt's own currency is X"*.
+- **The verifier trusts the keyring, not a receipt-designated payee.** `ok:true` means *a key
+  present in `receiverKeyring` signed* — it does **not** prove that key belongs to the receipt's
+  legitimate payee (the pilot binds to no payee field). With a multi-key `receiverKeyring`, a
+  different trusted receiver could co-attest. The verified key is returned as `result.kid`; put
+  only the intended counterparty's key in `receiverKeyring`, or check `result.kid`.
+- **Carrier authentication is opt-in.** Step 2 runs only when `receiptKeyring` is supplied. If it
+  is omitted, you **must** have already run `verifyChain([receipt], { keyring }) → VALID`; otherwise
+  a forged-but-self-consistent carrier plus an attacker-held receiver key yields `ok:true`. Prefer
+  passing `receiptKeyring` so carrier authenticity is enforced in one call.
+
 ## 6. Pilot-grade caveats
 
 This pilot is deliberately thin and reuses only what the public package already exposes.

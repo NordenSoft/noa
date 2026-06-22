@@ -69,6 +69,8 @@ describe("dogfood co-attestation (Track A2): a counterparty signs ONE input fiel
       receiptKeyring: signer.keyring,
     });
     expect(r.ok).toBe(true);
+    // ok:true surfaces WHICH trusted receiver signed (QA-panel: "a bare {ok:true} doesn't say who").
+    expect(r.kid).toBe(receiver.kid);
   });
 
   it("a TAMPERED co-attested field FAILS (the value is inside the signed payload)", () => {
