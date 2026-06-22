@@ -71,6 +71,29 @@ describe("dogfood co-attestation (Track A2): a counterparty signs ONE input fiel
     expect(r.ok).toBe(true);
     // ok:true surfaces WHICH trusted receiver signed (QA-panel: "a bare {ok:true} doesn't say who").
     expect(r.kid).toBe(receiver.kid);
+    // …and that THIS call authenticated the carrier (receiptKeyring was supplied).
+    expect(r.carrierAuthenticated).toBe(true);
+  });
+
+  it("ok:true surfaces carrierAuthenticated:false when receiptKeyring is omitted (caller pre-verified)", () => {
+    const signer = newDogfoodSigner("dogfood-key-coatt-carrierbit");
+    const receiver = newReceiver("receiver-payee-cb");
+    const { receipt, inputs } = emitReceipt(
+      refundRequest(REFUND_AMOUNT_MINOR, { id: "rc_coatt_cb", ts: "2026-06-22T17:00:00.000Z" }),
+      refundGuardPolicy(),
+      signer,
+      null,
+    );
+    // The caller authenticates the carrier itself, then verifies the co-att WITHOUT receiptKeyring.
+    expect(verifyChain([receipt], { keyring: signer.keyring }).status).toBe("VALID");
+    const coAtt = createCoAttestation(
+      { receipt, field: "amountMinor", value: REFUND_AMOUNT_MINOR, currency: CURRENCY, ts: TS },
+      { kid: receiver.kid, privateKey: receiver.privateKey },
+    );
+    const r = verifyCoAttestation(coAtt, { receipt, params: inputs, receiverKeyring: receiver.keyring });
+    expect(r.ok).toBe(true);
+    // The bit is honest: this call did NOT authenticate the carrier (caller must have pre-verified).
+    expect(r.carrierAuthenticated).toBe(false);
   });
 
   it("a TAMPERED co-attested field FAILS (the value is inside the signed payload)", () => {

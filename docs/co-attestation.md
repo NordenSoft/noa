@@ -189,7 +189,10 @@ all three are stated here so the PROVES claim is not read as stronger than the m
 - **Carrier authentication is opt-in.** Step 2 runs only when `receiptKeyring` is supplied. If it
   is omitted, you **must** have already run `verifyChain([receipt], { keyring }) → VALID`; otherwise
   a forged-but-self-consistent carrier plus an attacker-held receiver key yields `ok:true`. Prefer
-  passing `receiptKeyring` so carrier authenticity is enforced in one call.
+  passing `receiptKeyring` so carrier authenticity is enforced in one call. On `ok:true` the result's
+  **`carrierAuthenticated`** bit reports which path was taken (`true` = this call authenticated the
+  carrier; `false` = it relied on the caller's prior `verifyChain`), so `ok:true` is never silently
+  dependent on an unstated check.
 
 ## 6. Pilot-grade caveats
 

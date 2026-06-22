@@ -131,6 +131,14 @@ export interface CoAttestationResult {
    * only the intended counterparty's key in receiverKeyring, or check this field).
    */
   kid?: string;
+  /**
+   * On ok:true, whether THIS call authenticated the carrier receipt (step 2 ran because a
+   * receiptKeyring was supplied). When false, carrier authenticity was NOT checked here — the caller
+   * MUST have already run verifyChain([receipt],{keyring}) → VALID, else a forged-but-self-consistent
+   * carrier could yield ok:true. Surfaced (QA-panel MED) so ok:true is self-describing about carrier
+   * trust rather than silently depending on an unstated precondition.
+   */
+  carrierAuthenticated?: boolean;
 }
 
 const HASH_RE = /^sha256:[0-9a-f]{64}$/;
@@ -227,7 +235,9 @@ export function verifyCoAttestation(
     const hashInput = receiptHashInput(receipt);
     const receiptHash = "sha256:" + sha256Hex(hashInput);
 
-    // 2. optional carrier authenticity (mirrors verifyReceiptCompliance {keyring}).
+    // 2. optional carrier authenticity (mirrors verifyReceiptCompliance {keyring}). The block returns
+    // early on ANY failure, so reaching past it with receiptKeyring supplied ⇒ the carrier authenticated.
+    const carrierAuthenticated = receiptKeyring !== undefined;
     if (receiptKeyring !== undefined) {
       const shape = validateReceiptShape(receipt);
       if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
@@ -260,8 +270,9 @@ export function verifyCoAttestation(
     }
 
     // Surface the verified counterparty kid (it is inside the signed surface) so ok:true is
-    // self-describing about WHO signed — see CoAttestationResult.kid.
-    return { ok: true, kid: coAtt.sig.kid };
+    // self-describing about WHO signed — see CoAttestationResult.kid — and whether THIS call
+    // authenticated the carrier (vs relying on the documented pre-verify precondition).
+    return { ok: true, kid: coAtt.sig.kid, carrierAuthenticated };
   } catch (e) {
     return { ok: false, reason: `co-attestation verify error: ${(e as Error).message}` };
   }
