@@ -50,7 +50,8 @@
     "build": "tsc -p tsconfig.json",
     "gen:vectors": "node dist/scripts/gen-vectors.js",
     "gen:l2-vectors": "node dist/scripts/gen-l2-vectors.js",
-    "test": "npm run build && npm run gen:vectors && npm run gen:l2-vectors && node --test \"dist/test/**/*.test.js\"",
+    "test": "npm run build && npm run gen:vectors && npm run gen:l2-vectors && node --test \"dist/test/*.test.js\" \"dist/test/cose/**/*.test.js\" \"dist/test/policy/**/*.test.js\"",
+    "test:dogfood": "npx -y vitest@3.2.6 run test/dogfood/",
     "verify": "node dist/src/cli.js verify",
     "prepare": "npm run build",
     "prepublishOnly": "npm run build"

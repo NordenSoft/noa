@@ -15,3 +15,5 @@ _*.mjs
 _*.ts
 _repro_*
 _probe*
+# Per-session agent working dir (evidence/jsonl scratch — never ship)
+agent-context/

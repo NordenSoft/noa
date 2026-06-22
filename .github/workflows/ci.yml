@@ -56,3 +56,8 @@ jobs:
           else
             echo "TAMPERED -> exit $? (want non-zero)"
           fi
+      - name: Dogfood pilots (PRIVATE, vitest — proxy/replay/co-attestation behaviour)
+        # The dogfood harnesses under test/dogfood/ are PRIVATE/internal (not in package.json `files`)
+        # and use vitest (resolved via a pinned npx, NOT a project dependency — the lib stays zero-dep).
+        # `npm test` (node:test) deliberately excludes them; this gates their runtime behaviour.
+        run: npm run test:dogfood
