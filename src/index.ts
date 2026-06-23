@@ -1,5 +1,5 @@
 /**
- * @noa/receipt — the open Agent Action Receipt organ.
+ * noa-receipt — the open Agent Action Receipt organ.
  *
  * Public API: build signed receipts, canonicalize/hash them, and verify a chain OFFLINE
  * with no dependency on any NOA service. This package is the governance/receipt organ only;

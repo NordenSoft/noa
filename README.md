@@ -82,7 +82,7 @@ can't be detected offline.
 In code:
 
 ```ts
-import { buildReceipt, verifyChain, generateKeyPair } from "@noa/receipt";
+import { buildReceipt, verifyChain, generateKeyPair } from "noa-receipt";
 ```
 
 ## Status (honest)

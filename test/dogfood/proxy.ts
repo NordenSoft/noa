@@ -1,6 +1,6 @@
 /**
  * test/dogfood/proxy.ts — PRIVATE internal dogfood harness. NOT part of the published
- * @noa/receipt surface: it lives under `test/`, which package.json `files` does not ship.
+ * noa-receipt surface: it lives under `test/`, which package.json `files` does not ship.
  *
  * Purpose: wrap a SAMPLE agent action — a deterministic policy DECISION over integer-minor-unit
  * inputs — and emit a HASH-ONLY receipt for it via the existing public lib. It REUSES the public
