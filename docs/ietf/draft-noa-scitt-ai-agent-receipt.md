@@ -8,6 +8,12 @@ area = "Security"
 workgroup = "SCITT"
 keyword = ["SCITT", "COSE", "AI agent", "receipt", "provenance", "policy", "attestation", "accountability"]
 
+[seriesInfo]
+name = "Internet-Draft"
+value = "draft-noa-scitt-ai-agent-receipt-00"
+status = "informational"
+stream = "IETF"
+
 [[author]]
 initials = "T."
 surname = "Toraman"
