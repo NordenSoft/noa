@@ -50,8 +50,8 @@ test("an INDEPENDENT impl (cbor2 + node:crypto) verifies NOA's COSE_Sign1 — un
   const ok = crypto.verify(null, sigStructure, pub, Buffer.from(sig!));
   assert.equal(ok, true, "an off-the-shelf COSE verification path must accept NOA's COSE_Sign1");
 
-  // 4. The protected header is exactly {1: -8} (alg EdDSA) per the COSE registry
-  assert.equal(Buffer.from(prot!).toString("hex"), "a10127");
+  // 4. The protected header is exactly {1: -19} (alg Ed25519, RFC 9864) per the COSE registry
+  assert.equal(Buffer.from(prot!).toString("hex"), "a10132");
 });
 
 test("cross-impl: a tampered NOA COSE_Sign1 is rejected by the independent verifier too", () => {

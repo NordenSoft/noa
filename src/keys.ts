@@ -79,8 +79,9 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // PIN THE CURVE. cryptoVerify(null, …) dispatches the verification algorithm on the KEY's type,
     // NOT on a fixed Ed25519. Without this, an Ed448 (or any verify(null)-compatible) public key in
     // the keyring + a genuine signature under it verifies TRUE even though the receipt declares
-    // sig.alg="ed25519" — algorithm/key confusion (CWE-347). The EdDSA COSE alg (-8) also admits
-    // Ed448, so this single key-type pin is the durable defense on BOTH verifyChain and COSE paths.
+    // sig.alg="ed25519" — algorithm/key confusion (CWE-347). The COSE path pins the curve-specific
+    // Ed25519 alg-id (-19, RFC 9864) — unlike the generic EdDSA (-8) it does NOT admit Ed448 — but
+    // this key-type pin remains the durable defense on BOTH verifyChain and COSE paths.
     if (key.asymmetricKeyType !== "ed25519") return false;
     // Reject NON-CANONICAL SPKI (e.g. valid key + trailing garbage): OpenSSL's DER parser
     // accepts trailing bytes, so one logical key could have many encodings. A trust layer must

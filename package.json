@@ -1,6 +1,6 @@
 {
   "name": "noa-receipt",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "NOA Agent Action Receipt — open, offline-verifiable provenance for AI-agent actions. The governance/receipt organ only; the NOA brain is separate and proprietary.",
   "license": "Apache-2.0",
   "type": "module",

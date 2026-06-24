@@ -1,5 +1,5 @@
 /**
- * COSE_Sign1 (RFC 9052) over Ed25519/EdDSA — the universal, standards envelope for a NOA receipt.
+ * COSE_Sign1 (RFC 9052) over Ed25519 — the universal, standards envelope for a NOA receipt.
  * A NOA receipt wrapped as COSE_Sign1 verifies in ANY conforming COSE implementation (every
  * language, TPM/FIDO/cloud-KMS, RATS/EAT, SCITT) without NOA's code — that is what "universal" means.
  * Zero runtime deps: our own deterministic CBOR + node:crypto Ed25519. Conformance against an
@@ -12,11 +12,16 @@ import { signEd25519, verifyEd25519, type Keyring } from "../keys.js";
 const COSE_SIGN1_TAG = 18;
 const HDR_ALG = 1;
 const HDR_KID = 4;
-const ALG_EDDSA = -8;
+// COSE alg = Ed25519 (-19), the fully-specified algorithm of RFC 9864. We deliberately use the
+// curve-specific -19 rather than the generic EdDSA (-8, RFC 9053, deprecated Oct-2025): -8 also
+// admits Ed448, so -19 closes the algorithm-confusion surface at the alg-id layer (complementing the
+// node:crypto key-type pin in keys.ts). This matches the published IETF draft
+// (draft-noa-scitt-ai-agent-receipt), which already uses -19.
+const ALG_ED25519 = -19;
 
-/** protected header = canonical CBOR map { 1: -8 } (alg = EdDSA), serialized (wrapped as bstr by caller). */
+/** protected header = canonical CBOR map { 1: -19 } (alg = Ed25519), serialized (wrapped as bstr by caller). */
 function protectedHeaderBytes(): Buffer {
-  return encMap([[encInt(HDR_ALG), encInt(ALG_EDDSA)]]);
+  return encMap([[encInt(HDR_ALG), encInt(ALG_ED25519)]]);
 }
 
 /** RFC 9052 Sig_structure for COSE_Sign1: [ "Signature1", protected:bstr, external_aad:bstr(empty), payload:bstr ]. */
@@ -47,19 +52,19 @@ export interface CoseVerifyResult {
   reason?: string;
 }
 
-function isEdDSAProtected(protectedBytes: Buffer): boolean {
-  // must decode to exactly { 1: -8 } — reject alg confusion / unexpected protected headers
+function isEd25519Protected(protectedBytes: Buffer): boolean {
+  // must decode to exactly { 1: -19 } — reject alg confusion / unexpected protected headers
   try {
     const m = decode(protectedBytes);
     if (m.t !== "map" || m.v.length !== 1) return false;
     const [k, val] = m.v[0]!;
-    return k.t === "int" && k.v === HDR_ALG && val.t === "int" && val.v === ALG_EDDSA;
+    return k.t === "int" && k.v === HDR_ALG && val.t === "int" && val.v === ALG_ED25519;
   } catch {
     return false;
   }
 }
 
-/** Verify a COSE_Sign1: structure, EdDSA alg, kid→keyring, signature. Never throws. */
+/** Verify a COSE_Sign1: structure, Ed25519 alg, kid→keyring, signature. Never throws. */
 export function coseSign1Verify(coseBytes: Buffer, keyring: Keyring): CoseVerifyResult {
   // Fail-closed on a non-object keyring (round-16 #5): mirrors verifyChain's round-15 #7 guard, which the
   // round-15 fix did NOT propagate to the COSE path. A null keyring would throw a raw TypeError on
@@ -81,7 +86,7 @@ export function coseSign1Verify(coseBytes: Buffer, keyring: Keyring): CoseVerify
   if (p.t !== "bstr" || u.t !== "map" || pl.t !== "bstr" || s.t !== "bstr") {
     return { ok: false, kid: null, payload: null, reason: "COSE_Sign1 element types invalid" };
   }
-  if (!isEdDSAProtected(p.v)) return { ok: false, kid: null, payload: null, reason: "protected header is not {alg: EdDSA}" };
+  if (!isEd25519Protected(p.v)) return { ok: false, kid: null, payload: null, reason: "protected header is not {alg: Ed25519}" };
   let kid: string | null = null;
   for (const [k, val] of u.v) {
     if (k.t === "int" && k.v === HDR_KID && val.t === "bstr") kid = val.v.toString("utf8");

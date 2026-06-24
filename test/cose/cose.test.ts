@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
 import { generateKeyPair } from "../../src/keys.js";
 import { buildReceipt, type BuildInput, type Signer } from "../../src/builder.js";
 import { receiptToCose, receiptFromCose } from "../../src/cose/receipt-cose.js";
 import { coseSign1, coseSign1Verify } from "../../src/cose/cose-sign1.js";
-import { encInt, encBstr, encTstr, encArray, encMap, decode, CborError } from "../../src/cose/cbor.js";
+import { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, CborError } from "../../src/cose/cbor.js";
 import { sha256Prefixed } from "../../src/hash.js";
 import { canonicalize } from "../../src/jcs.js";
 
@@ -89,15 +90,44 @@ test("ROUND-3: decoder REJECTS non-canonical CBOR (shortest-form + sorted/unique
   assert.equal((decode(Buffer.from([0xa2, 0x01, 0x00, 0x02, 0x00])) as { t: string }).t, "map"); // 1,2 sorted
 });
 
-test("alg-confusion: a COSE_Sign1 whose protected header isn't {alg:EdDSA} is rejected", () => {
-  // hand-build a tag-18 with protected = {1: -7} (ES256, not EdDSA) → must reject
+test("alg-confusion: a COSE_Sign1 whose protected header isn't {alg:Ed25519} is rejected", () => {
   const kp = generateKeyPair("k");
-  const badProtected = encMap([[encInt(1), encInt(-7)]]);
-  const body = encArray([encBstr(badProtected), encMap([[encInt(4), encBstr(Buffer.from("k"))]]), encBstr(Buffer.from("x")), encBstr(Buffer.alloc(64))]);
-  const cose = Buffer.concat([Buffer.from([0xd2]), body]);
-  const r = coseSign1Verify(cose, { k: kp.publicKey });
-  assert.equal(r.ok, false);
-  assert.match(r.reason ?? "", /EdDSA/);
+  // hand-build a tag-18 with protected = {1: alg} → must reject for any alg != -19 (Ed25519, RFC 9864),
+  // INCLUDING the now-deprecated generic EdDSA (-8) and ES256 (-7). Pinning the curve-specific -19
+  // (rather than -8, which also admits Ed448) closes the alg-id-layer confusion surface.
+  for (const badAlg of [-7 /* ES256 */, -8 /* generic EdDSA, deprecated */, -35 /* ES384 */]) {
+    const badProtected = encMap([[encInt(1), encInt(badAlg)]]);
+    const body = encArray([encBstr(badProtected), encMap([[encInt(4), encBstr(Buffer.from("k"))]]), encBstr(Buffer.from("x")), encBstr(Buffer.alloc(64))]);
+    const cose = Buffer.concat([Buffer.from([0xd2]), body]);
+    const r = coseSign1Verify(cose, { k: kp.publicKey });
+    assert.equal(r.ok, false, `alg ${badAlg} must be rejected`);
+    assert.match(r.reason ?? "", /Ed25519/);
+  }
+});
+
+test("curve-pin: an Ed448 key + {1:-19} protected + genuine Ed448 signature is REJECTED (defends past the alg-id check)", () => {
+  // The alg-id check ({1:-19}) closes the registry-layer confusion; this test proves the SECOND,
+  // deeper defense — the node:crypto curve-type pin in verifyEd25519. We construct a COSE_Sign1 that
+  // PASSES isEd25519Protected (protected = {1:-19}, the very alg we accept) yet is signed by a real
+  // Ed448 key whose SPKI sits in the keyring under the kid. If verification dispatched on the key type
+  // (cryptoVerify(null, …) does), this Ed448 signature would verify TRUE under alg "Ed25519" —
+  // algorithm/key confusion (CWE-347). The asymmetricKeyType !== "ed25519" pin must reject it.
+  const { publicKey, privateKey } = generateKeyPairSync("ed448");
+  const kid = "ed448-key";
+  const pubB64 = (publicKey.export({ type: "spki", format: "der" }) as Buffer).toString("base64");
+
+  // hand-build the COSE_Sign1 exactly as cose-sign1.ts does, but sign with the Ed448 key:
+  const prot = encMap([[encInt(1), encInt(-19)]]); // {1:-19} — accepted by isEd25519Protected
+  const payload = Buffer.from("ed448-attack-payload", "utf8");
+  const sigStructure = encArray([encTstr("Signature1"), encBstr(prot), encBstr(Buffer.alloc(0)), encBstr(payload)]);
+  const sig = cryptoSign(null, sigStructure, privateKey); // a GENUINE Ed448 signature over the Sig_structure
+  const unprotected = encMap([[encInt(4), encBstr(Buffer.from(kid, "utf8"))]]);
+  const body = encArray([encBstr(prot), unprotected, encBstr(payload), encBstr(sig)]);
+  const cose = encTag(18, body);
+
+  const r = coseSign1Verify(cose, { [kid]: pubB64 });
+  assert.equal(r.ok, false, "an Ed448 key/sig must be rejected even when the protected header says Ed25519 (curve pin)");
+  assert.match(r.reason ?? "", /bad signature/); // reaches the verify step; rejected by the curve-type pin
 });
 
 test("ROUND-6: a truncated multi-byte CBOR head throws typed CborError (not raw RangeError) — contract + DoS guard", () => {

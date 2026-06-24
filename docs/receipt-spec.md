@@ -243,8 +243,11 @@ A NOA Receipt is also expressible as a **COSE_Sign1** (RFC 9052) so it verifies 
 COSE implementation — every language, hardware (TPM/FIDO), cloud KMS, RATS/EAT — **without NOA's code**.
 That is what makes it universal rather than bespoke.
 
-- **Algorithm:** EdDSA (COSE alg `-8`), protected header `{1: -8}` (and nothing else — a verifier MUST
-  reject any other protected header to prevent algorithm confusion).
+- **Algorithm:** Ed25519 (COSE alg `-19`, RFC 9864), protected header `{1: -19}` (and nothing else — a
+  verifier MUST reject any other protected header to prevent algorithm confusion). We use the
+  curve-specific `-19` rather than the generic EdDSA (`-8`, RFC 9053, deprecated Oct-2025): `-8` also
+  admits Ed448, so pinning `-19` closes the Ed448 algorithm-confusion surface at the alg-id layer (the
+  CBOR-encoded protected header is exactly `a10132`, complementing the node:crypto curve-type key pin).
 - **kid:** carried in the unprotected header (label `4`), resolved against the verifier's keyring.
 - **Payload:** the JCS-canonical NOA receipt bytes (§2/§4). So a standard COSE verify authenticates the
   receipt; a NOA-native consumer then parses the payload and runs the hash-chain / policy checks (§3–§6).
