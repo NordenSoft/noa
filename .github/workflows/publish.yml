@@ -1,0 +1,50 @@
+name: publish
+
+# Trusted Publishing (OIDC) — NO NPM_TOKEN, no expiring secret to rotate.
+# npm trusts GitHub Actions' OIDC identity for this exact repo + workflow and
+# mints short-lived publish credentials on the fly. One-time setup on npmjs.com:
+#   noa-receipt → Settings → Publishing access / Trusted Publisher → GitHub Actions
+#     Organization or user: NordenSoft
+#     Repository:           noa
+#     Workflow filename:    publish.yml
+#     (Environment:         leave blank)
+# After that, ship a new version with NO token, ever:
+#   npm version patch    # bumps package.json + creates a vX.Y.Z tag
+#   git push --follow-tags
+# The tag push triggers this job, which builds, tests, and publishes via OIDC
+# with a provenance attestation (signed proof the artifact was built from this repo).
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch: {}   # also allow a manual run from the Actions tab
+
+permissions:
+  contents: read
+  id-token: write   # REQUIRED: lets the job mint the OIDC token npm exchanges for
+                    # short-lived publish credentials (also what enables --provenance)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node still ships npm 10.x.
+      - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1)
+        run: npm install -g npm@latest
+
+      - run: npm ci
+
+      - name: Build + generate vectors + test (never publish broken)
+        run: npm test
+
+      - name: Publish to npm via OIDC (no token, with provenance)
+        run: npm publish --provenance --access public
