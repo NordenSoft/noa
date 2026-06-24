@@ -1,7 +1,7 @@
 %%%
 title = "A SCITT Profile for AI-Agent Action Receipts"
 abbrev = "SCITT AI-Agent Action Receipts"
-docName = "draft-noa-scitt-ai-agent-receipt-00"
+docName = "draft-noa-scitt-ai-agent-receipt-01"
 category = "info"
 ipr = "trust200902"
 area = "Security"
@@ -10,7 +10,7 @@ keyword = ["SCITT", "COSE", "AI agent", "receipt", "provenance", "policy", "atte
 
 [seriesInfo]
 name = "Internet-Draft"
-value = "draft-noa-scitt-ai-agent-receipt-00"
+value = "draft-noa-scitt-ai-agent-receipt-01"
 status = "informational"
 stream = "IETF"
 
@@ -136,7 +136,10 @@ genesis receipt (`seq == 0`).
 
 ## Protected header
 
-A receipt is a COSE_Sign1 (CBOR tag 18) Signed Statement. The protected header MUST contain:
+A receipt is a COSE_Sign1 (CBOR tag 18) Signed Statement. Its protected header MUST contain `alg`;
+the receipt MUST additionally carry a key identifier, which SHOULD be in the protected header and MAY
+be in the unprotected header (see below — this avoids the RFC 2119 contradiction of requiring `kid` in
+the protected header while also permitting it in the unprotected one). In detail:
 
 - **`alg` (label 1) = `-19` (Ed25519)** as registered in the IANA COSE Algorithms registry by
   [RFC9864], Section 2.2 (the fully-specified Ed25519 identifier; RFC 8032 Section 5.1
@@ -147,7 +150,14 @@ A receipt is a COSE_Sign1 (CBOR tag 18) Signed Statement. The protected header M
   `alg = -19` self-disambiguating, so a verifier MUST NOT rely on the key's `crv` alone to
   determine the algorithm.
 - A key identifier sufficient to resolve the verification key: `kid` (label 4), or a
-  certificate reference (`x5t` label 34 / `x5chain` label 33) where a PKI is used.
+  certificate reference (`x5t` label 34 / `x5chain` label 33) where a PKI is used. The `kid`
+  SHOULD be carried in the protected header (where it is covered by the signature and cannot be
+  stripped or swapped); it MAY instead be carried in the unprotected header (label 4) — a verifier
+  MUST resolve it from either bucket, preferring the protected copy when both are present. A
+  verifier MUST NOT reject a COSE_Sign1 solely because the protected header carries additional
+  registered header parameters (e.g. `kid`, `content type`, `crit`, `CWT_Claims`) beyond `alg`;
+  per [RFC9052], Section 3.1 any header it does not understand and that is NOT listed in `crit`
+  (label 2) MUST be ignored, and any critical header it cannot process MUST cause rejection.
 
 The protected header SHOULD contain the **CWT_Claims** header parameter (label 15, [RFC9597])
 carrying at least `iss` (issuer / the receipt-emitting authority) and `sub` (subject / the

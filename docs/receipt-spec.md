@@ -243,12 +243,18 @@ A NOA Receipt is also expressible as a **COSE_Sign1** (RFC 9052) so it verifies 
 COSE implementation — every language, hardware (TPM/FIDO), cloud KMS, RATS/EAT — **without NOA's code**.
 That is what makes it universal rather than bespoke.
 
-- **Algorithm:** Ed25519 (COSE alg `-19`, RFC 9864), protected header `{1: -19}` (and nothing else — a
-  verifier MUST reject any other protected header to prevent algorithm confusion). We use the
-  curve-specific `-19` rather than the generic EdDSA (`-8`, RFC 9053, deprecated Oct-2025): `-8` also
-  admits Ed448, so pinning `-19` closes the Ed448 algorithm-confusion surface at the alg-id layer (the
-  CBOR-encoded protected header is exactly `a10132`, complementing the node:crypto curve-type key pin).
-- **kid:** carried in the unprotected header (label `4`), resolved against the verifier's keyring.
+- **Algorithm:** Ed25519 (COSE alg `-19`, RFC 9864). The protected header alg (label `1`) MUST be `-19`;
+  a verifier MUST reject any other `alg` to prevent algorithm confusion. We use the curve-specific `-19`
+  rather than the generic EdDSA (`-8`, RFC 9053, deprecated Oct-2025): `-8` also admits Ed448, so pinning
+  `-19` closes the Ed448 algorithm-confusion surface at the alg-id layer (complementing the node:crypto
+  curve-type key pin). NOA *issues* the minimal protected header `{1: -19}` (CBOR `a10132`). On the
+  *verify* side, per RFC 9052 §3.1, additional registered/non-critical protected headers (e.g. `kid`,
+  `content type`, `CWT_Claims`) are accepted and any unknown header NOT listed in `crit` (label `2`) is
+  ignored — so a draft-conformant peer that carries `kid`/`crit`/extra headers in the protected bucket
+  still verifies; only the `alg` pin and `crit`-processability are enforced (a critical header the
+  verifier cannot process is rejected, fail-closed).
+- **kid:** NOA *emits* `kid` in the unprotected header (label `4`); a verifier resolves it against its
+  keyring from EITHER bucket, preferring the protected (signed) copy when present.
 - **Payload:** the JCS-canonical NOA receipt bytes (§2/§4). So a standard COSE verify authenticates the
   receipt; a NOA-native consumer then parses the payload and runs the hash-chain / policy checks (§3–§6).
 - **Sig_structure:** the RFC 9052 `["Signature1", protected, external_aad(empty), payload]`, Ed25519-signed.
