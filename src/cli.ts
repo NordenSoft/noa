@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `noa verify <receipts.json> [--keyring <keyring.json>] [--checkpoint <cp.json>]`
+ * `noa verify <receipts.json> [--keyring <keyring.json>] [--checkpoint <cp.json>] [--identity <manifest.json>]`
  *
  * Offline receipt-chain verifier. No network, no NOA cloud. Deterministic exit codes so it
  * drops straight into CI:
@@ -9,6 +9,7 @@
  *   2  TAMPERED     (an integrity check failed)
  *   3  MALFORMED    (not a well-formed receipt chain / bad input)
  *   4  USAGE        (bad arguments / unreadable file)
+ *   5  UNTRUSTED    (signature ok, but (agent.id, sig.kid) not authorized by the identity manifest)
  *
  * CI rule: treat ANY non-zero exit as failure. Do not special-case "==2".
  *
@@ -19,7 +20,7 @@
 import { readFileSync, statSync } from "node:fs";
 import { safeParse } from "./safe-json.js";
 import { verifyChain, type VerifyOptions } from "./verify.js";
-import type { Keyring, Checkpoint } from "./index.js";
+import type { Keyring, Checkpoint, IdentityManifest } from "./index.js";
 
 const MAX_FILE_BYTES = 64 * 1024 * 1024; // 64 MiB hard cap
 
@@ -29,12 +30,13 @@ const EXIT = {
   TAMPERED: 2,
   MALFORMED: 3,
   USAGE: 4,
+  UNTRUSTED: 5,
 } as const;
 
 function usage(msg?: string): never {
   if (msg) process.stderr.write(`error: ${msg}\n`);
   process.stderr.write(
-    "usage: noa verify <receipts.json> [--keyring <keyring.json>] [--checkpoint <checkpoint.json>]\n",
+    "usage: noa verify <receipts.json> [--keyring <keyring.json>] [--checkpoint <checkpoint.json>] [--identity <manifest.json>]\n",
   );
   process.exit(EXIT.USAGE);
 }
@@ -65,6 +67,7 @@ function main(argv: string[]): number {
   let receiptsPath: string | undefined;
   let keyringPath: string | undefined;
   let checkpointPath: string | undefined;
+  let identityPath: string | undefined;
 
   for (let i = 1; i < args.length; i++) {
     const a = args[i]!;
@@ -76,6 +79,10 @@ function main(argv: string[]): number {
       const v = args[++i];
       if (v === undefined || v.startsWith("--")) usage("--checkpoint requires a path");
       checkpointPath = v;
+    } else if (a === "--identity") {
+      const v = args[++i];
+      if (v === undefined || v.startsWith("--")) usage("--identity requires a path");
+      identityPath = v;
     } else if (a.startsWith("--")) usage(`unknown flag: ${a}`);
     else if (!receiptsPath) receiptsPath = a;
     else usage(`unexpected argument: ${a}`);
@@ -88,6 +95,7 @@ function main(argv: string[]): number {
     receipts = readJsonFile(receiptsPath);
     if (keyringPath) opts.keyring = readJsonFile(keyringPath) as Keyring;
     if (checkpointPath) opts.checkpoint = readJsonFile(checkpointPath) as Checkpoint;
+    if (identityPath) opts.identityManifest = readJsonFile(identityPath) as IdentityManifest;
   } catch (e) {
     process.stderr.write(`error: ${(e as Error).message}\n`);
     return EXIT.MALFORMED;
@@ -101,6 +109,8 @@ function main(argv: string[]): number {
       return EXIT.VALID;
     case "UNVERIFIED":
       return EXIT.UNVERIFIED;
+    case "UNTRUSTED":
+      return EXIT.UNTRUSTED;
     case "TAMPERED":
       return EXIT.TAMPERED;
     default:

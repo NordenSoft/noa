@@ -1,0 +1,623 @@
+{
+  "spec": "noa.federation.acceptance/0.1",
+  "note": "GROUND-TRUTH witness-federation §4 acceptance vectors. Anchors signed with REAL Ed25519 keys (fixed test-only material). Re-derivable via scripts/gen-federation-vectors.ts. DORMANT reference verifier — not in the live path.",
+  "cases": [
+    {
+      "name": "a-quorum-met",
+      "note": "§4: 2 of 3 pinned witnesses validly confirm exactly H -> QUORUM_CONFIRMED (snapshot)",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "lTVsg5l3QIzRBzDE0EIQHLKz7P1GjasFQwYmKQU85v3m1BQ/jWOCdpRfotCo/IVs4cPUzV4Mya2fIaR6oCgYAw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-2",
+            "value": "MepQuzzDJVQwoxhY8dnt+OylbV2NSiik15xuLwNKD+igu2wypwZvadnDbsKP/BTyB6bSOinw1ByTpMBfe4K/BA=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": true,
+        "classification": "QUORUM_CONFIRMED"
+      }
+    },
+    {
+      "name": "b-below-quorum",
+      "note": "§4 point 2: only 1 confirm, q=2 — fail-closed (silence is 'unknown', never accept)",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "lTVsg5l3QIzRBzDE0EIQHLKz7P1GjasFQwYmKQU85v3m1BQ/jWOCdpRfotCo/IVs4cPUzV4Mya2fIaR6oCgYAw=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": false,
+        "classification": "NOT_ESTABLISHED"
+      }
+    },
+    {
+      "name": "c-unpinned-witness",
+      "note": "§2.2: W4 is not pinned; its genuine confirm is dropped -> below quorum",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "lTVsg5l3QIzRBzDE0EIQHLKz7P1GjasFQwYmKQU85v3m1BQ/jWOCdpRfotCo/IVs4cPUzV4Mya2fIaR6oCgYAw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-4",
+            "value": "E4yAusaFybHxF6SzcJddzR5+THXrlmHE6sGTv0vUmad5mWs0pu0FGsCoS+xGRaIQ922pc/kyMaAeESTIs+G7BQ=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": false,
+        "classification": "NOT_ESTABLISHED"
+      }
+    },
+    {
+      "name": "c2-frost-root-as-anchor",
+      "note": "§5: the FROST root does not sign anchors; a root-signed anchor is unpinned -> dropped",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "lTVsg5l3QIzRBzDE0EIQHLKz7P1GjasFQwYmKQU85v3m1BQ/jWOCdpRfotCo/IVs4cPUzV4Mya2fIaR6oCgYAw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "frost-root",
+            "value": "CepYQAOluSbj7FJ/NGpDjo5M385TLNOmk2NlPkHf2xT501qRFJ4r6u2pFGHckvpGt9kh1HhLw6aFbbESi0sJDA=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": false,
+        "classification": "NOT_ESTABLISHED"
+      }
+    },
+    {
+      "name": "d-duplicate-witness-double-count",
+      "note": "distinctness §2.2: W1's two genuine anchors fold to one confirmation -> below quorum",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "lTVsg5l3QIzRBzDE0EIQHLKz7P1GjasFQwYmKQU85v3m1BQ/jWOCdpRfotCo/IVs4cPUzV4Mya2fIaR6oCgYAw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T11:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "8vzf5AW1xgBKGivKREix2x4s3ujXRyjUyi0u0/dg+Daq49Z+OLzcrKY/Tqm6aEeqLqjaD+vG5aPVuOngaUGVDg=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": false,
+        "classification": "NOT_ESTABLISHED"
+      }
+    },
+    {
+      "name": "e-tampered-anchor-sig",
+      "note": "a tampered signature under a pinned kid is dropped -> only the genuine confirm counts",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "ATVsg5l3QIzRBzDE0EIQHLKz7P1GjasFQwYmKQU85v3m1BQ/jWOCdpRfotCo/IVs4cPUzV4Mya2fIaR6oCgYAw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-2",
+            "value": "MepQuzzDJVQwoxhY8dnt+OylbV2NSiik15xuLwNKD+igu2wypwZvadnDbsKP/BTyB6bSOinw1ByTpMBfe4K/BA=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": false,
+        "classification": "NOT_ESTABLISHED"
+      }
+    },
+    {
+      "name": "e2-wrong-pubkey",
+      "note": "anchor CLAIMS witness-1 but is signed by W2's key -> fails against W1's pinned pubkey",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "MepQuzzDJVQwoxhY8dnt+OylbV2NSiik15xuLwNKD+igu2wypwZvadnDbsKP/BTyB6bSOinw1ByTpMBfe4K/BA=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-3",
+            "value": "kgZBIHlPoTT5WNW1sA/2zgoSPLXs/7BKNeGRTSaXXDFS8Lv1eGD9Ei7BbzVVGPkjcQNv+VDimDuSoVURJC4EBQ=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": false,
+        "classification": "NOT_ESTABLISHED"
+      }
+    },
+    {
+      "name": "f-frontier-extends-past-head",
+      "note": "§4 point 1 (currency, not inclusion): a witness frontier PAST H -> TRUNCATED (overrides quorum)",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "lTVsg5l3QIzRBzDE0EIQHLKz7P1GjasFQwYmKQU85v3m1BQ/jWOCdpRfotCo/IVs4cPUzV4Mya2fIaR6oCgYAw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-2",
+            "value": "MepQuzzDJVQwoxhY8dnt+OylbV2NSiik15xuLwNKD+igu2wypwZvadnDbsKP/BTyB6bSOinw1ByTpMBfe4K/BA=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 6,
+          "headHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "ts": "2026-06-23T12:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-3",
+            "value": "2wPbrRyzUfUTtYr7a7kBKBGjimbU0NzC+KWOILrXiNdCUkCN3szpWpw9lnjt8DuyEEngCF5HYLZRyvwdx4fwCQ=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": false,
+        "classification": "TRUNCATED"
+      }
+    },
+    {
+      "name": "f2-divergent-fork",
+      "note": "§4: same seq, different headHash on the same chain -> FORK (fail-closed)",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "Gi35jFTaXcIwFppzDq3/SELR/vs7wBxGbXgrRdtKR+232lQ6fxaLCskK7oQUsMEFV/8V1WVCPNQh/BXRqK7PAw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-2",
+            "value": "MepQuzzDJVQwoxhY8dnt+OylbV2NSiik15xuLwNKD+igu2wypwZvadnDbsKP/BTyB6bSOinw1ByTpMBfe4K/BA=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-3",
+            "value": "kgZBIHlPoTT5WNW1sA/2zgoSPLXs/7BKNeGRTSaXXDFS8Lv1eGD9Ei7BbzVVGPkjcQNv+VDimDuSoVURJC4EBQ=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": false,
+        "classification": "FORK"
+      }
+    },
+    {
+      "name": "g-freshness-quorum-fresh",
+      "note": "§4.2/§6: with a 1h window, two 10:00 confirms are FRESH -> QUORUM_CONFIRMED",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "lTVsg5l3QIzRBzDE0EIQHLKz7P1GjasFQwYmKQU85v3m1BQ/jWOCdpRfotCo/IVs4cPUzV4Mya2fIaR6oCgYAw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-2",
+            "value": "MepQuzzDJVQwoxhY8dnt+OylbV2NSiik15xuLwNKD+igu2wypwZvadnDbsKP/BTyB6bSOinw1ByTpMBfe4K/BA=="
+          }
+        }
+      ],
+      "opts": {
+        "freshness": {
+          "now": 1782208800000,
+          "maxAgeMs": 3600000
+        }
+      },
+      "expect": {
+        "complete": true,
+        "classification": "QUORUM_CONFIRMED"
+      }
+    },
+    {
+      "name": "g2-freshness-stale-replay",
+      "note": "§4.2/§6: a STALE pre-truncation confirm-quorum (06:00) replayed under a 1h window -> STALE, fail-closed",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T06:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "kUPy5QGjMPOaTuSjdGN6+bIdWnh9emGHCA3YBPUhAKn9HcG8fVf2MUyivnwVz2yVa36AxN+jXHOjpRRoi4qiCw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T06:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-2",
+            "value": "A776Vidy1NQve1sFfKCJ3PBRn+YVkoXZptrn35YxxQ6rfYWsGL+DF4XbsTdWI41fbhGpP9+ufx8Ka0FKBtnXCg=="
+          }
+        }
+      ],
+      "opts": {
+        "freshness": {
+          "now": 1782208800000,
+          "maxAgeMs": 3600000
+        }
+      },
+      "expect": {
+        "complete": false,
+        "classification": "STALE"
+      }
+    }
+  ]
+}

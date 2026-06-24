@@ -1,5 +1,5 @@
 /**
- * @noa/receipt — the open Agent Action Receipt organ.
+ * noa-receipt — the open Agent Action Receipt organ.
  *
  * Public API: build signed receipts, canonicalize/hash them, and verify a chain OFFLINE
  * with no dependency on any NOA service. This package is the governance/receipt organ only;
@@ -35,6 +35,7 @@ export {
   verifyEd25519,
   type KeyPair,
   type Keyring,
+  type IdentityManifest,
 } from "./keys.js";
 export { buildReceipt, buildCheckpoint, type Signer, type BuildInput } from "./builder.js";
 export {
@@ -45,3 +46,30 @@ export {
   type VerifyResult,
   type VerifyStatus,
 } from "./verify.js";
+
+// L2 — policy-compliance (deterministic refEval). All fail-closed: a malformed policy or a
+// bad input yields a reproducible DENY verdict, never an exception or a silent permit.
+export {
+  POLICY_SPEC,
+  policyHash,
+  readSet,
+  readSetHash,
+  type Policy,
+  type Rule,
+  type Condition,
+  type Verdict as PolicyVerdict,
+  type Scalar,
+  type InputSnapshot,
+} from "./policy/dsl.js";
+export { evaluate, PolicyError, REF_EVAL_VERSION, type EvalResult } from "./policy/eval.js";
+export { validatePolicy, assertValidPolicy, type PolicyValidation } from "./policy/validate.js";
+// L2 on-receipt policy-compliance: commit (policyHash+readSetHash+inputsHash) into a receipt + verify it
+// offline by re-running the deterministic evaluator over the recorded inputs.
+export { complianceCommit, verifyReceiptCompliance, type ComplianceCommit, type ComplianceResult } from "./policy/compliance.js";
+export type { ReceiptCompliance } from "./types.js";
+
+// Universal envelope — the NOA receipt as a COSE_Sign1 (RFC 9052) / SCITT Signed Statement, so it
+// verifies in ANY conforming COSE implementation without NOA's code. Zero runtime deps.
+export { coseSign1, coseSign1Verify, type CoseSigner, type CoseVerifyResult } from "./cose/cose-sign1.js";
+export { receiptToCose, receiptFromCose, type ReceiptCoseResult } from "./cose/receipt-cose.js";
+export { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, CborError, type CborValue } from "./cose/cbor.js";

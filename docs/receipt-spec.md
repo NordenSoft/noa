@@ -141,7 +141,7 @@ Anyone — operator, auditor, receiving service, regulator — verifies a chain 
 NOA service, via `noa verify` (or the library `verifyChain`):
 
 ```
-verify(receipts, { keyring?, checkpoint? }):
+verify(receipts, { keyring?, checkpoint?, identityManifest? }):
   1. structural validate each receipt (strict; reject unknown fields)   -> else MALFORMED
   2. single chain partition; seqs contiguous 0..n-1, unique             -> else TAMPERED
   for each receipt in seq order:
@@ -149,19 +149,38 @@ verify(receipts, { keyring?, checkpoint? }):
   4. pin sig.kid per agent.id (reject mid-chain key swap)
   5. signatures, by keyring state:
        - keyring supplied AND kid known   -> ed25519_verify over the domain-separated preimage
+                                             (curve-PINNED: a non-Ed25519 key is rejected, no alg-confusion)
        - keyring supplied AND kid UNKNOWN -> TAMPERED (no silent TOFU on attacker input)
        - no keyring at all                -> UNVERIFIED (cannot authenticate; never VALID)
+  5b. identity binding (only if identityManifest supplied):
+       - (agent.id, sig.kid) authorized in the manifest -> ok
+       - else                                           -> UNTRUSTED (cross-agent impersonation:
+                                                           authenticated key, but NOT authorized for
+                                                           this agent.id). No manifest => kid-level
+                                                           attribution + an explicit warning.
   6. linkage: seq 0 => prevHash null; else prevHash == prev.hash && seq == prev.seq+1
-  7. if checkpoint: assert head matches checkpoint (tail-truncation)
-  -> VALID | UNVERIFIED | TAMPERED | MALFORMED
+  7. if checkpoint: assert head matches checkpoint (tail-truncation); and (if identityManifest
+       supplied) the checkpoint sig.kid MUST be authorized for the GENESIS agent.id (the chain
+       OPENER, seq 0) — NOT the mutable head — else UNTRUSTED (closes the re-heading attack); warn
+       when the chain has >1 agent.id (opener-scoped completeness)
+  -> VALID | UNVERIFIED | UNTRUSTED | TAMPERED | MALFORMED
 ```
 
 CLI exit codes: `0` VALID · `1` UNVERIFIED (no keyring supplied) · `2` TAMPERED · `3` MALFORMED
-· `4` usage. **CI rule: treat any non-zero exit as failure** (do not special-case `==2`). Honest
+· `4` usage · `5` UNTRUSTED (identity binding failed). **CI rule: treat any non-zero exit as failure** (do not special-case `==2`). Honest
 by design: without a keyring, signatures are reported UNVERIFIED, never VALID; without a
 checkpoint, the verifier emits an explicit tail-truncation warning; and it always emits a
 fork/equivocation caveat (an offline verifier sees only the branch it was given) plus a
 non-monotonic-timestamp warning if `ts` goes backwards.
+
+**Public-key strictness (interop-normative).** A conformant verifier MUST decode the Ed25519 public
+key `A` strictly: it **MUST reject** the 8 canonical small-order point encodings (the torsion subgroup
+of order dividing 8) and **MUST reject** any non-canonical encoding with `y ≥ q`. A cofactored verifier
+(e.g. OpenSSL) otherwise accepts low-order keys that a strict RFC-8032 verifier rejects, splitting the
+verdict on identical signed bytes (a legitimate signing key is never a low-order point, so this rejects
+no genuine key). This is the minimal pin for cross-impl agreement on `A` — **not** full ZIP-215
+semantics; the signature's `R` point needs no separate blocklist because it is bound by the verification
+equation, which both implementations enforce. The cross-impl conformance suite pins these vectors.
 
 ---
 
@@ -180,7 +199,22 @@ truncation/extension is detected. **The checkpoint signature is held to the same
 receipts**: with a keyring supplied, a checkpoint signed by an unknown `kid` (or with a bad
 signature) is `TAMPERED`, and `tailChecked` is set true **only** for an authenticated
 checkpoint — otherwise an attacker could drop the tail and forge a checkpoint over the
-truncated head with their own key. Without a checkpoint the verifier **warns** that
+truncated head with their own key. **Identity-bound (when an `identityManifest` is supplied):**
+the checkpoint is authorized by the chain **OPENER** — its `sig.kid` MUST be authorized for the
+**GENESIS** receipt's `agent.id` (the `seq == 0` receipt that opened the chain), else `UNTRUSTED`.
+**The authority is the opener, NOT the mutable head** — this is deliberate: a `scope.chain` is a
+*shared* partition with no opener/ownership binding, so any co-trusted key holder can APPEND its own
+receipt onto a victim's prefix, become the head, drop the victim's tail, and forge a checkpoint over
+its OWN head (the **re-heading** attack, round-10 audit). Binding to the head would then check the
+attacker's checkpoint against the attacker's OWN authorized `agent.id` → `VALID` while the victim's
+tail is erased. The opener cannot be re-written by an appended tail, so genesis-binding rejects the
+re-heading checkpoint as `UNTRUSTED` and strictly subsumes the legitimate opener-checkpoint case
+(when the opener also heads, genesis == head). **Multi-agent caveat:** the checkpoint completeness it
+proves is *opener-scoped*. When a chain holds more than one distinct `agent.id`, the verifier **warns**
+that a co-agent's tail is not separately certified by the opener's checkpoint. **Residual (needs the
+v1.0 external anchor):** the opener itself dropping a co-agent's tail, and the no-`identityManifest`
+case (kid-level only — any keyring-trusted key can forge a checkpoint over any head). Without a
+checkpoint the verifier **warns** that
 tail-truncation is undetectable offline. True tamper-*proof* (vs evident) needs an external
 anchor — transparency log / receiver-attestation — which is **v1.0** (§7).
 
@@ -200,3 +234,82 @@ anchor — transparency log / receiver-attestation — which is **v1.0** (§7).
 
 *Reference implementation + conformance vectors: this repository (`src/`, `conformance/`).
 Companion: [README](../README.md) · [THREAT-MODEL](../THREAT-MODEL.md) · [SECURITY](../SECURITY.md).*
+
+---
+
+## 8. The universal envelope — COSE_Sign1 / SCITT profile
+
+A NOA Receipt is also expressible as a **COSE_Sign1** (RFC 9052) so it verifies in **any** conforming
+COSE implementation — every language, hardware (TPM/FIDO), cloud KMS, RATS/EAT — **without NOA's code**.
+That is what makes it universal rather than bespoke.
+
+- **Algorithm:** Ed25519 (COSE alg `-19`, RFC 9864), protected header `{1: -19}` (and nothing else — a
+  verifier MUST reject any other protected header to prevent algorithm confusion). We use the
+  curve-specific `-19` rather than the generic EdDSA (`-8`, RFC 9053, deprecated Oct-2025): `-8` also
+  admits Ed448, so pinning `-19` closes the Ed448 algorithm-confusion surface at the alg-id layer (the
+  CBOR-encoded protected header is exactly `a10132`, complementing the node:crypto curve-type key pin).
+- **kid:** carried in the unprotected header (label `4`), resolved against the verifier's keyring.
+- **Payload:** the JCS-canonical NOA receipt bytes (§2/§4). So a standard COSE verify authenticates the
+  receipt; a NOA-native consumer then parses the payload and runs the hash-chain / policy checks (§3–§6).
+- **Sig_structure:** the RFC 9052 `["Signature1", protected, external_aad(empty), payload]`, Ed25519-signed.
+- **CBOR:** core-deterministic (RFC 8949 §4.2) — shortest-form heads, map keys sorted by encoded bytes.
+
+**SCITT:** the same COSE_Sign1 is a **SCITT Signed Statement**. Registering it in a SCITT transparency
+log yields a registration **receipt** + an append-only, witness-cosigned anchor — which supplies the
+external non-equivocation / tail-truncation defense the self-signed hash-chain (§6) cannot give alone.
+
+**Conformance:** NOA ships its own zero-dependency COSE_Sign1 producer/verifier, and its output is
+verified by an **independent** implementation (an off-the-shelf CBOR library + a separate Ed25519 path)
+in the conformance suite — universality is proven, not asserted.
+
+---
+
+## 9. L2 policy-compliance (optional, on-receipt)
+
+A receipt MAY commit an `governance.compliance` block binding the decision to the exact policy + the
+exact recorded inputs WITHOUT carrying raw inputs (which may be PII) — only their hashes:
+
+```
+"governance": { …, "compliance": {
+  "policyHash":   "sha256:…",   // JCS-canonical policy identity
+  "readSetHash":  "sha256:…",   // the policy's closed input read-set
+  "inputsHash":   "sha256:…",   // JCS-canonical recorded decision inputs (hash only — no raw PII)
+  "verdict":      "ALLOW|DENY"  // OPTIONAL: the recorded decision (re-run at commit time)
+}}
+```
+
+`verifyReceiptCompliance(receipt, policy, inputs)` is the OFFLINE L2 proof: given the policy + the
+recorded inputs out-of-band, it confirms the three committed hashes authenticate exactly that policy +
+those inputs, then **re-runs the deterministic evaluator** to reproduce the verdict. When the commitment
+also records a `verdict`, the verifier **REQUIRES the re-run verdict to equal the recorded one** — so a
+receipt that commits inputs evaluating to DENY while recording ALLOW is rejected (`ok:false`). It is
+fail-closed (any hash mismatch / verdict mismatch / non-canonicalizable input ⇒ `ok:false`) and never
+throws. A substituted policy (policyHash mismatch — anti policy-swap) or substituted inputs (inputsHash
+mismatch) is rejected. The `verdict` field is OPTIONAL and additive: a commitment without it stays
+backward-compatible (no reconciliation; the verifier just returns the re-run verdict).
+
+**CARRIER AUTHENTICITY (normative MUST):** the L2 check operates on the receipt's `governance.compliance`
+block, which is attacker-mutable on a NON-authentic receipt — so by itself it does NOT establish that the
+receipt is genuine. A verifier MUST authenticate the carrier before trusting an L2 `ok:true`, by EITHER
+passing the keyring to `verifyReceiptCompliance(receipt, policy, inputs, { keyring })` (it then verifies the
+carrier's own `chain.hash` + Ed25519 signature first; a non-authentic carrier ⇒ `ok:false`) OR calling
+`verifyChain([...], { keyring })` and requiring `VALID` first. Reporting "compliant" off an un-authenticated
+carrier is a conformance violation.
+
+**ATTRIBUTION — KID-LEVEL vs AGENT-LEVEL (round-17 #1):** `{ keyring }` carrier-auth is *kid-level* — it
+proves "a keyring-trusted key signed this carrier", NOT "THIS `agent.id` signed it". In a multi-key keyring a
+co-trusted key can sign a receipt claiming `agent.id=victim` and still pass carrier-auth, which is exactly the
+cross-agent impersonation `verifyChain` rejects as `UNTRUSTED` *only* when also given an identityManifest. To
+bind WHICH agent, pass `verifyReceiptCompliance(receipt, policy, inputs, { keyring, identityManifest })`: after
+carrier-auth, an unauthorized `(agent.id, sig.kid)` pairing ⇒ `ok:false` (mirroring verify.ts §5 / the
+`UNTRUSTED` verdict). Without an identityManifest, L2 attribution stays kid-level.
+
+**Honesty razor (normative):** this proves *"policy P, re-run over the RECORDED inputs I, yields verdict
+V, and V equals the decision the receipt recorded, on an authenticated carrier"* — it is
+substitution-resistant (a receipt cannot commit DENY-inputs while claiming ALLOW), but it is NOT proof the
+policy was in force at decision time, nor that I is true or complete, nor that P is a *good* rule, nor that
+the recorded inputs reflect external ground truth (the oracle/input-authenticity limit — a lying agent can
+emit a fully-valid receipt over inputs it fabricated). Carrier-auth via `{ keyring }` alone is *kid-level*:
+it does NOT prove THIS `agent.id` signed — pass `{ keyring, identityManifest }` to bind the signer to the
+agent (see "ATTRIBUTION" above). The reference policy DSL is integer-only / pure-logic; policies using
+non-deterministic elements are out of scope for replay.

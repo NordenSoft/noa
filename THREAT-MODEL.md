@@ -27,7 +27,7 @@ truth or safety.
 | T2 | Re-order / drop a middle record | seq contiguity + prevHash linkage | `attack/seq-gap`, `attack/relinked` |
 | T3 | Forge a fresh genesis | genesis must have `prevHash:null`, signed | `attack/forged-genesis` |
 | T4 | Strip signature, alter, re-sign with new key | `sig.kid` is inside the hash → breaks linkage | `attack/key-swap` |
-| T5 | Re-sign with a real adversary key | key pinned per `agent.id` → rejected | `attack/key-swap-resigned` |
+| T5 | Re-sign a record **mid-chain** with a different trusted key | `sig.kid` pinned per `agent.id` *within a chain* → mid-chain key-swap rejected (does **not** stop a fresh forged chain — see cross-agent impersonation below) | `attack/key-swap-resigned` |
 | T6 | Present a corrupted/forged signature | Ed25519 verify against keyring | `attack/wrong-signature` |
 | T6b | Unknown signing key while a keyring is supplied | treated as TAMPERED (no silent TOFU on attacker input) | `attack/unknown-kid` |
 | T7 | Number-serialization / canonicalization disagreement | integer-only JCS, frozen rules, pinned vectors | `jcs.test`, conformance |
@@ -36,24 +36,70 @@ truth or safety.
 | T9 | Smuggle PII/data in an **unknown** field | `additionalProperties:false` everywhere | `schema.test`, `malformed/pii-smuggle` |
 | T10 | Malicious input → verifier DoS/pollution | depth/size bounds, `__proto__` reject, no eval/network | `safe-json.test`, `malformed/deep-nest` |
 | T11 | Cross-protocol signature reuse | domain-separated signing preimage (`NOA-Receipt-v0.1-sig:`) | `roundtrip.test`, conformance |
+| T12 | "Compliant" claimed off a **forged** carrier (L2) | `verifyReceiptCompliance(…, { keyring })` authenticates the carrier (own-hash + Ed25519) BEFORE the L2 check; or require `verifyChain → VALID` first | `policy/compliance.test` (round-12 #1) |
+| T13 | L2 verdict the receipt **never re-derives** | committed `verdict` (ALLOW\|DENY) is reconciled against a re-run of the evaluator → `ok:false` on mismatch | `policy/compliance.test` (round-11) |
+| T14 | Ed25519 signature malleability (`S' = S+L`) | both reference verifiers reject non-canonical `S ≥ L` and non-canonical point/base64 encodings | `conformance` (round-12 #2/#3) |
+| T15 | Low-order / non-canonical **public key** consensus split (cofactored OpenSSL accepts a small-subgroup key the strict RFC-8032 equation rejects → `VALID` in one impl, `TAMPERED` in the other on identical signed bytes) | both reference verifiers reject the 8 canonical small-order point encodings (torsion subgroup of order dividing 8) AND any non-canonical `y ≥ q` public-key encoding, decoding `A` with identical strictness | `keys.test`, `conformance` (round-18 #2) |
 
 > Note on T9: this stops PII in **unknown** fields. It does NOT stop a caller putting PII in a
 > **known** opaque string (e.g. `approval.by`, `agent.model`). Those fields are opaque by
 > contract and MUST NOT carry PII — the format cannot enforce that. Don't read "PII-free" as a
 > guarantee about caller-supplied identifiers.
 
+> Note on T15 (chosen convention, stated precisely): the normative rule is **"reject the 8 canonical
+> small-order public-key encodings AND any non-canonical `y ≥ q` public-key encoding."** This is the
+> minimal pin that makes the two reference verifiers agree on the public key `A`; it is **not** a claim of
+> full ZIP-215 semantics. All *other* malformed/non-canonical encodings are rejected by each verifier's
+> normal decoding rules, and the cross-impl conformance suite asserts no split on the low-order vectors.
+> The signature's `R` point is **not** separately blocklisted: `R` is bound by the verification equation
+> `[S]B = R + [h]A`, which both stacks enforce, so a low-order/non-canonical `R` (absent a crafted matching
+> `S`/`h`) fails the equation in **both** impls — no verify-`true` split. A third-party verifier that does
+> not adopt this same public-key rule will diverge from NOA on a low-order key; conformance vectors are
+> versioned so the rule is testable.
+
 ## Threats NOT fully addressed in v0.1 (stated honestly)
 
 - **Tail-truncation (T-tail):** deleting the most-recent receipts leaves a valid prefix.
   *Mitigation now:* signed **checkpoints** (§6 of the spec) detect it when supplied; the
-  verifier **warns** when no checkpoint is given. *Full fix:* external anchor / transparency
+  verifier **warns** when no checkpoint is given. With an `identityManifest`, a checkpoint is
+  authorized by the chain **OPENER** (the genesis `agent.id`), **not** the mutable head — see the
+  re-heading sub-threat below. *Full fix:* external anchor / transparency
   log in v1.0. Without an anchor, offline verification cannot distinguish "nothing happened
   after seq N" from "records after seq N were deleted."
+- **Re-heading truncation among co-trusted keys (T-tail-reheading, round-10 audit):** a `scope.chain`
+  is a *shared* partition with no opener/ownership binding, so a co-trusted key holder can APPEND its
+  own receipt onto a victim's prefix, BECOME the head, DROP the victim's incriminating tail, and forge
+  a checkpoint over its OWN head. Earlier the checkpoint §5b binding checked the kid against the **head**
+  `agent.id` — i.e. the attacker's own authorized id — returning `VALID` + `tailChecked:true` while the
+  victim's tail was silently erased. *Mitigation now (shipped):* the checkpoint authority is bound to the
+  chain **OPENER** (the `seq == 0` `agent.id`), which an appended tail cannot re-write → the re-heading
+  attacker's checkpoint is `UNTRUSTED`; the verifier also **warns** (opener-scoped completeness) whenever
+  a chain holds more than one `agent.id`. *Residual (needs the v1.0 external anchor):* the opener itself
+  dropping a co-agent's tail, and the **no-`identityManifest`** case (kid-level only — any keyring-trusted
+  key can forge a checkpoint over any head). §5b is therefore an *opener-scoped* truncation defense, not a
+  general anti-truncation guarantee against a co-trusted key.
 - **Private-key compromise / no revocation / no forward-security:** a leaked private key lets
   the holder retroactively re-sign an entirely fabricated history (bounded only by an external
   checkpoint/anchor someone already holds). v0.1 has **no revocation list and no key-evolution**.
-  Use KMS/HSM; rotate via `kid`. Cryptographic *attribution* is provided; key-exfiltration
-  prevention is not.
+  Use KMS/HSM; rotate via `kid`. Cryptographic *attribution to a keyring-trusted key* is provided;
+  binding that key to a specific `agent.id` is **not** (see cross-agent impersonation below), and
+  key-exfiltration prevention is not.
+- **Cross-agent impersonation among co-trusted keys:** the trust root is the keyring (`kid → public
+  key`) only — there is **no** authenticated `agent.id → allowed-kid` binding. The per-`agent.id` `kid`
+  pin (T5) enforces *continuity within one chain*, not *who may open a chain*. So in a keyring holding
+  more than one trusted key, the holder of ANY trusted private key can author a fully **VALID** chain
+  that asserts ANY other `agent.id` (PoC: a low-privilege signer emits a `payment.refund` / CRITICAL
+  chain under a high-privilege `agent.id` and it verifies VALID). A VALID receipt therefore proves
+  *"a keyring-trusted key signed this"*, **not** *"this specific `agent.id` acted"* — the `agent.id` is
+  a signer-asserted label, authenticated only at the `kid` level. **Single-key keyrings are unaffected.**
+  *Mitigation now (v0.2, shipped):* supply an **`identityManifest`** (`agent.id → authorized kid(s)`) to
+  `verifyChain`. When present, a receipt whose `(agent.id, sig.kid)` pairing is not authorized is rejected
+  as **`UNTRUSTED`** (distinct from `TAMPERED`: the bytes + key are real, the *binding* is not) — this
+  upgrades a `VALID` result from "a keyring-trusted key signed" to "THIS `agent.id` signed". Without a
+  manifest, attribution stays kid-level (and `verifyChain` emits an explicit warning saying so). The
+  manifest is a trust input the operator vouches for (same class as the keyring); distributing it as a
+  *signed* statement is a deployment concern. *Remaining:* in-band rotation-attestation (one endorsed
+  key→key transition) so live chains survive rotation without manual manifest edits.
 - **Replay / freshness / liveness:** a wholly-valid chain, head, or checkpoint can be re-presented
   later as if current. The format carries no nonce/epoch/expiry. **Freshness is the caller's
   responsibility** — pin an expected chain id + head hash from a fresh, trusted channel; do not
@@ -83,8 +129,26 @@ truth or safety.
 - **Truthfulness of the action:** a receipt records *what was authorized and decided*, not
   that the downstream system actually did it. Pair with the receiving system's own logs for
   end-to-end assurance (receiver-attestation is a v1.0 goal).
+- **L2 input-authenticity / the oracle limit:** `verifyReceiptCompliance` proves the recorded decision
+  re-runs to the recorded verdict over the policy + the RECORDED inputs — it does NOT prove those inputs
+  reflect external ground truth. A compromised or lying agent can emit a fully-valid, fully-verifying
+  receipt over inputs it fabricated (e.g. "balance read = 0"). Closing this needs source/tool
+  co-signatures over the read-set (a v1.0 witnessed-input goal); today L2 certifies *consistency of a
+  self-reported decision on an authenticated carrier*, not the truth of its inputs.
 - **Enforcement bypass:** see SECURITY.md — `noa.guard()` is advisory unless placed at the
   credential/write boundary; the MCP proxy must fail-closed.
+- **In-process-API hostile-getter residual (declared known-limitation, v0.1):** the documented,
+  deployed verifier surfaces — the CLI, `verifyChainText`, and the independent Python verifier — consume
+  parsed JSON (no accessors) and are immune. The in-process JS object APIs (`verifyChain(obj)`,
+  `verifyCheckpoint(obj)`, `verifyReceiptCompliance(obj)`) accept caller-supplied LIVE objects; v0.1
+  snapshots every such input once (`structuredClone`) and is fail-closed, so all *known* flipping-accessor /
+  throwing-accessor / non-cloneable vectors yield `MALFORMED`, never a wrong VALID and never a raw throw.
+  Because any future property read on a live object is a *potential* new accessor surface, this class is
+  treated as **continuous hardening, not a release blocker**: after 18 adversarial multi-model audit rounds
+  (R1–R18; every confirmed finding fixed in BOTH implementations with a regression probe + cross-impl
+  conformance), the v0.1 correctness surface is **declared hardened**. Callers passing attacker-influenced
+  *live JS objects* directly to the in-process API should pre-parse via `verifyChainText` / `JSON.parse`
+  (the immune path). New same-class in-process-getter findings are tracked and fixed, not gated on.
 
 ## Clean-room / scope boundary (why this is safe to open-source)
 

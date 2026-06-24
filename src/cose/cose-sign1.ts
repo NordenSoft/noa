@@ -1,0 +1,99 @@
+/**
+ * COSE_Sign1 (RFC 9052) over Ed25519 — the universal, standards envelope for a NOA receipt.
+ * A NOA receipt wrapped as COSE_Sign1 verifies in ANY conforming COSE implementation (every
+ * language, TPM/FIDO/cloud-KMS, RATS/EAT, SCITT) without NOA's code — that is what "universal" means.
+ * Zero runtime deps: our own deterministic CBOR + node:crypto Ed25519. Conformance against an
+ * independent COSE library is proven in the test suite (not asserted).
+ */
+
+import { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, type CborValue } from "./cbor.js";
+import { signEd25519, verifyEd25519, type Keyring } from "../keys.js";
+
+const COSE_SIGN1_TAG = 18;
+const HDR_ALG = 1;
+const HDR_KID = 4;
+// COSE alg = Ed25519 (-19), the fully-specified algorithm of RFC 9864. We deliberately use the
+// curve-specific -19 rather than the generic EdDSA (-8, RFC 9053, deprecated Oct-2025): -8 also
+// admits Ed448, so -19 closes the algorithm-confusion surface at the alg-id layer (complementing the
+// node:crypto key-type pin in keys.ts). This matches the published IETF draft
+// (draft-noa-scitt-ai-agent-receipt), which already uses -19.
+const ALG_ED25519 = -19;
+
+/** protected header = canonical CBOR map { 1: -19 } (alg = Ed25519), serialized (wrapped as bstr by caller). */
+function protectedHeaderBytes(): Buffer {
+  return encMap([[encInt(HDR_ALG), encInt(ALG_ED25519)]]);
+}
+
+/** RFC 9052 Sig_structure for COSE_Sign1: [ "Signature1", protected:bstr, external_aad:bstr(empty), payload:bstr ]. */
+function sigStructure(protectedBytes: Buffer, payload: Buffer): Buffer {
+  return encArray([encTstr("Signature1"), encBstr(protectedBytes), encBstr(Buffer.alloc(0)), encBstr(payload)]);
+}
+
+export interface CoseSigner {
+  kid: string;
+  /** base64 PKCS8 DER Ed25519 private key (same form as keys.ts) */
+  privateKey: string;
+}
+
+/** Produce a COSE_Sign1 (CBOR tag 18) over `payload`. kid goes in the unprotected header. */
+export function coseSign1(payload: Buffer, signer: CoseSigner): Buffer {
+  const prot = protectedHeaderBytes();
+  const sigB64 = signEd25519(signer.privateKey, sigStructure(prot, payload));
+  const sig = Buffer.from(sigB64, "base64");
+  const unprotected = encMap([[encInt(HDR_KID), encBstr(Buffer.from(signer.kid, "utf8"))]]);
+  const body = encArray([encBstr(prot), unprotected, encBstr(payload), encBstr(sig)]);
+  return encTag(COSE_SIGN1_TAG, body);
+}
+
+export interface CoseVerifyResult {
+  ok: boolean;
+  kid: string | null;
+  payload: Buffer | null;
+  reason?: string;
+}
+
+function isEd25519Protected(protectedBytes: Buffer): boolean {
+  // must decode to exactly { 1: -19 } — reject alg confusion / unexpected protected headers
+  try {
+    const m = decode(protectedBytes);
+    if (m.t !== "map" || m.v.length !== 1) return false;
+    const [k, val] = m.v[0]!;
+    return k.t === "int" && k.v === HDR_ALG && val.t === "int" && val.v === ALG_ED25519;
+  } catch {
+    return false;
+  }
+}
+
+/** Verify a COSE_Sign1: structure, Ed25519 alg, kid→keyring, signature. Never throws. */
+export function coseSign1Verify(coseBytes: Buffer, keyring: Keyring): CoseVerifyResult {
+  // Fail-closed on a non-object keyring (round-16 #5): mirrors verifyChain's round-15 #7 guard, which the
+  // round-15 fix did NOT propagate to the COSE path. A null keyring would throw a raw TypeError on
+  // `keyring[kid]` below (violating "never throws"); an array / non-object is an operator error, not an empty
+  // trust root. Reject cleanly as ok:false with the same "keyring must be an object" reason as verify.ts.
+  if (keyring === null || typeof keyring !== "object" || Array.isArray(keyring)) {
+    return { ok: false, kid: null, payload: null, reason: "keyring must be an object (kid -> base64 SPKI)" };
+  }
+  let v: CborValue;
+  try {
+    v = decode(coseBytes);
+  } catch (e) {
+    return { ok: false, kid: null, payload: null, reason: `cbor: ${(e as Error).message}` };
+  }
+  if (v.t !== "tag" || v.tag !== COSE_SIGN1_TAG) return { ok: false, kid: null, payload: null, reason: "not a COSE_Sign1 (tag 18)" };
+  const arr = v.v;
+  if (arr.t !== "array" || arr.v.length !== 4) return { ok: false, kid: null, payload: null, reason: "COSE_Sign1 must be a 4-element array" };
+  const p = arr.v[0]!, u = arr.v[1]!, pl = arr.v[2]!, s = arr.v[3]!;
+  if (p.t !== "bstr" || u.t !== "map" || pl.t !== "bstr" || s.t !== "bstr") {
+    return { ok: false, kid: null, payload: null, reason: "COSE_Sign1 element types invalid" };
+  }
+  if (!isEd25519Protected(p.v)) return { ok: false, kid: null, payload: null, reason: "protected header is not {alg: Ed25519}" };
+  let kid: string | null = null;
+  for (const [k, val] of u.v) {
+    if (k.t === "int" && k.v === HDR_KID && val.t === "bstr") kid = val.v.toString("utf8");
+  }
+  if (!kid) return { ok: false, kid: null, payload: null, reason: "no kid (unprotected header label 4)" };
+  const pub = keyring[kid];
+  if (!pub) return { ok: false, kid, payload: null, reason: `unknown kid "${kid}" not in keyring` };
+  const ok = verifyEd25519(pub, sigStructure(p.v, pl.v), s.v.toString("base64"));
+  return ok ? { ok: true, kid, payload: pl.v } : { ok: false, kid, payload: null, reason: "bad signature" };
+}

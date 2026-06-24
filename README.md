@@ -35,8 +35,10 @@ happen **before** it runs, and leaves an independently verifiable provenance rec
 
 > **What it is, precisely:** tamper-*evident* provenance — it proves a record was produced under
 > the stated rules and not edited mid-chain. It is **not** proof-of-action, non-repudiation, or a
-> freshness guarantee, and it can't detect an action for which no receipt was emitted. The honest
-> limits (replay, key compromise, fork/equivocation, tail-truncation) are written down in
+> freshness guarantee, and it can't detect an action for which no receipt was emitted. In a keyring
+> with more than one trusted key it proves *a trusted key signed this*, not *which `agent.id` acted*.
+> The honest limits (replay, key compromise, fork/equivocation, tail-truncation, cross-agent
+> attribution in multi-key keyrings) are written down in
 > [THREAT-MODEL.md](THREAT-MODEL.md) — read them before you rely on this.
 
 ## The Receipt
@@ -61,7 +63,7 @@ the signing key is bound into the hash, and verification runs **offline** — no
 ## Verify a chain offline (no account, no network)
 
 ```bash
-npm install          # zero runtime dependencies (Node ≥ 20 stdlib only)
+npm install          # zero runtime deps (Node ≥ 20 stdlib only; @types/node is type-only)
 npm test             # build + generate conformance vectors + run the full conformance suite
 
 # verify a signed chain against a keyring + checkpoint
@@ -72,7 +74,7 @@ node dist/src/cli.js verify conformance/vectors/valid-chain.json \
 ```
 
 Exit codes are CI-ready: `0` VALID · `1` unverified-sig (no keyring) · `2` TAMPERED · `3`
-MALFORMED · `4` usage. Every tampered/forged/truncated/key-swapped vector under
+MALFORMED · `4` usage · `5` UNTRUSTED (identity binding failed). Every tampered/forged/truncated/key-swapped vector under
 [`conformance/`](conformance/vectors) is rejected — and the verifier is honest: without a
 keyring it will **not** claim VALID, and without a checkpoint it **warns** that tail-truncation
 can't be detected offline.
@@ -80,7 +82,7 @@ can't be detected offline.
 In code:
 
 ```ts
-import { buildReceipt, verifyChain, generateKeyPair } from "@noa/receipt";
+import { buildReceipt, verifyChain, generateKeyPair } from "noa-receipt";
 ```
 
 ## Status (honest)
@@ -89,6 +91,7 @@ import { buildReceipt, verifyChain, generateKeyPair } from "@noa/receipt";
 - ✅ **Offline verifier** — library + `noa verify` CLI, zero runtime deps, hostile-input hardened.
 - ✅ **JSON-Schema + conformance suite** — 14 attack + 9 malformed vectors, all rejected.
 - 🚧 **SDK `noa.guard()` · MCP proxy · hosted control-plane** — examples in [`examples/`](examples), hardening in progress.
+- ⚠️ **0.2.0 (breaking):** COSE_Sign1 alg-id `-8` (generic EdDSA) → `-19` (Ed25519, RFC 9864) — closes the Ed448 alg-confusion surface; old `{1:-8}` envelopes no longer verify.
 - This is **early access**, and it is **one organ** of NOA — not the whole brain. The full
   agent-cognition platform (cognition, memory, BYO-agent hosting) is separate and proprietary.
 

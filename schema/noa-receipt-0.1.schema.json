@@ -3,6 +3,7 @@
   "$id": "https://noatrust.com/schema/noa-receipt-0.1.schema.json",
   "title": "NOA Receipt v0.1",
   "description": "Open, offline-verifiable provenance record for an AI-agent action. Params are never carried in raw form — only their hash (paramsHash). Unknown fields are rejected (additionalProperties:false). Caller-supplied identifiers (id, scope.chain, agent.id, agent.model, approval.by, ruleId) are opaque and MUST NOT contain PII; the format cannot enforce that.",
+  "$comment": "STRUCTURAL AID, NOT the full normative validator. JSON Schema cannot express two controls that the normative reference validators (src/schema.ts and impl-py/noa_verify.py) additionally enforce, so a receipt accepted by THIS schema may still be MALFORMED: (1) well-formed Unicode — strings containing lone UTF-16 surrogates are rejected (spec §2, threat-model T7b: surrogate→U+FFFD hash-collision channel); (2) duplicate object keys are rejected by the strict JSON parser (threat-model T8). For a conformant verdict, run the normative validator, not a generic JSON-Schema check.",
   "type": "object",
   "additionalProperties": false,
   "required": ["spec", "id", "ts", "scope", "agent", "action", "governance", "chain", "sig"],
@@ -60,6 +61,17 @@
           "properties": {
             "by": { "type": "string" },
             "at": { "type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$" }
+          }
+        },
+        "compliance": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["policyHash", "readSetHash", "inputsHash"],
+          "properties": {
+            "policyHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "readSetHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "inputsHash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+            "verdict": { "enum": ["ALLOW", "DENY"] }
           }
         }
       }

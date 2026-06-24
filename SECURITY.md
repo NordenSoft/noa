@@ -11,8 +11,9 @@ within 72 hours. This is an early-access project; coordinated disclosure is appr
 This is a **trust layer**, so it is built to be boring and hostile-input-safe:
 
 - **Zero runtime dependencies.** The verifier and library use only the Node standard library
-  (`node:crypto`). Nothing is pulled from the network at verify time. Smaller supply chain =
-  smaller attack surface.
+  (`node:crypto`). The single declared dependency, `@types/node`, is **type-only** — TypeScript
+  declarations stripped at build, never imported or executed at runtime. Nothing is pulled from the
+  network at verify time. Smaller supply chain = smaller attack surface.
 - **Strict parser.** Receipts are parsed by a hardened JSON parser (`safeParse`) that rejects
   duplicate keys, `__proto__`/`constructor`/`prototype` keys, floats/exponents, unpaired
   surrogates, and over-deep or over-large input. The `noa verify` CLI and the `verifyChainText()`

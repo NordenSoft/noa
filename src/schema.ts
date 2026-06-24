@@ -74,6 +74,9 @@ export function validateReceiptShape(value: unknown): SchemaResult {
   }
   const r = value;
 
+  // Fail-closed: a caller-supplied LIVE object with a throwing/side-effecting accessor must yield a
+  // structural rejection, never escape as a raw throw (mirrors the fail-closed Python validator) — round-12.
+  try {
   checkExactKeys(
     r,
     ["spec", "id", "ts", "scope", "agent", "action", "governance", "chain", "sig"],
@@ -83,7 +86,13 @@ export function validateReceiptShape(value: unknown): SchemaResult {
   );
 
   if (r.spec !== RECEIPT_SPEC) errors.push(`receipt.spec: must be "${RECEIPT_SPEC}"`);
-  if (!str(r.id) || r.id.length === 0 || r.id.length > 128) errors.push("receipt.id: non-empty string ≤128 chars");
+  // id length is bounded in CODE POINTS, not UTF-16 code units. `r.id.length` counts code UNITS, so an id of
+  // astral characters (each 2 units) would be falsely rejected here while the Python verifier (len() = code
+  // points) and the normative schema (maxLength on RFC-8259/JSON characters = code points) accept it — a
+  // cross-impl consensus split on identical signed bytes (an astral id of 65 emoji = 65 code points = 130
+  // units → TS MALFORMED, Python VALID). [...r.id].length iterates by code point, matching both. (Only true
+  // char-count CAPS need this; non-empty `length===0` checks elsewhere are unit-vs-point-agnostic.)
+  if (!str(r.id) || r.id.length === 0 || [...r.id].length > 128) errors.push("receipt.id: non-empty string ≤128 chars");
   if (!str(r.ts) || !RFC3339_RE.test(r.ts)) errors.push("receipt.ts: must be RFC 3339 UTC timestamp");
 
   // scope
@@ -127,7 +136,7 @@ export function validateReceiptShape(value: unknown): SchemaResult {
     checkExactKeys(
       r.governance,
       ["mode", "verdict", "sandboxed"],
-      ["ruleId", "approval"],
+      ["ruleId", "approval", "compliance"],
       "receipt.governance",
       errors,
     );
@@ -143,6 +152,19 @@ export function validateReceiptShape(value: unknown): SchemaResult {
         if (!str(r.governance.approval.at) || !RFC3339_RE.test(r.governance.approval.at as string))
           errors.push("receipt.governance.approval.at: RFC 3339 UTC");
       } else errors.push("receipt.governance.approval: object or null");
+    }
+    if (has(r.governance, "compliance") && r.governance.compliance !== null) {
+      const c = r.governance.compliance;
+      if (isPlainObject(c)) {
+        checkExactKeys(c, ["policyHash", "readSetHash", "inputsHash"], ["verdict"], "receipt.governance.compliance", errors);
+        for (const k of ["policyHash", "readSetHash", "inputsHash"] as const) {
+          if (!str(c[k]) || !HASH_RE.test(c[k] as string)) errors.push(`receipt.governance.compliance.${k}: sha256:<64 hex>`);
+        }
+        // Optional + additive: the recorded policy decision. When present it MUST be ALLOW|DENY so
+        // verifyReceiptCompliance can reconcile a re-run verdict against it (spec §9).
+        if (has(c, "verdict") && c.verdict !== "ALLOW" && c.verdict !== "DENY")
+          errors.push('receipt.governance.compliance.verdict: must be "ALLOW" or "DENY"');
+      } else errors.push("receipt.governance.compliance: object or null");
     }
   } else errors.push("receipt.governance: object required");
 
@@ -163,6 +185,9 @@ export function validateReceiptShape(value: unknown): SchemaResult {
     if (!str(r.sig.kid) || r.sig.kid.length === 0) errors.push("receipt.sig.kid: non-empty string");
     if (!str(r.sig.value) || r.sig.value.length === 0) errors.push("receipt.sig.value: non-empty string");
   } else errors.push("receipt.sig: object required (signatures are mandatory in v0.1)");
+  } catch (e) {
+    return { ok: false, errors: [`receipt: structural-validation error: ${(e as Error).message}`] };
+  }
 
   return { ok: errors.length === 0, errors };
 }

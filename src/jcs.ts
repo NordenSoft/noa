@@ -27,7 +27,9 @@ export function canonicalize(value: unknown): string {
   return serialize(value, 0);
 }
 
-const MAX_DEPTH = 64;
+/** Single source of truth for nesting depth. Shared with the policy validator so an accepted
+ *  policy is always canonicalizable (i.e. policyHash/readSetHash can never throw on it). */
+export const MAX_DEPTH = 64;
 
 function serialize(v: unknown, depth: number): string {
   if (depth > MAX_DEPTH) throw new JcsError("max nesting depth exceeded");
