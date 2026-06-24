@@ -1,0 +1,9 @@
+{
+  "kid": "noa-interop-kid-1",
+  "alg_expected": -19,
+  "cose_sign1_hex": "d28443a10132a104516e6f612d696e7465726f702d6b69642d31567b2268656c6c6f223a226e6f61222c226e223a34327d584006a0949640451a50409684fc45a5f7d853ec00a48da7aa8a41d956bba43f76bc56d6500380b01bee3f5cdb873547ab5eece53f287c09e8205a452a415717f70a",
+  "protected_header_hex": "a10132",
+  "payload_hex": "7b2268656c6c6f223a226e6f61222c226e223a34327d",
+  "pub_spki_b64": "MCowBQYDK2VwAyEAbm0GbjepG9UXJYmkq54afS0EzC4mproX5gKQFC9mE9E=",
+  "pub_raw32_hex": "6e6d066e37a91bd5172589a4ab9e1a7d2d04cc2e26a6ba17e60290142f6613d1"
+}

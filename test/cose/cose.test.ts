@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPairSync, sign as cryptoSign } from "node:crypto";
-import { generateKeyPair } from "../../src/keys.js";
+import { generateKeyPair, signEd25519 } from "../../src/keys.js";
 import { buildReceipt, type BuildInput, type Signer } from "../../src/builder.js";
 import { receiptToCose, receiptFromCose } from "../../src/cose/receipt-cose.js";
 import { coseSign1, coseSign1Verify } from "../../src/cose/cose-sign1.js";
@@ -218,6 +218,128 @@ test("ROUND-16 #5: a non-object keyring (null / array / non-object) ⇒ clean ok
   // sanity: a genuine keyring still verifies (no happy-path regression)
   assert.equal(coseSign1Verify(cose, { k: kp.publicKey }).ok, true);
   assert.equal(receiptFromCose(wrapped, { [kp.kid]: kp.publicKey }).ok, true);
+});
+
+// ── FORWARD-COMPAT relaxation (verifier accepts draft-conformant peers; alg-pin preserved) ──────────
+// helper: hand-build a COSE_Sign1 with an ARBITRARY protected map + unprotected map, signed by `priv`.
+function buildCose(protectedMap: Buffer, unprotectedMap: Buffer, payload: Buffer, privB64: string): Buffer {
+  const sigStruct = encArray([encTstr("Signature1"), encBstr(protectedMap), encBstr(Buffer.alloc(0)), encBstr(payload)]);
+  const sig = Buffer.from(signEd25519(privB64, sigStruct), "base64");
+  return encTag(18, encArray([encBstr(protectedMap), unprotectedMap, encBstr(payload), encBstr(sig)]));
+}
+
+test("FWD-COMPAT (a): kid in the PROTECTED header {1:-19, 4:kid} is accepted AND verifies", () => {
+  const kp = generateKeyPair("k-prot");
+  const payload = Buffer.from("kid-in-protected-payload", "utf8");
+  // protected = {1:-19, 4:"k-prot"} (kid signed-in); unprotected = {} (empty)
+  const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encBstr(Buffer.from("k-prot", "utf8"))]]);
+  const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
+  const r = coseSign1Verify(cose, { "k-prot": kp.publicKey });
+  assert.equal(r.ok, true, r.reason); // former exact-{1:-19} gate REJECTED this; now accepted
+  assert.equal(r.kid, "k-prot"); // resolved from the protected (signed) bucket
+  assert.equal(r.payload?.toString("utf8"), "kid-in-protected-payload");
+});
+
+test("FWD-COMPAT (a'): protected kid is preferred over a DIFFERENT unprotected kid (signed copy wins)", () => {
+  const kp = generateKeyPair("signer-key");
+  const payload = Buffer.from("x", "utf8");
+  const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encBstr(Buffer.from("signer-key", "utf8"))]]);
+  // unprotected carries a DECOY kid; the protected (signed) one must win → keyring lookup uses signer-key
+  const unprot = encMap([[encInt(4), encBstr(Buffer.from("attacker-decoy-kid", "utf8"))]]);
+  const cose = buildCose(prot, unprot, payload, kp.privateKey);
+  const r = coseSign1Verify(cose, { "signer-key": kp.publicKey });
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.kid, "signer-key");
+});
+
+test("FWD-COMPAT (a''): a protected kid (label 4) that is NOT a bstr fails CLOSED — no downgrade to the unsigned unprotected kid", () => {
+  const kp = generateKeyPair("real-key");
+  const payload = Buffer.from("x", "utf8");
+  // protected kid is mistyped (an int, not a bstr); a DECOY valid kid sits in the UNSIGNED unprotected
+  // bucket. The verifier must REJECT — never silently fall through to the unsigned kid. (cross-family QA, surface B)
+  const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encInt(42)]]);
+  const unprot = encMap([[encInt(4), encBstr(Buffer.from("real-key", "utf8"))]]);
+  const cose = buildCose(prot, unprot, payload, kp.privateKey);
+  const r = coseSign1Verify(cose, { "real-key": kp.publicKey });
+  assert.equal(r.ok, false, "a non-bstr protected kid must fail closed, not downgrade to the unsigned bucket");
+  assert.match(r.reason ?? "", /protected kid .*must be a bstr/i);
+});
+
+test("FWD-COMPAT (b): an UNKNOWN critical header (crit lists a label we don't process) is REJECTED (fail-closed)", () => {
+  const kp = generateKeyPair("k-crit");
+  const payload = Buffer.from("crit-payload", "utf8");
+  // protected = {1:-19, 2:[3], 3:0} — crit declares content-type (label 3) critical, which we do NOT
+  // process → reject. (We process only alg(1) + kid(4); anything else critical is fail-closed.)
+  const prot = encMap([
+    [encInt(1), encInt(-19)],
+    [encInt(2), encArray([encInt(3)])],
+    [encInt(3), encInt(0)],
+    [encInt(4), encBstr(Buffer.from("k-crit", "utf8"))],
+  ]);
+  const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
+  const r = coseSign1Verify(cose, { "k-crit": kp.publicKey });
+  assert.equal(r.ok, false, "a crit label the verifier cannot process must fail-closed");
+  assert.match(r.reason ?? "", /critical/);
+});
+
+test("FWD-COMPAT (b''): a crit listing the kid label {2:[4]} is accepted — we DO process kid (key resolution)", () => {
+  const kp = generateKeyPair("k-crit-kid");
+  const payload = Buffer.from("p", "utf8");
+  // crit declares kid (4) critical. We read+use kid for key resolution → we process it → accept
+  // (closes the over-rejection of a draft-conformant kid-critical peer; cross-family QA, surface B).
+  const prot = encMap([
+    [encInt(1), encInt(-19)],
+    [encInt(2), encArray([encInt(4)])],
+    [encInt(4), encBstr(Buffer.from("k-crit-kid", "utf8"))],
+  ]);
+  const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
+  const r = coseSign1Verify(cose, { "k-crit-kid": kp.publicKey });
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.kid, "k-crit-kid");
+});
+
+test("FWD-COMPAT (b'): a crit listing ONLY the alg label {2:[1]} is accepted (we DO process alg)", () => {
+  const kp = generateKeyPair("k-crit-ok");
+  const payload = Buffer.from("p", "utf8");
+  const prot = encMap([[encInt(1), encInt(-19)], [encInt(2), encArray([encInt(1)])]]);
+  const cose = buildCose(prot, encMap([[encInt(4), encBstr(Buffer.from("k-crit-ok", "utf8"))]]), payload, kp.privateKey);
+  const r = coseSign1Verify(cose, { "k-crit-ok": kp.publicKey });
+  assert.equal(r.ok, true, r.reason);
+});
+
+test("FWD-COMPAT (c): alg-confusion STILL closed — {1:-8} (deprecated EdDSA) is rejected post-relaxation", () => {
+  const kp = generateKeyPair("k8");
+  const payload = Buffer.from("p", "utf8");
+  // even with a GENUINE Ed25519 signature, alg=-8 in the protected header must be rejected (alg pin).
+  const prot = encMap([[encInt(1), encInt(-8)], [encInt(4), encBstr(Buffer.from("k8", "utf8"))]]);
+  const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
+  const r = coseSign1Verify(cose, { k8: kp.publicKey });
+  assert.equal(r.ok, false, "alg -8 must remain rejected after the forward-compat relaxation");
+  assert.match(r.reason ?? "", /Ed25519/);
+});
+
+test("FWD-COMPAT (c'): an extra UNKNOWN non-critical protected label is IGNORED, envelope still verifies (RFC 9052 §3.1)", () => {
+  const kp = generateKeyPair("k-extra");
+  const payload = Buffer.from("p", "utf8");
+  // protected = {1:-19, 4:kid, 15:bstr(CWT_Claims placeholder), 99:bstr(future/private label)} — none critical.
+  const prot = encMap([
+    [encInt(1), encInt(-19)],
+    [encInt(4), encBstr(Buffer.from("k-extra", "utf8"))],
+    [encInt(15), encBstr(Buffer.from("cwt", "utf8"))],
+    [encInt(99), encBstr(Buffer.from("future", "utf8"))],
+  ]);
+  const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
+  const r = coseSign1Verify(cose, { "k-extra": kp.publicKey });
+  assert.equal(r.ok, true, r.reason); // unknown non-critical labels ignored, not rejected (forward-compat)
+  assert.equal(r.kid, "k-extra");
+});
+
+test("FWD-COMPAT (d): the legacy kid-in-UNPROTECTED envelope NOA itself emits STILL verifies (no regression)", () => {
+  const kp = generateKeyPair("k-legacy");
+  const cose = coseSign1(Buffer.from("legacy", "utf8"), { kid: "k-legacy", privateKey: kp.privateKey });
+  const r = coseSign1Verify(cose, { "k-legacy": kp.publicKey });
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.kid, "k-legacy");
 });
 
 test("round-17 #5: receiptFromCose with a throwing-accessor identityManifest → clean ok:false, never throws", () => {
