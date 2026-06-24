@@ -15,5 +15,9 @@ _*.mjs
 _*.ts
 _repro_*
 _probe*
+# Exception: a LEGIT shared test fixture that happens to use the _ prefix — deterministic seeded
+# Ed25519 keys for byte-identical federation vector regen (test + generator import it; public test
+# keys, NEVER real secrets). Without this, the _*.ts scratch rule silently drops it → CI build TS2307.
+!test/federation/_seeded-keys.ts
 # Per-session agent working dir (evidence/jsonl scratch — never ship)
 agent-context/
