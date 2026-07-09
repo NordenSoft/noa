@@ -38,8 +38,10 @@ jobs:
           cache: npm
 
       # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node still ships npm 10.x.
-      - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1)
-        run: npm install -g npm@latest
+      # Pin to the 11.x line: `npm@latest` is now npm@12, which requires node >= 22 (EBADENGINE on
+      # this node-20 runner). npm 11.x is >= 11.5.1 (OIDC-capable) AND node-20-compatible.
+      - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1; pin 11.x — npm 12 needs node 22+)
+        run: npm install -g npm@11
 
       - run: npm ci
 
