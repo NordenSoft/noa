@@ -1,6 +1,6 @@
 # NOA Receipt — Witness & Transparency Federation
 
-### An informational (DORMANT) spec for the neutral, buyer-run transparency layer that graduates the receipt from *tamper-evident* to *tamper-proof*
+### An informational (DORMANT) spec for the neutral, buyer-run transparency layer that graduates the receipt from *tamper-evident* to *tamper-evident, independently witnessed*
 
 > **Status:** Informational · DORMANT draft (2026-06-22). Apache-2.0. This document specifies
 > **no running service, no endpoints, and no wire format.** It describes the *trust architecture*
@@ -44,8 +44,8 @@ seq N' from 'records after seq N were deleted.'"*
 > operational dependency on the receipt's signer or its vendor — that witness the chain as it grows
 > and co-sign its advancing head. A deleted tail then leaves a gap between what the independent
 > witnesses observed and what the prover can exhibit. That is what graduates the receipt from
-> *tamper-evident* toward *tamper-proof* — under the stated trust assumptions in §6–§7, which are
-> real and named, not waved away.
+> *tamper-evident* toward *independently witnessed* — under the stated trust assumptions in §6–§7,
+> which are real and named, not waved away.
 
 This is the **v1.0** item on the receipt-spec roadmap (§7: *"external anchor (transparency log /
 receiver-attestation) → tamper-evident, independently witnessed; neutral-foundation governance"*).
@@ -273,7 +273,7 @@ hide from the verifier every witness that observed the longer head. The argument
    pinned witness that observed the true (longer) head must be either colluding with the truncator
    or unreachable at check time — and the verifier fails closed if it cannot reach ≥q confirmations.
 
-**Stated assumptions (the conditions under which "tamper-proof" holds):**
+**Stated assumptions (the conditions under which independent non-deletion witnessing holds):**
 
 - **Quorum honesty + reachability.** Of the verifier's k pinned witnesses, the truncator colludes
   with fewer than q, **and** at least one honest witness that observed the true head is reachable
