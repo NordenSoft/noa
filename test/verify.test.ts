@@ -429,3 +429,88 @@ test("round-17 #3: a non-object checkpoint → MALFORMED (parity with the Python
   assert.equal(good.status, "VALID", good.reason);
   assert.equal(good.tailChecked, true);
 });
+
+// --- A1 hardening: chain-wide scope.tenant consistency (additive; see THREAT-MODEL.md "namespace / context binding") ---
+
+const tenantSigner = generateKeyPair("tenant-key");
+const tenantKeyring: Keyring = { [tenantSigner.kid]: tenantSigner.publicKey };
+const tenantSignerRef = { kid: tenantSigner.kid, privateKey: tenantSigner.privateKey };
+
+function mkTenantReceipt(id: string, tenant: string | undefined, prev: ReturnType<typeof buildReceipt> | null): ReturnType<typeof buildReceipt> {
+  const input: BuildInput = {
+    id,
+    ts: "2026-07-10T10:00:00.000Z",
+    scope: tenant === undefined ? { chain: "c-tenant-drift" } : { chain: "c-tenant-drift", tenant },
+    agent: { id: "svc", model: null, principal: "SERVICE" },
+    action: { id: "a", canonical: "a", riskClass: "LOW", paramsHash: sha256Prefixed("x"), reversible: true, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: null, approval: null, sandboxed: false },
+  };
+  return buildReceipt(input, prev, tenantSignerRef);
+}
+
+test("A1: mixed scope.tenant across one chain -> VALID by default, WITH a machine-readable tenant-drift warning", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", "acme", r0);
+  const r2 = mkTenantReceipt("r2", "globex", r1);
+  const r = verifyChain([r0, r1, r2], { keyring: tenantKeyring });
+  assert.equal(r.status, "VALID", r.reason);
+  assert.ok(
+    r.warnings.includes('tenant-drift: seq 1 "acme" -> seq 2 "globex"'),
+    `expected a tenant-drift warning, got: ${JSON.stringify(r.warnings)}`,
+  );
+});
+
+test("A1: consistent scope.tenant across one chain -> NO tenant-drift warning", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", "acme", r0);
+  const r2 = mkTenantReceipt("r2", "acme", r1);
+  const r = verifyChain([r0, r1, r2], { keyring: tenantKeyring });
+  assert.equal(r.status, "VALID", r.reason);
+  assert.ok(!r.warnings.some((w) => /tenant-drift/.test(w)), `unexpected tenant-drift warning: ${JSON.stringify(r.warnings)}`);
+});
+
+test("A1: scope.tenant absent on every receipt -> NO tenant-drift warning (absence is consistency, not drift)", () => {
+  const r0 = mkTenantReceipt("r0", undefined, null);
+  const r1 = mkTenantReceipt("r1", undefined, r0);
+  const r = verifyChain([r0, r1], { keyring: tenantKeyring });
+  assert.equal(r.status, "VALID", r.reason);
+  assert.ok(!r.warnings.some((w) => /tenant-drift/.test(w)), `unexpected tenant-drift warning: ${JSON.stringify(r.warnings)}`);
+});
+
+test("A1: scope.tenant present on some receipts and absent on others (within one chain) -> reported as drift too", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", undefined, r0);
+  const r = verifyChain([r0, r1], { keyring: tenantKeyring });
+  assert.equal(r.status, "VALID", r.reason);
+  assert.ok(
+    r.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 (none)'),
+    `expected a tenant-drift warning for present->absent, got: ${JSON.stringify(r.warnings)}`,
+  );
+});
+
+test("A1: requireTenantConsistency:true + drift -> fail-closed TAMPERED (same verdict class as the scope.chain partition-split check), badSeq points at the first drifting receipt", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", "acme", r0);
+  const r2 = mkTenantReceipt("r2", "globex", r1);
+  const r = verifyChain([r0, r1, r2], { keyring: tenantKeyring, requireTenantConsistency: true });
+  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.match(r.reason ?? "", /tenant-drift: seq 1 "acme" -> seq 2 "globex"/);
+  assert.equal(r.badSeq, 2);
+});
+
+test("A1: requireTenantConsistency:true + NO drift -> VALID (opt-in enforcement never fires a false positive)", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", "acme", r0);
+  const r = verifyChain([r0, r1], { keyring: tenantKeyring, requireTenantConsistency: true });
+  assert.equal(r.status, "VALID", r.reason);
+  assert.deepEqual(r.warnings.filter((w) => /tenant-drift/.test(w)), []);
+});
+
+test("A1: requireTenantConsistency defaults to false — an existing caller with a mixed-tenant chain keeps its EXACT pre-A1 verdict (backward compatible)", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", "globex", r0);
+  const withoutFlag = verifyChain([r0, r1], { keyring: tenantKeyring });
+  const explicitFalse = verifyChain([r0, r1], { keyring: tenantKeyring, requireTenantConsistency: false });
+  assert.equal(withoutFlag.status, "VALID");
+  assert.equal(explicitFalse.status, "VALID");
+});

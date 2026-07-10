@@ -27,6 +27,17 @@ export interface VerifyOptions {
    * Omit it to keep kid-level attribution (the weaker, documented guarantee).
    */
   identityManifest?: IdentityManifest;
+  /**
+   * Opt-in fail-closed enforcement of chain-wide `scope.tenant` consistency (A1 hardening; additive,
+   * default false — existing callers see no verdict change). By DEFAULT, a `scope.tenant` that drifts
+   * (or appears on some receipts and not others) across one `scope.chain` is only reported in
+   * `warnings` and the verdict is unaffected (VALID stays VALID) — this is the pre-existing,
+   * THREAT-MODEL-documented "namespace binding is the caller's responsibility" posture. Set this to
+   * `true` to instead reject the FIRST drift as `TAMPERED` (the same verdict class already used for a
+   * `scope.chain` partition split — see the chain-partition check above — since a drifting `tenant` is
+   * the identical class of problem: a scope field the caller assumed was chain-wide-constant, isn't).
+   */
+  requireTenantConsistency?: boolean;
 }
 
 export interface VerifyResult {
@@ -54,6 +65,11 @@ function fail(
   return r;
 }
 
+/** Human/machine-readable label for a `scope.tenant` value in a drift message: quoted string, or `(none)`. */
+function describeTenant(t: string | undefined): string {
+  return t === undefined ? "(none)" : JSON.stringify(t);
+}
+
 /**
  * Verify a NOA receipt chain. Pure, offline, deterministic — no network, no NOA cloud.
  *
@@ -70,6 +86,11 @@ function fail(
  *  - FORK / EQUIVOCATION: an offline verifier only sees the branch it is given; it cannot know
  *    the signer also signed a different history at the same seq. Detecting that needs an
  *    external witness / transparency log (v1.0). Reported in warnings.
+ *  - TENANT CONSISTENCY (A1 hardening): `scope.tenant` is NOT enforced chain-wide the way
+ *    `scope.chain` is — a caller mixing receipts from different tenants under one chain still
+ *    gets VALID by default; the drift is reported in `warnings` (machine-readable
+ *    `tenant-drift: seq A "x" -> seq B "y"` entries). Set `requireTenantConsistency: true` to
+ *    reject the first drift as TAMPERED instead.
  */
 export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): VerifyResult {
   // SNAPSHOT THE ENTIRE opts ONCE (round-17 #2/#4 — class-killer). Every opts.* field (maxReceipts, keyring,
@@ -144,6 +165,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   let list!: Receipt[];
   let chainId!: string;
   let ordered!: Receipt[];
+  const tenantDriftMessages: string[] = [];
   try {
     if (haveManifest) {
       const live = o.identityManifest;
@@ -199,6 +221,28 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       if (!r) return fail("TAMPERED", `seq gap: missing seq ${s}`, chainId, list.length, s);
       ordered.push(r);
     }
+
+    // 3b. Chain-wide tenant-consistency scan (A1 hardening — THREAT-MODEL.md "namespace / context
+    // binding"). scope.tenant is a sibling of scope.chain in ReceiptScope but, unlike scope.chain, is
+    // NOT enforced structurally: nothing today stops one scope.chain from carrying receipts for
+    // DIFFERENT scope.tenant values (or some receipts with a tenant and some without) — a caller who
+    // assumes tenant isolation follows chain isolation would get a silent VALID over a mixed-tenant
+    // chain. This walks `ordered` (seq-order, already validated/contiguous) once and records every
+    // seq-to-seq drift as a machine-readable message; by default these ONLY land in `warnings` below
+    // (additive, verdict unaffected). `requireTenantConsistency: true` escalates the FIRST drift to
+    // TAMPERED — the same verdict class as the `scope.chain` partition-split check in step 2, since
+    // this is the identical class of problem for the sibling scope field.
+    for (let i = 1; i < ordered.length; i++) {
+      const prevR = ordered[i - 1]!;
+      const curR = ordered[i]!;
+      if (curR.scope.tenant !== prevR.scope.tenant) {
+        const msg = `tenant-drift: seq ${prevR.chain.seq} ${describeTenant(prevR.scope.tenant)} -> seq ${curR.chain.seq} ${describeTenant(curR.scope.tenant)}`;
+        tenantDriftMessages.push(msg);
+        if (o.requireTenantConsistency) {
+          return fail("TAMPERED", msg, chainId, list.length, curR.chain.seq);
+        }
+      }
+    }
   } catch {
     return fail("MALFORMED", "input object threw during validation/ordering", null, receipts.length);
   }
@@ -219,7 +263,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   // #2), so it is accessor-free and shared by both surfaces — no separate clone needed; the non-object guard
   // above runs first, so a non-cloneable keyring already failed at the opts snapshot → MALFORMED.
   const keyring: Keyring = o.keyring === undefined ? {} : o.keyring;
-  const warnings: string[] = [];
+  const warnings: string[] = [...tenantDriftMessages];
 
   // 4. Walk the chain: hash, key-pinning, signature, linkage, timestamp monotonicity.
   const pinnedKid = new Map<string, string>(); // agent.id -> kid (key continuity)
