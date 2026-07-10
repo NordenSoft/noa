@@ -117,14 +117,14 @@ truth or safety.
   compatible). Pass `requireTenantConsistency: true` to instead reject the first drift as
   `TAMPERED` (the same verdict class as a `scope.chain` partition split, since it is the identical
   class of problem for the sibling scope field). This closes the "silent" half of the gap; matching
-  the (now-guaranteed-consistent) tenant value to *your* expected tenant remains the caller's job.
+  the (now-enforced-consistent) tenant value to *your* expected tenant remains the caller's job.
 - **Omission ≠ tampering:** this proves the integrity of the receipts that EXIST. An agent that
   simply never emits a receipt for a bad action leaves no trace to detect. It is log-integrity,
   not a guarantee of behavioral honesty.
 - **Signer-asserted timestamps:** `ts` is set by the signer and is therefore backdatable. The
   verifier only warns on non-monotonic `ts`; do not treat timestamps as trusted wall-clock.
-- **Keyring is the root of trust:** every guarantee collapses if the verifier's keyring is
-  wrong. Distributing/securing/updating the keyring is out of band and out of scope for v0.1.
+- **Keyring is the root of trust:** every property above stops holding if the verifier's keyring
+  is wrong. Distributing/securing/updating the keyring is out of band and out of scope for v0.1.
 - **Unknown `kid` is reported `TAMPERED` (fail-closed tradeoff):** when a keyring is supplied, a
   signature by a key not in it (receipt OR checkpoint) is `TAMPERED`. This is deliberate
   (no silent trust-on-first-use of attacker input). The cost: a *legitimately rotated* key looks

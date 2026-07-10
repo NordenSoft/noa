@@ -125,7 +125,7 @@ EOF
 ```
 
 Cut the receipt *before* the action runs, verify it *offline*, and the signed hash-chain proves it
-wasn't altered — the same building block the [killer demo](examples/killer-demo/demo.mjs) chains
+wasn't altered — the same building block the [killer demo](https://github.com/NordenSoft/noa/blob/main/examples/killer-demo/demo.mjs) chains
 into a full deferred → rejected → executed story.
 
 ## Status (honest)
@@ -133,7 +133,7 @@ into a full deferred → rejected → executed story.
 - ✅ **Receipt spec (v0.1)** — mandatory Ed25519, key-pinning, genesis + tail-truncation rules.
 - ✅ **Offline verifier** — library + `noa verify` CLI, zero runtime deps, hostile-input hardened.
 - ✅ **JSON-Schema + conformance suite** — 14 attack + 9 malformed vectors, all rejected.
-- 🚧 **SDK `noa.guard()` · MCP proxy · hosted control-plane** — examples in [`examples/`](examples), hardening in progress.
+- 🚧 **SDK `noa.guard()` · MCP proxy · hosted control-plane** — examples in [`examples/`](https://github.com/NordenSoft/noa/tree/main/examples), hardening in progress.
 - ⚠️ **0.2.0 (breaking):** COSE_Sign1 alg-id `-8` (generic EdDSA) → `-19` (Ed25519, RFC 9864) — closes the Ed448 alg-confusion surface; old `{1:-8}` envelopes no longer verify.
 - This is **early access**, and it is **one organ** of NOA — not the whole brain. The full
   agent-cognition platform (cognition, memory, BYO-agent hosting) is separate and proprietary.
