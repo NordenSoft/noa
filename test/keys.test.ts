@@ -74,3 +74,27 @@ test("a genuine full-order key still verifies (no false-negative from the low-or
   const sig = signEd25519(kp.privateKey, msg);
   assert.equal(verifyEd25519(kp.publicKey, msg, sig), true);
 });
+
+// ── T14: Ed25519 signature malleability (S' = S+L) — explicit S < L scalar check ──────────────
+test("verifyEd25519 REJECTS a malleated signature S' = S+L over a genuinely-signed message", () => {
+  // R || S is 64 bytes; S (the low 32 bytes, little-endian) has group order L. S and S+L are congruent
+  // mod L, so a signature (R, S+L) satisfies the SAME verification equation as the original (R, S) — a
+  // second, non-canonical encoding of an already-valid signature. The explicit S < L check in
+  // verifyEd25519 rejects it independently of whatever node:crypto/OpenSSL does at runtime.
+  const L = 2n ** 252n + 27742317777372353535851937790883648493n;
+  const kp = generateKeyPair("k-malleate");
+  const msg = Buffer.from("authorize:payment.refund:CRITICAL", "utf8");
+  const sig = signEd25519(kp.privateKey, msg);
+  assert.equal(verifyEd25519(kp.publicKey, msg, sig), true); // sanity: the genuine signature verifies
+
+  const sigBytes = Buffer.from(sig, "base64");
+  let S = 0n;
+  for (let i = 63; i >= 32; i--) S = (S << 8n) | BigInt(sigBytes[i]!);
+  assert.ok(S < L, "sanity: a genuine signature's S must already be canonical (< L)");
+  let Sp = S + L; // S+L < 2L < 2^253, so it still fits in 32 bytes
+  const spBytes = Buffer.alloc(32);
+  for (let i = 0; i < 32; i++) { spBytes[i] = Number(Sp & 0xffn); Sp >>= 8n; }
+  const malleated = Buffer.concat([sigBytes.subarray(0, 32), spBytes]).toString("base64");
+
+  assert.equal(verifyEd25519(kp.publicKey, msg, malleated), false);
+});

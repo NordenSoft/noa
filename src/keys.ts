@@ -118,6 +118,19 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // Require exactly 64 bytes AND that the input round-trips to its own canonical base64 encoding.
     const sigBytes = Buffer.from(signatureB64, "base64");
     if (sigBytes.length !== 64 || sigBytes.toString("base64") !== signatureB64) return false;
+    // EXPLICIT S < L scalar check (RFC 8032 §5.1.7 / T14). sigBytes = R (32 bytes) || S (32 bytes,
+    // little-endian). A malleated signature S' = S + L (for any valid (R, S)) verifies under the SAME
+    // equation as the original (the group has order L, so S and S+L are congruent mod L) — S' is a
+    // SECOND, non-canonical encoding of an already-valid signature (Ed25519 signature malleability).
+    // node:crypto/OpenSSL already rejects S >= L at verification time as of this writing, but that is a
+    // property of the underlying OpenSSL build's *runtime* behavior, not a property this reference
+    // implementation asserts on its own. Checking S < L explicitly here makes rejection a documented,
+    // implementation-owned invariant — independent of whatever a future Node/OpenSSL upgrade does —
+    // and matches the independent Python reference, which performs the identical check (impl-py/noa_verify.py).
+    const L = 2n ** 252n + 27742317777372353535851937790883648493n;
+    let S = 0n;
+    for (let i = 63; i >= 32; i--) S = (S << 8n) | BigInt(sigBytes[i]!);
+    if (S >= L) return false;
     return cryptoVerify(null, message, key, sigBytes);
   } catch {
     return false;

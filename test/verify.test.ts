@@ -207,6 +207,21 @@ test("a non-canonical base64 signature is TAMPERED (sig.value must round-trip to
   assert.equal(verifyChain(chain, { keyring }).status, "TAMPERED");
 });
 
+test("T14: a malleated signature (S' = S+L) on an otherwise-genuine receipt is TAMPERED", () => {
+  // Same technique as impl-py/conformance.mjs's S-malleability vector, exercised at the verifyChain level:
+  // R stays genuine, S is replaced by the congruent-mod-L S+L — the same equation, a non-canonical encoding.
+  const L = 2n ** 252n + 27742317777372353535851937790883648493n;
+  const chain = structuredClone(load("valid-chain.json")) as Array<Record<string, any>>;
+  const sigBytes = Buffer.from(chain[0]!.sig.value, "base64");
+  let S = 0n;
+  for (let i = 63; i >= 32; i--) S = (S << 8n) | BigInt(sigBytes[i]!);
+  let Sp = S + L;
+  const spBytes = Buffer.alloc(32);
+  for (let i = 0; i < 32; i++) { spBytes[i] = Number(Sp & 0xffn); Sp >>= 8n; }
+  chain[0]!.sig.value = Buffer.concat([sigBytes.subarray(0, 32), spBytes]).toString("base64");
+  assert.equal(verifyChain(chain, { keyring }).status, "TAMPERED");
+});
+
 test("verifyChain on a receipt with a throwing accessor → MALFORMED (never throws out)", () => {
   let res!: ReturnType<typeof verifyChain>;
   assert.doesNotThrow(() => { res = verifyChain([{ get spec() { throw new Error("boom"); } }], { keyring }); });
