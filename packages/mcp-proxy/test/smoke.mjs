@@ -53,7 +53,7 @@ function readCounts(countsFile) {
  * create-proxy-server.mjs module the CLI ships, connected to a real Client over an
  * InMemoryTransport linked pair.
  */
-async function makeSession({ sessionId, store, extraTool = false, countsFile, onReceipt: customOnReceipt }) {
+async function makeSession({ sessionId, store, extraTool = false, countsFile, onReceipt: customOnReceipt, agentId }) {
   const env = { ...process.env };
   if (extraTool) env.NOA_DEMO_EXTRA_TOOL = "1";
   if (countsFile) env.NOA_DEMO_COUNTS_FILE = countsFile;
@@ -68,13 +68,24 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile, on
   const signer = { kid: kp.kid, privateKey: kp.privateKey };
   const keyring = { [kp.kid]: kp.publicKey };
   const receipts = [];
-  // `receipts` only ever gets a push AFTER the caller-supplied onReceipt (if any) returns
-  // without throwing — it stands in for "durably persisted", exactly like a real receipt-log
-  // append would only be considered done once the write itself succeeded.
+  // `receipts` only ever gets a push AFTER the caller-supplied onReceipt (if any) has SETTLED
+  // without throwing/rejecting — it stands in for "durably persisted", exactly like a real
+  // receipt-log append would only be considered done once the write itself succeeded. When
+  // `customOnReceipt` returns a thenable (an async persister, e.g. Scenario M's delayed writer),
+  // that thenable is returned from this wrapper too, so create-proxy-server.mjs's own
+  // `await persisted` genuinely waits on it — a wrapper that always returned synchronously
+  // (ignoring a returned promise) would silently skip that await and defeat the very race window
+  // an async persister is meant to exercise.
   const onReceipt = customOnReceipt
     ? (sid, r) => {
-        customOnReceipt(sid, r);
+        const result = customOnReceipt(sid, r);
+        if (result && typeof result.then === "function") {
+          return result.then(() => {
+            receipts.push(r);
+          });
+        }
         receipts.push(r);
+        return undefined;
       }
     : (_sid, r) => receipts.push(r);
 
@@ -85,6 +96,7 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile, on
     policy: TRANSFER_GUARD_POLICY,
     store,
     tenant: "smoke-tenant",
+    agentId,
     onReceipt,
   });
 
@@ -327,6 +339,81 @@ async function main() {
   await sessJ.close();
 
   // ---------------------------------------------------------------------------------------
+  // SCENARIO K: closing a session's host-facing connection must drop its chain state from the
+  // shared store (server.onclose -> store.end) — a proxy serving many short-lived host sessions
+  // must not accumulate unbounded per-session state for sessions that have already disconnected.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario K — session lifecycle: closing a session drops it from the store");
+  const storeK = createChainSessionStore();
+  const sessK = await makeSession({ sessionId: "session-K", store: storeK });
+  await sessK.client.callTool({ name: "echo", arguments: { text: "before-close" } });
+  ok("(k) the session is tracked in the store while the connection is open", storeK.size === 1);
+  await sessK.close();
+  ok(
+    "(k) closing the host-facing connection (server.onclose) drops the session from the store",
+    storeK.size === 0,
+  );
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO L: `agentId` is a STATIC proxy-config value (or falls back to sessionId) — NEVER
+  // sourced from a tool call's own `arguments`. A host/tool-caller putting an "agentId" field
+  // inside its own arguments must have ZERO effect on the receipt's recorded attribution.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario L — agentId is proxy-config-static, never sourced from request arguments (spoof-proof)");
+  const storeL = createChainSessionStore();
+  const sessL = await makeSession({ sessionId: "session-L", store: storeL, agentId: "configured-agent-007" });
+  await sessL.client.callTool({ name: "echo", arguments: { text: "hi", agentId: "attacker-supplied-id" } });
+  ok(
+    "(l) receipt.agent.id reflects the STATIC proxy-config agentId, not the request's own arguments.agentId",
+    sessL.receipts[0].agent.id === "configured-agent-007",
+  );
+  await sessL.close();
+
+  const storeL2 = createChainSessionStore();
+  const sessL2 = await makeSession({ sessionId: "session-L2", store: storeL2 });
+  await sessL2.client.callTool({ name: "echo", arguments: { text: "hi", agentId: "attacker-supplied-id-2" } });
+  ok(
+    "(l) with no configured agentId, falls back to sessionId (the prior default) — still never the request's arguments",
+    sessL2.receipts[0].agent.id === "session-L2",
+  );
+  await sessL2.close();
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO M: 25 concurrent calls on ONE session, with a REAL async-delayed persist (an actual
+  // setTimeout yield, not just a microtask), must still produce a gap-free, duplicate-free,
+  // contiguous, verifiable chain — proves the per-session queue (runExclusiveForSession in
+  // create-proxy-server.mjs) actually closes the interleaving window a naive async onReceipt
+  // would open, not just that Scenario J's synchronous fast path happens to stay safe.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario M — 25 concurrent calls with a REAL async-delayed persist stay gap-free (per-session queue)");
+  const storeM = createChainSessionStore();
+  const sessM = await makeSession({
+    sessionId: "session-M",
+    store: storeM,
+    onReceipt: () => new Promise((resolve) => setTimeout(resolve, Math.floor(Math.random() * 5))),
+  });
+
+  const parallelCallsM = Array.from({ length: 25 }, (_, i) =>
+    sessM.client.callTool({ name: "echo", arguments: { text: `m-call-${i}` } }),
+  );
+  const parallelResultsM = await Promise.all(parallelCallsM);
+  ok(
+    "(m) all 25 concurrent calls resolved despite a real async-delayed persist, each echoing its own text",
+    parallelResultsM.every((r, i) => r.content?.[0]?.text === `m-call-${i}`),
+  );
+  ok("(m) exactly 25 receipts recorded — no duplicates, no drops", sessM.receipts.length === 25);
+  const seqsM = sessM.receipts.map((r) => r.chain.seq).sort((a, b) => a - b);
+  ok(
+    `(m) seq set is exactly {0..24}, contiguous — sorted seqs=[${seqsM.join(",")}]`,
+    JSON.stringify(seqsM) === JSON.stringify(Array.from({ length: 25 }, (_, i) => i)),
+  );
+  const orderedM = [...sessM.receipts].sort((a, b) => a.chain.seq - b.chain.seq);
+  const vM = verifyChain(orderedM, { keyring: sessM.keyring });
+  ok(`(m) verifyChain(25 receipts, seq order) -> VALID, count=${vM.count}`, vM.status === "VALID" && vM.count === 25);
+
+  await sessM.close();
+
+  // ---------------------------------------------------------------------------------------
   // BONUS F: the LITERAL host-config from the report, spawned as a real OS process on BOTH
   // hops (host → proxy.mjs → demo-downstream.mjs), proving the zero-code-change integration
   // claim end-to-end, not just at the in-process factory level used above.
@@ -366,6 +453,59 @@ async function main() {
   ok("(F) CLI persisted 2 receipts to --receipt-log", cliReceipts.length === 2);
   const vCli = verifyChain(cliReceipts, { keyring: cliKeyring });
   ok("(F) CLI receipt log independently verifies VALID against the CLI's --keyring-file", vCli.status === "VALID");
+
+  // ---------------------------------------------------------------------------------------
+  // BONUS N: a persisted --key-file survives a CLI restart with the exact same kid, so a receipt
+  // chain begun before a restart and continued after it verifies under ONE external keyring —
+  // without --key-file, proxy.mjs's prior behavior (a fresh keypair every process start) would
+  // make that impossible.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus N — a persisted --key-file survives a CLI restart with the same kid");
+  const keyFilePath = tmpPath("cli-persistent-key.json");
+  const receiptLogRun1 = tmpPath("cli-receipts-run1.jsonl");
+  const receiptLogRun2 = tmpPath("cli-receipts-run2.jsonl");
+
+  const cliRun1Transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      PROXY_CLI, "--session-id", "cli-session-run1", "--key-file", keyFilePath,
+      "--receipt-log", receiptLogRun1, "--", process.execPath, DEMO_DOWNSTREAM,
+    ],
+  });
+  const cliRun1 = new Client({ name: "cli-smoke-host-run1", version: "1.0.0" }, { capabilities: {} });
+  await cliRun1.connect(cliRun1Transport);
+  await cliRun1.callTool({ name: "echo", arguments: { text: "run1" } });
+  await cliRun1.close();
+  await new Promise((r) => setTimeout(r, 150));
+
+  const keyAfterRun1 = JSON.parse(fs.readFileSync(keyFilePath, "utf8"));
+  const keyFileMode = fs.statSync(keyFilePath).mode & 0o777;
+  ok(`(n) --key-file is written mode 0600 (owner read/write only) — got 0${keyFileMode.toString(8)}`, keyFileMode === 0o600);
+
+  const cliRun2Transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      PROXY_CLI, "--session-id", "cli-session-run2", "--key-file", keyFilePath,
+      "--receipt-log", receiptLogRun2, "--", process.execPath, DEMO_DOWNSTREAM,
+    ],
+  });
+  const cliRun2 = new Client({ name: "cli-smoke-host-run2", version: "1.0.0" }, { capabilities: {} });
+  await cliRun2.connect(cliRun2Transport);
+  await cliRun2.callTool({ name: "echo", arguments: { text: "run2" } });
+  await cliRun2.close();
+  await new Promise((r) => setTimeout(r, 150));
+
+  const keyAfterRun2 = JSON.parse(fs.readFileSync(keyFilePath, "utf8"));
+  ok("(n) --key-file's kid is identical across a CLI restart against the same path", keyAfterRun1.kid === keyAfterRun2.kid);
+  ok("(n) --key-file's publicKey is identical across a CLI restart", keyAfterRun1.publicKey === keyAfterRun2.publicKey);
+
+  const receiptsRun1 = fs.readFileSync(receiptLogRun1, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const receiptsRun2 = fs.readFileSync(receiptLogRun2, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const persistedKeyring = { [keyAfterRun1.kid]: keyAfterRun1.publicKey };
+  const vRun1 = verifyChain(receiptsRun1, { keyring: persistedKeyring });
+  const vRun2 = verifyChain(receiptsRun2, { keyring: persistedKeyring });
+  ok(`(n) run 1's receipt verifies VALID under the persisted key (status=${vRun1.status})`, vRun1.status === "VALID");
+  ok(`(n) run 2's receipt (after restart) ALSO verifies VALID under the SAME persisted key (status=${vRun2.status})`, vRun2.status === "VALID");
 
   // ---------------------------------------------------------------------------------------
   // BONUS G: downstream connection failure at proxy STARTUP must fail closed (non-zero exit,
