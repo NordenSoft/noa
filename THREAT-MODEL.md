@@ -108,6 +108,16 @@ truth or safety.
   "this graph belongs to *your* deployment/customer/task" unless the caller checks `scope.chain`
   (and any agreed `tenant`/subject) against what it expected. `scope.chain` IS in the signed body
   (cross-chain splice is rejected), but matching it to *your* context is policy you must apply.
+  *Mitigation (A1 hardening, v0.3, additive):* unlike `scope.chain`, `scope.tenant` was previously
+  **not** checked for consistency across one chain at all — a caller relying on "one chain = one
+  tenant" got a silent `VALID` over a mixed-tenant chain. `verifyChain` now scans `scope.tenant`
+  across the whole (seq-ordered) chain and reports every drift (including a tenant appearing on
+  some receipts and not others) as a machine-readable `warnings` entry
+  (`tenant-drift: seq A "x" -> seq B "y"`) — by default the verdict is unaffected (backward
+  compatible). Pass `requireTenantConsistency: true` to instead reject the first drift as
+  `TAMPERED` (the same verdict class as a `scope.chain` partition split, since it is the identical
+  class of problem for the sibling scope field). This closes the "silent" half of the gap; matching
+  the (now-guaranteed-consistent) tenant value to *your* expected tenant remains the caller's job.
 - **Omission ≠ tampering:** this proves the integrity of the receipts that EXIST. An agent that
   simply never emits a receipt for a bad action leaves no trace to detect. It is log-integrity,
   not a guarantee of behavioral honesty.
