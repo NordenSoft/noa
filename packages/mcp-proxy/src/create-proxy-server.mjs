@@ -207,7 +207,22 @@ export async function createProxyServer({
       // against — not the possibly-omitted `tenant` closure variable) guarantees this commit lands
       // in the exact same tenant bucket `prepareSessionReceipt` peeked from; see "MULTI-TENANT
       // ISOLATION" in the same docstring.
-      commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
+      const committed = commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
+      if (!committed) {
+        // Observable, never silent: the receipt was ALREADY durably persisted above (onReceipt
+        // succeeded) and, for an ALLOW decision, is about to be forwarded to the downstream — but
+        // the store's commit-time segment check (see createChainSessionStore's "COMMIT-TIME
+        // SEGMENT CHECK" docstring) dropped the {prev,seq} advance because this session was torn
+        // down (a clean onclose, an idle-TTL sweep, or a cap eviction) or had already moved on to a
+        // newer segment while this call's persist (above) was in flight. This is NOT data loss —
+        // the persisted receipt stands on its own as a fully valid, independently-verifiable
+        // artifact, and the NEXT call for this sessionId legitimately opens a fresh, uncorrupted
+        // segment (see the docstring) — but an operator must be able to SEE a dropped commit rather
+        // than have it vanish from the logs with zero trace.
+        console.warn(
+          `noa-mcp-proxy: session "${sessionId}" (tenant "${prepared.tenant}", segment ${prepared.segmentId}) commit dropped — persisted receipt "${prepared.receipt.id}" was NOT chained (session torn down or superseded between prepare and persist); the next call for this session opens a fresh segment`,
+        );
+      }
       return prepared;
     });
 

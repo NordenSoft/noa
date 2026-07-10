@@ -490,6 +490,78 @@ async function main() {
   await sessP.close();
 
   // ---------------------------------------------------------------------------------------
+  // SCENARIO Q: a commit dropped by the store's OWN commit-time segment check (an external
+  // eviction — e.g. store.end()/sweep() firing from OUTSIDE create-proxy-server's own per-session
+  // queue, such as an idle-TTL sweep racing a slow persist) must be OBSERVABLE, never silent. The
+  // in-flight call still completes (the receipt was already durably persisted before the drop), the
+  // NEXT call for this session opens a legitimately fresh segment (orphan-free), and — the actual
+  // point of this scenario — a diagnostic naming the session and the drop is logged.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario Q — a store-side commit drop (segment check, not the proxy's own queue) is OBSERVABLE, not silent");
+  const storeQ = createChainSessionStore();
+  let releasePersistQ;
+  const persistGateQ = new Promise((resolve) => {
+    releasePersistQ = resolve;
+  });
+  const sessQ = await makeSession({
+    sessionId: "session-Q",
+    store: storeQ,
+    // Call 1's persist blocks until released — guaranteeing call 1 is still sitting between
+    // "persist" and "commit" at the moment the external eviction below fires.
+    onReceipt: () => persistGateQ,
+  });
+
+  const warnLinesQ = [];
+  const originalWarnQ = console.warn;
+  console.warn = (...args) => {
+    warnLinesQ.push(args.join(" "));
+  };
+
+  const call1PromiseQ = sessQ.client.callTool({ name: "echo", arguments: { text: "in-flight-q" } });
+  // Give call 1's handler a tick to actually start (prepareSessionReceipt already ran, onReceipt
+  // already invoked and is now awaiting persistGateQ) before the external eviction below.
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Simulate an EXTERNAL eviction landing mid-flight — bypassing create-proxy-server's own
+  // per-session queue entirely (e.g. an idle-TTL sweep(), or an operator/admin-surface store.end())
+  // — the exact race the store's own COMMIT-TIME SEGMENT CHECK (a second, independent layer from
+  // the proxy's queue) exists to catch. `makeSession` always configures `tenant: "smoke-tenant"`.
+  storeQ.end("session-Q", "smoke-tenant");
+
+  releasePersistQ();
+  const call1ResultQ = await call1PromiseQ;
+  console.warn = originalWarnQ;
+
+  ok(
+    "(q) the in-flight call still completes (persist already succeeded; forward happens regardless of store bookkeeping)",
+    call1ResultQ.content?.[0]?.text === "in-flight-q",
+  );
+  ok("(q) exactly 1 receipt was persisted (onReceipt succeeded before the drop)", sessQ.receipts.length === 1);
+  ok(
+    "(q) the dropped commit is OBSERVABLE — a warning naming the session and the drop was logged",
+    warnLinesQ.some((l) => l.includes("session-Q") && /dropped/i.test(l)),
+  );
+  ok("(q) the store shows 0 sessions after the drop (state genuinely torn down, not silently resurrected)", storeQ.size === 0);
+
+  const call2ResultQ = await sessQ.client.callTool({ name: "echo", arguments: { text: "post-drop-q" } });
+  ok("(q) the NEXT call after the drop still succeeds", call2ResultQ.content?.[0]?.text === "post-drop-q");
+  ok("(q) exactly 2 receipts total now (call 1 + call 2)", sessQ.receipts.length === 2);
+  ok(
+    "(q) call 2 opens a brand-new chain segment at seq 0 (orphan-free — not grafted onto the dropped call's stale receipt)",
+    sessQ.receipts[1].chain.seq === 0 && sessQ.receipts[1].chain.prevHash === null,
+  );
+  ok(
+    "(q) call 2's segment is a DISTINCT scope.chain from call 1's dropped segment",
+    sessQ.receipts[1].scope.chain !== sessQ.receipts[0].scope.chain,
+  );
+  const vQCall1 = verifyChain([sessQ.receipts[0]], { keyring: sessQ.keyring });
+  const vQCall2 = verifyChain([sessQ.receipts[1]], { keyring: sessQ.keyring });
+  ok(`(q) call 1's dropped-but-persisted segment still independently verifies VALID on its own — status=${vQCall1.status}`, vQCall1.status === "VALID");
+  ok(`(q) call 2's fresh segment independently verifies VALID — status=${vQCall2.status}`, vQCall2.status === "VALID");
+
+  await sessQ.close();
+
+  // ---------------------------------------------------------------------------------------
   // BONUS F: the LITERAL host-config from the report, spawned as a real OS process on BOTH
   // hops (host → proxy.mjs → demo-downstream.mjs), proving the zero-code-change integration
   // claim end-to-end, not just at the in-process factory level used above.
