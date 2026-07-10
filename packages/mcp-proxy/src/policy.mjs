@@ -33,6 +33,10 @@ export const TRANSFER_GUARD_POLICY = {
         op: "and",
         clauses: [
           { op: "eq", path: "action", value: "transfer_funds" },
+          // Floor at 0: a negative amountMinor is numerically "< 100_000_000" too, and without
+          // this clause it would fall straight into this ALLOW rule. Anything outside
+          // [0, 100_000_000) — including negative amounts — falls through to L2's default-DENY.
+          { op: "ge", path: "amountMinor", value: 0 },
           { op: "lt", path: "amountMinor", value: 100_000_000 },
         ],
       },

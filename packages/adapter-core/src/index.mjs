@@ -1,5 +1,5 @@
 export { preCheck, verifyReceiptCompliance } from "./pre-check.mjs";
-export { createChainSessionStore, preCheckSession } from "./session-store.mjs";
+export { createChainSessionStore, preCheckSession, prepareSessionReceipt, commitSessionReceipt } from "./session-store.mjs";
 export { REFUND_GUARD_POLICY } from "./policy.mjs";
 
 // Re-exported so downstream packages (e.g. mcp-proxy) only ever depend on

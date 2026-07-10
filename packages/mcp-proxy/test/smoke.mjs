@@ -53,7 +53,7 @@ function readCounts(countsFile) {
  * create-proxy-server.mjs module the CLI ships, connected to a real Client over an
  * InMemoryTransport linked pair.
  */
-async function makeSession({ sessionId, store, extraTool = false, countsFile }) {
+async function makeSession({ sessionId, store, extraTool = false, countsFile, onReceipt: customOnReceipt }) {
   const env = { ...process.env };
   if (extraTool) env.NOA_DEMO_EXTRA_TOOL = "1";
   if (countsFile) env.NOA_DEMO_COUNTS_FILE = countsFile;
@@ -68,6 +68,15 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile }) 
   const signer = { kid: kp.kid, privateKey: kp.privateKey };
   const keyring = { [kp.kid]: kp.publicKey };
   const receipts = [];
+  // `receipts` only ever gets a push AFTER the caller-supplied onReceipt (if any) returns
+  // without throwing — it stands in for "durably persisted", exactly like a real receipt-log
+  // append would only be considered done once the write itself succeeded.
+  const onReceipt = customOnReceipt
+    ? (sid, r) => {
+        customOnReceipt(sid, r);
+        receipts.push(r);
+      }
+    : (_sid, r) => receipts.push(r);
 
   const { server, downstream } = await createProxyServer({
     sessionId,
@@ -76,7 +85,7 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile }) 
     policy: TRANSFER_GUARD_POLICY,
     store,
     tenant: "smoke-tenant",
-    onReceipt: (_sid, r) => receipts.push(r),
+    onReceipt,
   });
 
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
@@ -228,6 +237,94 @@ async function main() {
 
   await sessE1.close();
   await sessE2.close();
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO H: a receipt-persist failure must fail the call closed AND must NOT burn the
+  // session's chain position — the next call has to be able to re-issue the exact same seq, so
+  // the persisted log never develops a gap. Simulates a one-time transient persist error (e.g. an
+  // ENOSPC/permission blip in a real --receipt-log append) that clears on the very next call.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario H — a persist failure fails closed with no permanent seq-gap");
+  const storeH = createChainSessionStore();
+  const countsH = tmpPath("counts-H.json");
+  let flakyFailedOnce = false;
+  const sessH = await makeSession({
+    sessionId: "session-H",
+    store: storeH,
+    countsFile: countsH,
+    onReceipt: () => {
+      if (!flakyFailedOnce) {
+        flakyFailedOnce = true;
+        throw new Error("simulated persist failure (e.g. ENOSPC)");
+      }
+    },
+  });
+
+  const denyFirst = await expectDeny(sessH.client.callTool({ name: "echo", arguments: { text: "first-attempt" } }));
+  ok("(h) call 1: persist failure surfaces as an MCP error to the host (fail-closed)", denyFirst.denied);
+  const countsAfterFirst = readCounts(countsH);
+  ok("(h) call 1: downstream handler never invoked (echo count is 0)", countsAfterFirst.echo === 0);
+  ok("(h) call 1: never recorded in the persisted receipt log (the persist itself failed)", sessH.receipts.length === 0);
+
+  const rSecond = await sessH.client.callTool({ name: "echo", arguments: { text: "second-attempt" } });
+  ok("(h) call 2: succeeds once the transient persist failure has cleared", rSecond.content?.[0]?.text === "second-attempt");
+  ok("(h) call 2: exactly 1 receipt persisted", sessH.receipts.length === 1);
+  ok(
+    "(h) call 2: reuses seq 0 — the seq call 1 would have consumed — no gap left behind",
+    sessH.receipts.length === 1 && sessH.receipts[0].chain.seq === 0,
+  );
+  const vH = verifyChain(sessH.receipts, { keyring: sessH.keyring });
+  ok(`(h) verifyChain(persisted receipts) -> VALID, the chain never saw the lost attempt (status=${vH.status})`, vH.status === "VALID");
+
+  await sessH.close();
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO I: a negative amountMinor must never satisfy "allow-small-transfer" just because it
+  // is numerically less than the large-transfer ceiling — the rule needs an explicit floor.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario I — negative amountMinor never falls through to an ALLOW");
+  const storeI = createChainSessionStore();
+  const countsI = tmpPath("counts-I.json");
+  const sessI = await makeSession({ sessionId: "session-I", store: storeI, countsFile: countsI });
+
+  const denyNegative = await expectDeny(
+    sessI.client.callTool({ name: "transfer_funds", arguments: { amountMinor: -999999, to: "attacker" } }),
+  );
+  ok("(i) transfer_funds with amountMinor -999999 -> DENY, not ALLOW", denyNegative.denied && denyNegative.code === -32600);
+  const countsAfterI = readCounts(countsI);
+  ok("(i) downstream transfer_funds handler never invoked for the negative amount", countsAfterI.transfer_funds === 0);
+
+  await sessI.close();
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO J: 25 concurrent calls fired at ONE session (no waiting for one to resolve before
+  // sending the next) must still produce a gap-free, duplicate-free, contiguous, verifiable
+  // chain — proves the persist-then-commit fix did not reintroduce an interleaving window for the
+  // synchronous-persist fast path (the only path either shipped onReceipt implementation uses).
+  // ---------------------------------------------------------------------------------------
+  section("Scenario J — 25 concurrent calls on one session stay gap-free (race safety)");
+  const storeJ = createChainSessionStore();
+  const sessJ = await makeSession({ sessionId: "session-J", store: storeJ });
+
+  const parallelCalls = Array.from({ length: 25 }, (_, i) =>
+    sessJ.client.callTool({ name: "echo", arguments: { text: `call-${i}` } }),
+  );
+  const parallelResults = await Promise.all(parallelCalls);
+  ok(
+    "(j) all 25 concurrent calls resolved, each echoing back its own text",
+    parallelResults.every((r, i) => r.content?.[0]?.text === `call-${i}`),
+  );
+  ok("(j) exactly 25 receipts recorded — no duplicates, no drops", sessJ.receipts.length === 25);
+  const seqsJ = sessJ.receipts.map((r) => r.chain.seq).sort((a, b) => a - b);
+  ok(
+    `(j) seq set is exactly {0..24}, contiguous — sorted seqs=[${seqsJ.join(",")}]`,
+    JSON.stringify(seqsJ) === JSON.stringify(Array.from({ length: 25 }, (_, i) => i)),
+  );
+  const orderedJ = [...sessJ.receipts].sort((a, b) => a.chain.seq - b.chain.seq);
+  const vJ = verifyChain(orderedJ, { keyring: sessJ.keyring });
+  ok(`(j) verifyChain(25 receipts, seq order) -> VALID, count=${vJ.count}`, vJ.status === "VALID" && vJ.count === 25);
+
+  await sessJ.close();
 
   // ---------------------------------------------------------------------------------------
   // BONUS F: the LITERAL host-config from the report, spawned as a real OS process on BOTH

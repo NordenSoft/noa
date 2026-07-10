@@ -67,3 +67,17 @@ jobs:
         # and use vitest (resolved via a pinned npx, NOT a project dependency — the lib stays zero-dep).
         # `npm test` (node:test) deliberately excludes them; this gates their runtime behaviour.
         run: npm run test:dogfood
+      - name: adapter-core unit tests (packages/adapter-core)
+        # No package-lock.json here (dependencies: {}) — `npm ci` would refuse without one, so
+        # `npm install` is correct. Needs the root build above: it imports the built dist/ directly.
+        run: |
+          cd packages/adapter-core
+          npm install
+          npm test
+      - name: mcp-proxy smoke test (packages/mcp-proxy)
+        # Real-transport smoke test: fail-closed DENY, live tools/list reflection, session
+        # isolation, persist-then-commit ordering, and CLI double-stdio integration.
+        run: |
+          cd packages/mcp-proxy
+          npm ci
+          npm test
