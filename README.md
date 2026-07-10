@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/NordenSoft/noa/actions/workflows/ci.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/ci.yml)
 
-222 tests green, including TS↔Python cross-implementation conformance in CI — the independent
+238 tests green, including TS↔Python cross-implementation conformance in CI — the independent
 Python reference verifier is required to agree with the TS verifier on every conformance vector.
 
 > **What this repo is:** the open-source of **one organ** of NOA — the **governance &

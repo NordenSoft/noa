@@ -6,6 +6,8 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-10
+
 ### Security
 
 - **`verifyReceiptCompliance`**: a supplied-but-falsy `{ keyring: "" }` (or `null` / `0` / `false`)
@@ -22,6 +24,26 @@ All notable changes to `noa-receipt` are documented here. The format follows
 - **`prepublishOnly`**: the pre-publish test/build gate no longer fetches a test runner over the
   network at publish time — it now uses a locally pinned, lockfile-resolved dependency, so a
   publish (or a clean `npm ci`) can't fail or hang due to an unreachable registry.
+
+### Added
+
+- **Cross-version backcompat guarantee**: frozen golden receipt chains, produced from the real
+  `v0.3.0` tag build, are re-verified by every build — so a future change can never silently stop
+  accepting a receipt an earlier version issued. Expected security verdicts are pinned independently
+  in the test, not read back from the fixtures, so a regenerated fixture can't rubber-stamp a broken
+  verdict.
+- **Conformance matrix** (`conformance/MATRIX.md`): an auto-derived TS↔Python pass/fail table across
+  every vector class (structural, hash, signature, key-swap, impersonation, truncation, dup-key,
+  malleability, unicode, tenant), with an explicit "one mismatch fails the class" threshold — the
+  compliance bar a third-party verifier can measure itself against. Drift is gated in CI and before publish.
+
+### Changed
+
+- **Published-surface hygiene**: compiled output ships without source comments, and a
+  publish-surface guard runs in CI and before publish — it scans the exact npm tarball for
+  internal development shorthand and for absolute security claims (e.g. "tamper-proof",
+  "guarantee") outside an honest-negation context, keeping the published package's language
+  consistent with the honest, tamper-*evident* framing used throughout.
 
 ## [0.3.0] - 2026-07-09
 
@@ -80,5 +102,6 @@ scoped `@noa/receipt`).
   "a keyring-trusted key signed this" to "this agent signed this", closing cross-agent
   impersonation in a multi-key keyring.
 
-[Unreleased]: https://github.com/NordenSoft/noa/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/NordenSoft/noa/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/NordenSoft/noa/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/NordenSoft/noa/releases/tag/v0.3.0
