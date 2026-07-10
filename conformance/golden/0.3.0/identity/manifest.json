@@ -1,0 +1,8 @@
+{
+  "golden-agent-a": [
+    "golden-signer-a"
+  ],
+  "golden-agent-b": [
+    "golden-signer-b"
+  ]
+}

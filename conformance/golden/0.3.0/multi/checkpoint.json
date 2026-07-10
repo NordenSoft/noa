@@ -1,0 +1,12 @@
+{
+  "spec": "noa.checkpoint/0.1",
+  "chain": "golden_multi_chain",
+  "highestSeq": 3,
+  "headHash": "sha256:0ea4f941c64d4307776d7fc529472dcaa9247f4bb0af5684809e9f305d64a821",
+  "ts": "2026-05-02T10:11:00.000Z",
+  "sig": {
+    "alg": "ed25519",
+    "kid": "golden-signer-1",
+    "value": "gRtl4CGCt9T6YcY6suEoChRjtBM0h93n0Ytj3GA1PgnWsD4Jj119LRJvYoEV50uNFrMxgB4EJyuzYdd9dJBDCw=="
+  }
+}
