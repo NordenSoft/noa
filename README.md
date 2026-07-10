@@ -64,7 +64,7 @@ are opaque and must not contain PII; the format can't enforce that — see THREA
 
 Full format: [`docs/receipt-spec.md`](docs/receipt-spec.md). Signatures are **mandatory** (Ed25519),
 the signing key is bound into the hash, and verification runs **offline** — no account, no network.
-Production key management: [docs/trust-root-checklist.md](docs/trust-root-checklist.md).
+Production key management: [docs/trust-root-checklist.md](https://github.com/NordenSoft/noa/blob/main/docs/trust-root-checklist.md).
 
 ## Verify a chain offline (no account, no network)
 
@@ -81,7 +81,7 @@ node dist/src/cli.js verify conformance/vectors/valid-chain.json \
 
 Exit codes are CI-ready: `0` VALID · `1` unverified-sig (no keyring) · `2` TAMPERED · `3`
 MALFORMED · `4` usage · `5` UNTRUSTED (identity binding failed). Every tampered/forged/truncated/key-swapped vector under
-[`conformance/`](conformance/vectors) is rejected — and the verifier is honest: without a
+[`conformance/`](https://github.com/NordenSoft/noa/tree/main/conformance/vectors) is rejected — and the verifier is honest: without a
 keyring it will **not** claim VALID, and without a checkpoint it **warns** that tail-truncation
 can't be detected offline.
 
