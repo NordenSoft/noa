@@ -403,7 +403,11 @@ export function prepareSessionReceipt(toolCall, { sessionId, store, signer, poli
   // so `segmentId` stays the chain-id's trailing digit run (see the docstring for why that ordering
   // matters).
   const defaultChain = `${effectiveTenant}:${sessionId}#${instanceToken}-seg${segmentId}`;
-  const result = preCheck(toolCall, { signer, policy, prev, seq, tenant, chain: chain ?? defaultChain });
+  // Pass the RESOLVED `effectiveTenant` (not the possibly-null raw option): `preCheck`'s own
+  // `tenant = "default-tenant"` is a JS default parameter that only fires on `undefined`, so a
+  // literal `null` would otherwise reach `buildReceipt` and throw instead of failing closed —
+  // keeping preCheck's "never throws, only DENY" contract intact for a null tenant too.
+  const result = preCheck(toolCall, { signer, policy, prev, seq, tenant: effectiveTenant, chain: chain ?? defaultChain });
   // `segmentId` AND `tenant` (the resolved `effectiveTenant`, not the possibly-omitted raw option)
   // travel alongside the prepared result so `commitSessionReceipt` can verify — AT COMMIT TIME —
   // that the session's live state is still this SAME (tenant, segment) (see
