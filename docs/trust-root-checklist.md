@@ -30,6 +30,9 @@ only `sig.kid` (which key signed) and `sig.value` (the signature) are.
 ## 3. Build the keyring, distribute it out-of-band
 
 ```js
+import { generateKeyPair } from "noa-receipt";
+
+const kp = generateKeyPair("agent-prod-key-1");
 const keyring = { [kp.kid]: kp.publicKey }; // kid -> base64 SPKI public key
 ```
 
@@ -46,10 +49,36 @@ is ever trusted, any holder of any trusted key can author a fully `VALID` chain 
 someone else's `agent.id`. Close that with an `identityManifest`:
 
 ```js
+import { generateKeyPair, buildReceipt, verifyChain } from "noa-receipt";
+
+const kp = generateKeyPair("agent-prod-key-1");
+const signer = { kid: kp.kid, privateKey: kp.privateKey };
+const keyring = { [kp.kid]: kp.publicKey };
 const identityManifest = { "billing-agent-7": [kp.kid] }; // agent.id -> authorized kid(s)
 
-const result = verifyChain(receipts, { keyring, identityManifest });
-// unauthorized (agent.id, sig.kid) pairing -> status: "UNTRUSTED", not "TAMPERED"
+const receipt = buildReceipt(
+  {
+    id: "rcpt_0",
+    ts: new Date().toISOString(),
+    scope: { chain: "checklist:demo" },
+    agent: { id: "billing-agent-7", model: "vendor/model-v1", principal: "SERVICE" },
+    action: {
+      id: "payment.refund",
+      canonical: "payment.refund",
+      riskClass: "LOW",
+      paramsHash: "sha256:" + "0".repeat(64), // never carry raw params — only their hash
+      reversible: false,
+      rollbackRef: null,
+    },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "low-risk-auto", approval: null, sandboxed: false },
+  },
+  null, // no previous receipt: this is the genesis of the chain
+  signer,
+);
+
+const result = verifyChain([receipt], { keyring, identityManifest });
+console.log(result.status); // -> "VALID"
+// an unauthorized (agent.id, sig.kid) pairing instead -> status: "UNTRUSTED", not "TAMPERED"
 ```
 
 Skip this only for a single-key keyring, where the ambiguity can't arise. Details:
@@ -61,18 +90,46 @@ Skip this only for a single-key keyring, where the ambiguity can't arise. Detail
 truncated prefix still sees `VALID`. A checkpoint closes that:
 
 ```js
-import { buildCheckpoint } from "noa-receipt";
+import { generateKeyPair, buildReceipt, buildCheckpoint, verifyChain } from "noa-receipt";
+
+const kp = generateKeyPair("agent-prod-key-1");
+const signer = { kid: kp.kid, privateKey: kp.privateKey }; // the chain's opener key — see step 6
+const keyring = { [kp.kid]: kp.publicKey };
+const identityManifest = { "billing-agent-7": [kp.kid] };
+
+const latestReceipt = buildReceipt(
+  {
+    id: "rcpt_0",
+    ts: new Date().toISOString(),
+    scope: { chain: "checklist:demo" },
+    agent: { id: "billing-agent-7", model: "vendor/model-v1", principal: "SERVICE" },
+    action: {
+      id: "payment.refund",
+      canonical: "payment.refund",
+      riskClass: "LOW",
+      paramsHash: "sha256:" + "0".repeat(64),
+      reversible: false,
+      rollbackRef: null,
+    },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "low-risk-auto", approval: null, sandboxed: false },
+  },
+  null, // genesis: this receipt also opens the chain, so `signer` is the opener key here
+  signer,
+);
 
 const checkpoint = buildCheckpoint(latestReceipt, new Date().toISOString(), signer);
-verifyChain(receipts, { keyring, identityManifest, checkpoint }); // tailChecked: true
+const result = verifyChain([latestReceipt], { keyring, identityManifest, checkpoint });
+console.log(result.status, result.tailChecked); // -> "VALID" true
 ```
 
-Sign checkpoints with the chain's **opener** key (the `agent.id` at `seq == 0`) — that's the
-key `verifyChain` checks a checkpoint's authority against when an `identityManifest` is
-supplied, and it's what stops a co-trusted key from re-heading the chain and forging a
-checkpoint over its own truncated view (receipt-spec.md §6). Publish/refresh the checkpoint
-on whatever cadence matches your risk tolerance; without one, the verifier still runs, but it
-emits an explicit tail-truncation warning instead of silently trusting completeness.
+Sign checkpoints with the **private key that corresponds to the `kid` which signed the chain's
+genesis (`seq == 0`) receipt for that `agent.id`** — colloquially "the opener key", but it is a
+*key*, not the `agent.id` string itself. That's the key `verifyChain` checks a checkpoint's
+authority against when an `identityManifest` is supplied, and it's what stops a co-trusted key
+from re-heading the chain and forging a checkpoint over its own truncated view
+(receipt-spec.md §6). Publish/refresh the checkpoint on whatever cadence matches your risk
+tolerance; without one, the verifier still runs, but it emits an explicit tail-truncation
+warning instead of silently trusting completeness.
 
 ## 6. Rotating a key
 
@@ -81,9 +138,35 @@ A `kid` is pinned to `agent.id` **within one chain** the moment the second recei
 by design, not a bug to work around:
 
 ```js
+import { generateKeyPair, buildReceipt, verifyChain } from "noa-receipt";
+
+const kp = generateKeyPair("agent-prod-key-1");
+const kp2 = generateKeyPair("agent-prod-key-2"); // a second key, wrongly reused mid-chain
+const keyring = { [kp.kid]: kp.publicKey, [kp2.kid]: kp2.publicKey };
+
+const buildInputBase = (id) => ({
+  id,
+  ts: new Date().toISOString(),
+  scope: { chain: "checklist:demo" },
+  agent: { id: "billing-agent-7", model: "vendor/model-v1", principal: "SERVICE" },
+  action: {
+    id: "payment.refund",
+    canonical: "payment.refund",
+    riskClass: "LOW",
+    paramsHash: "sha256:" + "0".repeat(64),
+    reversible: false,
+    rollbackRef: null,
+  },
+  governance: { mode: "on", verdict: "EXECUTED", ruleId: "low-risk-auto", approval: null, sandboxed: false },
+});
+
+const genesis = buildReceipt(buildInputBase("rcpt_0"), null, { kid: kp.kid, privateKey: kp.privateKey });
 // same chain, second receipt signed by a different key -> rejected
-verifyChain([genesis, second], { keyring });
-// -> { "status": "TAMPERED", "reason": "key swap for agent \"billing-agent-7\" ..." }
+const second = buildReceipt(buildInputBase("rcpt_1"), genesis, { kid: kp2.kid, privateKey: kp2.privateKey });
+
+const result = verifyChain([genesis, second], { keyring });
+console.log(result.status, "|", result.reason);
+// -> TAMPERED | key swap for agent "billing-agent-7" (kid agent-prod-key-1 -> agent-prod-key-2)
 ```
 
 So rotation is a **new chain, not an in-chain edit**: generate a new key pair, start the next
