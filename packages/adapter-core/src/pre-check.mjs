@@ -282,24 +282,49 @@ export function preCheck(
   // findAmbiguousDottedArgKey's docstring for the decoy-collision this closes. Fail the ENTIRE call
   // closed, unconditionally, rather than let a policy see one of two colliding values by accident
   // of iteration/insertion order.
-  const ambiguousArgKey = findAmbiguousDottedArgKey(toolCall.args);
+  //
+  // Both this scan AND the flatten step below descend into every enumerable value in `args` —
+  // ordinarily just plain data, but a caller embedding this package in-process (documented as
+  // usable by "any MCP integration: proxy, gateway, in-process guard") can legitimately hand it an
+  // `args` object carrying a throwing getter or Proxy trap (never producible by `JSON.parse`, but
+  // a live JS object built by that caller's own code can contain one). Reading such a property
+  // throws the MOMENT either traversal reaches it — `preCheck`'s "never throws" contract (already
+  // honored for a genuinely uncanonicalizable/circular `args` shape via `canonicalParamsHash`
+  // above) must hold here too: a throw during either traversal fails the WHOLE call closed (DENY,
+  // no compliance commit — the same "nothing valid to evaluate/replay" posture as the other
+  // fail-closed paths), never escapes as an uncaught exception to the caller.
+  let ambiguousArgKey = null;
+  let argsEnumerationThrew = false;
+  try {
+    ambiguousArgKey = findAmbiguousDottedArgKey(toolCall.args);
+  } catch {
+    argsEnumerationThrew = true;
+  }
+
   let ev;
-  if (ambiguousArgKey !== null) {
+  if (argsEnumerationThrew) {
+    ev = { verdict: "DENY", ruleFired: "args-enumeration-threw", engine: "args-flatten-ambiguity-guard" };
+  } else if (ambiguousArgKey !== null) {
     ev = { verdict: "DENY", ruleFired: "args-flatten-ambiguous-dotted-key", engine: "args-flatten-ambiguity-guard" };
   } else if (argsUncanonicalizable) {
     ev = { verdict: "DENY", ruleFired: "args-uncanonicalizable", engine: "args-canonicalization-guard" };
   } else {
-    Object.assign(inputs, flattenArgsToPolicyInputs(toolCall.args, "args", 0, {}, { count: 0 }));
-    ev = evaluate(policy, inputs); // ALLOW | DENY, fail-closed, re-runnable
+    try {
+      Object.assign(inputs, flattenArgsToPolicyInputs(toolCall.args, "args", 0, {}, { count: 0 }));
+      ev = evaluate(policy, inputs); // ALLOW | DENY, fail-closed, re-runnable
+    } catch {
+      argsEnumerationThrew = true;
+      ev = { verdict: "DENY", ruleFired: "args-enumeration-threw", engine: "args-flatten-ambiguity-guard" };
+    }
   }
   const decision = ev.verdict === "ALLOW" ? "ALLOW" : "DENY";
 
-  // Commit the policy+inputs ONLY when the inputs are canonicalizable AND unambiguous. Malformed
-  // inputs (e.g. a float amount), a dotted-key ambiguity, or fully-uncanonicalizable args (a
-  // circular reference) → fail-closed DENY with NO compliance block (there is nothing valid to
-  // commit/replay).
+  // Commit the policy+inputs ONLY when the inputs are canonicalizable, unambiguous, AND args could
+  // be enumerated at all. Malformed inputs (e.g. a float amount), a dotted-key ambiguity, a
+  // fully-uncanonicalizable args (a circular reference), or an args enumeration that itself threw
+  // → fail-closed DENY with NO compliance block (there is nothing valid to commit/replay).
   let compliance = null;
-  if (ambiguousArgKey === null && !argsUncanonicalizable) {
+  if (!argsEnumerationThrew && ambiguousArgKey === null && !argsUncanonicalizable) {
     try {
       compliance = complianceCommit(policy, inputs);
     } catch {

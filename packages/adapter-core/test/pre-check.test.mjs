@@ -125,6 +125,21 @@ test("preCheck: a bigint leaf in args never throws — handled by the stable-str
   assert.notEqual(r.receipt.governance.ruleId, "args-uncanonicalizable");
 });
 
+test("preCheck: a throwing getter/Proxy trap inside args never throws (fail-closed DENY, not a crash) — 'never throws' holds even for a live-object args shape JSON.parse could never produce", () => {
+  const { signer } = signerAndKeyring("test-key-getter-throw");
+  const evilArgs = {};
+  Object.defineProperty(evilArgs, "poison", {
+    enumerable: true,
+    get() {
+      throw new Error("getter-triggered-boom");
+    },
+  });
+  assert.doesNotThrow(() => preCheck({ name: "payment.refund", args: evilArgs }, { signer, policy: REFUND_GUARD_POLICY }));
+  const r = preCheck({ name: "payment.refund", args: evilArgs }, { signer, policy: REFUND_GUARD_POLICY });
+  assert.equal(r.decision, "DENY", "a throwing args getter must fail the whole call closed, never throw past preCheck");
+  assert.equal(r.receipt.governance.compliance, null, "nothing valid to commit when args enumeration itself threw");
+});
+
 test("preCheck: full args are visible to the policy under an args.* prefix — a new rule can read args.recipient", () => {
   const { signer } = signerAndKeyring("test-key-9");
   // A policy that ONLY the args-projection change makes expressible: deny any refund whose
