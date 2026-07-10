@@ -1,5 +1,10 @@
 # NOA — Agent Action Receipt
 
+[![CI](https://github.com/NordenSoft/noa/actions/workflows/ci.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/ci.yml)
+
+193 tests green, including TS↔Python cross-implementation conformance in CI — the independent
+Python reference verifier is required to agree with the TS verifier on every conformance vector.
+
 > **What this repo is:** the open-source of **one organ** of NOA — the **governance &
 > receipt layer**: the part that gates an AI agent's real-world actions and issues a
 > tamper-evident, independently verifiable receipt.
@@ -79,11 +84,48 @@ MALFORMED · `4` usage · `5` UNTRUSTED (identity binding failed). Every tampere
 keyring it will **not** claim VALID, and without a checkpoint it **warns** that tail-truncation
 can't be detected offline.
 
-In code:
+## Your first receipt (copy, paste, run)
 
-```ts
-import { buildReceipt, verifyChain, generateKeyPair } from "noa-receipt";
+In your own project — no clone, no build step, just the published package:
+
+```bash
+npm install noa-receipt
+node --input-type=module <<'EOF'
+import { generateKeyPair, buildReceipt, verifyChain } from "noa-receipt";
+
+const kp = generateKeyPair("demo-key-1");
+const signer = { kid: kp.kid, privateKey: kp.privateKey };
+const keyring = { [kp.kid]: kp.publicKey };
+
+const receipt = buildReceipt(
+  {
+    id: "rcpt_0",
+    ts: new Date().toISOString(),
+    scope: { chain: "quickstart:demo" },
+    agent: { id: "quickstart-agent", model: "vendor/model-v1", principal: "SERVICE" },
+    action: {
+      id: "payment.refund",
+      canonical: "payment.refund",
+      riskClass: "LOW",
+      paramsHash: "sha256:" + "0".repeat(64), // never carry raw params — only their hash
+      reversible: false,
+      rollbackRef: null,
+    },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "low-risk-auto", approval: null, sandboxed: false },
+  },
+  null, // no previous receipt: this is the genesis of the chain
+  signer,
+);
+
+const result = verifyChain([receipt], { keyring });
+console.log(result.status); // -> "VALID"
+EOF
+# -> VALID
 ```
+
+Cut the receipt *before* the action runs, verify it *offline*, and the signed hash-chain proves it
+wasn't altered — the same building block the [killer demo](examples/killer-demo/demo.mjs) chains
+into a full deferred → rejected → executed story.
 
 ## Status (honest)
 
