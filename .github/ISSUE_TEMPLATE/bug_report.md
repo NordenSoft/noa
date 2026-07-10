@@ -16,8 +16,7 @@ assignees: ""
      schema, or the verifier, a minimal script beats a description. -->
 
 ```
-npm install noa-receipt
-npx --package=noa-receipt noa verify <receipts.json> [--keyring <keyring.json>] [--checkpoint <checkpoint.json>]
+npx noa-receipt verify <receipts.json> [--keyring <keyring.json>] [--checkpoint <checkpoint.json>]
 # ...or whatever steps actually trigger it
 ```
 
