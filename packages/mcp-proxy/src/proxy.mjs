@@ -11,18 +11,37 @@
  * never made aware a proxy exists — the host's config line is the only thing that changes.
  *
  * Flags (all optional):
- *   --session-id <id>      receipt-chain session id (default: a fresh randomUUID())
- *   --tenant <name>        receipt scope.tenant (default: "default-tenant")
- *   --receipt-log <path>   append each emitted receipt as one JSON line (JSONL)
- *   --keyring-file <path>  write { [kid]: publicKey } once at startup, so an external verifier
- *                          can `verifyChain`/`verify` the receipt log independently of this process
+ *   --session-id <id>          receipt-chain session id (default: a fresh randomUUID())
+ *   --tenant <name>            receipt scope.tenant (default: "default-tenant")
+ *   --agent-id <id>            STATIC receipt.agent.id for every call this process makes (default:
+ *                              the session id, the prior behavior). Read ONLY from this flag/env —
+ *                              never from a tool call's own arguments, so a host or downstream tool
+ *                              can never spoof its own attribution.
+ *   --receipt-log <path>       append each emitted receipt as one JSON line (JSONL), written with a
+ *                              non-blocking fs.promises.appendFile so a slow disk never blocks the
+ *                              event loop for other in-flight sessions.
+ *   --keyring-file <path>      write { [kid]: publicKey } once at startup, so an external verifier
+ *                              can `verifyChain`/`verify` the receipt log independently of this
+ *                              process.
+ *   --key-file <path>          load a persisted signing identity from this path, or — if it
+ *                              doesn't exist yet — generate one and write it here (mode 0600, since
+ *                              it holds a private key). Without this flag, the prior behavior is
+ *                              unchanged: a fresh Ed25519 keypair every process start (kid tied to
+ *                              this run's session id). WITH it, restarting the proxy against the
+ *                              SAME --key-file reuses the exact same kid, so a receipt chain begun
+ *                              before a restart and continued after it verifies under one signing
+ *                              identity. Alternative: the NOA_MCP_PROXY_KEY_FILE env var (the flag
+ *                              wins if both are given).
+ *   --session-idle-ttl-ms <n>  override the session store's idle-TTL sweep (default: 1 hour;
+ *                              see noa-mcp-adapter-core's createChainSessionStore).
+ *   --max-sessions <n>         override the session store's max-sessions cap (default: 10,000).
  *
  * Fail-closed at startup: if the downstream command cannot be spawned or fails MCP
  * initialization, this process logs to stderr and exits non-zero WITHOUT ever starting to serve
  * the host — there is no partially-working proxy state.
  */
 import { randomUUID } from "node:crypto";
-import { appendFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, chmodSync, promises as fsp } from "node:fs";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { generateKeyPair, createChainSessionStore } from "noa-mcp-adapter-core";
@@ -33,38 +52,110 @@ function parseArgs(argv) {
   const sepIndex = argv.indexOf("--");
   if (sepIndex === -1) {
     throw new Error(
-      "usage: proxy.mjs [--session-id <id>] [--tenant <name>] [--receipt-log <path>] " +
-        "[--keyring-file <path>] -- <downstream-command> [downstream-args...]",
+      "usage: proxy.mjs [--session-id <id>] [--tenant <name>] [--agent-id <id>] " +
+        "[--receipt-log <path>] [--keyring-file <path>] [--key-file <path>] " +
+        "[--session-idle-ttl-ms <n>] [--max-sessions <n>] -- <downstream-command> [downstream-args...]",
     );
   }
   const own = argv.slice(0, sepIndex);
   const downstream = argv.slice(sepIndex + 1);
   if (downstream.length === 0) throw new Error("proxy.mjs: no downstream command given after `--`");
 
-  const opts = { sessionId: null, tenant: "default-tenant", receiptLog: null, keyringFile: null };
+  const opts = {
+    sessionId: null,
+    tenant: "default-tenant",
+    agentId: null,
+    receiptLog: null,
+    keyringFile: null,
+    keyFile: null,
+    sessionIdleTtlMs: null,
+    maxSessions: null,
+  };
   for (let i = 0; i < own.length; i++) {
     const flag = own[i];
     const value = own[++i];
     if (flag === "--session-id") opts.sessionId = value;
     else if (flag === "--tenant") opts.tenant = value;
+    else if (flag === "--agent-id") opts.agentId = value;
     else if (flag === "--receipt-log") opts.receiptLog = value;
     else if (flag === "--keyring-file") opts.keyringFile = value;
+    else if (flag === "--key-file") opts.keyFile = value;
+    else if (flag === "--session-idle-ttl-ms") opts.sessionIdleTtlMs = Number(value);
+    else if (flag === "--max-sessions") opts.maxSessions = Number(value);
     else throw new Error(`proxy.mjs: unknown flag "${flag}"`);
   }
   return { opts, downstreamCommand: downstream[0], downstreamArgs: downstream.slice(1) };
+}
+
+/**
+ * Loads a persisted `{ kid, privateKey, publicKey }` signing identity from `keyFile`, or generates
+ * one and persists it (mode 0600 — it holds a private key) if the file doesn't exist yet. Without
+ * a `keyFile` at all, keeps the prior behavior exactly: a fresh keypair every call, kid tied to
+ * this run's `sessionId`.
+ */
+function loadOrCreateSigner({ keyFile, sessionId }) {
+  if (!keyFile) {
+    const kp = generateKeyPair(`noa-mcp-proxy:${sessionId}`);
+    return { kid: kp.kid, privateKey: kp.privateKey, publicKey: kp.publicKey };
+  }
+  if (existsSync(keyFile)) {
+    let raw;
+    try {
+      raw = JSON.parse(readFileSync(keyFile, "utf8"));
+    } catch (err) {
+      throw new Error(`proxy.mjs: --key-file "${keyFile}" is not valid JSON (${err.message})`);
+    }
+    if (!raw || typeof raw.kid !== "string" || typeof raw.privateKey !== "string" || typeof raw.publicKey !== "string") {
+      throw new Error(`proxy.mjs: --key-file "${keyFile}" is malformed (expected { kid, privateKey, publicKey })`);
+    }
+    return raw;
+  }
+  // First run against this path: generate a stable kid ONCE (not tied to sessionId — the whole
+  // point of a persisted key is that it outlives any one session) and persist it.
+  const kp = generateKeyPair(`noa-mcp-proxy:${randomUUID()}`);
+  const record = { kid: kp.kid, privateKey: kp.privateKey, publicKey: kp.publicKey };
+  writeFileSync(keyFile, JSON.stringify(record, null, 2), { mode: 0o600 });
+  // Belt-and-suspenders: writeFileSync's `mode` option only governs the permissions a NEWLY
+  // created file gets (subject to umask); an explicit chmod pins it to 0600 regardless.
+  chmodSync(keyFile, 0o600);
+  return record;
+}
+
+/**
+ * Serializes every append to ONE file path through a single promise chain, so concurrent sessions
+ * writing to the SAME shared --receipt-log never interleave partial lines, while still using the
+ * non-blocking fs.promises API (never fs.appendFileSync, which blocks the whole event loop for
+ * every other in-flight session while the disk write completes).
+ */
+function createSequentialFileAppender(path) {
+  let tail = Promise.resolve();
+  return function append(line) {
+    const next = tail.then(() => fsp.appendFile(path, line, "utf8"));
+    // Decoupled always-settling continuation: one failed write must reject THIS call's own
+    // promise (propagated back to create-proxy-server.mjs's onReceipt handling, which fails the
+    // call closed) without poisoning the chain for the next queued append.
+    tail = next.then(() => undefined, () => undefined);
+    return next;
+  };
 }
 
 async function main() {
   const { opts, downstreamCommand, downstreamArgs } = parseArgs(process.argv.slice(2));
   const sessionId = opts.sessionId ?? randomUUID();
 
-  const kp = generateKeyPair(`noa-mcp-proxy:${sessionId}`);
+  const keyFile = opts.keyFile ?? process.env.NOA_MCP_PROXY_KEY_FILE ?? null;
+  const kp = loadOrCreateSigner({ keyFile, sessionId });
   const signer = { kid: kp.kid, privateKey: kp.privateKey };
   if (opts.keyringFile) writeFileSync(opts.keyringFile, JSON.stringify({ [kp.kid]: kp.publicKey }), "utf8");
 
-  const store = createChainSessionStore();
-  const onReceipt = opts.receiptLog
-    ? (_sessionId, receipt) => appendFileSync(opts.receiptLog, JSON.stringify(receipt) + "\n", "utf8")
+  const store = createChainSessionStore({
+    ...(opts.sessionIdleTtlMs != null && Number.isFinite(opts.sessionIdleTtlMs) ? { idleTtlMs: opts.sessionIdleTtlMs } : {}),
+    ...(opts.maxSessions != null && Number.isFinite(opts.maxSessions) ? { maxSessions: opts.maxSessions } : {}),
+  });
+
+  const appendReceiptLine = opts.receiptLog ? createSequentialFileAppender(opts.receiptLog) : null;
+  const onReceipt = appendReceiptLine
+    ? (_sessionId, receipt) => appendReceiptLine(JSON.stringify(receipt) + "\n")
     : undefined;
 
   const downstreamTransport = new StdioClientTransport({ command: downstreamCommand, args: downstreamArgs });
@@ -78,6 +169,7 @@ async function main() {
       policy: TRANSFER_GUARD_POLICY,
       store,
       tenant: opts.tenant,
+      agentId: opts.agentId ?? undefined,
       onReceipt,
     });
   } catch (err) {
