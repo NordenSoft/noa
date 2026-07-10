@@ -565,6 +565,49 @@ test("prepareSessionReceipt: a literal sessionId crafted to look exactly like an
   store.dispose();
 });
 
+test("prepareSessionReceipt: two SEPARATE store instances (simulating two process lifetimes of a restarted proxy, e.g. a persisted --key-file across a restart) sharing the SAME stable sessionId mint DISTINCT default chain-ids — CRITICAL-2: segmentCounter is memory-only and independently starts at 0 in EVERY createChainSessionStore() call, so pre-fix both processes' first-ever segment was segmentId=1, and a stable (operator-supplied, non-random) --session-id collided on the exact same default chain-id across the restart", () => {
+  const { signer, keyring } = signerAndKeyring("test-key-cross-restart");
+  const sessionId = "stable-operator-session-id"; // e.g. a fixed --session-id an operator reuses across restarts
+  const tenant = "acme";
+
+  // Two INDEPENDENT store instances — exactly what a restarted proxy process gets: `proxy.mjs`
+  // calls `createChainSessionStore()` exactly once per process lifetime, so a restart always
+  // constructs a brand-new store with its own segmentCounter starting at 0.
+  const storeProcessRun1 = createChainSessionStore();
+  const storeProcessRun2 = createChainSessionStore();
+
+  assert.notEqual(
+    storeProcessRun1.instanceToken,
+    storeProcessRun2.instanceToken,
+    "two separate store instances must never mint the same instanceToken",
+  );
+
+  function doCall(store, name) {
+    const prepared = prepareSessionReceipt({ name, args: {} }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
+    commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId);
+    return prepared.receipt;
+  }
+
+  const run1First = doCall(storeProcessRun1, "payment.refund"); // "pre-restart" process, its own segmentId=1
+  const run2First = doCall(storeProcessRun2, "payment.refund"); // "post-restart" process, ALSO its own segmentId=1
+
+  assert.notEqual(
+    run1First.scope.chain,
+    run2First.scope.chain,
+    "two distinct store instances (process lifetimes) sharing a stable sessionId must never mint the same default chain-id, even though each independently starts its own segment counter at 1",
+  );
+
+  // Each segment must still independently verify VALID on its own — the fix is about NOT
+  // colliding, not about breaking either segment's own internal validity.
+  const vRun1 = verifyChain([run1First], { keyring });
+  const vRun2 = verifyChain([run2First], { keyring });
+  assert.equal(vRun1.status, "VALID");
+  assert.equal(vRun2.status, "VALID");
+
+  storeProcessRun1.dispose();
+  storeProcessRun2.dispose();
+});
+
 test("prepareSessionReceipt/commitSessionReceipt: a session that is NEVER evicted stays on exactly one chain segment across many calls — verifyChain VALID (no regression from the segment-counter redesign)", () => {
   const store = createChainSessionStore();
   const { signer, keyring } = signerAndKeyring("test-key-no-evict-regression");

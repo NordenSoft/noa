@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { preCheck } from "./pre-check.mjs";
 
 /** 1 hour: a session that has issued no call in this long is considered abandoned. */
@@ -80,6 +81,53 @@ function defaultOnEvict(sessionId, reason) {
  * independent, fully-verifiable segment) — exactly the same discipline a multi-session log already
  * requires today, since two DIFFERENT sessionIds already get two different `scope.chain` ids.
  *
+ * CROSS-PROCESS-RESTART SEGMENT IDENTITY: `segmentCounter` above is memory-only, scoped to ONE
+ * `createChainSessionStore()` call — a fresh process (e.g. `packages/mcp-proxy`'s CLI restarted
+ * against a persisted `--key-file`, which keeps the SAME signing `kid` and can be launched with the
+ * SAME operator-supplied `--session-id` across the restart) constructs a BRAND-NEW store whose
+ * `segmentCounter` independently starts at 0 again. Without anything further, that fresh process's
+ * very first segment for that stable sessionId would ALSO be `segmentId = 1` — identical to the
+ * pre-restart process's first segment — so the default chain-id
+ * (`${tenant}:${sessionId}#seg${segmentId}`) would collide across the restart even though neither
+ * segment is actually tampered with (the exact same class of fabricated-TAMPERED-via-colliding-
+ * chain-id bug the segment-counter redesign above fixed for WITHIN one process). The fix: every
+ * `createChainSessionStore()` call additionally mints a store-instance-scoped `instanceToken`
+ * (`randomUUID()`, once, at construction) and folds it into the default chain-id BEFORE the
+ * `segmentId` suffix — `${tenant}:${sessionId}#${instanceToken}-seg${segmentId}` (see
+ * `prepareSessionReceipt` below) — so two DIFFERENT store instances (i.e. two DIFFERENT process
+ * lifetimes) can never mint the same default chain-id for the same sessionId, no matter how their
+ * independent `segmentCounter`s happen to line up. `instanceToken` is placed BEFORE `seg${segmentId}`
+ * (not after) so `segmentId` stays the chain-id's trailing digit run — the same sessionId-mimicry
+ * collision-resistance property already proven above (uniqueness comes from the counter/token pair,
+ * never from parsing the chain-id string) is unaffected by ordering; this convention is simply about
+ * keeping a human/operator reading a chain-id able to spot "segment N" at a glance. Exposed via the
+ * returned store's `instanceToken` getter, mainly for diagnostics/tests.
+ *
+ * Honest limit: this closes the COLLISION, not persistence. A restarted process's first segment for
+ * a stable sessionId is a legitimately NEW, distinct chain segment — it does NOT continue the
+ * pre-restart segment's seq. True cross-restart continuity of ONE logical chain would require
+ * persisting `segmentCounter`/`{prev,seq}` state itself (not just the signing key), which this store
+ * does not do — see `packages/mcp-proxy/README.md`'s "Honest limits" section.
+ *
+ * COMMIT-TIME SEGMENT CHECK: `advance()` (below) is the write half of the prepare→persist→commit
+ * split (see `prepareSessionReceipt`/`commitSessionReceipt`). Because persistence can be genuinely
+ * asynchronous, an unrelated event — a clean `end()` (e.g. `server.onclose` firing for an abrupt
+ * host-side disconnect), an idle-TTL sweep, or a cap eviction — can race in during the gap between
+ * "prepare" and "commit" for the SAME sessionId. If `advance()` unconditionally resurrected a
+ * missing session (as it used to), it would auto-vivify a BRAND-NEW segment and graft the
+ * already-stale-by-then receipt onto it as that fresh segment's `prev` — corrupting the NEW
+ * segment's seq (it would start at 1, with a `prevHash` pointing at a receipt from a DIFFERENT
+ * `scope.chain`, so the very next `verifyChain()` on that new segment's own receipts reports a
+ * fabricated "gap"/TAMPERED for a segment that was never actually tampered with). The fix: `advance()`
+ * accepts the `segmentId` the receipt was PREPARED against (see `prepareSessionReceipt`) and is a
+ * NO-OP — it does not resurrect, does not graft, does not advance `seq` — unless the session's LIVE
+ * state still exists AND is still that SAME segment. A caller (`packages/mcp-proxy`'s
+ * `create-proxy-server.mjs`) that additionally routes any `store.end()` call through the same
+ * per-session serialization queue used for prepare→persist→commit closes the race window entirely
+ * (the end() can then only run before an in-flight call starts, or after it has fully settled) —
+ * `advance()`'s segment check is the second, independent layer that also protects a caller which
+ * does NOT (or cannot) queue its `end()` calls that way.
+ *
  * @param {{ idleTtlMs?: number, maxSessions?: number, sweepIntervalMs?: number,
  *   now?: () => number, onEvict?: (sessionId: string, reason: "idle-ttl-expired" | "cap-exceeded") => void }} [options]
  */
@@ -100,6 +148,14 @@ export function createChainSessionStore({
    *  from (see `prepareSessionReceipt` below) — never a sessionId-keyed epoch, never sessionId text
    *  parsing. Starts at 0 so the first-ever segment is `segmentId = 1`. */
   let segmentCounter = 0;
+
+  /** This store instance's unique identity, minted ONCE via `randomUUID()` at construction — see
+   *  the module docstring's "CROSS-PROCESS-RESTART SEGMENT IDENTITY" section. Folded into every
+   *  default chain-id this store instance hands out (see `prepareSessionReceipt`), so two SEPARATE
+   *  store instances (two process lifetimes) can never collide on the same default chain-id even
+   *  for the exact same sessionId + segmentId=1 (each instance's own `segmentCounter` independently
+   *  starts at 0). */
+  const instanceToken = randomUUID();
 
   /** Drops the single session with the smallest `lastAccessedAt` (a no-op if empty — a
    *  misconfigured `maxSessions <= 0` with zero sessions currently held simply finds nothing to
@@ -155,19 +211,51 @@ export function createChainSessionStore({
   if (typeof sweepTimer.unref === "function") sweepTimer.unref();
 
   return {
-    /** Current `{ prev, seq, segmentId }` for a session, without mutating (creates the slot on
-     *  first read). `segmentId` is this store instance's globally-unique, never-reused counter
-     *  value assigned when this state object was minted — see the module docstring's "SEGMENT
-     *  IDENTITY" section; `prepareSessionReceipt()` below folds it into the default chain id. */
+    /** Current `{ prev, seq, segmentId, instanceToken }` for a session, without mutating (creates
+     *  the slot on first read). `segmentId` is this store instance's globally-unique, never-reused
+     *  counter value assigned when this state object was minted — see the module docstring's
+     *  "SEGMENT IDENTITY" section; `instanceToken` is this STORE INSTANCE's own identity (constant
+     *  across every session it ever holds — see "CROSS-PROCESS-RESTART SEGMENT IDENTITY").
+     *  `prepareSessionReceipt()` below folds both into the default chain id. */
     peek(sessionId) {
       const state = stateFor(sessionId);
-      return { prev: state.prev, seq: state.seq, segmentId: state.segmentId };
+      return { prev: state.prev, seq: state.seq, segmentId: state.segmentId, instanceToken };
     },
-    /** Records the just-built receipt for a session, advancing its seq. */
-    advance(sessionId, receipt) {
-      const state = stateFor(sessionId);
+    /** Records `receipt` as the session's new chain head, advancing its seq.
+     *
+     *  When `expectedSegmentId` IS given (the `prepareSessionReceipt()`/`commitSessionReceipt()`
+     *  path always gives it — see the module docstring's "COMMIT-TIME SEGMENT CHECK" section):
+     *  this is a NO-OP unless the session's LIVE state (a) still exists AND (b) is still that SAME
+     *  segment. If the session was torn down (a clean `end()`, an idle-TTL sweep, or a cap
+     *  eviction) between this receipt's `prepareSessionReceipt()` and this call, or has already
+     *  moved on to a NEWER segment, this drops the commit — it does NOT resurrect a fresh segment
+     *  and graft this now-stale receipt onto it (that graft is exactly what used to corrupt the
+     *  NEXT segment's seq).
+     *
+     *  When `expectedSegmentId` is OMITTED (backward-compatible: a direct/low-level caller with no
+     *  persist-gated commit step at all, or with no async gap between create and record — this
+     *  package's own `store.advance(sessionId, receipt)` unit tests do this to seed a session's
+     *  state in one call): falls back to the ORIGINAL behavior, `stateFor(sessionId)` — creates
+     *  the session's slot if it doesn't exist yet. A caller that opts into this simpler form is
+     *  opting OUT of the commit-time staleness check; the real production path
+     *  (`packages/mcp-proxy`'s `create-proxy-server.mjs`) always supplies `expectedSegmentId`.
+     *
+     *  Returns `true` if the commit actually advanced the store, `false` if it was dropped as
+     *  stale (a caller that wants to observe/log a dropped commit can check this). */
+    advance(sessionId, receipt, expectedSegmentId) {
+      if (expectedSegmentId === undefined) {
+        const state = stateFor(sessionId);
+        state.prev = receipt;
+        state.seq += 1;
+        return true;
+      }
+      const state = sessions.get(sessionId);
+      if (!state) return false; // torn down between prepare and commit — drop, never resurrect
+      if (state.segmentId !== expectedSegmentId) return false; // stale segment
+      state.lastAccessedAt = now();
       state.prev = receipt;
       state.seq += 1;
+      return true;
     },
     /** Drops a session's chain state on a CLEAN disconnect (e.g. `server.onclose`). A later
      *  `stateFor()` call on the same sessionId (a genuine reconnect) mints a brand-new state with
@@ -186,6 +274,11 @@ export function createChainSessionStore({
     /** Number of sessions currently tracked (diagnostics/tests only). */
     get size() {
       return sessions.size;
+    },
+    /** This store instance's unique identity token — see the module docstring's
+     *  "CROSS-PROCESS-RESTART SEGMENT IDENTITY" section. Exposed mainly for diagnostics/tests. */
+    get instanceToken() {
+      return instanceToken;
     },
   };
 }
@@ -217,22 +310,39 @@ export function prepareSessionReceipt(toolCall, { sessionId, store, signer, poli
   if (!sessionId) throw new Error("prepareSessionReceipt: `sessionId` is required");
   if (!store) throw new Error("prepareSessionReceipt: `store` is required");
 
-  const { prev, seq, segmentId } = store.peek(sessionId);
-  // Default chain-id always folds in `segmentId` (the store's globally-unique, never-reused
-  // segment counter — see createChainSessionStore's "SEGMENT IDENTITY" docstring), not just past
-  // some threshold: uniqueness comes from the counter, never from parsing/matching `sessionId`
-  // text, so no sessionId content can ever be crafted to collide with it.
-  const defaultChain = `${tenant ?? "default-tenant"}:${sessionId}#seg${segmentId}`;
-  return preCheck(toolCall, { signer, policy, prev, seq, tenant, chain: chain ?? defaultChain });
+  const { prev, seq, segmentId, instanceToken } = store.peek(sessionId);
+  // Default chain-id folds in BOTH `instanceToken` (this STORE INSTANCE's own identity — see
+  // createChainSessionStore's "CROSS-PROCESS-RESTART SEGMENT IDENTITY" docstring, closes the
+  // cross-restart collision) and `segmentId` (this store instance's globally-unique, never-reused
+  // segment counter — see "SEGMENT IDENTITY"), never just past some threshold: uniqueness comes
+  // from the token+counter pair, never from parsing/matching `sessionId` text, so no sessionId
+  // content can ever be crafted to collide with it. `instanceToken` is placed BEFORE `seg${segmentId}`
+  // so `segmentId` stays the chain-id's trailing digit run (see the docstring for why that ordering
+  // matters).
+  const defaultChain = `${tenant ?? "default-tenant"}:${sessionId}#${instanceToken}-seg${segmentId}`;
+  const result = preCheck(toolCall, { signer, policy, prev, seq, tenant, chain: chain ?? defaultChain });
+  // `segmentId` travels alongside the prepared result so `commitSessionReceipt` can verify — AT
+  // COMMIT TIME — that the session's live state is still this SAME segment (see
+  // createChainSessionStore's "COMMIT-TIME SEGMENT CHECK" docstring for the onclose/eviction race
+  // this closes).
+  return { ...result, segmentId };
 }
 
 /**
  * Phase 2 of 2 — WRITE. Records `receipt` as the session's new chain head, advancing its seq.
  * Call this ONLY once `receipt` has been durably handled by the caller (see
  * `prepareSessionReceipt()` above) — never unconditionally right after preparing it.
+ *
+ * `segmentId` should be the SAME value `prepareSessionReceipt()` returned alongside this `receipt`
+ * (its own return value's `.segmentId`) — passing it lets the store detect and drop a STALE commit
+ * (the session was torn down or moved to a newer segment between prepare and commit) instead of
+ * silently corrupting the next segment; see createChainSessionStore's "COMMIT-TIME SEGMENT CHECK"
+ * docstring. Omitting it is backward-compatible (a caller with no async gap between prepare and
+ * commit never hits that race) but loses this check. Returns `store.advance()`'s boolean (`true` =
+ * committed, `false` = dropped as stale) for a caller that wants to observe it.
  */
-export function commitSessionReceipt(store, sessionId, receipt) {
-  store.advance(sessionId, receipt);
+export function commitSessionReceipt(store, sessionId, receipt, segmentId) {
+  return store.advance(sessionId, receipt, segmentId);
 }
 
 /**
@@ -256,6 +366,6 @@ export function commitSessionReceipt(store, sessionId, receipt) {
  */
 export function preCheckSession(toolCall, options) {
   const result = prepareSessionReceipt(toolCall, options);
-  commitSessionReceipt(options.store, options.sessionId, result.receipt);
+  commitSessionReceipt(options.store, options.sessionId, result.receipt, result.segmentId);
   return result;
 }
