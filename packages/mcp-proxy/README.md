@@ -88,6 +88,18 @@ npm test   # node test/smoke.mjs — real child processes, real MCP Client/Serve
   a restart begins a new signing identity unless `--key-file` (or `NOA_MCP_PROXY_KEY_FILE`) is
   explicitly given. Key ROTATION (retiring an old `kid` while keeping old receipts verifiable
   under a multi-key keyring) is not implemented — a real rotation policy is a deployment concern.
+- **`--key-file` gives restart-continuity of the SIGNING IDENTITY, not of one CHAIN.** Reusing the
+  same `--key-file` across a restart keeps every receipt (before AND after the restart) verifiable
+  under the SAME `kid`/external keyring — but a restart still begins a NEW, distinct receipt-chain
+  segment (a different `scope.chain`), even when `--session-id` is also held stable across the
+  restart: `noa-mcp-adapter-core`'s `createChainSessionStore` mints a fresh per-process-lifetime
+  token specifically so two separate process lifetimes can never collide on the same default
+  chain-id. It is NOT one continuous chain resuming where the pre-restart process left off — group
+  receipts by `scope.chain` before calling `verifyChain()` on a merged log (each group is its own
+  independently-verifiable segment), exactly as `noa-mcp-adapter-core`'s README documents. True
+  cross-restart continuity of a SINGLE logical chain would additionally require persisting the
+  session's `{prev,seq}` position itself (not just the signing key) — this package does not do
+  that; it is a roadmap item (round-2), not current behavior.
 - **No downstream `inputSchema` validation.** The proxy forwards `request.params.arguments`
   through `preCheck`'s policy engine (which only ever sees the scalar paths it projects — see
   `noa-mcp-adapter-core`'s README) and, on ALLOW, straight to the downstream tool. It does NOT

@@ -417,6 +417,79 @@ async function main() {
   await sessM.close();
 
   // ---------------------------------------------------------------------------------------
+  // SCENARIO P: `server.onclose` firing WHILE a call is mid-flight — receipt already prepared and
+  // handed to `onReceipt` (persisting), but not yet committed — must never let the NEXT call for
+  // this session inherit a corrupted chain position. Pre-fix, `onclose` ran `store.end(sessionId)`
+  // IMMEDIATELY, synchronously, completely outside the per-session queue: if it landed in this
+  // exact window, the delayed call's LATER `commitSessionReceipt` would find no live session state
+  // and silently auto-vivify a brand-new segment, grafting the already-stale-by-then receipt onto
+  // it as that fresh segment's `prev` — corrupting the very NEXT segment's seq (a fabricated
+  // verifyChain TAMPERED for a session that was never actually tampered with). Post-fix, onclose's
+  // `store.end` is routed through the SAME per-session exclusive queue as the prepare→persist→
+  // commit critical section, so it can only run before an in-flight call starts or after it has
+  // fully settled — never in the middle.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario P — onclose mid-flight commit race must not corrupt the NEXT segment's seq (CRITICAL-1)");
+  const storeP = createChainSessionStore();
+  let releasePersist;
+  const persistGate = new Promise((resolve) => {
+    releasePersist = resolve;
+  });
+  const sessP = await makeSession({
+    sessionId: "session-P",
+    store: storeP,
+    // Call 1's persist blocks until the test explicitly releases it — guaranteeing call 1 is still
+    // sitting between "persist" and "commit" (inside runExclusiveForSession's queued task) at the
+    // moment we fire onclose below.
+    onReceipt: () => persistGate,
+  });
+
+  // Fire call 1 but do not await it yet.
+  const call1PromiseP = sessP.client.callTool({ name: "echo", arguments: { text: "in-flight" } });
+  // Give call 1's handler a tick to actually start (prepareSessionReceipt already ran, onReceipt
+  // already invoked and is now awaiting persistGate) before firing onclose — a real abrupt
+  // disconnect racing against an in-flight, still-persisting call.
+  await new Promise((r) => setTimeout(r, 20));
+
+  // Simulate the MCP SDK firing `server.onclose` for an abrupt host-side disconnect WHILE call 1 is
+  // still mid-flight. Invoked directly (rather than actually tearing down the transport) so the
+  // rest of this scenario can still observe call 1 completing normally afterward.
+  sessP.server.onclose();
+  // Now let call 1's persist actually complete.
+  releasePersist();
+  const call1ResultP = await call1PromiseP;
+  ok("(p) call 1 (the in-flight call racing onclose) still completes successfully", call1ResultP.content?.[0]?.text === "in-flight");
+
+  // Call 2, same session, fired only AFTER call 1 (and onclose's queued store.end) have both fully
+  // settled — this is what verifies the fix: it must open a genuinely FRESH segment (prev=null,
+  // seq=0), never grafted onto call 1's now-stale receipt as that stale segment's continuation.
+  const call2ResultP = await sessP.client.callTool({ name: "echo", arguments: { text: "post-onclose" } });
+  ok("(p) call 2 (after onclose) still completes successfully", call2ResultP.content?.[0]?.text === "post-onclose");
+
+  ok("(p) exactly 2 receipts recorded (call 1 + call 2)", sessP.receipts.length === 2);
+  const call1ReceiptP = sessP.receipts[0];
+  const call2ReceiptP = sessP.receipts[1];
+
+  ok(
+    "(p) call 2 starts a brand-new chain segment at seq 0 (NOT grafted onto call 1's stale receipt as seq 1)",
+    call2ReceiptP.chain.seq === 0 && call2ReceiptP.chain.prevHash === null,
+  );
+  ok(
+    "(p) call 2's segment is a DISTINCT scope.chain from call 1's (no cross-segment graft)",
+    call2ReceiptP.scope.chain !== call1ReceiptP.scope.chain,
+  );
+
+  const vCall1SegmentP = verifyChain([call1ReceiptP], { keyring: sessP.keyring });
+  const vCall2SegmentP = verifyChain([call2ReceiptP], { keyring: sessP.keyring });
+  ok(`(p) call 1's own segment independently verifies VALID — status=${vCall1SegmentP.status}`, vCall1SegmentP.status === "VALID");
+  ok(
+    `(p) call 2's segment independently verifies VALID (no fabricated TAMPERED seq-gap) — status=${vCall2SegmentP.status}`,
+    vCall2SegmentP.status === "VALID",
+  );
+
+  await sessP.close();
+
+  // ---------------------------------------------------------------------------------------
   // BONUS F: the LITERAL host-config from the report, spawned as a real OS process on BOTH
   // hops (host → proxy.mjs → demo-downstream.mjs), proving the zero-code-change integration
   // claim end-to-end, not just at the in-process factory level used above.

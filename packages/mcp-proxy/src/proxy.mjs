@@ -28,10 +28,22 @@
  *                              it holds a private key). Without this flag, the prior behavior is
  *                              unchanged: a fresh Ed25519 keypair every process start (kid tied to
  *                              this run's session id). WITH it, restarting the proxy against the
- *                              SAME --key-file reuses the exact same kid, so a receipt chain begun
- *                              before a restart and continued after it verifies under one signing
- *                              identity. Alternative: the NOA_MCP_PROXY_KEY_FILE env var (the flag
- *                              wins if both are given).
+ *                              SAME --key-file reuses the exact same kid — receipts emitted before
+ *                              AND after a restart verify under that ONE signing identity/external
+ *                              keyring. Honest limit: a restart still begins a NEW, distinct
+ *                              receipt-chain SEGMENT (`scope.chain` differs — see
+ *                              noa-mcp-adapter-core's createChainSessionStore, which mints a fresh
+ *                              per-process-lifetime token specifically so a restarted process can
+ *                              never collide with its pre-restart chain-id even when reusing the
+ *                              same --session-id); it does NOT resume one continuous chain spanning
+ *                              the restart. Each segment verifies independently on its own — group
+ *                              receipts by `scope.chain` before calling `verifyChain()`, exactly as
+ *                              noa-mcp-adapter-core's README documents. True cross-restart
+ *                              continuity of ONE logical chain would additionally require
+ *                              persisting the session's `{prev,seq}` state itself, which this
+ *                              package does not do (see its "Honest limits" section). Alternative:
+ *                              the NOA_MCP_PROXY_KEY_FILE env var (the flag wins if both are
+ *                              given).
  *   --session-idle-ttl-ms <n>  override the session store's idle-TTL sweep (default: 1 hour;
  *                              see noa-mcp-adapter-core's createChainSessionStore).
  *   --max-sessions <n>         override the session store's max-sessions cap (default: 10,000).

@@ -31,10 +31,23 @@
  *
  * Session lifecycle: `server.onclose` (fired by the MCP SDK when the host-facing transport
  * closes, for any reason — see `node_modules/@modelcontextprotocol/sdk/.../shared/protocol.d.ts`)
- * drops this session's chain state from `store` and its entry from `sessionCallQueues`, so a
- * long-running proxy process does not accumulate state for sessions whose host has disconnected.
- * `store` itself ALSO bounds unattended growth independently (idle-TTL sweep + max-sessions cap —
- * see `noa-mcp-adapter-core`'s `createChainSessionStore`) for hosts that never cleanly close.
+ * drops this session's chain state from `store`, so a long-running proxy process does not
+ * accumulate state for sessions whose host has disconnected. Its `store.end(sessionId)` call is
+ * routed through the SAME per-session exclusive queue (`runExclusiveForSession`, below) as
+ * `tools/call`'s own prepare→persist→commit critical section — NOT run immediately/synchronously
+ * — so an abrupt disconnect firing `onclose` WHILE a call is mid-flight (receipt already prepared
+ * and handed to `onReceipt`, not yet committed) can only land BEFORE that call's task starts or
+ * AFTER it has fully settled, never in the middle. (Before this fix, `onclose` ran `store.end()`
+ * immediately, outside the queue — landing it in that exact window let the in-flight call's LATER
+ * commit silently auto-vivify a brand-new segment and graft its now-stale receipt onto it as that
+ * fresh segment's `prev`, corrupting the NEXT segment's seq; see `noa-mcp-adapter-core`'s
+ * `createChainSessionStore` — the "COMMIT-TIME SEGMENT CHECK" docstring section — for the second,
+ * independent layer of this same fix.) `runExclusiveForSession`'s own self-draining logic already
+ * cleans up `sessionCallQueues`' entry for this session once the queued end-task settles (as long
+ * as no newer call queued behind it since — see its docstring below), so no separate cleanup is
+ * needed here. `store` itself ALSO bounds unattended growth independently (idle-TTL sweep +
+ * max-sessions cap — see `noa-mcp-adapter-core`'s `createChainSessionStore`) for hosts that never
+ * cleanly close.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -89,18 +102,21 @@ export async function createProxyServer({
   // written generically in case a future caller multiplexes more than one session through a
   // shared queue helper.
   //
-  // SELF-DRAINING (abrupt-disconnect-leak guard): `server.onclose` below already deletes THIS
-  // session's entry on a CLEAN disconnect, but an abrupt one (the host process is killed, the pipe
-  // dies without a clean MCP close) never fires `onclose` at all — without further care, the map
-  // would keep a permanently-settled, no-longer-useful promise reference around forever for that
-  // session. `runExclusiveForSession` below instead drains its OWN entry the moment its queued task
-  // settles AND no NEWER call has queued behind it since (the identity check — `=== tail` — makes
-  // this race-safe: if a second call queued in the meantime, the map already holds a DIFFERENT tail,
-  // so this stale settle-callback correctly does nothing). Steady-state (no in-flight call for a
-  // session) therefore holds ZERO entries, regardless of whether `onclose` ever fires — bounding
-  // this map's size, at any instant, to "the number of DISTINCT sessionIds with an in-flight call
-  // RIGHT NOW", which for this factory's current one-sessionId-per-instance usage is hard-bounded
-  // to 1 by construction (a future multi-session caller inherits the same per-session drain).
+  // SELF-DRAINING (abrupt-disconnect-leak guard): on a CLEAN disconnect, `server.onclose` below
+  // queues its `store.end()` call THROUGH `runExclusiveForSession` (not a direct map delete — see
+  // the "Session lifecycle" module-docstring paragraph above for why), so it relies on the exact
+  // same self-draining path described here. An ABRUPT disconnect (the host process is killed, the
+  // pipe dies without a clean MCP close) never fires `onclose` at all — without further care, the
+  // map would keep a permanently-settled, no-longer-useful promise reference around forever for
+  // that session. Either way, `runExclusiveForSession` below drains its OWN entry the moment its
+  // queued task settles AND no NEWER call has queued behind it since (the identity check —
+  // `=== tail` — makes this race-safe: if a second call queued in the meantime, the map already
+  // holds a DIFFERENT tail, so this stale settle-callback correctly does nothing). Steady-state (no
+  // in-flight call for a session) therefore holds ZERO entries, regardless of whether `onclose`
+  // ever fires — bounding this map's size, at any instant, to "the number of DISTINCT sessionIds
+  // with an in-flight call RIGHT NOW", which for this factory's current one-sessionId-per-instance
+  // usage is hard-bounded to 1 by construction (a future multi-session caller inherits the same
+  // per-session drain).
   const sessionCallQueues = new Map();
   function runExclusiveForSession(id, task) {
     const prior = sessionCallQueues.get(id) ?? Promise.resolve();
@@ -119,8 +135,14 @@ export async function createProxyServer({
   }
 
   server.onclose = () => {
-    store.end(sessionId);
-    sessionCallQueues.delete(sessionId);
+    // Queued (never run immediately) — see the module docstring's "Session lifecycle" paragraph
+    // above for the mid-flight-commit race this closes. `runExclusiveForSession`'s own
+    // self-draining logic deletes THIS session's `sessionCallQueues` entry once this queued
+    // end-task settles (as long as no newer call queued behind it since); `.catch(() => {})` is
+    // defense-in-depth only — `store.end()` is a plain `Map.delete`, it cannot actually reject.
+    runExclusiveForSession(sessionId, () => {
+      store.end(sessionId);
+    }).catch(() => {});
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
@@ -172,7 +194,11 @@ export async function createProxyServer({
         // this exact seq (see prepareSessionReceipt/commitSessionReceipt in noa-mcp-adapter-core).
         throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: receipt persist failed, call rejected before forwarding (${err.message})`);
       }
-      commitSessionReceipt(store, sessionId, prepared.receipt);
+      // `prepared.segmentId` (the segment this receipt was PREPARED against) lets the store detect
+      // a stale commit — the session was torn down or moved to a newer segment while this call's
+      // persist (above) was in flight — and drop it instead of corrupting the next segment's seq;
+      // see noa-mcp-adapter-core's createChainSessionStore "COMMIT-TIME SEGMENT CHECK" docstring.
+      commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId);
       return prepared;
     });
 
