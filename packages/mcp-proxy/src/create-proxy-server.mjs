@@ -12,13 +12,29 @@
  *     unexpected exception) never forwards — the downstream tool handler is never invoked — and
  *     the host receives an MCP error carrying the receipt id + the rule that fired.
  *
- * compute → persist → commit ordering: the session's chain position (`store`) is only advanced
- * AFTER `onReceipt` has been called and (if it returned a promise) has resolved. If `onReceipt`
- * throws/rejects — e.g. a receipt-log append hitting ENOSPC — the call is rejected closed and the
- * session's seq is left untouched, so the very next call for this session re-issues the exact
- * same seq: a persist failure can never leave a gap in the middle of the persisted chain. See
- * `noa-mcp-adapter-core`'s `prepareSessionReceipt`/`commitSessionReceipt` for the two-phase API
- * this relies on.
+ * compute → persist → commit ordering, with a per-session serialization invariant: the session's
+ * chain position (`store`) is only advanced AFTER `onReceipt` has been called and (if it returned
+ * a promise) has resolved. `onReceipt` MAY be asynchronous/non-blocking (e.g. a non-blocking
+ * `fs.promises.appendFile`, see proxy.mjs's `--receipt-log` writer) — but two concurrent
+ * `tools/call` invocations for the SAME session must never both "prepare" a receipt off the
+ * store's un-advanced `{prev,seq}` before the first call's commit has actually run (that would
+ * issue a duplicate/gap seq and corrupt the chain). `sessionCallQueues` below chains every call
+ * for a given `sessionId` onto that session's own promise tail — a session-scoped mutex around
+ * exactly the prepare→persist→commit critical section — so same-session calls serialize their
+ * commit ordering while calls for DIFFERENT sessions still run fully concurrently, and the actual
+ * downstream forward (the slow part) happens OUTSIDE the lock, after the commit/deny decision is
+ * already settled. If `onReceipt` throws/rejects — e.g. a receipt-log append hitting ENOSPC — the
+ * call is rejected closed and the session's seq is left untouched, so the very next call for this
+ * session re-issues the exact same seq: a persist failure can never leave a gap in the middle of
+ * the persisted chain. See `noa-mcp-adapter-core`'s `prepareSessionReceipt`/`commitSessionReceipt`
+ * for the two-phase API this relies on.
+ *
+ * Session lifecycle: `server.onclose` (fired by the MCP SDK when the host-facing transport
+ * closes, for any reason — see `node_modules/@modelcontextprotocol/sdk/.../shared/protocol.d.ts`)
+ * drops this session's chain state from `store` and its entry from `sessionCallQueues`, so a
+ * long-running proxy process does not accumulate state for sessions whose host has disconnected.
+ * `store` itself ALSO bounds unattended growth independently (idle-TTL sweep + max-sessions cap —
+ * see `noa-mcp-adapter-core`'s `createChainSessionStore`) for hosts that never cleanly close.
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
@@ -33,7 +49,8 @@ import { prepareSessionReceipt, commitSessionReceipt } from "noa-mcp-adapter-cor
  *   policy: object,
  *   store: ReturnType<typeof import("noa-mcp-adapter-core").createChainSessionStore>,
  *   tenant?: string,
- *   onReceipt?: (sessionId: string, receipt: object) => void,
+ *   agentId?: string,
+ *   onReceipt?: (sessionId: string, receipt: object) => (void | Promise<void>),
  *   serverInfo?: { name: string, version: string },
  *   downstreamInfo?: { name: string, version: string },
  * }} config
@@ -46,6 +63,7 @@ export async function createProxyServer({
   policy,
   store,
   tenant = "default-tenant",
+  agentId,
   onReceipt,
   serverInfo = { name: "noa-mcp-proxy", version: "0.1.0" },
   downstreamInfo = { name: "noa-mcp-proxy(downstream-client)", version: "0.1.0" },
@@ -64,6 +82,30 @@ export async function createProxyServer({
 
   const server = new Server(serverInfo, { capabilities: { tools: {} } });
 
+  // Per-session serialization for the prepare→persist→commit critical section (see the
+  // module docstring above). Keyed by sessionId so unrelated sessions never head-of-line-block
+  // each other; this map holds at most one live promise chain PER SESSION THIS FUNCTION SERVES —
+  // in practice exactly one, since one createProxyServer() instance serves one sessionId — but is
+  // written generically in case a future caller multiplexes more than one session through a
+  // shared queue helper.
+  const sessionCallQueues = new Map();
+  function runExclusiveForSession(id, task) {
+    const prior = sessionCallQueues.get(id) ?? Promise.resolve();
+    // `.then(task, task)` — run `task` once `prior` SETTLES, whether it resolved or rejected, so
+    // one call's persist failure never stalls the next call queued behind it.
+    const next = prior.then(task, task);
+    // The stored tail is a SEPARATE, always-resolving promise, decoupled from `next` (the one
+    // returned to THIS call's own caller) — so a rejection here never poisons the chain for the
+    // NEXT queued call, while `next` itself still faithfully rejects for the awaiting caller.
+    sessionCallQueues.set(id, next.then(() => undefined, () => undefined));
+    return next;
+  }
+
+  server.onclose = () => {
+    store.end(sessionId);
+    sessionCallQueues.delete(sessionId);
+  };
+
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
     // Dynamic reflection: no static table lives in this proxy. Whatever the downstream currently
     // exposes is exactly what tools/list returns, every single call.
@@ -75,40 +117,47 @@ export async function createProxyServer({
   });
 
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const toolCall = { name: request.params.name, args: request.params.arguments, agentId: sessionId };
+    // `agentId` is STATIC, proxy-config-supplied (falling back to sessionId when the caller
+    // configures none — the prior default) — NEVER read from `request.params.arguments`. A tool
+    // call whose arguments happen to contain a key literally named "agentId" has zero effect on
+    // receipt attribution; see noa-mcp-adapter-core's preCheck() for the same invariant on the
+    // decision-engine side.
+    const toolCall = { name: request.params.name, args: request.params.arguments, agentId: agentId ?? sessionId };
 
-    let decision, receipt;
-    try {
-      // Prepare only — does NOT touch `store` yet, so a persist failure below can leave the
-      // session's chain position exactly where it was.
-      ({ decision, receipt } = prepareSessionReceipt(toolCall, { sessionId, store, signer, policy, tenant }));
-    } catch (err) {
-      // Defense in depth: preCheck/evaluate are documented to never throw, but a component sitting
-      // at the credential boundary must fail-closed on ANY unexpected exception, not only the ones
-      // the policy engine itself anticipated.
-      throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: pre-check failed closed (${err.message})`);
-    }
+    // Prepare→persist→commit runs inside this session's exclusive queue slot (runExclusiveForSession
+    // above), so a persist that takes real async time (e.g. a non-blocking fs.promises.appendFile)
+    // can never let a SECOND concurrent call for this SAME session observe the store's
+    // un-advanced {prev,seq} before the first call has actually committed.
+    const { decision, receipt } = await runExclusiveForSession(sessionId, async () => {
+      let prepared;
+      try {
+        // Prepare only — does NOT touch `store` yet, so a persist failure below can leave the
+        // session's chain position exactly where it was.
+        prepared = prepareSessionReceipt(toolCall, { sessionId, store, signer, policy, tenant });
+      } catch (err) {
+        // Defense in depth: preCheck/evaluate are documented to never throw, but a component
+        // sitting at the credential boundary must fail-closed on ANY unexpected exception, not
+        // only the ones the policy engine itself anticipated.
+        throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: pre-check failed closed (${err.message})`);
+      }
 
-    try {
-      // `onReceipt` is documented (and both shipped implementations — this package's CLI
-      // appendFileSync-based logger and the smoke test's in-memory logger — are) SYNCHRONOUS, so
-      // the common case never reaches the `await` below: no new yield point is introduced between
-      // preparing this receipt and committing it, which is exactly what keeps concurrent calls on
-      // the SAME session race-free (nothing else can observe this session's store between prepare
-      // and commit because nothing else runs until this synchronous stretch finishes). If a
-      // caller supplies an ASYNC onReceipt (returns a thenable), it IS awaited here so a rejection
-      // still gates the commit below — but that necessarily opens a real interleaving window for
-      // other concurrent calls on the same session while the persist is in flight; neither shipped
-      // onReceipt exercises that path today.
-      const persisted = onReceipt?.(sessionId, receipt);
-      if (persisted && typeof persisted.then === "function") await persisted;
-    } catch (err) {
-      // Fail-closed: a receipt that couldn't be durably recorded must not spend a chain seq slot —
-      // the session's position stays put, so the next call for this session re-issues this exact
-      // seq (see prepareSessionReceipt/commitSessionReceipt in noa-mcp-adapter-core).
-      throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: receipt persist failed, call rejected before forwarding (${err.message})`);
-    }
-    commitSessionReceipt(store, sessionId, receipt);
+      try {
+        // `onReceipt` may be SYNCHRONOUS or ASYNCHRONOUS (returns a thenable) — either way this
+        // call's own commit below only happens after it settles. The per-session queue this task
+        // runs inside of is what keeps a slower async persist from opening a same-session race
+        // window; without it, a second concurrent call for this session could prepare a receipt
+        // off the same un-advanced {prev,seq} while this call's persist is still in flight.
+        const persisted = onReceipt?.(sessionId, prepared.receipt);
+        if (persisted && typeof persisted.then === "function") await persisted;
+      } catch (err) {
+        // Fail-closed: a receipt that couldn't be durably recorded must not spend a chain seq
+        // slot — the session's position stays put, so the next call for this session re-issues
+        // this exact seq (see prepareSessionReceipt/commitSessionReceipt in noa-mcp-adapter-core).
+        throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: receipt persist failed, call rejected before forwarding (${err.message})`);
+      }
+      commitSessionReceipt(store, sessionId, prepared.receipt);
+      return prepared;
+    });
 
     if (decision !== "ALLOW") {
       // FORWARD-YOK: the downstream tool handler is never invoked for a DENY.
@@ -120,6 +169,9 @@ export async function createProxyServer({
     }
 
     // ALLOW → forward to the real downstream tool and return ITS real result untouched.
+    // Deliberately OUTSIDE the per-session lock above: the downstream round-trip touches no
+    // shared session-chain state, so letting it run unlocked keeps full concurrency for the
+    // (usually slower) actual tool execution — only the chain-critical section serializes.
     try {
       return await downstream.callTool(request.params);
     } catch (err) {
