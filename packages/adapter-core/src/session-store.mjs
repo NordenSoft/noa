@@ -11,6 +11,11 @@ const DEFAULT_MAX_SESSIONS = 10_000;
  *  never more than once every 5 minutes (a short TTL still gets a reasonably prompt sweep
  *  without the interval firing so often it becomes overhead in a long-lived process). */
 const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
+/** Matches preCheck()'s own default `tenant` — used whenever a caller omits `tenant` on any of
+ *  this store's tenant-aware entry points (`peek`/`advance`/`end`/`prepareSessionReceipt`), so an
+ *  existing single-tenant caller that never passes `tenant` at all sees IDENTICAL behavior to
+ *  before this store became tenant-aware (see the "MULTI-TENANT ISOLATION" docstring below). */
+const DEFAULT_TENANT = "default-tenant";
 
 function defaultOnEvict(sessionId, reason) {
   console.warn(`noa-mcp-adapter-core: session store evicted session "${sessionId}" (${reason})`);
@@ -128,6 +133,33 @@ function defaultOnEvict(sessionId, reason) {
  * `advance()`'s segment check is the second, independent layer that also protects a caller which
  * does NOT (or cannot) queue its `end()` calls that way.
  *
+ * MULTI-TENANT ISOLATION: a single proxy/gateway process can serve MORE THAN ONE tenant (the
+ * `tenant` option every tenant-aware entry point below accepts) — e.g. a multi-tenant SaaS gateway
+ * fronting many customers' MCP sessions through one process. Two DIFFERENT tenants can legitimately
+ * hand this store the exact SAME `sessionId` string (sessionIds are not guaranteed globally unique
+ * across tenants — a tenant has no reason to know, or coordinate on, another tenant's session-id
+ * scheme). Before this store became tenant-aware, its ONE session Map was keyed by `sessionId`
+ * alone — `tenant` only ever affected the CHAIN-ID a receipt records (`scope.chain`), never which
+ * `{prev, seq, segmentId}` bucket a call actually read/wrote. Two tenants sharing a sessionId would
+ * therefore silently SHARE one live state object: tenant B's very first call could inherit tenant
+ * A's `{prev, seq}` chain position outright (tenant B's receipt would even claim `seq > 0` on what
+ * tenant B believes is its first-ever call) — a genuine cross-tenant chain-state leak, not merely a
+ * cosmetic chain-id collision.
+ *
+ * Fixed by keying this store TWO LEVELS deep — `Map<tenant, Map<sessionId, state>>` — rather than
+ * concatenating `tenant` and `sessionId` into one string key. A single concatenated string key
+ * (e.g. `` `${tenant}:${sessionId}` ``) would reopen the EXACT class of collision this module's own
+ * "SEGMENT IDENTITY" section above already fixed once for chain-ids: a tenant `"a"` with sessionId
+ * `"b:c"` and a tenant `"a:b"` with sessionId `"c"` would both concatenate to the identical string
+ * `"a:b:c"`, with no way for the store to tell them apart after the fact. Nesting two nested Maps
+ * (rather than one string-keyed Map) makes that ambiguity structurally impossible — `tenant` and
+ * `sessionId` are compared as independent values, never joined into a shared string, so no content
+ * either one contains can ever be crafted to collide with the other. Every tenant-aware entry point
+ * (`peek`/`advance`/`end`) defaults its `tenant` parameter to `DEFAULT_TENANT` ("default-tenant" —
+ * the same literal `preCheck()` itself defaults to) when omitted, so a caller that never passes
+ * `tenant` at all — every pre-existing single-tenant caller — sees IDENTICAL behavior to before
+ * this store became tenant-aware.
+ *
  * @param {{ idleTtlMs?: number, maxSessions?: number, sweepIntervalMs?: number,
  *   now?: () => number, onEvict?: (sessionId: string, reason: "idle-ttl-expired" | "cap-exceeded") => void }} [options]
  */
@@ -138,8 +170,23 @@ export function createChainSessionStore({
   now = Date.now,
   onEvict = defaultOnEvict,
 } = {}) {
-  /** @type {Map<string, { prev: import("../../../dist/src/types.js").Receipt | null, seq: number, lastAccessedAt: number, segmentId: number }>} */
-  const sessions = new Map();
+  /** @type {Map<string, Map<string, { prev: import("../../../dist/src/types.js").Receipt | null, seq: number, lastAccessedAt: number, segmentId: number }>>}
+   *  tenant -> Map<sessionId, state> — see the "MULTI-TENANT ISOLATION" docstring above for why this
+   *  is nested rather than a single string-concatenated key. */
+  const tenantBuckets = new Map();
+  /** Total session count across ALL tenant buckets, maintained incrementally (not recomputed by
+   *  scanning every bucket) so `get size()` and the max-sessions cap check both stay O(1). */
+  let totalSessions = 0;
+
+  /** The `Map<sessionId, state>` for `tenant`, creating it on first use. */
+  function bucketFor(tenant) {
+    let bucket = tenantBuckets.get(tenant);
+    if (!bucket) {
+      bucket = new Map();
+      tenantBuckets.set(tenant, bucket);
+    }
+    return bucket;
+  }
 
   /** Store-scoped, monotonically increasing, NEVER reused/decremented counter — see the module
    *  docstring's "SEGMENT IDENTITY" section. Every brand-new state object `stateFor()` mints (first
@@ -157,50 +204,64 @@ export function createChainSessionStore({
    *  starts at 0). */
   const instanceToken = randomUUID();
 
-  /** Drops the single session with the smallest `lastAccessedAt` (a no-op if empty — a
-   *  misconfigured `maxSessions <= 0` with zero sessions currently held simply finds nothing to
-   *  evict rather than looping). */
+  /** Drops the single session with the smallest `lastAccessedAt`, GLOBALLY across every tenant
+   *  bucket (the cap bounds this store instance's total memory, not any one tenant's slice of it —
+   *  a no-op if empty, e.g. a misconfigured `maxSessions <= 0` with zero sessions currently held
+   *  simply finds nothing to evict rather than looping). */
   function evictOldestIdle(reason) {
+    let oldestTenant = null;
     let oldestId = null;
     let oldestAt = Infinity;
-    for (const [id, state] of sessions) {
-      if (state.lastAccessedAt < oldestAt) {
-        oldestAt = state.lastAccessedAt;
-        oldestId = id;
+    for (const [tenant, bucket] of tenantBuckets) {
+      for (const [id, state] of bucket) {
+        if (state.lastAccessedAt < oldestAt) {
+          oldestAt = state.lastAccessedAt;
+          oldestTenant = tenant;
+          oldestId = id;
+        }
       }
     }
     if (oldestId !== null) {
-      sessions.delete(oldestId);
+      const bucket = tenantBuckets.get(oldestTenant);
+      bucket.delete(oldestId);
+      totalSessions -= 1;
+      if (bucket.size === 0) tenantBuckets.delete(oldestTenant);
       onEvict(oldestId, reason);
     }
   }
 
-  function stateFor(sessionId) {
+  function stateFor(sessionId, tenant) {
     if (typeof sessionId !== "string" || sessionId.length === 0) {
       throw new Error("createChainSessionStore: sessionId must be a non-empty string");
     }
-    let state = sessions.get(sessionId);
+    const bucket = bucketFor(tenant);
+    let state = bucket.get(sessionId);
     if (state) {
       state.lastAccessedAt = now();
       return state;
     }
-    if (maxSessions > 0 && sessions.size >= maxSessions) evictOldestIdle("cap-exceeded");
+    if (maxSessions > 0 && totalSessions >= maxSessions) evictOldestIdle("cap-exceeded");
     segmentCounter += 1;
     state = { prev: null, seq: 0, lastAccessedAt: now(), segmentId: segmentCounter };
-    sessions.set(sessionId, state);
+    bucket.set(sessionId, state);
+    totalSessions += 1;
     return state;
   }
 
-  /** Drops every session whose `lastAccessedAt` is at or before `now() - idleTtlMs`. Exposed
-   *  directly (not just via the background timer) so a caller with an injected `now` can assert
-   *  TTL behavior deterministically without waiting real wall-clock time. */
+  /** Drops every session (in every tenant bucket) whose `lastAccessedAt` is at or before
+   *  `now() - idleTtlMs`. Exposed directly (not just via the background timer) so a caller with an
+   *  injected `now` can assert TTL behavior deterministically without waiting real wall-clock time. */
   function sweep() {
     const cutoff = now() - idleTtlMs;
-    for (const [id, state] of sessions) {
-      if (state.lastAccessedAt <= cutoff) {
-        sessions.delete(id);
-        onEvict(id, "idle-ttl-expired");
+    for (const [tenant, bucket] of tenantBuckets) {
+      for (const [id, state] of bucket) {
+        if (state.lastAccessedAt <= cutoff) {
+          bucket.delete(id);
+          totalSessions -= 1;
+          onEvict(id, "idle-ttl-expired");
+        }
       }
+      if (bucket.size === 0) tenantBuckets.delete(tenant);
     }
   }
 
@@ -212,13 +273,17 @@ export function createChainSessionStore({
 
   return {
     /** Current `{ prev, seq, segmentId, instanceToken }` for a session, without mutating (creates
-     *  the slot on first read). `segmentId` is this store instance's globally-unique, never-reused
-     *  counter value assigned when this state object was minted — see the module docstring's
-     *  "SEGMENT IDENTITY" section; `instanceToken` is this STORE INSTANCE's own identity (constant
-     *  across every session it ever holds — see "CROSS-PROCESS-RESTART SEGMENT IDENTITY").
-     *  `prepareSessionReceipt()` below folds both into the default chain id. */
-    peek(sessionId) {
-      const state = stateFor(sessionId);
+     *  the slot on first read). `tenant` (defaults to `DEFAULT_TENANT` when omitted, matching
+     *  `preCheck()`'s own default) selects an INDEPENDENT sessionId-keyed bucket — see the module
+     *  docstring's "MULTI-TENANT ISOLATION" section: two different tenants peeking the identical
+     *  `sessionId` always get two independent state slots, never a shared one. `segmentId` is this
+     *  store instance's globally-unique, never-reused counter value assigned when this state object
+     *  was minted — see the module docstring's "SEGMENT IDENTITY" section; `instanceToken` is this
+     *  STORE INSTANCE's own identity (constant across every session it ever holds — see
+     *  "CROSS-PROCESS-RESTART SEGMENT IDENTITY"). `prepareSessionReceipt()` below folds both into
+     *  the default chain id. */
+    peek(sessionId, tenant = DEFAULT_TENANT) {
+      const state = stateFor(sessionId, tenant);
       return { prev: state.prev, seq: state.seq, segmentId: state.segmentId, instanceToken };
     },
     /** Records `receipt` as the session's new chain head, advancing its seq.
@@ -240,16 +305,22 @@ export function createChainSessionStore({
      *  opting OUT of the commit-time staleness check; the real production path
      *  (`packages/mcp-proxy`'s `create-proxy-server.mjs`) always supplies `expectedSegmentId`.
      *
+     *  `tenant` (defaults to `DEFAULT_TENANT` when omitted) MUST match the tenant this receipt was
+     *  `peek()`/`prepareSessionReceipt()`-prepared against — see the module docstring's
+     *  "MULTI-TENANT ISOLATION" section — otherwise this looks up (or, on the no-`expectedSegmentId`
+     *  path, auto-creates) the WRONG tenant's bucket for this sessionId.
+     *
      *  Returns `true` if the commit actually advanced the store, `false` if it was dropped as
      *  stale (a caller that wants to observe/log a dropped commit can check this). */
-    advance(sessionId, receipt, expectedSegmentId) {
+    advance(sessionId, receipt, expectedSegmentId, tenant = DEFAULT_TENANT) {
       if (expectedSegmentId === undefined) {
-        const state = stateFor(sessionId);
+        const state = stateFor(sessionId, tenant);
         state.prev = receipt;
         state.seq += 1;
         return true;
       }
-      const state = sessions.get(sessionId);
+      const bucket = tenantBuckets.get(tenant);
+      const state = bucket ? bucket.get(sessionId) : undefined;
       if (!state) return false; // torn down between prepare and commit — drop, never resurrect
       if (state.segmentId !== expectedSegmentId) return false; // stale segment
       state.lastAccessedAt = now();
@@ -257,12 +328,19 @@ export function createChainSessionStore({
       state.seq += 1;
       return true;
     },
-    /** Drops a session's chain state on a CLEAN disconnect (e.g. `server.onclose`). A later
-     *  `stateFor()` call on the same sessionId (a genuine reconnect) mints a brand-new state with
-     *  a fresh `segmentId` — see the module docstring's "SEGMENT IDENTITY" section — so it can
-     *  never collide with this segment's chain-id, regardless of how soon the reconnect happens. */
-    end(sessionId) {
-      sessions.delete(sessionId);
+    /** Drops a session's chain state on a CLEAN disconnect (e.g. `server.onclose`). `tenant`
+     *  (defaults to `DEFAULT_TENANT` when omitted) selects which tenant's bucket to drop from — see
+     *  the module docstring's "MULTI-TENANT ISOLATION" section. A later `stateFor()` call on the
+     *  same `(tenant, sessionId)` pair (a genuine reconnect) mints a brand-new state with a fresh
+     *  `segmentId` — see the module docstring's "SEGMENT IDENTITY" section — so it can never
+     *  collide with this segment's chain-id, regardless of how soon the reconnect happens. */
+    end(sessionId, tenant = DEFAULT_TENANT) {
+      const bucket = tenantBuckets.get(tenant);
+      if (!bucket) return;
+      if (bucket.delete(sessionId)) {
+        totalSessions -= 1;
+        if (bucket.size === 0) tenantBuckets.delete(tenant);
+      }
     },
     /** Run an idle-TTL sweep right now (also runs automatically on `sweepIntervalMs`). */
     sweep,
@@ -271,9 +349,9 @@ export function createChainSessionStore({
     dispose() {
       clearInterval(sweepTimer);
     },
-    /** Number of sessions currently tracked (diagnostics/tests only). */
+    /** Number of sessions currently tracked across ALL tenants (diagnostics/tests only). */
     get size() {
-      return sessions.size;
+      return totalSessions;
     },
     /** This store instance's unique identity token — see the module docstring's
      *  "CROSS-PROCESS-RESTART SEGMENT IDENTITY" section. Exposed mainly for diagnostics/tests. */
@@ -310,7 +388,12 @@ export function prepareSessionReceipt(toolCall, { sessionId, store, signer, poli
   if (!sessionId) throw new Error("prepareSessionReceipt: `sessionId` is required");
   if (!store) throw new Error("prepareSessionReceipt: `store` is required");
 
-  const { prev, seq, segmentId, instanceToken } = store.peek(sessionId);
+  // Resolved ONCE, reused for BOTH the store lookup (`store.peek`, tenant-bucket-selecting — see
+  // createChainSessionStore's "MULTI-TENANT ISOLATION" docstring) and the default chain-id string
+  // below, so the two can never diverge (matches `preCheck()`'s own "default-tenant" default when
+  // `tenant` is omitted).
+  const effectiveTenant = tenant ?? DEFAULT_TENANT;
+  const { prev, seq, segmentId, instanceToken } = store.peek(sessionId, effectiveTenant);
   // Default chain-id folds in BOTH `instanceToken` (this STORE INSTANCE's own identity — see
   // createChainSessionStore's "CROSS-PROCESS-RESTART SEGMENT IDENTITY" docstring, closes the
   // cross-restart collision) and `segmentId` (this store instance's globally-unique, never-reused
@@ -319,13 +402,15 @@ export function prepareSessionReceipt(toolCall, { sessionId, store, signer, poli
   // content can ever be crafted to collide with it. `instanceToken` is placed BEFORE `seg${segmentId}`
   // so `segmentId` stays the chain-id's trailing digit run (see the docstring for why that ordering
   // matters).
-  const defaultChain = `${tenant ?? "default-tenant"}:${sessionId}#${instanceToken}-seg${segmentId}`;
+  const defaultChain = `${effectiveTenant}:${sessionId}#${instanceToken}-seg${segmentId}`;
   const result = preCheck(toolCall, { signer, policy, prev, seq, tenant, chain: chain ?? defaultChain });
-  // `segmentId` travels alongside the prepared result so `commitSessionReceipt` can verify — AT
-  // COMMIT TIME — that the session's live state is still this SAME segment (see
-  // createChainSessionStore's "COMMIT-TIME SEGMENT CHECK" docstring for the onclose/eviction race
-  // this closes).
-  return { ...result, segmentId };
+  // `segmentId` AND `tenant` (the resolved `effectiveTenant`, not the possibly-omitted raw option)
+  // travel alongside the prepared result so `commitSessionReceipt` can verify — AT COMMIT TIME —
+  // that the session's live state is still this SAME (tenant, segment) (see
+  // createChainSessionStore's "COMMIT-TIME SEGMENT CHECK" AND "MULTI-TENANT ISOLATION" docstrings
+  // for the races this closes: a caller that re-passes `result.tenant` back into
+  // `commitSessionReceipt` can never accidentally commit into the WRONG tenant's bucket).
+  return { ...result, segmentId, tenant: effectiveTenant };
 }
 
 /**
@@ -338,11 +423,17 @@ export function prepareSessionReceipt(toolCall, { sessionId, store, signer, poli
  * (the session was torn down or moved to a newer segment between prepare and commit) instead of
  * silently corrupting the next segment; see createChainSessionStore's "COMMIT-TIME SEGMENT CHECK"
  * docstring. Omitting it is backward-compatible (a caller with no async gap between prepare and
- * commit never hits that race) but loses this check. Returns `store.advance()`'s boolean (`true` =
- * committed, `false` = dropped as stale) for a caller that wants to observe it.
+ * commit never hits that race) but loses this check. `tenant` should likewise be the SAME value
+ * `prepareSessionReceipt()` returned (its `.tenant`, the resolved `effectiveTenant` — NOT the
+ * possibly-omitted raw option the caller originally passed in) — see createChainSessionStore's
+ * "MULTI-TENANT ISOLATION" docstring: passing a different (or omitted, defaulting to
+ * `DEFAULT_TENANT`) tenant here than the one the receipt was prepared against would look up (or,
+ * on the no-`segmentId` path, auto-create) the WRONG tenant's bucket for this sessionId. Returns
+ * `store.advance()`'s boolean (`true` = committed, `false` = dropped as stale) for a caller that
+ * wants to observe it.
  */
-export function commitSessionReceipt(store, sessionId, receipt, segmentId) {
-  return store.advance(sessionId, receipt, segmentId);
+export function commitSessionReceipt(store, sessionId, receipt, segmentId, tenant) {
+  return store.advance(sessionId, receipt, segmentId, tenant);
 }
 
 /**
@@ -366,6 +457,10 @@ export function commitSessionReceipt(store, sessionId, receipt, segmentId) {
  */
 export function preCheckSession(toolCall, options) {
   const result = prepareSessionReceipt(toolCall, options);
-  commitSessionReceipt(options.store, options.sessionId, result.receipt, result.segmentId);
+  // `result.tenant` (the RESOLVED effective tenant `prepareSessionReceipt` peeked against), not
+  // `options.tenant` directly — guarantees the commit targets the exact same tenant bucket the
+  // prepare step read from, even when `options.tenant` was omitted (see createChainSessionStore's
+  // "MULTI-TENANT ISOLATION" docstring).
+  commitSessionReceipt(options.store, options.sessionId, result.receipt, result.segmentId, result.tenant);
   return result;
 }

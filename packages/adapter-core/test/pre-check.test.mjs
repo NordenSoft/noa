@@ -387,6 +387,52 @@ test("preCheck: a plain nested object (no dotted keys) still projects and evalua
   assert.equal(allow.decision, "ALLOW");
 });
 
+test("createChainSessionStore: two DIFFERENT tenants sharing the exact SAME sessionId get fully independent chains — no cross-tenant state leakage (MULTI-TENANT ISOLATION)", () => {
+  // Pre-fix: the store's ONE Map was keyed by sessionId alone — `tenant` only ever affected the
+  // chain-id STRING a receipt records, never which {prev,seq,segmentId} state object a call
+  // actually read/wrote. Two tenants sharing a sessionId would silently share one live state slot:
+  // tenant B's very first call could inherit tenant A's {prev,seq} chain position outright.
+  const { signer, keyring } = signerAndKeyring("test-key-multitenant");
+  const store = createChainSessionStore();
+  const sessionId = "shared-session-id";
+
+  const tenantACall1 = preCheckSession(
+    { name: "payment.refund", args: { amountMinor: 100 } },
+    { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant: "tenant-A" },
+  );
+  const tenantBCall1 = preCheckSession(
+    { name: "payment.refund", args: { amountMinor: 200 } },
+    { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant: "tenant-B" },
+  );
+  const tenantACall2 = preCheckSession(
+    { name: "payment.refund", args: { amountMinor: 300 } },
+    { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant: "tenant-A" },
+  );
+
+  // Both tenants' FIRST call starts its OWN chain at seq 0 — proof tenant B's call never observed
+  // tenant A's {prev,seq} despite sharing the identical sessionId string.
+  assert.equal(tenantACall1.receipt.chain.seq, 0);
+  assert.equal(tenantBCall1.receipt.chain.seq, 0, "tenant B's first call must start at seq 0, not inherit tenant A's seq");
+  assert.equal(tenantACall2.receipt.chain.seq, 1, "tenant A's second call must chain onto tenant A's OWN first call, not tenant B's");
+  assert.equal(tenantACall2.receipt.chain.prevHash, tenantACall1.receipt.chain.hash);
+  assert.notEqual(tenantACall1.receipt.scope.chain, tenantBCall1.receipt.scope.chain, "two tenants sharing a sessionId must never share a scope.chain id");
+
+  const vA = verifyChain([tenantACall1.receipt, tenantACall2.receipt], { keyring });
+  const vB = verifyChain([tenantBCall1.receipt], { keyring });
+  assert.equal(vA.status, "VALID");
+  assert.equal(vB.status, "VALID");
+  assert.equal(store.size, 2, "the same sessionId under two different tenants must occupy two SEPARATE store slots");
+
+  // Same-tenant-same-sessionId keeps the EXISTING (pre-fix) behavior — a third call for tenant A
+  // reusing the identical sessionId still advances the SAME tenant-A chain: no regression.
+  const tenantACall3 = preCheckSession(
+    { name: "payment.refund", args: { amountMinor: 400 } },
+    { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant: "tenant-A" },
+  );
+  assert.equal(tenantACall3.receipt.chain.seq, 2);
+  assert.equal(tenantACall3.receipt.scope.chain, tenantACall1.receipt.scope.chain, "same-tenant resumes on the same chain, unaffected by tenant isolation");
+});
+
 test("createChainSessionStore: two sessions get independent {prev,seq} — no cross-session leakage", () => {
   const { signer, keyring } = signerAndKeyring("test-key-7");
   const store = createChainSessionStore();
@@ -486,7 +532,7 @@ test("prepareSessionReceipt/commitSessionReceipt: idle-TTL eviction of a still-a
 
   function doCall(name) {
     const prepared = prepareSessionReceipt({ name, args: {} }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
-    commitSessionReceipt(store, sessionId, prepared.receipt);
+    commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
     return prepared.receipt;
   }
 
@@ -514,7 +560,7 @@ test("prepareSessionReceipt/commitSessionReceipt: max-sessions cap eviction of a
 
   function doCall(sessionId, name) {
     const prepared = prepareSessionReceipt({ name, args: {} }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
-    commitSessionReceipt(store, sessionId, prepared.receipt);
+    commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
     return prepared.receipt;
   }
 
@@ -551,7 +597,7 @@ test("prepareSessionReceipt/commitSessionReceipt: evict -> resume -> clean end()
 
   function doCall(name) {
     const prepared = prepareSessionReceipt({ name, args: {} }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
-    commitSessionReceipt(store, sessionId, prepared.receipt);
+    commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
     return prepared.receipt;
   }
 
@@ -566,7 +612,7 @@ test("prepareSessionReceipt/commitSessionReceipt: evict -> resume -> clean end()
     const resumed = doCall("payment.refund");
     segments.push([resumed]);
     // "clean end()" — host disconnects normally (e.g. server.onclose).
-    store.end(sessionId);
+    store.end(sessionId, tenant);
     // "reconnect" — the SAME sessionId reconnects immediately, well within idleTtlMs, with NO
     // intervening sweep/eviction in between — exactly the case the stale-tombstone bug missed.
     const reconnected = doCall("payment.refund");
@@ -604,7 +650,7 @@ test("prepareSessionReceipt: a literal sessionId crafted to look exactly like an
 
   function doCall(sessionId, name) {
     const prepared = prepareSessionReceipt({ name, args: {} }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
-    commitSessionReceipt(store, sessionId, prepared.receipt);
+    commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
     return prepared.receipt;
   }
 
@@ -651,7 +697,7 @@ test("prepareSessionReceipt: two SEPARATE store instances (simulating two proces
 
   function doCall(store, name) {
     const prepared = prepareSessionReceipt({ name, args: {} }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
-    commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId);
+    commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
     return prepared.receipt;
   }
 
@@ -686,7 +732,7 @@ test("prepareSessionReceipt/commitSessionReceipt: a session that is NEVER evicte
       { name: "payment.refund", args: { amountMinor: 10 } },
       { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant },
     );
-    commitSessionReceipt(store, sessionId, prepared.receipt);
+    commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
     chain.push(prepared.receipt);
   }
   const chainIds = new Set(chain.map((r) => r.scope.chain));

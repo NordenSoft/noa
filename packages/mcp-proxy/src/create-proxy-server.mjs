@@ -141,7 +141,12 @@ export async function createProxyServer({
     // end-task settles (as long as no newer call queued behind it since); `.catch(() => {})` is
     // defense-in-depth only — `store.end()` is a plain `Map.delete`, it cannot actually reject.
     runExclusiveForSession(sessionId, () => {
-      store.end(sessionId);
+      // `tenant` (the SAME closure value every prepareSessionReceipt/commitSessionReceipt call for
+      // this session already uses) — omitting it would default to the store's DEFAULT_TENANT and
+      // drop the WRONG tenant's bucket when this proxy instance was configured with a non-default
+      // tenant (see noa-mcp-adapter-core's createChainSessionStore "MULTI-TENANT ISOLATION"
+      // docstring).
+      store.end(sessionId, tenant);
     }).catch(() => {});
   };
 
@@ -198,7 +203,11 @@ export async function createProxyServer({
       // a stale commit — the session was torn down or moved to a newer segment while this call's
       // persist (above) was in flight — and drop it instead of corrupting the next segment's seq;
       // see noa-mcp-adapter-core's createChainSessionStore "COMMIT-TIME SEGMENT CHECK" docstring.
-      commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId);
+      // `prepared.tenant` (the store's own RESOLVED effective tenant this receipt was prepared
+      // against — not the possibly-omitted `tenant` closure variable) guarantees this commit lands
+      // in the exact same tenant bucket `prepareSessionReceipt` peeked from; see "MULTI-TENANT
+      // ISOLATION" in the same docstring.
+      commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
       return prepared;
     });
 
