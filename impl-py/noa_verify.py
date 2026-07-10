@@ -134,8 +134,8 @@ def ed25519_verify(public32, message, signature):
 _SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")  # AlgorithmIdentifier{1.3.101.112} + BIT STRING
 
 # The 8 CANONICAL small-order Ed25519 public-key encodings (torsion subgroup of order dividing 8: identity,
-# order-2, two order-4, four order-8 points), as 32-byte little-endian point encodings. CROSS-IMPL CONSENSUS
-# (round-18 #2): node:crypto/OpenSSL verify is COFACTORED and ACCEPTS a low-order public key; this strict
+# order-2, two order-4, four order-8 points), as 32-byte little-endian point encodings. CROSS-IMPL CONSENSUS:
+# node:crypto/OpenSSL verify is COFACTORED and ACCEPTS a low-order public key; this strict
 # reference can reject it — the SAME signed bytes then split VALID(TS) / TAMPERED(PY). Both impls now reject
 # these so they agree. A legitimate signing key is NEVER a low-order point, so valid behavior is unchanged.
 # (NON-CANONICAL y >= q encodings of these points are already rejected by _decodepoint's y >= q guard — so
@@ -156,7 +156,7 @@ def _strict_b64decode(s):
     """Strict CANONICAL base64: reject non-alphabet chars (validate=True) AND non-canonical encodings
     (trailing non-zero bits, padding/whitespace/URL-safe variants) by requiring the decoded bytes to
     RE-ENCODE to exactly the input. Parity with the TS reference's canonical round-trip so both verifiers
-    agree byte-for-byte on sig.value / keyring bytes (round-13 #2/#5)."""
+    agree byte-for-byte on sig.value / keyring bytes."""
     if not isinstance(s, str):
         raise ValueError("base64 input must be a string")
     raw = base64.b64decode(s, validate=True)
@@ -169,7 +169,7 @@ def spki_to_raw(pub_b64):
     if len(der) != 44 or der[:12] != _SPKI_PREFIX:
         raise ValueError("not a canonical Ed25519 SPKI")
     raw = der[12:]
-    # CROSS-IMPL CONSENSUS (round-18 #2): reject a SMALL-ORDER public key here so this strict reference and the
+    # CROSS-IMPL CONSENSUS: reject a SMALL-ORDER public key here so this strict reference and the
     # cofactored node:crypto/OpenSSL reference (which ACCEPTS low-order keys) agree on the SAME verdict. Done at
     # the key-decode boundary (not deep in ed25519_verify) so the rejection is deterministic regardless of the
     # accompanying signature, exactly matching src/keys.ts. (Non-canonical y >= q encodings of these points are
@@ -193,14 +193,14 @@ def _reject_constant(s): raise ValueError(f"non-finite JSON literal not allowed:
 
 def _strict_int(s):
     # parity with TS safeParse: reject any integer outside Number.isSafeInteger (> 2^53-1). json default
-    # parse_int accepts unbounded ints, which would diverge from the TS parser (round-14 #2).
+    # parse_int accepts unbounded ints, which would diverge from the TS parser.
     v = int(s)
     if abs(v) > (1 << 53) - 1: raise ValueError("integer outside safe range")
     return v
 
 def _reject_lone_surrogate(v):
     """Recursively reject any string (dict KEY or VALUE, list item, at ANY depth) that carries a lone
-    UTF-16 surrogate (round-15 #3/#4 cross-impl fix). The TS safeParse rejects an unpaired surrogate in
+    UTF-16 surrogate (cross-impl fix). The TS safeParse rejects an unpaired surrogate in
     EVERY string of EVERY file via out.isWellFormed() (src/safe-json.ts) — a forgery channel, since a lone
     surrogate collapses to U+FFFD at the UTF-8 hashing step. Python's json.loads, by contrast, happily
     decodes a `\\ud800` escape (in a value OR a keyring kid OR an unknown checkpoint field) into a lone-
@@ -225,7 +225,7 @@ def _reject_lone_surrogate(v):
 def strict_load_text(text):
     """Parse receipt JSON like the TS safeParse: dup keys, floats, OVERSIZED ints (> 2^53-1), the JS-ism
     constants NaN/Infinity/-Infinity (which go through parse_constant, NOT parse_float), prototype keys, and
-    LONE UTF-16 SURROGATES in any string (round-14 #2 + round-15 #3/#4 parity — json's defaults would
+    LONE UTF-16 SURROGATES in any string (parity with the TS parser — json's defaults would
     otherwise over-accept vs safeParse, splitting the cross-impl verdict)."""
     return _reject_lone_surrogate(
         json.loads(text, object_pairs_hook=_strict_pairs, parse_float=_reject_float,
@@ -246,14 +246,14 @@ _MODES = frozenset(["off", "shadow", "approvals_on", "on"])
 _VERDICTS = frozenset(["ALLOWED", "BLOCKED", "DEFERRED", "EXECUTED", "FAILED", "ROLLED_BACK", "SIMULATED"])
 
 import re as _re
-# NOTE: every use of these is `.fullmatch()`, NOT `.match()` (round-14 #1). Python's `re` `$` also matches
+# NOTE: every use of these is `.fullmatch()`, NOT `.match()`. Python's `re` `$` also matches
 # just before a SINGLE trailing newline, so `.match()` would accept e.g. "sha256:<hex>\n" — which JS regex
 # `$` (end-of-input) and the JSON-Schema `pattern` dialect REJECT, splitting the cross-impl verdict on
 # opaque fields. `.fullmatch()` requires the whole string, matching the TS reference + normative schema.
 _HASH_RE = _re.compile(r"^sha256:[0-9a-f]{64}$")
 _PARAMS_HASH_RE = _re.compile(r"^(sha256|hmac-sha256):[0-9a-f]{64}$")
 # RFC 3339 §5.6 — accept lowercase 't'/'z' too (must match schema/noa-receipt-0.1.schema.json + src/schema.ts).
-# Digit classes are SPELLED OUT as [0-9], NOT `\d` (round-15 cross-impl fix). Python's `re` `\d` matches the
+# Digit classes are SPELLED OUT as [0-9], NOT `\d` (cross-impl fix). Python's `re` `\d` matches the
 # whole Unicode "decimal number" category (Nd) — Arabic-Indic ٢٠٢٦, fullwidth ２０２６, etc. — while JS/ECMA-262
 # `\d` (the dialect the normative JSON-Schema `pattern` uses, and src/schema.ts/verify.ts) is ASCII [0-9] ONLY.
 # With bare `\d`, a crypto-genuine receipt carrying a Unicode-digit `ts`/`approval.at` (or a checkpoint `ts`)
@@ -272,7 +272,7 @@ def _is_obj(v):
 
 def _is_str(v):
     """A str. (The TS isWellFormed() lone-surrogate guard is mirrored EARLIER, at the parse boundary, by
-    strict_load_text's _reject_lone_surrogate pass (round-15 #3/#4) — json.loads DOES decode a `\\ud800`
+    strict_load_text's _reject_lone_surrogate pass — json.loads DOES decode a `\\ud800`
     escape into a lone surrogate, so the rejection cannot live here; by the time a value reaches this shape
     check it is already well-formed, making a plain type check the faithful mirror.)"""
     return isinstance(v, str)
@@ -408,7 +408,7 @@ def validate_receipt_shape(value):
                 else:
                     errors.append("receipt.governance.approval: object or null")
             # B4 optional governance.compliance ({policyHash, readSetHash, inputsHash}, each sha256:<64hex>,
-            # PLUS an optional recorded verdict ALLOW|DENY — round-11). Mirrors src/schema.ts:147-157.
+            # PLUS an optional recorded verdict ALLOW|DENY). Mirrors src/schema.ts:147-157.
             if "compliance" in gov and gov.get("compliance") is not None:
                 c = gov.get("compliance")
                 if _is_obj(c):
@@ -481,7 +481,7 @@ def checkpoint_hash_input(cp):
 _CHECKPOINT_KEYS = frozenset(["spec", "chain", "highestSeq", "headHash", "ts", "sig"])
 
 def _verify_checkpoint(cp, keyring):
-    # STRICT structural validation, parity with src/verify.ts verifyCheckpoint (round-12): a checkpoint is a
+    # STRICT structural validation, parity with src/verify.ts verifyCheckpoint: a checkpoint is a
     # SIGNED trust statement → additionalProperties:false + typed/format fields. Mismatch ⇒ "bad" (TAMPERED).
     if not isinstance(cp, dict): return "bad"
     if any(k not in _CHECKPOINT_KEYS for k in cp.keys()): return "bad"
@@ -492,7 +492,7 @@ def _verify_checkpoint(cp, keyring):
     if not isinstance(cp.get("headHash"), str) or not _HASH_RE.fullmatch(cp.get("headHash")): return "bad"
     if not isinstance(cp.get("ts"), str) or not _RFC3339_RE.fullmatch(cp.get("ts")): return "bad"
     sig = cp.get("sig")
-    # sig sub-object is ALSO strict (round-13 #4): exactly {alg,kid,value}, alg="ed25519" — closes a
+    # sig sub-object is ALSO strict (top-level strictness alone isn't enough): exactly {alg,kid,value}, alg="ed25519" — closes a
     # smuggled-field channel inside the SIGNED surface + an unvalidated alg, parity with src/verify.ts.
     if not isinstance(sig, dict): return "bad"
     if any(k not in ("alg", "kid", "value") for k in sig.keys()): return "bad"
@@ -515,7 +515,7 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
     (UNTRUSTED), and checkpoint tail-truncation + §5b checkpoint identity binding."""
     if not isinstance(receipts, list) or not receipts:
         return "MALFORMED", "input is not a non-empty array"
-    # Fail-closed on a non-object keyring (JSON list/number/string) — never crash with a traceback (round-13 #6).
+    # Fail-closed on a non-object keyring (JSON list/number/string) — never crash with a traceback.
     if keyring is not None and not isinstance(keyring, dict):
         return "MALFORMED", "keyring must be an object (kid -> base64 SPKI)"
     if identity_manifest is not None:
@@ -564,7 +564,7 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
             if not pub: return "TAMPERED", f"unknown kid {kid} at seq {s}"
             msg = _RECEIPT_DOMAIN + hashlib.sha256(hi.encode("utf-8")).digest()
             try:
-                sig = _strict_b64decode(r["sig"].get("value", ""))  # canonical base64 only (round-13 #2)
+                sig = _strict_b64decode(r["sig"].get("value", ""))  # canonical base64 only
                 pub_raw = spki_to_raw(pub)  # a malformed keyring SPKI must fail-closed (TAMPERED), never raise
             except Exception:
                 return "TAMPERED", f"bad signature/key encoding at seq {s}"
@@ -588,7 +588,7 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
         if checkpoint.get("highestSeq") != head["chain"].get("seq") or checkpoint.get("headHash") != head["chain"].get("hash"):
             return "TAMPERED", "chain head does not match checkpoint (tail truncated/extended)"
         # 5b checkpoint identity binding — bind to the chain's GENESIS agent (the OPENER, seq 0), NOT the
-        # mutable head. Round-10 audit: a shared scope.chain lets any co-trusted key APPEND its receipt onto
+        # mutable head. The re-heading attack: a shared scope.chain lets any co-trusted key APPEND its receipt onto
         # a victim's prefix, become the head, drop the victim's tail, and forge a checkpoint over its OWN
         # head; head-binding then "validated" the attacker against its OWN authorized id (VALID + erased
         # tail). The opener cannot be re-written by an appended tail, so genesis-binding rejects the
@@ -615,7 +615,7 @@ def _main(argv):
     usage = "usage: noa_verify.py <receipts.json> [keyring.json] [--identity <m.json>] [--checkpoint <cp.json>]\n"
     while i < len(args):
         a = args[i]
-        # A TRAILING --identity/--checkpoint with NO following path (round-16 #2/#3): silently setting the path
+        # A TRAILING --identity/--checkpoint with NO following path: silently setting the path
         # to None would DROP the security control (the manifest / tail-truncation check) and the verifier would
         # return VALID (exit 0) — a fail-OPEN where the TS CLI returns usage (exit 4). Emit usage + exit 4 to
         # match the TS CLI: a malformed invocation never silently weakens enforcement.
@@ -636,7 +636,7 @@ def _main(argv):
         # ALL input files (incl. the auxiliary trust files) go through the strict parser — parity with the
         # TS CLI (src/cli.ts readJsonFile -> safeParse). Plain json.load silently accepts duplicate keys
         # (last-wins), floats, and NaN/Infinity, which would make the documented T8 dup-key mitigation FALSE
-        # for the keyring/identity/checkpoint and diverge from the TS reference (round-12 audit).
+        # for the keyring/identity/checkpoint and diverge from the TS reference.
         receipts = strict_load_text(open(receipts_path).read())  # strict: dup-key/float/proto rejected
         keyring = strict_load_text(open(keyring_path).read()) if keyring_path else None
         identity = strict_load_text(open(identity_path).read()) if identity_path else None
@@ -644,7 +644,7 @@ def _main(argv):
     except Exception as e:
         print(json.dumps({"status": "MALFORMED", "detail": str(e)})); return _EXIT["MALFORMED"]
     # A trust/aux file that was GIVEN but loaded to a non-object (null/list/number/...) is an operator error,
-    # NOT "absent" (round-15 #6/#7). The TS in-process API treats `opts.X !== undefined` as PRESENT, so a
+    # NOT "absent". The TS in-process API treats `opts.X !== undefined` as PRESENT, so a
     # `null` identity/checkpoint there is "present but not a valid object" → MALFORMED (keeps the impersonation
     # / tail defenses). But the Python CLI loads a `null` file to None, which verify_chain reads as "not
     # supplied" → it would silently drop the manifest/checkpoint and over-accept (VALID). Mirror TS here: if

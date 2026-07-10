@@ -6,7 +6,7 @@ import { verifyChain } from "../src/verify.js";
 import { sha256Prefixed } from "../src/hash.js";
 
 // Two agents, two keys. We can mint a receipt for ANY agent.id with ANY signer (the builder's signer
-// determines sig.kid), which is exactly the cross-agent impersonation primitive from the round-4 audit.
+// determines sig.kid), which is exactly the cross-agent impersonation primitive B1 defends against.
 const alice = generateKeyPair("alice-key");
 const bob = generateKeyPair("bob-key");
 const keyring = { [alice.kid]: alice.publicKey, [bob.kid]: bob.publicKey };
@@ -29,7 +29,7 @@ test("B1: identity manifest authorizes the (agent.id, kid) pairing → VALID", (
   assert.equal(r.signaturesVerified, true);
 });
 
-test("B1: CROSS-AGENT IMPERSONATION is caught — agent.id=alice signed by bob's key → UNTRUSTED (round-4 HIGH closed)", () => {
+test("B1: CROSS-AGENT IMPERSONATION is caught — agent.id=alice signed by bob's key → UNTRUSTED", () => {
   // Bob, holding only bob's key, mints a CRITICAL payment.refund chain claiming agent.id="alice".
   // The signature is genuine + bob-key is in the keyring → WITHOUT a manifest this verifies VALID
   // (the disclosed limit). WITH the manifest, the impersonation is rejected.
@@ -61,7 +61,7 @@ test("B1: no manifest → VALID + the kid-level-attribution honesty warning (bac
   assert.ok(r.warnings.some((w) => /no identityManifest/.test(w)));
 });
 
-test("B1 (round-7 fix): manifest supplied but NO keyring → UNVERIFIED, not UNTRUSTED (no overclaim of unperformed auth)", () => {
+test("B1: manifest supplied but NO keyring → UNVERIFIED, not UNTRUSTED (no overclaim of unperformed auth)", () => {
   // identity binding is meaningless about a key never authenticated. An impersonation chain with a
   // manifest but no keyring must stay UNVERIFIED (signatures not authenticated) — NOT UNTRUSTED, whose
   // documented meaning is "authenticated key, binding not authorized".
@@ -72,11 +72,11 @@ test("B1 (round-7 fix): manifest supplied but NO keyring → UNVERIFIED, not UNT
   assert.ok(r.warnings.some((w) => /identityManifest supplied but no keyring/.test(w)));
 });
 
-test("B1 (round-7 HIGH fix, round-10 genesis-binding): a checkpoint forged by a co-trusted-but-UNauthorized key → UNTRUSTED (tail-truncation defense bound to the chain OPENER)", () => {
+test("B1 (genesis-binding): a checkpoint forged by a co-trusted-but-UNauthorized key → UNTRUSTED (tail-truncation defense bound to the chain OPENER)", () => {
   // alice's genuine head, but the checkpoint is signed by BOB (a keyring-trusted key NOT authorized for
   // alice). Pre-fix this verified VALID + tailChecked:true (bob could truncate alice's tail and forge the
   // checkpoint). With identity binding on the checkpoint, it must be UNTRUSTED. Here the chain is a single
-  // alice receipt, so genesis == head: the round-10 genesis-binding subsumes the old head-binding exactly.
+  // alice receipt, so genesis == head: genesis-binding subsumes plain head-binding exactly.
   const head = buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey });
   const manifest = { alice: ["alice-key"], bob: ["bob-key"] };
   const forgedCp = buildCheckpoint(head, "2026-06-21T11:00:00.000Z", { kid: bob.kid, privateKey: bob.privateKey });
@@ -90,8 +90,8 @@ test("B1 (round-7 HIGH fix, round-10 genesis-binding): a checkpoint forged by a 
   assert.equal(good.tailChecked, true);
 });
 
-test("B1 (round-10 HIGH fix): RE-HEADING truncation — a co-trusted key appends onto a victim's prefix, drops the tail, and forges a checkpoint over its OWN head → UNTRUSTED (genesis-binding, NOT head-binding)", () => {
-  // The round-10 attack the old head-binding missed: a scope.chain is a SHARED partition with no
+test("B1: RE-HEADING truncation — a co-trusted key appends onto a victim's prefix, drops the tail, and forges a checkpoint over its OWN head → UNTRUSTED (genesis-binding, NOT head-binding)", () => {
+  // The re-heading attack that plain head-binding missed: a scope.chain is a SHARED partition with no
   // opener/ownership binding, so bob (a co-trusted, manifest-authorized key) can append his own receipt
   // onto alice's genesis, BECOME the head, DROP alice's incriminating CRITICAL refund tail, and forge a
   // checkpoint over his own head. Head-binding checked the checkpoint kid against bob's OWN authorized
@@ -132,7 +132,7 @@ test("B1 (round-10 HIGH fix): RE-HEADING truncation — a co-trusted key appends
   assert.ok(multi.warnings.some((w) => /checkpoint completeness is opener-scoped/.test(w)), "multi-agent checkpoint must warn about opener-scoped completeness");
 });
 
-test("B1 (round-11 HIGH): TOCTOU — an ACCESSOR-property manifest entry that flips between validation and enforcement → UNTRUSTED (read-once snapshot)", () => {
+test("B1: TOCTOU — an ACCESSOR-property manifest entry that flips between validation and enforcement → UNTRUSTED (read-once snapshot)", () => {
   // The manifest is read once at the validation pass and again at enforcement (4c-bis). A getter that
   // returns ['alice-key'] to the validator (so validation passes) and ['bob-key'] to enforcement (so the
   // bob-signed impersonation is "authorized") would verify VALID pre-fix. With the read-once snapshot the
@@ -153,7 +153,7 @@ test("B1 (round-11 HIGH): TOCTOU — an ACCESSOR-property manifest entry that fl
   assert.equal(reads, 1, "the entry getter must be read EXACTLY ONCE (snapshot), not at both validation + enforcement");
 });
 
-test("B1 (round-11 HIGH): TOCTOU — an ARRAY-ELEMENT getter that flips between validation and enforcement → UNTRUSTED (slice copies by value)", () => {
+test("B1: TOCTOU — an ARRAY-ELEMENT getter that flips between validation and enforcement → UNTRUSTED (slice copies by value)", () => {
   // Subtler variant: the entry IS an array, but element [0] is a getter that returns 'alice-key' first
   // (validation: every element is a string ✓) then 'bob-key' (enforcement: includes('bob-key') ✓). The
   // snapshot copies via Array.prototype.slice, materializing element values at copy time → enforcement
@@ -177,7 +177,7 @@ test("B1 (round-11 HIGH): TOCTOU — an ARRAY-ELEMENT getter that flips between 
   assert.equal(reads, 1, "the element getter must be read EXACTLY ONCE (slice copy), not at both validation + enforcement");
 });
 
-test("B1 (round-11): the read-once snapshot does NOT regress the legitimate accessor case — a getter returning a STABLE authorized value still VALID", () => {
+test("B1: the read-once snapshot does NOT regress the legitimate accessor case — a getter returning a STABLE authorized value still VALID", () => {
   // A getter that always returns the same authorized value must still pass — the snapshot only removes the
   // ABILITY TO FLIP, it does not reject accessor-backed manifests.
   const chain = [buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey })];

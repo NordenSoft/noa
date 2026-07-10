@@ -22,11 +22,16 @@ PRs that cross this line are declined on principle. See [THREAT-MODEL.md](./THRE
 npm install
 npm test          # build + generate conformance vectors + run the suite (node:test)
 npm run build     # type-check + emit dist/
+npm run test:dogfood  # private dogfood suite (vitest)
 npm run verify -- conformance/vectors/valid-chain.json --keyring conformance/vectors/keyring.json
 ```
 
+- **Node version:** the published package targets **Node ≥ 20** (`engines`) and has **zero runtime
+  dependencies**, so consumers run it on any Node ≥ 20. The *contributor toolchain* is stricter: the
+  dogfood suite's `vitest`/`vite` devDependency needs **Node ≥ 20.19** (or ≥ 22.12). This is a
+  dev-only requirement — it does not narrow the runtime `engines` the package ships to consumers.
 - **Zero runtime dependencies** is a feature — do not add one without a strong, discussed
-  reason. Dev-only deps (TypeScript, types) are fine.
+  reason. Dev-only deps (TypeScript, types, vitest) are fine.
 - If you touch hashing/canonicalization/schema, **regenerate vectors** (`npm run gen:vectors`)
   and commit them; CI fails on vector drift.
 - New behavior needs a test. New attack ideas are especially welcome as conformance vectors.

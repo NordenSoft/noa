@@ -101,7 +101,7 @@ function match(c: Condition, inputs: InputSnapshot): boolean {
  *   - any internal comparison error (e.g. input type ≠ policy value type) ⇒ DENY "eval-error"
  *   - required path absent ⇒ DENY "required-input-absent:<path>"
  * `then` is guaranteed ALLOW|DENY by the up-front validator, so a typo'd verdict can never
- * become a silent permit downstream (closes the round-1 default-DENY bypass).
+ * become a silent permit downstream (closes a default-DENY bypass).
  */
 export function evaluate(policy: Policy, inputs: InputSnapshot): EvalResult {
   const pv = validatePolicy(policy);

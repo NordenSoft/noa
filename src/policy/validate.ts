@@ -1,7 +1,7 @@
 /**
  * Strict, static well-formedness validator for a NOA Policy.
  *
- * Round-1 deep audit found that an internally-inconsistent policy could `policyHash()` cleanly
+ * Deep audit found that an internally-inconsistent policy could `policyHash()` cleanly
  * yet at evaluate-time either THROW (exception-as-verdict, not reproducible) or — worse — let a
  * typo'd `then` / unknown `op` slip a DENY rule into a silent never-match → default-DENY bypass.
  *
@@ -129,7 +129,7 @@ export function validatePolicy(p: unknown): PolicyValidation {
       validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);
     });
   }
-  // Identity-hash safety (round-4 audit): a policy this validator ACCEPTS must be canonicalizable,
+  // Identity-hash safety: a policy this validator ACCEPTS must be canonicalizable,
   // so policyHash()/readSetHash() (both route through canonicalize) can never throw on an accepted
   // policy. The per-condition depth cap above counts condition nesting only; canonicalize also counts
   // the policy→rules→[i]→when wrapper AND the extra array level inside every `and`/`or`, so the two

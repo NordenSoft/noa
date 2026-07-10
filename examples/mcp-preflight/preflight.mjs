@@ -1,5 +1,5 @@
 /**
- * MCP Pre-Flight PEP/PDP — reference integration (the #1 distribution move).
+ * MCP Pre-Flight PEP/PDP — reference integration.
  *
  * Sits between an MCP host and its tool servers. For EVERY tool call it runs the DETERMINISTIC policy
  * evaluator `evaluate(policy, inputs)` (NOA's offline-replayable moat — not a risk lookup table) and
@@ -114,7 +114,7 @@ function main() {
   ok("on-receipt compliance REJECTS substituted inputs (inputsHash bind)", tampered.ok === false);
 
   // Tamper: a receipt that COMMITS the OPPOSITE verdict (DENY) while its recorded inputs evaluate to
-  // ALLOW must FAIL verdict reconciliation (round-11) — the recorded decision itself must reproduce.
+  // ALLOW must FAIL verdict reconciliation — the recorded decision itself must reproduce.
   const forged = { ...chain[0], governance: { ...chain[0].governance, compliance: { ...chain[0].governance.compliance, verdict: "DENY" } } };
   const vr = verifyReceiptCompliance(forged, POLICY, results[0].evidence.inputs);
   ok("on-receipt compliance REJECTS a committed verdict that does not reproduce (verdict bind)", vr.ok === false && /verdict mismatch/.test(vr.reason ?? ""));

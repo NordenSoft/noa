@@ -69,7 +69,7 @@ describe("dogfood co-attestation (Track A2): a counterparty signs ONE input fiel
       receiptKeyring: signer.keyring,
     });
     expect(r.ok).toBe(true);
-    // ok:true surfaces WHICH trusted receiver signed (QA-panel: "a bare {ok:true} doesn't say who").
+    // ok:true surfaces WHICH trusted receiver signed (a bare {ok:true} wouldn't say who).
     expect(r.kid).toBe(receiver.kid);
     // …and that THIS call authenticated the carrier (receiptKeyring was supplied).
     expect(r.carrierAuthenticated).toBe(true);

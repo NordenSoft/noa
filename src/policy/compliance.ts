@@ -13,14 +13,14 @@
  * while claiming ALLOW). It is NOT proof the policy was in force at decision time, nor that I is
  * true/complete, nor that P is a good rule.
  *
- * AUTHENTICITY (round-12): the L2 check operates on the receipt's `governance.compliance` block, which is
+ * AUTHENTICITY: the L2 check operates on the receipt's `governance.compliance` block, which is
  * attacker-mutable on a NON-authentic receipt. By itself it does NOT establish that the receipt is genuine.
  * The carrier MUST be independently authenticated — either pass `{ keyring }` here (the carrier's own hash
  * + Ed25519 signature are then verified BEFORE the L2 check; a non-authentic carrier ⇒ ok:false), or call
  * `verifyChain([...], { keyring })` and require VALID first. Never report "compliant" off a carrier you
  * have not authenticated. Never throws (fail-closed).
  *
- * ATTRIBUTION (round-17 #1): `{ keyring }` carrier-auth is KID-LEVEL — it proves "a keyring-trusted key
+ * ATTRIBUTION: `{ keyring }` carrier-auth is KID-LEVEL — it proves "a keyring-trusted key
  * signed this carrier", NOT "THIS agent.id signed it". In a multi-key keyring a co-trusted key can sign a
  * receipt claiming `agent.id=victim` and still pass carrier-auth (ok:true), exactly the cross-agent
  * impersonation `verifyChain` rejects as UNTRUSTED only when given an identityManifest. To get the same
@@ -45,7 +45,7 @@ export interface ComplianceCommit {
   inputsHash: string;
   /** The recorded policy decision (re-run at commit time). Lets verifyReceiptCompliance reconcile a
    *  re-run verdict against the decision the receipt claims — closes the "records a verdict it never
-   *  re-derives" gap (round-11 MEDIUM). */
+   *  re-derives" gap. */
   verdict: "ALLOW" | "DENY";
 }
 
@@ -103,7 +103,7 @@ export interface VerifyComplianceOptions {
  * caller already authenticated the carrier (verifyChain → VALID). Without that, ok:true says nothing about
  * the receipt being genuine — only that the committed block is internally policy-consistent.
  *
- * Pass `{ keyring, identityManifest }` to ALSO bind WHICH agent.id signed (round-17 #1): after carrier-auth,
+ * Pass `{ keyring, identityManifest }` to ALSO bind WHICH agent.id signed: after carrier-auth,
  * an unauthorized `(agent.id, sig.kid)` pairing ⇒ ok:false. Without an identityManifest, attribution is
  * kid-level (a keyring-trusted key signed, not necessarily THIS agent.id).
  */
@@ -117,17 +117,17 @@ export function verifyReceiptCompliance(
     if (typeof receipt !== "object" || receipt === null) {
       return { ok: false, reason: "receipt is not an object" };
     }
-    // SNAPSHOT THE CARRIER ONCE (round-13 HIGH TOCTOU): a LIVE receipt with a flipping accessor could
+    // SNAPSHOT THE CARRIER ONCE (TOCTOU hardening): a LIVE receipt with a flipping accessor could
     // return an EVIL governance.compliance on the first read (the comparison source) and the REAL signed
     // block on later reads (carrier auth) — authenticating one block while comparing another → a false
     // "compliant" green on an authenticated carrier. structuredClone fires every accessor EXACTLY ONCE,
     // producing accessor-free data; ALL reads below (carrier auth AND the L2 compare) use this ONE snapshot.
-    // (Mirrors the round-11 identityManifest read-once snapshot + round-12 #10 accessor hardening.) Reading
+    // (Mirrors the identityManifest read-once snapshot + accessor hardening elsewhere in this module.) Reading
     // INSIDE the try also honors the "never throws" contract for null / throwing-accessor receipts (#3/#7).
     const snap = structuredClone(receipt) as Receipt;
     const c = snap.governance?.compliance;
     if (!c) return { ok: false, reason: "receipt carries no governance.compliance commitment" };
-    // SNAPSHOT THE POLICY + INPUTS ONCE (round-16 #6 MEDIUM TOCTOU). Both arguments are caller-supplied LIVE
+    // SNAPSHOT THE POLICY + INPUTS ONCE (TOCTOU hardening). Both arguments are caller-supplied LIVE
     // objects read MORE THAN ONCE: `policy` by policyHash + readSetHash + evaluate; `inputs` by the inputsHash
     // check + evaluate. A flipping accessor (a getter that returns one value on read#1 and another on read#2)
     // could split the hash check from the re-run — e.g. present ALLOW-inputs to inputsHash and DENY-inputs to
@@ -137,22 +137,45 @@ export function verifyReceiptCompliance(
     // / non-cloneable arg fails closed (ok:false), honoring the "never throws" contract.
     const policySnap = structuredClone(policy) as Policy;
     const inputsSnap = structuredClone(inputs) as InputSnapshot;
-    // CARRIER AUTHENTICATION (round-12 HIGH): when a keyring is supplied, prove the receipt itself is
+    // SNAPSHOT opts ONCE (hostile-accessor parity with verify.ts:95). `opts.keyring` and
+    // `opts.identityManifest` are caller-supplied and read MORE THAN ONCE below (the presence gate, then the
+    // value that carrier-auth / identity-binding actually use). A flipping accessor — `get keyring(){ return
+    // n++ === 0 ? undefined : realKeyring }` (undefined on read#1, a value later, or vice-versa) — could
+    // split the `!== undefined` presence check from the auth that depends on it, skipping carrier-auth while
+    // still returning ok:true. structuredClone deep-copies opts ONCE into plain, accessor-free data (firing
+    // every getter EXACTLY ONCE); a non-cloneable / throwing-getter opts is caught by the outer try → ok:false
+    // (fail-closed). A null/undefined opts normalizes to `{}` (the default-param only fills a MISSING arg, not
+    // an explicit null). EVERY opts read below is from `o`, never the live `opts`. (verifyChainText/CLI/Python
+    // consume parse output — no accessors — so are immune; this guards the in-process object API.)
+    const o: VerifyComplianceOptions =
+      (opts === null || opts === undefined) ? {} : (structuredClone(opts) as VerifyComplianceOptions);
+    // CARRIER AUTHENTICATION: when a keyring is supplied, prove the receipt itself is
     // genuine BEFORE trusting its compliance block — otherwise a forged/tampered receipt (verifyChain ⇒
     // TAMPERED) would still get a green "compliant" signal off its attacker-mutable governance.compliance.
-    if (opts.keyring) {
+    //
+    // PRESENCE, not truthiness: `o.keyring !== undefined` (mirrors verify.ts's `haveKeyring`). A prior
+    // `if (opts.keyring)` truthy-check let ANY falsy-but-supplied keyring (`""`, `0`, `null`) silently
+    // SKIP carrier-auth entirely — the caller explicitly asked to authenticate the carrier and the check
+    // never ran, yet ok:true could still come back. Presence-gating + the non-object guard immediately
+    // below makes every supplied-but-malformed keyring fail CLOSED instead of being ignored.
+    const haveKeyring = o.keyring !== undefined;
+    if (haveKeyring && (typeof o.keyring !== "object" || o.keyring === null || Array.isArray(o.keyring))) {
+      return { ok: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
+    }
+    if (haveKeyring) {
+      const keyring = o.keyring as Keyring;
       const shape = validateReceiptShape(snap);
       if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
       const hashInput = receiptHashInput(snap);
       if ("sha256:" + sha256Hex(hashInput) !== snap.chain.hash) {
         return { ok: false, reason: "carrier receipt hash mismatch — not authentic" };
       }
-      const pub = opts.keyring[snap.sig.kid];
+      const pub = keyring[snap.sig.kid];
       if (!pub) return { ok: false, reason: `carrier receipt signing key "${snap.sig.kid}" not in keyring` };
       if (!verifyEd25519(pub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), snap.sig.value)) {
         return { ok: false, reason: "carrier receipt signature not authenticated" };
       }
-      // IDENTITY BINDING (round-17 #1): the signature is now AUTHENTICATED, so — exactly like verify.ts
+      // IDENTITY BINDING: the signature is now AUTHENTICATED, so — exactly like verify.ts
       // 4c-bis — when an identityManifest is supplied, require the carrier's (agent.id, sig.kid) pairing to
       // be authorized. Without this, keyring carrier-auth is kid-level: a co-trusted key could sign a receipt
       // claiming agent.id=victim and pass (ok:true) while verifyChain([...],{keyring,identityManifest}) returns
@@ -160,8 +183,8 @@ export function verifyReceiptCompliance(
       // arrays sliced by value) so a flipping accessor cannot split validation from enforcement; read agent.id
       // / sig.kid from the read-once `snap`, never the live receipt. (Inside the outer try ⇒ a throwing manifest
       // accessor fails closed.)
-      if (opts.identityManifest !== undefined) {
-        const live = opts.identityManifest;
+      if (o.identityManifest !== undefined) {
+        const live = o.identityManifest;
         if (typeof live !== "object" || live === null || Array.isArray(live)) {
           return { ok: false, reason: "identityManifest must be an object (agent.id -> kid[])" };
         }
@@ -187,7 +210,7 @@ export function verifyReceiptCompliance(
     if (readSetHash(policySnap) !== c.readSetHash) return { ok: false, reason: "readSetHash mismatch" };
     if (sha256Prefixed(canonicalize(inputsSnap)) !== c.inputsHash) return { ok: false, reason: "inputsHash mismatch — supplied inputs are not the recorded ones" };
     const ev = evaluate(policySnap, inputsSnap);
-    // Verdict RECONCILIATION (round-11 MEDIUM): when the commitment records a verdict, the re-run MUST
+    // Verdict RECONCILIATION: when the commitment records a verdict, the re-run MUST
     // reproduce it. This is what makes spec §9's "re-runs and confirms the committed verdict reproduces"
     // literally true: a receipt that commits inputs which evaluate to DENY while recording ALLOW is
     // rejected. Backward-compatible — a commitment WITHOUT a verdict skips the check and just returns the

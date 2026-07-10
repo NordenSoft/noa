@@ -1,6 +1,6 @@
 /**
- * Deterministic L2 conformance-vector generator — the PRIMARY L2 deliverable (round-2 audit: the
- * conformance corpus matters more than the evaluator code; it pins behaviour for any re-implementer).
+ * Deterministic L2 conformance-vector generator — the PRIMARY L2 deliverable: the
+ * conformance corpus matters more than the evaluator code; it pins behaviour for any re-implementer.
  *
  * Emits, per policy: the policy, its policyHash + readSetHash, and a corpus of {inputs → expected
  * verdict + ruleFired} cases (allow / deny / default-deny / required-absent / fail-closed). A second
@@ -69,7 +69,7 @@ const vectors = {
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
-// UTF-16 / edge-case interop-landmine corpus (master-plan E7 / W4). Pins the #1
+// UTF-16 / edge-case interop-landmine corpus. Pins the #1
 // cross-impl divergence: NOA orders strings by raw UTF-16 CODE-UNIT value
 // (eval.ts cmp, RFC-8785/JCS-aligned). A 2nd impl that orders by Unicode
 // code-point (or by naive UTF-8 byte) DIVERGES on astral-plane chars (U+10000+),
@@ -326,7 +326,7 @@ const utf16Vectors = {
   spec: "noa.l2-conformance/0.2",
   engine: "noa-refeval/0.2",
   note:
-    "UTF-16 / edge-case interop-landmine corpus (master-plan E7/W4). NOA orders strings by RAW UTF-16 CODE-UNIT value (eval.ts cmp, RFC-8785/JCS-aligned), NOT by Unicode code-point or UTF-8 byte. On astral-plane chars (U+10000+) the first UTF-16 code unit is a HIGH SURROGATE 0xD800..0xDBFF — LOWER than BMP 0xE000..0xFFFF — so an astral char sorts BELOW the U+D800..U+FFFF range under UTF-16 but ABOVE it under code-point. Cases tagged '*-divergence' are engineered so the pinned (UTF-16) verdict is the OPPOSITE of a code-point/UTF-8-order evaluator's: A pins ALLOW where code-point gives DENY (U+10000 vs U+FFFF); F1/F2 pin DENY where code-point gives ALLOW (U+20000 vs U+FF00 / U+FFFD). BMP/astral BOUNDARY coverage (G): G1 pins ALLOW vs U+E000 (smallest BMP above surrogates — code-point would DENY); G2 pins DENY vs U+D7FF (largest BMP below surrogates — the lower edge where BOTH orderings AGREE, divergence STOPS); G3 pins ALLOW with a SHARED 'x' prefix that diverges at position 2 (proves it isn't first-position-only). A non-conforming (code-point/byte-order) evaluator FAILS the divergence cases. Booleans: lt/gt compare numerically (false<true), they do NOT fail-close. Depth: MAX_DEPTH=64 enforced by canonicalize (jcs.ts:32) + validatePolicy bounds recursion — a conforming impl MUST count every object AND array nesting level identically; deep-50 evaluates, deep-62/deep-500 fail-close policy-invalid (and are UNHASHABLE → policyHash:null, which a conforming impl must reproduce). Every verdict/ruleFired/policyHash/readSetHash below was produced by RUNNING the real evaluator + real hash fns.",
+    "UTF-16 / edge-case interop-landmine corpus. NOA orders strings by RAW UTF-16 CODE-UNIT value (eval.ts cmp, RFC-8785/JCS-aligned), NOT by Unicode code-point or UTF-8 byte. On astral-plane chars (U+10000+) the first UTF-16 code unit is a HIGH SURROGATE 0xD800..0xDBFF — LOWER than BMP 0xE000..0xFFFF — so an astral char sorts BELOW the U+D800..U+FFFF range under UTF-16 but ABOVE it under code-point. Cases tagged '*-divergence' are engineered so the pinned (UTF-16) verdict is the OPPOSITE of a code-point/UTF-8-order evaluator's: A pins ALLOW where code-point gives DENY (U+10000 vs U+FFFF); F1/F2 pin DENY where code-point gives ALLOW (U+20000 vs U+FF00 / U+FFFD). BMP/astral BOUNDARY coverage (G): G1 pins ALLOW vs U+E000 (smallest BMP above surrogates — code-point would DENY); G2 pins DENY vs U+D7FF (largest BMP below surrogates — the lower edge where BOTH orderings AGREE, divergence STOPS); G3 pins ALLOW with a SHARED 'x' prefix that diverges at position 2 (proves it isn't first-position-only). A non-conforming (code-point/byte-order) evaluator FAILS the divergence cases. Booleans: lt/gt compare numerically (false<true), they do NOT fail-close. Depth: MAX_DEPTH=64 enforced by canonicalize (jcs.ts:32) + validatePolicy bounds recursion — a conforming impl MUST count every object AND array nesting level identically; deep-50 evaluates, deep-62/deep-500 fail-close policy-invalid (and are UNHASHABLE → policyHash:null, which a conforming impl must reproduce). Every verdict/ruleFired/policyHash/readSetHash below was produced by RUNNING the real evaluator + real hash fns.",
   policies: UTF16_BLOCKS.map((b) => {
     // An over-depth policy (deep-62 / deep-500) is INVALID and therefore UNHASHABLE: canonicalize()
     // throws past the depth-64 cap, so policyHash/readSetHash have no value (null). A conforming 2nd

@@ -25,7 +25,7 @@ export interface KeyPair {
 /**
  * The 8 canonical small-order Ed25519 public-key encodings (the torsion subgroup of order dividing 8:
  * identity, the order-2 point, the two order-4 points, the four order-8 points), as 32-byte
- * little-endian point encodings. CROSS-IMPL CONSENSUS (round-18 #2): node:crypto/OpenSSL verify is
+ * little-endian point encodings. CROSS-IMPL CONSENSUS: node:crypto/OpenSSL verify is
  * *cofactored* and ACCEPTS a low-order public key (a small-subgroup key passes createPublicKey + the
  * curve-type pin + canonical-SPKI round-trip), whereas the independent strict-equation Python reference
  * can REJECT it — the SAME signed bytes then split VALID(TS) / TAMPERED(PY), breaking the "two
@@ -71,7 +71,7 @@ export function signEd25519(privateKeyB64: string, message: Buffer): string {
 export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB64: string): boolean {
   try {
     const der = Buffer.from(publicKeyB64, "base64");
-    // Canonical base64 for the keyring public key too (round-13 #5): node's Buffer.from is lenient
+    // Canonical base64 for the keyring public key too: node's Buffer.from is lenient
     // (whitespace / URL-safe / missing padding), so a non-canonical key STRING would verify VALID in TS
     // while the strict Python reference rejects it — a consensus divergence on a logically-identical key.
     if (der.toString("base64") !== publicKeyB64) return false;
@@ -89,7 +89,7 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // dedup, byte-pinning) cannot be bypassed by re-encoding. Re-export and require byte-equality.
     const canonical = key.export({ type: "spki", format: "der" }) as Buffer;
     if (!canonical.equals(der)) return false;
-    // CROSS-IMPL CONSENSUS on the PUBLIC KEY (round-18 #2). node:crypto/OpenSSL verify is COFACTORED and
+    // CROSS-IMPL CONSENSUS on the PUBLIC KEY. node:crypto/OpenSSL verify is COFACTORED and
     // accepts public keys the independent strict-equation Python reference rejects — splitting VALID(TS) /
     // TAMPERED(PY) on identical signed bytes. Two divergent classes, BOTH closed here so A is decoded with
     // the SAME strictness Python's _decodepoint enforces:
@@ -114,10 +114,23 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // node's Buffer.from(…, "base64") is LENIENT (silently ignores embedded whitespace, missing '='
     // padding, and trailing garbage), so many distinct strings decode to ONE valid 64-byte signature →
     // sig.value is non-canonical, and a receipt this verifier accepts is rejected (TAMPERED) by the strict
-    // Python reference (base64decode validate=True), breaking the cross-impl consensus bar (round-12).
+    // Python reference (base64decode validate=True), breaking the cross-impl consensus bar.
     // Require exactly 64 bytes AND that the input round-trips to its own canonical base64 encoding.
     const sigBytes = Buffer.from(signatureB64, "base64");
     if (sigBytes.length !== 64 || sigBytes.toString("base64") !== signatureB64) return false;
+    // EXPLICIT S < L scalar check (RFC 8032 §5.1.7 / T14). sigBytes = R (32 bytes) || S (32 bytes,
+    // little-endian). A malleated signature S' = S + L (for any valid (R, S)) verifies under the SAME
+    // equation as the original (the group has order L, so S and S+L are congruent mod L) — S' is a
+    // SECOND, non-canonical encoding of an already-valid signature (Ed25519 signature malleability).
+    // node:crypto/OpenSSL already rejects S >= L at verification time as of this writing, but that is a
+    // property of the underlying OpenSSL build's *runtime* behavior, not a property this reference
+    // implementation asserts on its own. Checking S < L explicitly here makes rejection a documented,
+    // implementation-owned invariant — independent of whatever a future Node/OpenSSL upgrade does —
+    // and matches the independent Python reference, which performs the identical check (impl-py/noa_verify.py).
+    const L = 2n ** 252n + 27742317777372353535851937790883648493n;
+    let S = 0n;
+    for (let i = 63; i >= 32; i--) S = (S << 8n) | BigInt(sigBytes[i]!);
+    if (S >= L) return false;
     return cryptoVerify(null, message, key, sigBytes);
   } catch {
     return false;

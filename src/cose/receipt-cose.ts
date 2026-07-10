@@ -40,14 +40,14 @@ export interface ReceiptCoseResult {
  * (agent.id, kid) pairing fails (ok:false) — mirroring the `UNTRUSTED` verdict.
  */
 export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityManifest?: IdentityManifest): ReceiptCoseResult {
-  // Fail-closed on a non-object keyring (round-16 #5): mirror verifyChain's round-15 #7 guard at the COSE
+  // Fail-closed on a non-object keyring: mirror verifyChain's non-object-keyring guard at the COSE
   // entry too, BEFORE any manifest work, so a null/array/non-object keyring is a clean ok:false here (not a
   // raw throw on a later `keyring[kid]`). coseSign1Verify guards as well; this keeps THIS entry point's own
   // contract fail-closed with a consistent reason.
   if (keyring === null || typeof keyring !== "object" || Array.isArray(keyring)) {
     return { ok: false, kid: null, receipt: null, reason: "keyring must be an object (kid -> base64 SPKI)", warnings: [] };
   }
-  // Validate the optional manifest AND SNAPSHOT it (fail-closed; matches verifyChain). Round-11 HIGH:
+  // Validate the optional manifest AND SNAPSHOT it (fail-closed; matches verifyChain). TOCTOU hardening:
   // read each entry EXACTLY ONCE into a plain Map, copying the array by value (slice captures element
   // values at copy time) so a getter entry / element-getter cannot return one value to this validation
   // pass and a different value to the enforcement read below (cross-agent impersonation TOCTOU). All
@@ -59,7 +59,7 @@ export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityMan
     if (typeof identityManifest !== "object" || identityManifest === null || Array.isArray(identityManifest)) {
       return { ok: false, kid: null, receipt: null, reason: "identityManifest must be an object (agent.id -> kid[])", warnings: [] };
     }
-    // GUARD the manifest read in try/catch (round-17 #5): the entries / array elements are caller-supplied LIVE
+    // GUARD the manifest read in try/catch: the entries / array elements are caller-supplied LIVE
     // values, so a hostile accessor (`get someAgent(){throw}` or a throwing element getter) must yield a clean
     // ok:false here, never escape as a RAW throw — mirroring verify.ts's manifest-validation guard. (verifyChain
     // wraps this in its own try; this COSE entry point needs its own, since it has no outer guard.)

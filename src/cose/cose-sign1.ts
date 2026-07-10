@@ -100,7 +100,7 @@ function validateProtectedAlg(protectedBytes: Buffer): ProtectedCheck {
     } else if (k.v === HDR_KID) {
       // A kid in the protected (signed) bucket MUST be a bstr. If present but mistyped, fail
       // CLOSED — never silently fall through to the UNSIGNED unprotected kid (that would
-      // downgrade the "signed kid cannot be stripped/swapped" guarantee). (cross-family QA)
+      // downgrade the "signed kid cannot be stripped/swapped" guarantee).
       if (val.t !== "bstr")
         return { ok: false, protectedKid: null, reason: "protected kid (label 4) must be a bstr" };
       protectedKid = val.v.toString("utf8");
@@ -115,7 +115,7 @@ function validateProtectedAlg(protectedBytes: Buffer): ProtectedCheck {
 
   // crit (RFC 9052 §3.1): every critical label MUST be one this verifier understands AND processes.
   // We process label 1 (alg — pinned to -19) and label 4 (kid — read for key resolution). A peer that
-  // marks EITHER critical is honored; any OTHER critical label is fail-closed (cross-family QA: matching
+  // marks EITHER critical is honored; any OTHER critical label is fail-closed (matching
   // the set we actually process keeps the verifier consistent with its own "reject only what you cannot
   // process" rule, instead of over-rejecting a draft-conformant kid-critical peer).
   if (critLabels !== null) {
@@ -134,8 +134,8 @@ function validateProtectedAlg(protectedBytes: Buffer): ProtectedCheck {
 
 /** Verify a COSE_Sign1: structure, Ed25519 alg, kid→keyring, signature. Never throws. */
 export function coseSign1Verify(coseBytes: Buffer, keyring: Keyring): CoseVerifyResult {
-  // Fail-closed on a non-object keyring (round-16 #5): mirrors verifyChain's round-15 #7 guard, which the
-  // round-15 fix did NOT propagate to the COSE path. A null keyring would throw a raw TypeError on
+  // Fail-closed on a non-object keyring: mirrors verifyChain's non-object-keyring guard, which had not
+  // originally propagated to the COSE path. A null keyring would throw a raw TypeError on
   // `keyring[kid]` below (violating "never throws"); an array / non-object is an operator error, not an empty
   // trust root. Reject cleanly as ok:false with the same "keyring must be an object" reason as verify.ts.
   if (keyring === null || typeof keyring !== "object" || Array.isArray(keyring)) {

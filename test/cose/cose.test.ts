@@ -77,7 +77,7 @@ test("COSE_Sign1: malformed CBOR ⇒ ok:false, no throw", () => {
   assert.equal(coseSign1Verify(Buffer.from([0x80]), { k: "x" }).ok, false); // empty array, not tag 18
 });
 
-test("ROUND-3: decoder REJECTS non-canonical CBOR (shortest-form + sorted/unique map keys)", () => {
+test("decoder REJECTS non-canonical CBOR (shortest-form + sorted/unique map keys)", () => {
   // non-minimal int heads (a strict COSE/SCITT verifier rejects these; so must NOA)
   assert.throws(() => decode(Buffer.from([0x19, 0x00, 0x05])), CborError); // 5 in 2 bytes
   assert.throws(() => decode(Buffer.from([0x18, 0x05])), CborError); // 5 in 1 byte
@@ -130,7 +130,7 @@ test("curve-pin: an Ed448 key + {1:-19} protected + genuine Ed448 signature is R
   assert.match(r.reason ?? "", /bad signature/); // reaches the verify step; rejected by the curve-type pin
 });
 
-test("ROUND-6: a truncated multi-byte CBOR head throws typed CborError (not raw RangeError) — contract + DoS guard", () => {
+test("a truncated multi-byte CBOR head throws typed CborError (not raw RangeError) — contract + DoS guard", () => {
   // Every truncated head width must surface the DOCUMENTED CborError, never Node's raw RangeError (which
   // would crash a contract-following `catch (e) { if (e instanceof CborError) …; throw e }` consumer).
   for (const b of [[0x18], [0x19, 0x00], [0x1a, 0x00, 0x00], [0x1b, 0, 0, 0, 0, 0, 0, 0], [0x58], [0x78]]) {
@@ -141,7 +141,7 @@ test("ROUND-6: a truncated multi-byte CBOR head throws typed CborError (not raw 
   assert.throws(() => decode(Buffer.from([0xd2, 0x84, 0x5a, 0x00, 0x00])), CborError);
 });
 
-test("ROUND-8: receiptFromCose identity binding — impersonation on the COSE path is caught + kid-level warned", () => {
+test("receiptFromCose identity binding — impersonation on the COSE path is caught + kid-level warned", () => {
   const alice = generateKeyPair("alice-key");
   const bob = generateKeyPair("bob-key");
   const keyring = { [alice.kid]: alice.publicKey, [bob.kid]: bob.publicKey };
@@ -165,7 +165,7 @@ test("ROUND-8: receiptFromCose identity binding — impersonation on the COSE pa
   assert.match(strong.reason ?? "", /not authorized for signing key/);
 });
 
-test("ROUND-11 HIGH: receiptFromCose identity binding is TOCTOU-safe — a flipping accessor manifest entry → ok:false (read-once snapshot)", () => {
+test("receiptFromCose identity binding is TOCTOU-safe — a flipping accessor manifest entry → ok:false (read-once snapshot)", () => {
   const alice = generateKeyPair("alice-key");
   const bob = generateKeyPair("bob-key");
   const keyring = { [alice.kid]: alice.publicKey, [bob.kid]: bob.publicKey };
@@ -193,11 +193,11 @@ test("ROUND-11 HIGH: receiptFromCose identity binding is TOCTOU-safe — a flipp
   assert.equal(reads, 1, "the COSE-path manifest entry must be read EXACTLY ONCE (snapshot)");
 });
 
-test("ROUND-16 #5: a non-object keyring (null / array / non-object) ⇒ clean ok:false, never throws (COSE path)", () => {
+test("a non-object keyring (null / array / non-object) ⇒ clean ok:false, never throws (COSE path)", () => {
   const kp = generateKeyPair("k");
   const cose = coseSign1(Buffer.from("x"), { kid: "k", privateKey: kp.privateKey });
 
-  // coseSign1Verify: null / array / non-object keyring → clean ok:false, doesNotThrow (round-15 #7 parity)
+  // coseSign1Verify: null / array / non-object keyring → clean ok:false, doesNotThrow (parity with verifyChain)
   for (const bad of [null, [], "x", 5]) {
     let r!: ReturnType<typeof coseSign1Verify>;
     assert.doesNotThrow(() => { r = coseSign1Verify(cose, bad as never); });
@@ -256,7 +256,7 @@ test("FWD-COMPAT (a''): a protected kid (label 4) that is NOT a bstr fails CLOSE
   const kp = generateKeyPair("real-key");
   const payload = Buffer.from("x", "utf8");
   // protected kid is mistyped (an int, not a bstr); a DECOY valid kid sits in the UNSIGNED unprotected
-  // bucket. The verifier must REJECT — never silently fall through to the unsigned kid. (cross-family QA, surface B)
+  // bucket. The verifier must REJECT — never silently fall through to the unsigned kid.
   const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encInt(42)]]);
   const unprot = encMap([[encInt(4), encBstr(Buffer.from("real-key", "utf8"))]]);
   const cose = buildCose(prot, unprot, payload, kp.privateKey);
@@ -286,7 +286,7 @@ test("FWD-COMPAT (b''): a crit listing the kid label {2:[4]} is accepted — we 
   const kp = generateKeyPair("k-crit-kid");
   const payload = Buffer.from("p", "utf8");
   // crit declares kid (4) critical. We read+use kid for key resolution → we process it → accept
-  // (closes the over-rejection of a draft-conformant kid-critical peer; cross-family QA, surface B).
+  // (closes the over-rejection of a draft-conformant kid-critical peer).
   const prot = encMap([
     [encInt(1), encInt(-19)],
     [encInt(2), encArray([encInt(4)])],
@@ -342,7 +342,7 @@ test("FWD-COMPAT (d): the legacy kid-in-UNPROTECTED envelope NOA itself emits ST
   assert.equal(r.kid, "k-legacy");
 });
 
-test("round-17 #5: receiptFromCose with a throwing-accessor identityManifest → clean ok:false, never throws", () => {
+test("receiptFromCose with a throwing-accessor identityManifest → clean ok:false, never throws", () => {
   const kp = generateKeyPair("k");
   const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
   const wrapped = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });

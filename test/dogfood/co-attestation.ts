@@ -135,7 +135,7 @@ export interface CoAttestationResult {
    * On ok:true, whether THIS call authenticated the carrier receipt (step 2 ran because a
    * receiptKeyring was supplied). When false, carrier authenticity was NOT checked here — the caller
    * MUST have already run verifyChain([receipt],{keyring}) → VALID, else a forged-but-self-consistent
-   * carrier could yield ok:true. Surfaced (QA-panel MED) so ok:true is self-describing about carrier
+   * carrier could yield ok:true. Surfaced so ok:true is self-describing about carrier
    * trust rather than silently depending on an unstated precondition.
    */
   carrierAuthenticated?: boolean;

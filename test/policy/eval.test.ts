@@ -81,8 +81,8 @@ test("type-mismatched input ⇒ fail-closed DENY (not an exception)", () => {
   assert.equal(r.ruleFired, "eval-error");
 });
 
-// ── ROUND-1 deep-audit regressions ──────────────────────────────────────────
-test("ROUND-1 HIGH: a typo'd `then` cannot become a silent permit (default-DENY bypass closed)", () => {
+// ── default-DENY / policy-validity fail-closed regressions ──────────────────
+test("a typo'd `then` cannot become a silent permit (default-DENY bypass closed)", () => {
   const evil = {
     spec: "noa.policy/0.2", id: "e", requiredPaths: ["amountMinor"],
     rules: [{ id: "b", when: { op: "ge", path: "amountMinor", value: 100 }, then: "DEN" }],
@@ -92,7 +92,7 @@ test("ROUND-1 HIGH: a typo'd `then` cannot become a silent permit (default-DENY 
   assert.equal(r.ruleFired, "policy-invalid");
 });
 
-test("ROUND-1: unknown op ⇒ policy-invalid DENY (a DENY rule can't silently vanish)", () => {
+test("unknown op ⇒ policy-invalid DENY (a DENY rule can't silently vanish)", () => {
   const bad = {
     spec: "noa.policy/0.2", id: "u", requiredPaths: [],
     rules: [{ id: "r", when: { op: "matches", path: "x", value: "y" }, then: "DENY" }],
@@ -102,7 +102,7 @@ test("ROUND-1: unknown op ⇒ policy-invalid DENY (a DENY rule can't silently va
   assert.equal(r.ruleFired, "policy-invalid");
 });
 
-test("ROUND-1: mixed-type `in` values ⇒ policy-invalid (no input-dependent ALLOW-or-throw)", () => {
+test("mixed-type `in` values ⇒ policy-invalid (no input-dependent ALLOW-or-throw)", () => {
   const bad = {
     spec: "noa.policy/0.2", id: "m", requiredPaths: [],
     rules: [{ id: "r", when: { op: "in", path: "a", values: [1, "x"] }, then: "ALLOW" }],
@@ -134,15 +134,15 @@ test("UTF-16 code-unit ordering (matches JCS/RFC-8785) — single canonical orde
   assert.deepEqual(rs, sorted);
 });
 
-// ── ROUND-2 deep-audit regressions ──────────────────────────────────────────
-test("ROUND-2: null/non-object input ⇒ fail-closed DENY (never an uncaught TypeError)", () => {
+// ── fail-closed input-shape + type-confusion regressions ────────────────────
+test("null/non-object input ⇒ fail-closed DENY (never an uncaught TypeError)", () => {
   assert.equal(evaluate(REFUND_POLICY, null as never).verdict, "DENY");
   assert.equal(evaluate(REFUND_POLICY, null as never).ruleFired, "input-invalid");
   assert.equal(evaluate(REFUND_POLICY, [] as never).verdict, "DENY");
   assert.equal(evaluate(REFUND_POLICY, "x" as never).verdict, "DENY");
 });
 
-test("ROUND-2: additionalProperties:false — an extra key anywhere ⇒ policy-invalid", () => {
+test("additionalProperties:false — an extra key anywhere ⇒ policy-invalid", () => {
   const extraOnRule = { ...REFUND_POLICY, rules: [{ id: "r", when: { op: "eq", path: "a", value: 1 }, then: "ALLOW", evil: 1 }] } as unknown as Policy;
   assert.equal(validatePolicy(extraOnRule).ok, false);
   const extraOnCond = { spec: "noa.policy/0.2", id: "p", requiredPaths: [], rules: [{ id: "r", when: { op: "eq", path: "a", value: 1, evil: 2 }, then: "DENY" }] } as unknown as Policy;
@@ -151,7 +151,7 @@ test("ROUND-2: additionalProperties:false — an extra key anywhere ⇒ policy-i
   assert.equal(validatePolicy(extraOnPolicy).ok, false);
 });
 
-test("ROUND-3: a throwing-getter / exotic input ⇒ fail-closed DENY (evaluate never throws)", () => {
+test("a throwing-getter / exotic input ⇒ fail-closed DENY (evaluate never throws)", () => {
   const evil: Record<string, unknown> = { action: "payment.refund" };
   Object.defineProperty(evil, "amountMinor", { enumerable: true, get() { throw new Error("boom"); } });
   const r = evaluate(REFUND_POLICY, evil as never);
@@ -159,14 +159,14 @@ test("ROUND-3: a throwing-getter / exotic input ⇒ fail-closed DENY (evaluate n
   assert.equal(r.ruleFired, "eval-error"); // not an uncaught Error
 });
 
-test("ROUND-3: required-absent is checked BEFORE scalar well-formedness (pinned ruleFired order)", () => {
+test("required-absent is checked BEFORE scalar well-formedness (pinned ruleFired order)", () => {
   // amountMinor is required AND absent; another field is a float → must report required-absent, not eval-error
   const r = evaluate(REFUND_POLICY, { action: "payment.refund", other: 1.5 } as never);
   assert.equal(r.verdict, "DENY");
   assert.match(r.ruleFired ?? "", /required-input-absent:amountMinor/);
 });
 
-test("ROUND-2: readSetHash type-confusion closed — string requiredPaths ≠ char-array", () => {
+test("readSetHash type-confusion closed — string requiredPaths ≠ char-array", () => {
   const asStr = { spec: "noa.policy/0.2", id: "p", requiredPaths: "ab", rules: [] } as unknown as Policy;
   const asArr = { spec: "noa.policy/0.2", id: "p", requiredPaths: ["a", "b"], rules: [] } as unknown as Policy;
   assert.notEqual(readSetHash(asStr), readSetHash(asArr)); // was an identical-hash collision
@@ -180,8 +180,8 @@ test("policyHash + readSet are stable + statically extracted", () => {
   assert.match(readSetHash(REFUND_POLICY), /^sha256:[0-9a-f]{64}$/);
 });
 
-// ── ROUND-4 deep-audit regression ───────────────────────────────────────────
-test("ROUND-4: a policy too deep to canonicalize is REJECTED by validatePolicy (no accept-but-unhashable window)", () => {
+// ── depth-cap / canonicalizability regression ───────────────────────────────
+test("a policy too deep to canonicalize is REJECTED by validatePolicy (no accept-but-unhashable window)", () => {
   // nestNot(N) = N `not` layers around {op:'exists'}. The per-condition depth cap counts condition
   // nesting only; canonicalize counts the policy→rules→[i]→when wrapper too, so depth ~61-64 used to be
   // validatePolicy().ok===true YET policyHash() threw an uncaught JcsError (and readSetHash did NOT —

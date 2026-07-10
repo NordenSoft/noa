@@ -8,7 +8,7 @@ import { policyHash, readSetHash, type Policy } from "../../src/policy/dsl.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const L2_DIR = join(__dirname, "..", "..", "..", "conformance", "l2");
-// Every committed L2 vector file is loaded (refund-guard = baseline; utf16-edge = E7/W4 UTF-16
+// Every committed L2 vector file is loaded (refund-guard = baseline; utf16-edge = the UTF-16
 // interop-landmine corpus). Any new file dropped here is conformance-checked automatically.
 const VEC_FILES = ["refund-guard.vectors.json", "utf16-edge.vectors.json"];
 
