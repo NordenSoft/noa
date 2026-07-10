@@ -88,6 +88,19 @@ export async function createProxyServer({
   // in practice exactly one, since one createProxyServer() instance serves one sessionId — but is
   // written generically in case a future caller multiplexes more than one session through a
   // shared queue helper.
+  //
+  // SELF-DRAINING (abrupt-disconnect-leak guard): `server.onclose` below already deletes THIS
+  // session's entry on a CLEAN disconnect, but an abrupt one (the host process is killed, the pipe
+  // dies without a clean MCP close) never fires `onclose` at all — without further care, the map
+  // would keep a permanently-settled, no-longer-useful promise reference around forever for that
+  // session. `runExclusiveForSession` below instead drains its OWN entry the moment its queued task
+  // settles AND no NEWER call has queued behind it since (the identity check — `=== tail` — makes
+  // this race-safe: if a second call queued in the meantime, the map already holds a DIFFERENT tail,
+  // so this stale settle-callback correctly does nothing). Steady-state (no in-flight call for a
+  // session) therefore holds ZERO entries, regardless of whether `onclose` ever fires — bounding
+  // this map's size, at any instant, to "the number of DISTINCT sessionIds with an in-flight call
+  // RIGHT NOW", which for this factory's current one-sessionId-per-instance usage is hard-bounded
+  // to 1 by construction (a future multi-session caller inherits the same per-session drain).
   const sessionCallQueues = new Map();
   function runExclusiveForSession(id, task) {
     const prior = sessionCallQueues.get(id) ?? Promise.resolve();
@@ -97,7 +110,11 @@ export async function createProxyServer({
     // The stored tail is a SEPARATE, always-resolving promise, decoupled from `next` (the one
     // returned to THIS call's own caller) — so a rejection here never poisons the chain for the
     // NEXT queued call, while `next` itself still faithfully rejects for the awaiting caller.
-    sessionCallQueues.set(id, next.then(() => undefined, () => undefined));
+    const tail = next.then(() => undefined, () => undefined);
+    sessionCallQueues.set(id, tail);
+    tail.then(() => {
+      if (sessionCallQueues.get(id) === tail) sessionCallQueues.delete(id);
+    });
     return next;
   }
 
