@@ -98,3 +98,22 @@ test("verifyEd25519 REJECTS a malleated signature S' = S+L over a genuinely-sign
 
   assert.equal(verifyEd25519(kp.publicKey, msg, malleated), false);
 });
+
+test("verifyEd25519 REJECTS the EXACT boundary S = L (only S < L is canonical, not S <= L)", () => {
+  // The malleability test above only exercised S' = S+L (strictly greater than L). This pins the
+  // boundary itself: S == L is congruent to S == 0 mod L, so it is cryptographically "valid" under the
+  // group's equation, but it is NOT the canonical scalar encoding — `if (S >= L) return false` must
+  // reject S === L, not just S > L. A `S > L` (strict) check would let this exact value slip through.
+  const L = 2n ** 252n + 27742317777372353535851937790883648493n;
+  const kp = generateKeyPair("k-boundary");
+  const msg = Buffer.from("authorize:payment.refund:CRITICAL", "utf8");
+  const sig = signEd25519(kp.privateKey, msg);
+  const sigBytes = Buffer.from(sig, "base64"); // keep R (bytes 0..31) from a genuine signature
+
+  let Sexact = L; // S = L exactly, little-endian
+  const sBytes = Buffer.alloc(32);
+  for (let i = 0; i < 32; i++) { sBytes[i] = Number(Sexact & 0xffn); Sexact >>= 8n; }
+  const atBoundary = Buffer.concat([sigBytes.subarray(0, 32), sBytes]).toString("base64");
+
+  assert.equal(verifyEd25519(kp.publicKey, msg, atBoundary), false);
+});
