@@ -228,6 +228,50 @@ test("an array-like with a throwing `length` getter → MALFORMED (never throws 
   assert.match(res.reason ?? "", /length is not readable/);
 });
 
+test("a `length` getter that returns a VALID number on the first read, then throws on every later read → MALFORMED (the catch never re-reads the live length)", () => {
+  // Regression for the "validation/ordering" catch inside verifyChain: it used to report `receipts.length`
+  // (a SECOND, live read of the caller's array) instead of the `n` captured by the ONE guarded read above.
+  // A length-accessor that lies clean on read #1 (satisfying every bounds check) and throws afterward would
+  // make that catch's OWN return statement raw-throw — a fail-closed path whose entire job is "never throw"
+  // becoming the very thing that throws. The fix captures `n` once and never re-reads `receipts.length`.
+  //
+  // Reachability note (documented honestly, not asserted as an exploit): Array.isArray only accepts a real
+  // Array or a Proxy wrapping one; Node's structuredClone unconditionally refuses ANY Proxy-wrapped array
+  // (DataCloneError, independent of what any trap does — verified empirically), so a flipping-length Proxy
+  // is neutralized one step earlier, at the (already-correct, `n`-based) receiptsSnap clone guard, before
+  // the "validation/ordering" try block is ever entered. This test therefore pins the OBSERVABLE end-to-end
+  // contract the fix protects — verifyChain never raw-throws and reports a safe, captured count, no matter
+  // how a hostile array-like's `length` misbehaves across repeated reads — across the WHOLE never-throws
+  // surface (guard, clone, and validation/ordering catches alike), the same invariant the fix restores.
+  let reads = 0;
+  const flipping = new Proxy([{ id: "r0" }], {
+    get(t, k, r) {
+      if (k === "length") {
+        reads++;
+        if (reads === 1) return Reflect.get(t, k, r); // valid on the guarded first read
+        throw new Error("boom-on-later-read");
+      }
+      return Reflect.get(t, k, r);
+    },
+  });
+  let res!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { res = verifyChain(flipping, { keyring }); });
+  assert.equal(res.status, "MALFORMED");
+  assert.ok(Number.isSafeInteger(res.count) && res.count >= 0, `count must be a safe captured number, got ${res.count}`);
+  assert.ok(reads >= 1, "the length getter must have been read at least once (the guarded capture)");
+
+  // Same hostile array-like, PLUS a throwing identityManifest entry-getter in opts: the whole-opts snapshot
+  // at the top of verifyChain runs BEFORE the array is ever touched, so the manifest failure is reported
+  // first (count 0) — still never a raw throw, and never a live re-read of either hostile input.
+  reads = 0;
+  const evilManifest: Record<string, unknown> = {};
+  Object.defineProperty(evilManifest, "a1", { enumerable: true, configurable: true, get() { throw new Error("boom-manifest"); } });
+  let res2!: ReturnType<typeof verifyChain>;
+  assert.doesNotThrow(() => { res2 = verifyChain(flipping, { keyring, identityManifest: evilManifest as never }); });
+  assert.equal(res2.status, "MALFORMED");
+  assert.equal(reads, 0, "opts is snapshotted before receipts is ever touched, so the length getter must not fire here");
+});
+
 test("checkpoint sig sub-object is strict (extra field / bad alg → malformed)", () => {
   const sigExtra = { ...checkpoint, sig: { ...checkpoint.sig, smuggled: "ssn=123" } } as unknown as Checkpoint;
   assert.equal(verifyCheckpoint(sigExtra, keyring), "malformed checkpoint"); // additionalProperties on sig

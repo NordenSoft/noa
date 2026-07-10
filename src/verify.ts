@@ -244,7 +244,12 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       }
     }
   } catch {
-    return fail("MALFORMED", "input object threw during validation/ordering", null, receipts.length);
+    // Use the captured `n` (read once, guarded, above), never re-read `receipts.length` here: a
+    // flipping length-accessor that returns a valid number on the first read (past the bounds
+    // check above) and throws on a second read would otherwise escape this catch as a raw,
+    // uncaught throw — violating the "never throws" contract from inside the fail-closed path
+    // whose entire job is to prevent exactly that.
+    return fail("MALFORMED", "input object threw during validation/ordering", null, n);
   }
 
   const haveKeyring = o.keyring !== undefined;
