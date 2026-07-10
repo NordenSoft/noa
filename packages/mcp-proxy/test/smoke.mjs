@@ -19,6 +19,8 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
@@ -29,6 +31,7 @@ import { TRANSFER_GUARD_POLICY } from "../src/policy.mjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEMO_DOWNSTREAM = path.join(__dirname, "..", "src", "demo-downstream.mjs");
 const PROXY_CLI = path.join(__dirname, "..", "src", "proxy.mjs");
+const execFileAsync = promisify(execFile);
 
 let fail = 0;
 function ok(label, cond) {
@@ -506,6 +509,68 @@ async function main() {
   const vRun2 = verifyChain(receiptsRun2, { keyring: persistedKeyring });
   ok(`(n) run 1's receipt verifies VALID under the persisted key (status=${vRun1.status})`, vRun1.status === "VALID");
   ok(`(n) run 2's receipt (after restart) ALSO verifies VALID under the SAME persisted key (status=${vRun2.status})`, vRun2.status === "VALID");
+
+  // ---------------------------------------------------------------------------------------
+  // BONUS O: --key-file symlink-attack guard (CWE-367 / TOCTOU) — the real CLI process, spawned
+  // against three attacker-planted paths, must fail closed (non-zero exit) in every case and must
+  // NEVER clobber an existing file's content/permissions nor redirect the freshly-generated private
+  // key to an attacker-chosen target.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus O — --key-file symlink-attack guard (CWE-367), real CLI process");
+
+  async function runProxyExpectingFailure(keyFilePath) {
+    try {
+      await execFileAsync(process.execPath, [
+        PROXY_CLI, "--session-id", "symlink-attack-probe", "--key-file", keyFilePath,
+        "--", process.execPath, DEMO_DOWNSTREAM,
+      ], { timeout: 5000 });
+      return { failed: false, stderr: "" };
+    } catch (err) {
+      return { failed: true, code: err.code, stderr: err.stderr ?? "" };
+    }
+  }
+
+  // O(a): dangling-symlink redirect — attacker plants a symlink at the operator's configured
+  // --key-file path, pointing at a location the attacker can read but the operator never intended.
+  const dirOa = fs.mkdtempSync(path.join(os.tmpdir(), "noa-mcp-proxy-symlink-oa-"));
+  const intendedOa = path.join(dirOa, "operator-dir", "keyfile.json");
+  const redirectedOa = path.join(dirOa, "attacker-readable", "redirected.json");
+  fs.mkdirSync(path.dirname(intendedOa), { recursive: true });
+  fs.mkdirSync(path.dirname(redirectedOa), { recursive: true });
+  fs.symlinkSync(redirectedOa, intendedOa);
+  const resultOa = await runProxyExpectingFailure(intendedOa);
+  ok("(o-a) CLI fails closed (non-zero exit) against a dangling-symlink --key-file target", resultOa.failed);
+  ok("(o-a) CLI's stderr names the symlink guard", /symlink/i.test(resultOa.stderr));
+  ok("(o-a) the private key was NOT written to the attacker-chosen redirected path", !fs.existsSync(redirectedOa));
+  fs.rmSync(dirOa, { recursive: true, force: true });
+
+  // O(b): existing-file clobber — attacker plants a symlink pointing at a file that ALREADY exists
+  // (e.g. another operator's real credential) — the CLI must refuse, leaving it byte-for-byte and
+  // permission-for-permission untouched.
+  const dirOb = fs.mkdtempSync(path.join(os.tmpdir(), "noa-mcp-proxy-symlink-ob-"));
+  const victimOb = path.join(dirOb, "victim-authorized_keys");
+  const attackKeyFileOb = path.join(dirOb, "shared", "keyfile.json");
+  fs.mkdirSync(path.dirname(attackKeyFileOb), { recursive: true });
+  fs.writeFileSync(victimOb, "ssh-ed25519 AAAA...legitimate-victim-key\n", { mode: 0o644 });
+  fs.symlinkSync(victimOb, attackKeyFileOb);
+  const beforeOb = { content: fs.readFileSync(victimOb, "utf8"), mode: fs.statSync(victimOb).mode & 0o777 };
+  const resultOb = await runProxyExpectingFailure(attackKeyFileOb);
+  const afterOb = { content: fs.readFileSync(victimOb, "utf8"), mode: fs.statSync(victimOb).mode & 0o777 };
+  ok("(o-b) CLI fails closed (non-zero exit) against a symlink-to-an-existing-file --key-file target", resultOb.failed);
+  ok("(o-b) the victim file's content is byte-for-byte unchanged (no clobber)", beforeOb.content === afterOb.content);
+  ok("(o-b) the victim file's permissions are unchanged (not forced to 0600)", beforeOb.mode === afterOb.mode);
+  fs.rmSync(dirOb, { recursive: true, force: true });
+
+  // O(c): an EXISTING (non-symlink) --key-file with loose permissions must be refused, not
+  // silently trusted — a private key file left world/group-readable is an operator misconfiguration
+  // the CLI must surface, not paper over.
+  const dirOc = fs.mkdtempSync(path.join(os.tmpdir(), "noa-mcp-proxy-symlink-oc-"));
+  const looseKeyFileOc = path.join(dirOc, "loose-keyfile.json");
+  fs.writeFileSync(looseKeyFileOc, JSON.stringify({ kid: "k", privateKey: "p", publicKey: "q" }), { mode: 0o644 });
+  const resultOc = await runProxyExpectingFailure(looseKeyFileOc);
+  ok("(o-c) CLI fails closed (non-zero exit) against a world-readable (mode 0644) --key-file", resultOc.failed);
+  ok("(o-c) CLI's stderr names the loose-permissions refusal", /group or others|0600/i.test(resultOc.stderr));
+  fs.rmSync(dirOc, { recursive: true, force: true });
 
   // ---------------------------------------------------------------------------------------
   // BONUS G: downstream connection failure at proxy STARTUP must fail closed (non-zero exit,
