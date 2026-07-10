@@ -137,21 +137,33 @@ export function verifyReceiptCompliance(
     // / non-cloneable arg fails closed (ok:false), honoring the "never throws" contract.
     const policySnap = structuredClone(policy) as Policy;
     const inputsSnap = structuredClone(inputs) as InputSnapshot;
+    // SNAPSHOT opts ONCE (hostile-accessor parity with verify.ts:95). `opts.keyring` and
+    // `opts.identityManifest` are caller-supplied and read MORE THAN ONCE below (the presence gate, then the
+    // value that carrier-auth / identity-binding actually use). A flipping accessor — `get keyring(){ return
+    // n++ === 0 ? undefined : realKeyring }` (undefined on read#1, a value later, or vice-versa) — could
+    // split the `!== undefined` presence check from the auth that depends on it, skipping carrier-auth while
+    // still returning ok:true. structuredClone deep-copies opts ONCE into plain, accessor-free data (firing
+    // every getter EXACTLY ONCE); a non-cloneable / throwing-getter opts is caught by the outer try → ok:false
+    // (fail-closed). A null/undefined opts normalizes to `{}` (the default-param only fills a MISSING arg, not
+    // an explicit null). EVERY opts read below is from `o`, never the live `opts`. (verifyChainText/CLI/Python
+    // consume parse output — no accessors — so are immune; this guards the in-process object API.)
+    const o: VerifyComplianceOptions =
+      (opts === null || opts === undefined) ? {} : (structuredClone(opts) as VerifyComplianceOptions);
     // CARRIER AUTHENTICATION: when a keyring is supplied, prove the receipt itself is
     // genuine BEFORE trusting its compliance block — otherwise a forged/tampered receipt (verifyChain ⇒
     // TAMPERED) would still get a green "compliant" signal off its attacker-mutable governance.compliance.
     //
-    // PRESENCE, not truthiness: `opts.keyring !== undefined` (mirrors verify.ts's `haveKeyring`). A prior
+    // PRESENCE, not truthiness: `o.keyring !== undefined` (mirrors verify.ts's `haveKeyring`). A prior
     // `if (opts.keyring)` truthy-check let ANY falsy-but-supplied keyring (`""`, `0`, `null`) silently
     // SKIP carrier-auth entirely — the caller explicitly asked to authenticate the carrier and the check
     // never ran, yet ok:true could still come back. Presence-gating + the non-object guard immediately
     // below makes every supplied-but-malformed keyring fail CLOSED instead of being ignored.
-    const haveKeyring = opts.keyring !== undefined;
-    if (haveKeyring && (typeof opts.keyring !== "object" || opts.keyring === null || Array.isArray(opts.keyring))) {
+    const haveKeyring = o.keyring !== undefined;
+    if (haveKeyring && (typeof o.keyring !== "object" || o.keyring === null || Array.isArray(o.keyring))) {
       return { ok: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
     }
     if (haveKeyring) {
-      const keyring = opts.keyring as Keyring;
+      const keyring = o.keyring as Keyring;
       const shape = validateReceiptShape(snap);
       if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
       const hashInput = receiptHashInput(snap);
@@ -171,8 +183,8 @@ export function verifyReceiptCompliance(
       // arrays sliced by value) so a flipping accessor cannot split validation from enforcement; read agent.id
       // / sig.kid from the read-once `snap`, never the live receipt. (Inside the outer try ⇒ a throwing manifest
       // accessor fails closed.)
-      if (opts.identityManifest !== undefined) {
-        const live = opts.identityManifest;
+      if (o.identityManifest !== undefined) {
+        const live = o.identityManifest;
         if (typeof live !== "object" || live === null || Array.isArray(live)) {
           return { ok: false, reason: "identityManifest must be an object (agent.id -> kid[])" };
         }
