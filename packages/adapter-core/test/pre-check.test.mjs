@@ -90,6 +90,41 @@ test("preCheck: paramsHash falls back gracefully (never throws) when args aren't
   assert.match(r.receipt.action.paramsHash, /^sha256:/);
 });
 
+test("preCheck: paramsHash's fallback is key-order-independent (unlike a raw JSON.stringify fallback)", () => {
+  const { signer } = signerAndKeyring("test-key-8c");
+  // Both objects need a float leaf (rate) to force the JCS-refusal fallback path, and differently
+  // ordered keys — a raw `JSON.stringify(value)` fallback would hash these to DIFFERENT strings
+  // (insertion-order-dependent); the stable-stringify fallback sorts keys, so they must agree.
+  const r1 = preCheck({ name: "payment.refund", args: { rate: 0.5, recipient: "bob", note: "hi" } }, { signer, policy: REFUND_GUARD_POLICY });
+  const r2 = preCheck({ name: "payment.refund", args: { note: "hi", recipient: "bob", rate: 0.5 } }, { signer, policy: REFUND_GUARD_POLICY });
+  assert.equal(r1.receipt.action.paramsHash, r2.receipt.action.paramsHash, "the fallback path must also be key-order-independent");
+});
+
+test("preCheck: circular-reference args never throw (fail-closed DENY, not a crash) — both JCS and the stable-stringify fallback refuse it", () => {
+  const { signer } = signerAndKeyring("test-key-circular");
+  const circular = { a: 1 };
+  circular.self = circular;
+  assert.doesNotThrow(() => preCheck({ name: "payment.refund", args: circular }, { signer, policy: REFUND_GUARD_POLICY }));
+  const r = preCheck({ name: "payment.refund", args: circular }, { signer, policy: REFUND_GUARD_POLICY });
+  // Genuinely uncanonicalizable content (neither JCS nor the fallback can represent it) forces the
+  // WHOLE call fail-closed DENY, not just a non-throwing hash — see canonicalParamsHash's docstring.
+  assert.equal(r.decision, "DENY");
+  assert.equal(r.receipt.governance.ruleId, "args-uncanonicalizable");
+  assert.equal(r.receipt.governance.compliance, null, "nothing valid to commit for uncanonicalizable args");
+  assert.match(r.receipt.action.paramsHash, /^sha256:/);
+});
+
+test("preCheck: a bigint leaf in args never throws — handled by the stable-stringify fallback, not forced to DENY (unlike a genuinely circular structure)", () => {
+  const { signer } = signerAndKeyring("test-key-bigint");
+  assert.doesNotThrow(() => preCheck({ name: "payment.refund", args: { amountMinor: 100, big: 123n } }, { signer, policy: REFUND_GUARD_POLICY }));
+  const r = preCheck({ name: "payment.refund", args: { amountMinor: 100, big: 123n } }, { signer, policy: REFUND_GUARD_POLICY });
+  // A bigint is representable by the stable-stringify fallback (unlike a circular reference), so
+  // this is NOT the "args-uncanonicalizable" fail-closed path — the normal policy decision
+  // (ALLOW, amountMinor=100 is small) still applies.
+  assert.equal(r.decision, "ALLOW");
+  assert.notEqual(r.receipt.governance.ruleId, "args-uncanonicalizable");
+});
+
 test("preCheck: full args are visible to the policy under an args.* prefix — a new rule can read args.recipient", () => {
   const { signer } = signerAndKeyring("test-key-9");
   // A policy that ONLY the args-projection change makes expressible: deny any refund whose
@@ -148,15 +183,95 @@ test("preCheck: full args are visible to the policy under an args.* prefix — a
   assert.equal(nestedDeny.receipt.governance.ruleId, "deny-embargoed-country");
 });
 
-test("preCheck: an unrelated float elsewhere in args does not deny the whole call (only the invalid path stays absent)", () => {
+test("preCheck: an unrelated float elsewhere in args does not deny the whole call (projected as a visible string, not silently poisoning unrelated fields)", () => {
   const { signer } = signerAndKeyring("test-key-10");
-  // rate=0.5 is not a valid policy scalar and is simply omitted from the projected args.* inputs —
-  // it must NOT poison evaluation of the unrelated `action`/`amountMinor` fields the policy reads.
+  // rate=0.5 is not a valid policy scalar for evaluate()'s integer-only assertion, but is now
+  // projected as a canonical decimal STRING (args.rate = "0.5"), not silently omitted (see
+  // flattenArgsToPolicyInputs's docstring) — the point of this test is that a rule reading an
+  // UNRELATED path (`action`/`amountMinor`) is completely unaffected by this visible-but-irrelevant
+  // field either way.
   const r = preCheck(
     { name: "payment.refund", args: { amountMinor: 4200, rate: 0.5 } },
     { signer, policy: REFUND_GUARD_POLICY },
   );
   assert.equal(r.decision, "ALLOW");
+  assert.equal(r.evidence.inputs["args.rate"], "0.5", "the float is visible to the policy as a canonical decimal string, not absent");
+});
+
+test("preCheck: a float leaf that would have been silently omitted (omission-bypass) is now VISIBLE — a magnitude rule fails closed instead of silently falling through to an unrelated ALLOW", () => {
+  const { signer } = signerAndKeyring("test-key-float-omission-bypass");
+  const AMOUNT_LIMIT_POLICY = {
+    spec: "noa.policy/0.2",
+    id: "amount-limit-guard-repro",
+    requiredPaths: [],
+    rules: [
+      { id: "deny-over-limit", when: { op: "ge", path: "args.amount", value: 1_000_000 }, then: "DENY" },
+      { id: "allow-wire-transfer", when: { op: "eq", path: "action", value: "wire.transfer" }, then: "ALLOW" },
+    ],
+  };
+  // Pre-fix: args.amount (a float) was OMITTED entirely from the projected inputs -> the
+  // deny-over-limit rule's condition read `undefined` -> false (a missing path never matches) ->
+  // fell through to allow-wire-transfer -> ALLOW. This was the omission-bypass: an over-limit
+  // amount silently invisible to the very rule meant to catch it.
+  const r = preCheck(
+    { name: "wire.transfer", args: { amount: 1_000_000.5 } },
+    { signer, policy: AMOUNT_LIMIT_POLICY },
+  );
+  // Post-fix: args.amount is projected as the string "1000000.5" -> deny-over-limit's `ge`
+  // comparison (a string value against a NUMBER policy literal) is a type mismatch ->
+  // evaluate()'s cmp() throws PolicyError -> evaluate() itself fails closed to DENY ("eval-error")
+  // rather than silently reading the path as absent and falling through to the permissive rule.
+  assert.equal(r.decision, "DENY");
+  assert.equal(r.evidence.inputs["args.amount"], "1000000.5");
+});
+
+test("preCheck: a nested value + a literal dotted top-level key at the SAME flattened path — DENY, fail-closed (no decoy-wins-collision bypass)", () => {
+  const { signer } = signerAndKeyring("test-key-dotkey-bypass");
+  const policy = {
+    spec: "noa.policy/0.2",
+    id: "transfer-guard-repro",
+    requiredPaths: [],
+    rules: [
+      { id: "deny-big-transfer", when: { op: "ge", path: "args.transfer.amount", value: 1_000_000 }, then: "DENY" },
+      { id: "allow-transfer", when: { op: "eq", path: "action", value: "wire.transfer" }, then: "ALLOW" },
+    ],
+  };
+  // The exact repro: a genuine over-limit nested value PLUS a decoy literal-dotted top-level key at
+  // the identical flattened path, inserted LAST so it would previously win the last-write-wins
+  // collision in Object.keys() insertion order.
+  const args = {
+    transfer: { amount: 999_999_999, recipient: "attacker-acct" },
+    "transfer.amount": 1,
+  };
+  const r = preCheck({ name: "wire.transfer", args }, { signer, policy });
+  assert.equal(r.decision, "DENY", "an ambiguous dotted key must fail the WHOLE call closed, never let a decoy value win");
+  assert.equal(r.evidence.inputs["args.transfer.amount"], undefined, "no ambiguous path is ever projected into the policy inputs at all");
+  assert.equal(r.receipt.governance.compliance, null, "an ambiguous-key call commits no compliance block — nothing valid to replay");
+});
+
+test("preCheck: a plain nested object (no dotted keys) still projects and evaluates normally — the ambiguity guard has no false positives", () => {
+  const { signer } = signerAndKeyring("test-key-dotkey-regression");
+  const policy = {
+    spec: "noa.policy/0.2",
+    id: "transfer-guard-regression",
+    requiredPaths: [],
+    rules: [
+      { id: "deny-big-transfer", when: { op: "ge", path: "args.transfer.amount", value: 1_000_000 }, then: "DENY" },
+      { id: "allow-transfer", when: { op: "eq", path: "action", value: "wire.transfer" }, then: "ALLOW" },
+    ],
+  };
+  const deny = preCheck(
+    { name: "wire.transfer", args: { transfer: { amount: 999_999_999, recipient: "attacker-acct" } } },
+    { signer, policy },
+  );
+  assert.equal(deny.decision, "DENY");
+  assert.equal(deny.receipt.governance.ruleId, "deny-big-transfer");
+
+  const allow = preCheck(
+    { name: "wire.transfer", args: { transfer: { amount: 50, recipient: "ok-acct" } } },
+    { signer, policy },
+  );
+  assert.equal(allow.decision, "ALLOW");
 });
 
 test("createChainSessionStore: two sessions get independent {prev,seq} — no cross-session leakage", () => {
