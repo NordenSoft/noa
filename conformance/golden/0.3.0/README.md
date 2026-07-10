@@ -1,0 +1,53 @@
+# Golden backcompat vectors — frozen v0.3.0 output
+
+**These files are FROZEN. Never regenerate them, never edit them by hand, never re-run a
+generator against them.** They exist to answer one question forever: *does a receipt chain that
+`noa-receipt@0.3.0` actually built and signed still verify with today's — and every future —
+`verifyChain`/`verifyChainText`?*
+
+This is a different guarantee than [`conformance/vectors/`](../vectors), which IS regenerated on
+every `npm test` run (from the *current* source, gated by `git status --porcelain` staying
+clean in CI). That catches "the generator's output changed" for the in-development version. It
+cannot catch "a change silently broke a receipt chain that a real `0.3.0` install already
+produced and handed to a customer, years ago" — because it re-derives its own expected bytes
+from the same code being tested. These golden vectors sidestep that: the bytes below were
+produced ONCE by an actual `v0.3.0` checkout (`git tag v0.3.0`, built from that exact source,
+not HEAD) and are asserted against verbatim, forever, by
+[`test/golden-backcompat.test.ts`](../../../test/golden-backcompat.test.ts).
+
+## Provenance
+
+Generated from git tag `v0.3.0` — **commit `26cb18c8ded76e782dc41198b9cf7d12ca95ef05`** (the
+exact SHA is recorded in [`MANIFEST.json`](MANIFEST.json) `commit`; verify with
+`git rev-parse v0.3.0^{commit}`). The tag was checked out into an isolated worktree, built there
+(`npm ci && npm run build`), and the generator script `scripts/gen-golden-vectors.mjs` was run
+against **that** build's `dist/src/{builder,hash}.js` (see the script's header comment for the
+exact invocation), NOT this repo's current `dist/`. The signing keys are fixed, hardcoded,
+TEST-ONLY Ed25519 keypairs (`golden-signer-1`, `golden-signer-2`, `golden-signer-a`,
+`golden-signer-b`) — their private keys are intentionally public in the generator script; never
+reuse them for anything real.
+
+This snapshot freezes **9 signed artifacts: 8 receipts** (1 genesis + 4 multi + 2 identity + 1
+impersonation) **+ 1 signed checkpoint** — the counts are also machine-asserted in
+`test/golden-backcompat.test.ts` against `MANIFEST.json`'s `receiptCount`/`checkpointCount`.
+
+`scripts/gen-golden-vectors.mjs` is committed for reproducibility/audit (so anyone can re-derive
+these exact bytes from the `v0.3.0` tag and diff), but it is **not** wired into `npm test` or any
+CI step — running it is a conscious, manual, one-time action taken only when *adding a new
+version's* golden snapshot (e.g. a future `conformance/golden/0.4.0/`), never to touch an
+existing frozen directory.
+
+## Scenarios
+
+| Directory | Contents | Represents |
+|---|---|---|
+| `genesis/` | `chain.json` (1 receipt, seq 0 only), `keyring.json` | The minimal valid chain: a lone genesis receipt. |
+| `multi/` | `chain.json` (4 receipts, 2 different signing agents), `keyring.json`, `checkpoint.json` | A realistic multi-agent chain spanning `DEFERRED`/`EXECUTED`/`BLOCKED` verdicts and `LOW`/`HIGH`/`CRITICAL` risk classes, plus a signed checkpoint over its head. |
+| `identity/` | `chain.json` (2 agents, each signing with its own key), `keyring.json`, `manifest.json`, `impersonation-chain.json` | The `identityManifest` (agent.id → authorized kid) binding, plus a frozen cross-agent-impersonation attempt (`agent.id` claims one identity, signed by the *other* agent's key). |
+
+See [`test/golden-backcompat.test.ts`](../../../test/golden-backcompat.test.ts) for the exact
+scenario → options → expected-verdict table asserted against these files (VALID / UNVERIFIED /
+TAMPERED / UNTRUSTED are all represented — a *security check that used to fire and stopped
+firing* is exactly as much a backcompat break as a *valid chain that stopped verifying*). This
+directory is unrelated to [`conformance/MATRIX.md`](../MATRIX.md), the TS↔Python
+cross-implementation pass/fail matrix.

@@ -1,0 +1,41 @@
+[
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "rcpt_golden_genesis_0000000001",
+    "ts": "2026-05-01T09:00:00.000Z",
+    "scope": {
+      "tenant": "golden_tenant",
+      "chain": "golden_genesis_chain"
+    },
+    "agent": {
+      "id": "golden-agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:216c7106b5e2c9310b550a44b1dcb230b01bd9937613af5db0469cbfa88e783e",
+      "reversible": false,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "EXECUTED",
+      "ruleId": "golden-rule-1",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 0,
+      "prevHash": null,
+      "hash": "sha256:c5f7754965f371581ee66e7e0463f4f64c83b329c816229351868f74df41d4af"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "golden-signer-1",
+      "value": "26rX7oAJjeAss6yWGo1EDihDGmwVgk5cCQBX+pCRg9VJxm6PU7lyTGmz5Ldn9TLwTgitCuW8NTDKR3zAdWenAQ=="
+    }
+  }
+]

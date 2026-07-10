@@ -55,8 +55,9 @@
     "test:dogfood": "vitest run test/dogfood/",
     "lint:publish-surface": "node scripts/lint-published-surface.mjs",
     "verify": "node dist/src/cli.js verify",
+    "check:matrix": "node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md",
     "prepare": "npm run build",
-    "prepublishOnly": "npm test && npm run test:dogfood && node impl-py/conformance.mjs && npm run lint:publish-surface"
+    "prepublishOnly": "npm test && npm run test:dogfood && node impl-py/conformance.mjs && npm run lint:publish-surface && npm run check:matrix"
   },
   "dependencies": {},
   "devDependencies": {

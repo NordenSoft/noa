@@ -1,0 +1,72 @@
+{
+  "version": "0.3.0",
+  "commit": "26cb18c8ded76e782dc41198b9cf7d12ca95ef05",
+  "producedFrom": "git tag v0.3.0 (commit 26cb18c8ded76e782dc41198b9cf7d12ca95ef05), checked out into an isolated worktree and built there (npm ci && npm run build) — NOT HEAD. Reproduce exactly: `git rev-parse v0.3.0^{commit}` must equal `commit` above.",
+  "generator": "scripts/gen-golden-vectors.mjs",
+  "receiptCount": 8,
+  "checkpointCount": 1,
+  "artifactBreakdown": "8 signed receipts (1 genesis + 4 multi + 2 identity + 1 impersonation) + 1 signed checkpoint = 9 signed artifacts total",
+  "note": "These files are frozen. See README.md. Consumed only by test/golden-backcompat.test.ts — which HARDCODES its own security verdicts and treats this manifest as documentation only (the `expected` fields below are cross-checked against the test-code oracle, never the source of truth for it).",
+  "scenarios": [
+    {
+      "name": "genesis-valid-with-keyring",
+      "files": { "chain": "genesis/chain.json", "keyring": "genesis/keyring.json" },
+      "options": { "keyring": true },
+      "expected": { "status": "VALID", "signaturesVerified": true, "count": 1 }
+    },
+    {
+      "name": "genesis-no-keyring",
+      "files": { "chain": "genesis/chain.json" },
+      "options": { "keyring": false },
+      "expected": { "status": "UNVERIFIED", "signaturesVerified": false, "count": 1 }
+    },
+    {
+      "name": "multi-valid-with-keyring",
+      "files": { "chain": "multi/chain.json", "keyring": "multi/keyring.json" },
+      "options": { "keyring": true },
+      "expected": { "status": "VALID", "signaturesVerified": true, "count": 4 }
+    },
+    {
+      "name": "multi-no-keyring",
+      "files": { "chain": "multi/chain.json" },
+      "options": { "keyring": false },
+      "expected": { "status": "UNVERIFIED", "signaturesVerified": false, "count": 4 }
+    },
+    {
+      "name": "multi-valid-with-checkpoint",
+      "files": { "chain": "multi/chain.json", "keyring": "multi/keyring.json", "checkpoint": "multi/checkpoint.json" },
+      "options": { "keyring": true, "checkpoint": true },
+      "expected": { "status": "VALID", "signaturesVerified": true, "tailChecked": true, "count": 4 }
+    },
+    {
+      "name": "multi-truncated-with-checkpoint",
+      "files": { "chain": "multi/chain.json", "keyring": "multi/keyring.json", "checkpoint": "multi/checkpoint.json" },
+      "options": { "keyring": true, "checkpoint": true, "chainTransform": "dropLast" },
+      "expected": { "status": "TAMPERED" }
+    },
+    {
+      "name": "identity-valid-with-manifest",
+      "files": { "chain": "identity/chain.json", "keyring": "identity/keyring.json", "identityManifest": "identity/manifest.json" },
+      "options": { "keyring": true, "identityManifest": true },
+      "expected": { "status": "VALID", "signaturesVerified": true, "count": 2 }
+    },
+    {
+      "name": "identity-valid-no-manifest-kid-level",
+      "files": { "chain": "identity/chain.json", "keyring": "identity/keyring.json" },
+      "options": { "keyring": true },
+      "expected": { "status": "VALID", "signaturesVerified": true, "count": 2 }
+    },
+    {
+      "name": "impersonation-no-manifest-kid-level-valid",
+      "files": { "chain": "identity/impersonation-chain.json", "keyring": "identity/keyring.json" },
+      "options": { "keyring": true },
+      "expected": { "status": "VALID", "signaturesVerified": true, "count": 1 }
+    },
+    {
+      "name": "impersonation-with-manifest-untrusted",
+      "files": { "chain": "identity/impersonation-chain.json", "keyring": "identity/keyring.json", "identityManifest": "identity/manifest.json" },
+      "options": { "keyring": true, "identityManifest": true },
+      "expected": { "status": "UNTRUSTED" }
+    }
+  ]
+}

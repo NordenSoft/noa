@@ -539,5 +539,49 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   expect("TAMPERED (non-canonical y≥q low-order pubkey in keyring) [PY verifier]", pyVerify([chainPath, ncLoKrPath]).code, 2);
 }
 
+// 13. KEY-SWAP (mid-chain kid change for the SAME agent.id, re-sealed so hash+sig are internally
+// self-consistent — only the "key held continuous per agent.id" pin should catch it). This is a
+// distinct class from #4b/#4c above (which swap the WHOLE chain's signer/kid); here the FIRST
+// receipt is genuine under kp, and only the SECOND receipt for the same agent.id switches to a
+// different, still keyring-trusted key.
+{
+  const kpSwapVictim = generateKeyPair("agent-key-swap-victim");
+  const swapR0 = mk(0, null);
+  const swapR1raw = mk(1, swapR0);
+  const swapR1 = { ...swapR1raw, sig: { alg: "ed25519", kid: kpSwapVictim.kid, value: "" } };
+  const swapHi = receiptHashInput(swapR1);
+  swapR1.chain.hash = "sha256:" + sha256Hex(swapHi);
+  swapR1.sig.value = signEd25519(kpSwapVictim.privateKey, signingMessage(RECEIPT_SIG_DOMAIN, swapHi));
+  const swapChain = [swapR0, swapR1];
+  const swapKeyring = { [kp.kid]: kp.publicKey, [kpSwapVictim.kid]: kpSwapVictim.publicKey };
+  const swapPath = join(dir, "key-swap.json");
+  const swapKrPath = join(dir, "key-swap-keyring.json");
+  writeFileSync(swapPath, JSON.stringify(swapChain));
+  writeFileSync(swapKrPath, JSON.stringify(swapKeyring));
+  const tsSwap = verifyChain(swapChain, { keyring: swapKeyring }).status;
+  const tsSwapOk = tsSwap === "TAMPERED";
+  console.log(`${tsSwapOk ? "✓" : "✗"} TAMPERED (key swap mid-chain, resigned, same agent.id) [TS verifyChain]: ${tsSwap} (want TAMPERED)`);
+  if (!tsSwapOk) failures++;
+  expect("TAMPERED (key swap mid-chain, resigned, same agent.id) [PY verifier]", pyVerify([swapPath, swapKrPath]).code, 2);
+}
+
+// 14. TENANT — scope.tenant is present but the WRONG TYPE (a number, not a string). Content is
+// re-sealed so hash+sig stay internally valid → this is a pure STRUCTURAL/shape rejection, not a
+// crypto-integrity one (MALFORMED, not TAMPERED), in both impls.
+{
+  const tenantBad = JSON.parse(JSON.stringify(r0));
+  tenantBad.scope.tenant = 12345;
+  const tHi = receiptHashInput(tenantBad);
+  tenantBad.chain.hash = "sha256:" + sha256Hex(tHi);
+  tenantBad.sig.value = signEd25519(kp.privateKey, signingMessage(RECEIPT_SIG_DOMAIN, tHi));
+  const tenantPath = join(dir, "tenant-bad-type.json");
+  writeFileSync(tenantPath, JSON.stringify([tenantBad]));
+  const tsTenant = verifyChain([tenantBad], { keyring }).status;
+  const tsTenantOk = tsTenant === "MALFORMED";
+  console.log(`${tsTenantOk ? "✓" : "✗"} MALFORMED (scope.tenant is a number, not a string) [TS verifyChain]: ${tsTenant} (want MALFORMED)`);
+  if (!tsTenantOk) failures++;
+  expect("MALFORMED (scope.tenant is a number, not a string) [PY verifier]", pyVerify([tenantPath, keyringPath]).code, 3);
+}
+
 if (failures) { console.error(`\nCROSS-IMPL CONFORMANCE FAILED: ${failures} mismatch(es)`); process.exit(1); }
 console.log("\nCROSS-IMPL CONFORMANCE PASS: the independent Python verifier agrees with the TS reference on every vector (incl. impersonation/truncation/dup-key security verdicts).");
