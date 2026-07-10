@@ -6,6 +6,19 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [Unreleased]
 
+### Security
+
+- **`verifyReceiptCompliance`**: a supplied-but-falsy `{ keyring: "" }` (or `null` / `0` / `false`)
+  previously skipped carrier authentication silently and could return `ok: true` off an
+  unauthenticated, attacker-mutable compliance block. Any keyring you pass is now checked for
+  presence, not truthiness — a falsy-but-supplied keyring fails closed instead of being ignored,
+  and any non-object keyring is rejected with a clear error.
+- **`verifyEd25519`**: added a regression test for the exact Ed25519 signature-malleability
+  boundary (`S == L`, the group order) — closes a gap where only `S > L` was covered.
+- **`prepublishOnly`**: the pre-publish test/build gate no longer fetches a test runner over the
+  network at publish time — it now uses a locally pinned, lockfile-resolved dependency, so a
+  publish (or a clean `npm ci`) can't fail or hang due to an unreachable registry.
+
 ## [0.3.0] - 2026-07-09
 
 [GitHub release](https://github.com/NordenSoft/noa/releases/tag/v0.3.0)
