@@ -39,7 +39,9 @@ This is a **trust layer**, so it is built to be boring and hostile-input-safe:
 - `noa.guard()` is **advisory** unless installed where the action's credentials/write
   authority actually live; the MCP proxy is designed to **fail-closed**. Unmanaged tools are
   outside the trust boundary — document which tools are governed.
-- Private-key custody is the operator's responsibility (use KMS/HSM in production).
+- Private-key custody is the operator's responsibility (use KMS/HSM in production). See
+  [docs/trust-root-checklist.md](docs/trust-root-checklist.md) for the practical key-generation,
+  keyring-distribution, checkpoint, and rotation checklist.
 
 ## Cryptography
 
