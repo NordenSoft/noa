@@ -140,6 +140,37 @@ test("preCheck: a throwing getter/Proxy trap inside args never throws (fail-clos
   assert.equal(r.receipt.governance.compliance, null, "nothing valid to commit when args enumeration itself threw");
 });
 
+test("preCheck: a throwing getter SPECIFICALLY on args.amountMinor never throws past preCheck (fail-closed DENY) — CRITICAL-3: this exact field used to be read UNGUARDED at the very top of preCheck(), before ANY enumeration guard runs, so (unlike the `poison`-key test above, which is only reached via the LATER, already-guarded args-tree traversal) a throwing `amountMinor` getter used to escape preCheck as an uncaught exception", () => {
+  const { signer } = signerAndKeyring("test-key-amountminor-getter-throw");
+  const evilArgs = {};
+  Object.defineProperty(evilArgs, "amountMinor", {
+    enumerable: true,
+    get() {
+      throw new Error("amountMinor-getter-boom");
+    },
+  });
+  assert.doesNotThrow(() => preCheck({ name: "payment.refund", args: evilArgs }, { signer, policy: REFUND_GUARD_POLICY }));
+  const r = preCheck({ name: "payment.refund", args: evilArgs }, { signer, policy: REFUND_GUARD_POLICY });
+  assert.equal(r.decision, "DENY", "a throwing args.amountMinor getter must fail the whole call closed, never throw past preCheck");
+  assert.equal(r.receipt.governance.ruleId, "toolcall-read-threw");
+  assert.equal(r.receipt.governance.compliance, null, "nothing valid to commit when the raw toolCall read itself threw");
+});
+
+test("preCheck: a throwing getter on toolCall.name itself ALSO never throws past preCheck (fail-closed DENY, same guard as args.amountMinor) — falls back to a safe sentinel action id so buildReceipt itself never throws on a non-string action.id", () => {
+  const { signer } = signerAndKeyring("test-key-name-getter-throw");
+  const evilToolCall = {
+    args: { amountMinor: 100 },
+    get name() {
+      throw new Error("name-getter-boom");
+    },
+  };
+  assert.doesNotThrow(() => preCheck(evilToolCall, { signer, policy: REFUND_GUARD_POLICY }));
+  const r = preCheck(evilToolCall, { signer, policy: REFUND_GUARD_POLICY });
+  assert.equal(r.decision, "DENY");
+  assert.equal(r.receipt.governance.ruleId, "toolcall-read-threw");
+  assert.equal(r.receipt.action.id, "unknown-action", "falls back to a safe sentinel action id when even toolCall.name itself cannot be read");
+});
+
 test("preCheck: full args are visible to the policy under an args.* prefix — a new rule can read args.recipient", () => {
   const { signer } = signerAndKeyring("test-key-9");
   // A policy that ONLY the args-projection change makes expressible: deny any refund whose

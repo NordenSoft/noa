@@ -260,6 +260,34 @@ export function preCheck(
   if (!signer) throw new Error("preCheck: `signer` is required");
   if (!policy) throw new Error("preCheck: `policy` is required (no implicit default policy)");
 
+  // FAIL-CLOSED READ GUARD (checked BEFORE anything else): `toolCall.name`/`toolCall.args` used to
+  // be read directly, UNGUARDED, at this exact spot — before ANY of the enumeration guards below
+  // (findAmbiguousDottedArgKey / flattenArgsToPolicyInputs, both already wrapped in their own
+  // try/catch) ever run. A caller embedding this package in-process (documented as usable by "any
+  // MCP integration: proxy, gateway, in-process guard") can legitimately hand it a `toolCall`/
+  // `args` shape carrying a throwing getter or Proxy trap (never producible by `JSON.parse`, but a
+  // live JS object built by that caller's own code can contain one) — e.g. an `args` object whose
+  // `amountMinor` property is `{ get amountMinor() { throw ... } }`. Reading it unguarded here
+  // would throw straight out of `preCheck()`, before reaching ANY fail-closed guard — violating
+  // this module's own "never throws, only DENY" contract. `safeName`/`safeArgs`/`safeAmountMinor`
+  // are captured ONCE, inside this one try/catch, and reused EVERYWHERE below (the receipt's
+  // `action.id`/`canonical` included, and every later `toolCall.args` read) instead of re-reading
+  // `toolCall.name`/`toolCall.args` a second time — a second unguarded read would reopen the exact
+  // same gap for a throwing `name`/`args` getter (getters re-invoke on every access, they are not
+  // cached), and would also let a live getter hand different call-sites inconsistent views of the
+  // "same" args for a single decision.
+  let safeName;
+  let safeArgs;
+  let safeAmountMinor;
+  let toolCallReadThrew = false;
+  try {
+    safeName = toolCall.name;
+    safeArgs = toolCall.args;
+    safeAmountMinor = safeArgs?.amountMinor;
+  } catch {
+    toolCallReadThrew = true;
+  }
+
   // The CLOSED-WORLD decision inputs. `action`/`amountMinor` are the original, hand-picked fields
   // (kept unchanged for backward compatibility — an existing policy reading top-level
   // `amountMinor` keeps working exactly as before, float-and-all fail-closed). `args.*` is the
@@ -267,14 +295,17 @@ export function preCheck(
   // flattenArgsToPolicyInputs above) so a policy can additionally read e.g. `args.recipient`.
   // `amountMinor` is optional: tools that don't carry a monetary amount simply omit it, and any
   // policy rule reading it treats "absent" as a non-match rather than a required field (unless
-  // the policy itself lists it in requiredPaths).
-  const inputs = { action: toolCall.name, amountMinor: toolCall.args?.amountMinor };
+  // the policy itself lists it in requiredPaths). When the raw read above itself threw, there is
+  // nothing valid to project at all — `inputs` stays empty and the branch below fails closed.
+  const inputs = toolCallReadThrew ? {} : { action: safeName, amountMinor: safeAmountMinor };
   if (inputs.amountMinor === undefined) delete inputs.amountMinor;
 
   // Computed EARLY (not just when building the receipt below) so a truly uncanonicalizable `args`
   // (a circular reference — see canonicalParamsHash's docstring) can force the WHOLE call's
-  // decision fail-closed, not merely avoid throwing during hash computation.
-  const paramsHash = canonicalParamsHash(toolCall.args);
+  // decision fail-closed, not merely avoid throwing during hash computation. Safe even when
+  // `toolCallReadThrew` — `safeArgs` is simply `undefined` in that case, and canonicalParamsHash
+  // treats an absent `args` as `{}`.
+  const paramsHash = canonicalParamsHash(safeArgs);
   const argsUncanonicalizable = paramsHash === UNCANONICALIZABLE_ARGS_SENTINEL_HASH;
 
   // FLATTEN-AMBIGUITY GUARD (checked BEFORE any args are projected): a raw arg key containing a
@@ -296,13 +327,17 @@ export function preCheck(
   let ambiguousArgKey = null;
   let argsEnumerationThrew = false;
   try {
-    ambiguousArgKey = findAmbiguousDottedArgKey(toolCall.args);
+    ambiguousArgKey = findAmbiguousDottedArgKey(safeArgs);
   } catch {
     argsEnumerationThrew = true;
   }
 
   let ev;
-  if (argsEnumerationThrew) {
+  if (toolCallReadThrew) {
+    // Highest-priority fail-closed check: the raw `toolCall.name`/`toolCall.args` read itself
+    // threw, BEFORE anything below could even run against real data — see the guard above.
+    ev = { verdict: "DENY", ruleFired: "toolcall-read-threw", engine: "toolcall-read-guard" };
+  } else if (argsEnumerationThrew) {
     ev = { verdict: "DENY", ruleFired: "args-enumeration-threw", engine: "args-flatten-ambiguity-guard" };
   } else if (ambiguousArgKey !== null) {
     ev = { verdict: "DENY", ruleFired: "args-flatten-ambiguous-dotted-key", engine: "args-flatten-ambiguity-guard" };
@@ -310,7 +345,7 @@ export function preCheck(
     ev = { verdict: "DENY", ruleFired: "args-uncanonicalizable", engine: "args-canonicalization-guard" };
   } else {
     try {
-      Object.assign(inputs, flattenArgsToPolicyInputs(toolCall.args, "args", 0, {}, { count: 0 }));
+      Object.assign(inputs, flattenArgsToPolicyInputs(safeArgs, "args", 0, {}, { count: 0 }));
       ev = evaluate(policy, inputs); // ALLOW | DENY, fail-closed, re-runnable
     } catch {
       argsEnumerationThrew = true;
@@ -319,12 +354,13 @@ export function preCheck(
   }
   const decision = ev.verdict === "ALLOW" ? "ALLOW" : "DENY";
 
-  // Commit the policy+inputs ONLY when the inputs are canonicalizable, unambiguous, AND args could
-  // be enumerated at all. Malformed inputs (e.g. a float amount), a dotted-key ambiguity, a
-  // fully-uncanonicalizable args (a circular reference), or an args enumeration that itself threw
-  // → fail-closed DENY with NO compliance block (there is nothing valid to commit/replay).
+  // Commit the policy+inputs ONLY when the raw toolCall read succeeded AND the inputs are
+  // canonicalizable, unambiguous, AND args could be enumerated at all. Malformed inputs (e.g. a
+  // float amount), a dotted-key ambiguity, a fully-uncanonicalizable args (a circular reference),
+  // a toolCall read that itself threw, or an args enumeration that itself threw → fail-closed DENY
+  // with NO compliance block (there is nothing valid to commit/replay).
   let compliance = null;
-  if (!argsEnumerationThrew && ambiguousArgKey === null && !argsUncanonicalizable) {
+  if (!toolCallReadThrew && !argsEnumerationThrew && ambiguousArgKey === null && !argsUncanonicalizable) {
     try {
       compliance = complianceCommit(policy, inputs);
     } catch {
@@ -343,8 +379,12 @@ export function preCheck(
       // static proxy-config value / the session id, never from the forwarded tool arguments).
       agent: { id: toolCall.agentId ?? "mcp-agent", model: null, principal: "POLICY" },
       action: {
-        id: toolCall.name,
-        canonical: toolCall.name,
+        // `safeName` (not a fresh `toolCall.name` re-read — see the guard above) so a throwing
+        // `name` getter can never surface here either; `?? "unknown-action"` covers both
+        // `toolCallReadThrew` (safeName never got assigned) and a legitimately absent name, since
+        // `buildReceipt`'s own structural check requires a non-empty string here.
+        id: safeName ?? "unknown-action",
+        canonical: safeName ?? "unknown-action",
         riskClass: decision === "DENY" ? "HIGH" : "LOW",
         paramsHash,
         reversible: false,
