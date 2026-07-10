@@ -20,7 +20,7 @@ surname = "Toraman"
 fullname = "Tora Toraman"
 organization = "NordenSoft"
   [author.address]
-  email = "hello@ordeliya.com"
+  email = "toratoraman@gmail.com"
 %%%
 
 .# Abstract
