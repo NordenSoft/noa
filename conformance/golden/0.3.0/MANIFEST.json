@@ -1,8 +1,12 @@
 {
   "version": "0.3.0",
-  "producedFrom": "git tag v0.3.0, built in isolation (npm ci && npm run build), NOT HEAD",
+  "commit": "26cb18c8ded76e782dc41198b9cf7d12ca95ef05",
+  "producedFrom": "git tag v0.3.0 (commit 26cb18c8ded76e782dc41198b9cf7d12ca95ef05), checked out into an isolated worktree and built there (npm ci && npm run build) — NOT HEAD. Reproduce exactly: `git rev-parse v0.3.0^{commit}` must equal `commit` above.",
   "generator": "scripts/gen-golden-vectors.mjs",
-  "note": "These files are frozen. See README.md. Consumed only by test/golden-backcompat.test.ts.",
+  "receiptCount": 8,
+  "checkpointCount": 1,
+  "artifactBreakdown": "8 signed receipts (1 genesis + 4 multi + 2 identity + 1 impersonation) + 1 signed checkpoint = 9 signed artifacts total",
+  "note": "These files are frozen. See README.md. Consumed only by test/golden-backcompat.test.ts — which HARDCODES its own security verdicts and treats this manifest as documentation only (the `expected` fields below are cross-checked against the test-code oracle, never the source of truth for it).",
   "scenarios": [
     {
       "name": "genesis-valid-with-keyring",

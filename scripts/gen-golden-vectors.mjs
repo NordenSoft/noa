@@ -12,9 +12,18 @@
  * Use this ONLY to add a NEW version's snapshot, and only against that version's own tagged
  * build (never against an in-progress HEAD):
  *
- *   git worktree add /tmp/vX.Y.Z-src vX.Y.Z
+ *   git worktree add /tmp/vX.Y.Z-src vX.Y.Z    # <-- the TAG is what makes the bytes authentic
  *   (cd /tmp/vX.Y.Z-src && npm ci && npm run build)
  *   node scripts/gen-golden-vectors.mjs /tmp/vX.Y.Z-src/dist/src conformance/golden/X.Y.Z
+ *
+ * ⚠️  The `<path-to-version-dist/src>` argument is trusted BLINDLY: this script imports
+ * builder.js/hash.js from whatever path you pass and freezes their output. It CANNOT verify that
+ * the path really came from the intended tag — so pointing it at HEAD's `dist/src`, or a dirty
+ * working tree, silently produces a "golden" snapshot that is NOT what the released version
+ * emitted, defeating the entire cross-version guarantee. The authenticity comes ENTIRELY from the
+ * caller checking out the correct tag; there is no in-script substitute for that. When adding a
+ * new snapshot, record `git rev-parse vX.Y.Z^{commit}` in that snapshot's MANIFEST.json `commit`
+ * field (the v0.3.0 snapshot pins commit 26cb18c8ded76e782dc41198b9cf7d12ca95ef05).
  *
  * The v0.3.0 snapshot under conformance/golden/0.3.0/ was produced exactly this way, from git
  * tag `v0.3.0`'s own `dist/src/{builder,hash}.js` (NOT this repo's current dist/src) — so the
@@ -26,6 +35,7 @@ import { join, dirname } from "node:path";
 const [, , distSrcArg, outDirArg] = process.argv;
 if (!distSrcArg || !outDirArg) {
   console.error("usage: node scripts/gen-golden-vectors.mjs <path-to-version-dist/src> <out-dir>");
+  console.error("NOTE: <path-to-version-dist/src> MUST be a build of the target git TAG, not HEAD — see header.");
   process.exit(2);
 }
 const SRC = distSrcArg;
