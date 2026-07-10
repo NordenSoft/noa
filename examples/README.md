@@ -9,7 +9,7 @@ node examples/killer-demo/demo.mjs        # the hallucinated $1,000,000 refund, 
 node examples/sdk-guard/guard.mjs         # guard(tool) wrapper — fail-closed, advisory
 node examples/mcp-proxy/proxy.mjs         # MCP-style interceptor MVP — fail-closed, zero-agent-change
 node examples/mcp-preflight/preflight.mjs # MCP pre-flight PEP/PDP — every tool call gets a signed,
-                                           # policy-replayable ALLOW/DENY receipt (the #1 distribution move)
+                                           # policy-replayable ALLOW/DENY receipt
 ```
 
 These are teaching sketches, not the hardened product surface. Two honesty notes carried in

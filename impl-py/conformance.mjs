@@ -285,7 +285,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   if (!tsListKrOk) failures++;
   expect("MALFORMED (keyring is a JSON list, not an object) [PY verifier]", pyVerify([chainPath, listKrPath]).code, 3);
 
-  // #5 non-canonical keyring SPKI base64 (embedded space): decodes leniently to the same key, but is not
+  // non-canonical keyring SPKI base64 (embedded space): decodes leniently to the same key, but is not
   // canonical → both reject (was TS-VALID / PY-TAMPERED divergence).
   const ncKr = { [kp.kid]: kp.publicKey.slice(0, 4) + " " + kp.publicKey.slice(4) };
   const ncKrPath = join(dir, "keyring-noncanon.json");
@@ -296,7 +296,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   if (!tsNcKrOk) failures++;
   expect("TAMPERED (non-canonical keyring SPKI base64) [PY verifier]", pyVerify([chainPath, ncKrPath]).code, 2);
 
-  // #2 trailing-bits non-canonical signature: a base64 string that decodes to the SAME 64 bytes but is not
+  // trailing-bits non-canonical signature: a base64 string that decodes to the SAME 64 bytes but is not
   // canonical (the final data char carries unused bits). Python's b64decode(validate=True) ACCEPTED these
   // (consensus break + sig malleability); now both reject via canonical round-trip.
   const ALPHA = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -377,7 +377,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
 // (so a null identity/checkpoint is "present but not an object" → MALFORMED). Python's json.loads + CLI
 // loaded these leniently. These vectors pin both impls to the SAME verdict at the file/option boundary. ──
 
-// #3 — a LONE UTF-16 surrogate in a keyring KID. TS safeParse rejects an unpaired surrogate in EVERY string
+// lone-surrogate-in-keyring-kid — a LONE UTF-16 surrogate in a keyring KID. TS safeParse rejects an unpaired surrogate in EVERY string
 // of EVERY file (src/safe-json.ts isWellFormed) → CLI MALFORMED; Python json.loads decoded a \uD800 escape
 // into a lone surrogate (over-accept) until strict_load_text's recursive _reject_lone_surrogate pass.
 {
@@ -392,7 +392,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
   expect("MALFORMED (lone surrogate in keyring kid) [PY verifier]", pyVerify([chainPath, surKrPath]).code, 3);
 }
 
-// #4 — a LONE UTF-16 surrogate in an (unknown) CHECKPOINT field. Same boundary: TS safeParse rejects the
+// lone-surrogate-in-checkpoint-field — a LONE UTF-16 surrogate in an (unknown) CHECKPOINT field. Same boundary: TS safeParse rejects the
 // file; Python must too (recursive surrogate pass), not parse-then-lenient.
 {
   // Genuine checkpoint object, then inject a 𝄞? no — a LONE low surrogate \uDC00 in an extra field.
@@ -408,7 +408,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
   expect("MALFORMED (lone surrogate in checkpoint field) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", surCpPath]).code, 3);
 }
 
-// #6 — an identity file that is literally `null` (a valid JSON value, but NOT a manifest object). The TS
+// null-identity-file — an identity file that is literally `null` (a valid JSON value, but NOT a manifest object). The TS
 // in-process API treats `opts.identityManifest !== undefined` as PRESENT → null is not an object → MALFORMED
 // (keeps the impersonation defense; a null manifest must NOT silently degrade to "no manifest"). The Python
 // CLI loaded `null` → None → verify_chain read it as "not supplied" → VALID (silent drop) until the _main

@@ -1,5 +1,5 @@
 /**
- * MCP Pre-Flight PEP/PDP — reference integration (the #1 distribution move).
+ * MCP Pre-Flight PEP/PDP — reference integration.
  *
  * Sits between an MCP host and its tool servers. For EVERY tool call it runs the DETERMINISTIC policy
  * evaluator `evaluate(policy, inputs)` (NOA's offline-replayable moat — not a risk lookup table) and

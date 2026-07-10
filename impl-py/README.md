@@ -57,5 +57,5 @@ matching `safeParse`). It intentionally does **not** re-implement the *signer*, 
 or the *policy evaluator* yet — those extend the conformance corpus next, and are the documented gaps. A
 deployer using this as their independent verifier gets verdict parity on the receipt-chain trust surface
 across the conformance corpus + the documented controls; parity is **not** an absolute claim over all
-possible inputs — it is continuously hardened via the cross-impl conformance suite (each audit round adds
-adversarial vectors and pins the verdict).
+possible inputs — it is continuously hardened via the cross-impl conformance suite (adversarial vectors
+are added over time and the verdict is pinned).

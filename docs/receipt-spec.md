@@ -5,7 +5,7 @@
 > **Status:** v0.1 (2026-06-20). Apache-2.0. This is the normative spec for the OPEN
 > governance/receipt **organ**. The NOA agent-cognition brain is separate and proprietary.
 >
-> **What changed from the early draft (after adversarial multi-model review):** signatures
+> **What changed from the early draft (after adversarial security review):** signatures
 > are now **MANDATORY**, the signing-key identity is **bound into the hash** (key-swap
 > defense), **genesis** and **tail-truncation** are defined explicitly, and the
 > canonicalization rules are frozen and integer-only. An unsigned hash chain is just a
