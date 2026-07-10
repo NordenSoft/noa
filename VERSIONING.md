@@ -9,11 +9,18 @@ common way to misjudge compatibility, so this is deliberately short and blunt.
 **library and CLI** — the TypeScript API surface exported from
 [`src/index.ts`](src/index.ts), the `noa` CLI's flags/exit codes, and runtime behavior. A
 `major` bump means an API or CLI contract changed in a way existing callers must adapt to; a
-`minor` adds capability without breaking callers; a `patch` is a fix.
+`minor` adds capability without breaking callers; a `patch` is a fix — **that is the rule once
+this package reaches `1.0.0`.**
+
+**Before `1.0.0`, [SemVer's own major-version-zero clause](https://semver.org/) applies:**
+*"anything MAY change at any time. The public API SHOULD NOT be considered stable."* So while
+`package.json`'s major stays `0`, a `minor` bump (`0.x` -> `0.(x+1)`) can legitimately be
+breaking — it is not held to the post-1.0 "minor = non-breaking" promise above.
 
 Example: `0.1.0 -> 0.3.0` shipped a **breaking COSE_Sign1 change** (algorithm-id `-8` to
-`-19`, see [CHANGELOG.md](CHANGELOG.md)) — that's a library/wire-envelope contract change
-signaled by the package version. It did **not** touch the JSON receipt format below.
+`-19`, see [CHANGELOG.md](CHANGELOG.md)) in a *minor* bump — allowed under the SemVer-0 clause
+above, not a mislabeled major. It did **not** touch the JSON receipt format below (`spec:
+"noa.receipt/0.1"`); §2 spells out exactly what the COSE change did and did not break.
 
 ## 2. The wire-format version (the `spec` string)
 
@@ -44,16 +51,32 @@ flags, new optional verifier inputs that don't change existing receipts' verdict
 supports), or the COSE/SCITT envelope in [receipt-spec.md](docs/receipt-spec.md) §8 (a
 *different* wire encoding of the same receipt, versioned by its own COSE `alg` id).
 
+**Where the COSE alg-id change (`-8` -> `-19`) fits — a third, independent axis:** it lives
+entirely inside the COSE_Sign1 envelope's own `alg` header ([receipt-spec.md](docs/receipt-spec.md)
+§8), not the `spec` string above and not `package.json`'s version. It broke exactly one thing: a
+**COSE-encoded** receipt/checkpoint signed under the old generic EdDSA (`-8`) no longer verifies
+against the current COSE verifier (`test/cose/cose.test.ts` pins this rejection). It changed
+nothing about the **native JSON path** — `verifyChain`/`verifyChainText`, the `noa verify` CLI,
+and every already-issued `spec: "noa.receipt/0.1"` receipt keep verifying exactly as before; see
+§3. If you only emit/consume the JSON receipt, this break never touched you; if you also
+emit/consume the COSE_Sign1 envelope, re-sign under `-19`.
+
 ## 3. Old-receipt verification policy
 
-A receipt stamped `noa.receipt/0.1` must keep verifying exactly as it does today, for as long
-as `0.1` is a supported `spec` string — regardless of which package version does the
-verifying. The [conformance vectors](conformance/vectors) are the enforced reference for this:
-they pin exact accept/reject behavior per vector, [CI fails the build](.github/workflows/ci.yml)
+A **JSON** receipt stamped `noa.receipt/0.1` must keep verifying exactly as it does today via
+`verifyChain`/`verifyChainText`/the `noa verify` CLI, for as long as `0.1` is a supported `spec`
+string — regardless of which package version does the verifying. This guarantee covers the
+native JSON hash-chain path only; it does **not** extend to the optional COSE_Sign1 envelope
+(§8's alg-id is the separate, already-broken-once axis described in §2 above — a deprecated-alg
+COSE envelope is *meant* to stay rejected, not grandfathered in). The
+[conformance vectors](conformance/vectors) are the enforced reference for the JSON path: they
+pin exact accept/reject behavior per vector, [CI fails the build](.github/workflows/ci.yml)
 on any vector drift, and the independent Python reference verifier
 ([`impl-py/`](impl-py)) must agree with the TypeScript verifier on every one of them. If you
-are building a third-party verifier, treat the vectors under `conformance/` as the
-authoritative golden reference for `spec: "noa.receipt/0.1"` — not this document's prose.
+are building a third-party verifier for the JSON format, treat the vectors under
+`conformance/` as the authoritative golden reference for `spec: "noa.receipt/0.1"` — not this
+document's prose. (`conformance/vectors` covers the JSON path only; the COSE `-8`-alg rejection
+is pinned by the separate unit-test suite in `test/cose/cose.test.ts`, not a golden vector.)
 
 ## 4. Practical rule for consumers
 
