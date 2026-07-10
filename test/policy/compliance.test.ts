@@ -152,6 +152,44 @@ test("with a keyring, an unknown signing kid is REJECTED", () => {
   assert.match(res.reason ?? "", /not in keyring/);
 });
 
+// ── falsy-keyring auth-bypass fix (behaviour change: previously ok:true, now ok:false) ──────────
+// A prior `if (opts.keyring)` TRUTHY check meant a supplied-but-falsy keyring ("" / null / 0) silently
+// SKIPPED carrier authentication entirely — the caller explicitly asked to authenticate the carrier and
+// the check never ran, yet ok:true still came back off an UNAUTHENTICATED carrier. The fix gates on
+// PRESENCE (`opts.keyring !== undefined`), mirroring verify.ts's `haveKeyring`, and fails closed on any
+// supplied-but-non-object keyring.
+test("PRESENCE not truthiness — a falsy-but-SUPPLIED keyring (empty string) does NOT skip carrier-auth (was ok:true, now ok:false)", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED");
+  const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring: "" as never });
+  assert.equal(res.ok, false, "an empty-string keyring must fail closed, never silently skip auth");
+  assert.match(res.reason ?? "", /keyring must be an object/);
+});
+
+test("a null keyring is REJECTED fail-closed (not silently treated as 'no keyring supplied')", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED");
+  const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring: null as never });
+  assert.equal(res.ok, false);
+  assert.match(res.reason ?? "", /keyring must be an object/);
+});
+
+test("an array keyring is REJECTED fail-closed", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED");
+  const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring: [] as never });
+  assert.equal(res.ok, false);
+  assert.match(res.reason ?? "", /keyring must be an object/);
+});
+
+test("happy path is preserved — a valid keyring + a genuine carrier still authenticates (ok:true)", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED");
+  const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring });
+  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.policyVerdict, "ALLOW");
+});
+
 // ── TOCTOU / fail-closed hardening ───────────────────────────────────────────
 test("a FLIPPING governance.compliance accessor cannot beat carrier auth (TOCTOU snapshot)", () => {
   const inputs = { action: "payment.refund", amountMinor: 100_000_000 }; // POLICY → DENY

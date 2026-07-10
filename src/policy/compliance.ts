@@ -140,14 +140,25 @@ export function verifyReceiptCompliance(
     // CARRIER AUTHENTICATION: when a keyring is supplied, prove the receipt itself is
     // genuine BEFORE trusting its compliance block — otherwise a forged/tampered receipt (verifyChain ⇒
     // TAMPERED) would still get a green "compliant" signal off its attacker-mutable governance.compliance.
-    if (opts.keyring) {
+    //
+    // PRESENCE, not truthiness: `opts.keyring !== undefined` (mirrors verify.ts's `haveKeyring`). A prior
+    // `if (opts.keyring)` truthy-check let ANY falsy-but-supplied keyring (`""`, `0`, `null`) silently
+    // SKIP carrier-auth entirely — the caller explicitly asked to authenticate the carrier and the check
+    // never ran, yet ok:true could still come back. Presence-gating + the non-object guard immediately
+    // below makes every supplied-but-malformed keyring fail CLOSED instead of being ignored.
+    const haveKeyring = opts.keyring !== undefined;
+    if (haveKeyring && (typeof opts.keyring !== "object" || opts.keyring === null || Array.isArray(opts.keyring))) {
+      return { ok: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
+    }
+    if (haveKeyring) {
+      const keyring = opts.keyring as Keyring;
       const shape = validateReceiptShape(snap);
       if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
       const hashInput = receiptHashInput(snap);
       if ("sha256:" + sha256Hex(hashInput) !== snap.chain.hash) {
         return { ok: false, reason: "carrier receipt hash mismatch — not authentic" };
       }
-      const pub = opts.keyring[snap.sig.kid];
+      const pub = keyring[snap.sig.kid];
       if (!pub) return { ok: false, reason: `carrier receipt signing key "${snap.sig.kid}" not in keyring` };
       if (!verifyEd25519(pub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), snap.sig.value)) {
         return { ok: false, reason: "carrier receipt signature not authenticated" };
