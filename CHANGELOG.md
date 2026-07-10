@@ -13,6 +13,10 @@ All notable changes to `noa-receipt` are documented here. The format follows
   unauthenticated, attacker-mutable compliance block. Any keyring you pass is now checked for
   presence, not truthiness — a falsy-but-supplied keyring fails closed instead of being ignored,
   and any non-object keyring is rejected with a clear error.
+- **`verifyReceiptCompliance`**: the `opts` object is now snapshotted once (matching `verifyChain`),
+  so a hostile flipping accessor on `opts.keyring` / `opts.identityManifest` can no longer return one
+  value to the presence check and another to the enforcement step — closing an identity-manifest
+  split that could authorize an impersonating signer. A non-cloneable `opts` fails closed.
 - **`verifyEd25519`**: added a regression test for the exact Ed25519 signature-malleability
   boundary (`S == L`, the group order) — closes a gap where only `S > L` was covered.
 - **`prepublishOnly`**: the pre-publish test/build gate no longer fetches a test runner over the
