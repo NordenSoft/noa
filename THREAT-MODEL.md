@@ -117,7 +117,7 @@ truth or safety.
   compatible). Pass `requireTenantConsistency: true` to instead reject the first drift as
   `TAMPERED` (the same verdict class as a `scope.chain` partition split, since it is the identical
   class of problem for the sibling scope field). This closes the "silent" half of the gap; matching
-  the (now-guaranteed-consistent) tenant value to *your* expected tenant remains the caller's job.
+  the (now-enforced-consistent) tenant value to *your* expected tenant remains the caller's job.
 - **Omission ≠ tampering:** this proves the integrity of the receipts that EXIST. An agent that
   simply never emits a receipt for a bad action leaves no trace to detect. It is log-integrity,
   not a guarantee of behavioral honesty.
