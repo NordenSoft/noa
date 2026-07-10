@@ -17,7 +17,8 @@ assignees: ""
 
 ```
 npm install noa-receipt
-# ...steps to trigger it
+npx --package=noa-receipt noa verify <receipts.json> [--keyring <keyring.json>] [--checkpoint <checkpoint.json>]
+# ...or whatever steps actually trigger it
 ```
 
 ## Expected verdict vs. actual verdict
