@@ -3,9 +3,9 @@
  *
  * Proves the emit -> replay -> verify round-trip for the dogfood harness, and that a tampered
  * receipt FAILS — both chain integrity (verifyChain ⇒ TAMPERED) and the on-receipt L2 proof
- * (verifyReceiptCompliance ⇒ ok:false). Runs under vitest from the npx cache
- * (`npx vitest run test/dogfood/replay.test.ts`); vitest resolves the `vitest` import at runtime,
- * while ./vitest-runtime.d.ts stands in for its types at static-typecheck time.
+ * (verifyReceiptCompliance ⇒ ok:false). Runs under vitest (`npm run test:dogfood`), which resolves
+ * `vitest` from the pinned devDependency — the package supplies its own types, so `tsc --noEmit`
+ * resolves the `vitest` import directly (no ambient shim needed).
  */
 
 import { describe, it, expect } from "vitest";
