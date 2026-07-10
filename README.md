@@ -64,6 +64,7 @@ are opaque and must not contain PII; the format can't enforce that — see THREA
 
 Full format: [`docs/receipt-spec.md`](docs/receipt-spec.md). Signatures are **mandatory** (Ed25519),
 the signing key is bound into the hash, and verification runs **offline** — no account, no network.
+Production key management: [docs/trust-root-checklist.md](docs/trust-root-checklist.md).
 
 ## Verify a chain offline (no account, no network)
 

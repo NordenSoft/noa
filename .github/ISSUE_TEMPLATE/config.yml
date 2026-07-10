@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/NordenSoft/noa/security/policy
+    about: Please do NOT open a public issue for a security report — see SECURITY.md for the private reporting channel.
