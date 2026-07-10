@@ -357,6 +357,7 @@ test("createChainSessionStore: exceeding maxSessions evicts the single oldest-id
     onEvict: (id, reason) => evicted.push({ id, reason }),
   });
   store.advance("s1", { fake: "receipt-1" }); // s1 lastAccessedAt=1000
+  const originalS1SegmentId = store.peek("s1").segmentId;
   currentTime = 1010;
   store.advance("s2", { fake: "receipt-2" }); // s2 lastAccessedAt=1010 (newer than s1)
   currentTime = 1020;
@@ -371,9 +372,10 @@ test("createChainSessionStore: exceeding maxSessions evicts the single oldest-id
   // `verifyChain` TAMPERED ("duplicate seq 0") over a session that was never actually tampered
   // with — see the two dedicated tests below, which build real receipts through
   // prepareSessionReceipt/commitSessionReceipt and assert verifyChain is VALID per segment. The one
-  // additional structural fact that closes the gap: the revived session's chain EPOCH must have
-  // advanced, proving it will NOT collide with the pre-eviction segment's default chain id.
-  assert.equal(revivedS1.chainEpoch, 2, "s1's resume must open chain-epoch 2, not silently reuse epoch 1");
+  // additional structural fact that closes the gap: the revived session's SEGMENT ID must be a
+  // brand-new, never-before-used value, proving it will NOT collide with the pre-eviction segment's
+  // default chain id (see session-store.mjs's "SEGMENT IDENTITY" docstring).
+  assert.notEqual(revivedS1.segmentId, originalS1SegmentId, "s1's resume must mint a brand-new segmentId, not silently reuse the pre-eviction one");
   store.dispose();
 });
 
@@ -433,4 +435,123 @@ test("prepareSessionReceipt/commitSessionReceipt: max-sessions cap eviction of a
   const vPost = verifyChain([a4], { keyring });
   assert.equal(vPre.status, "VALID", "pre-eviction 3-receipt segment verifies VALID");
   assert.equal(vPost.status, "VALID", "post-eviction (resumed) segment ALSO verifies VALID — cap-eviction of an active session no longer corrupts its chain");
+});
+
+test("prepareSessionReceipt/commitSessionReceipt: evict -> resume -> clean end() -> reconnect, repeated 5x, mints a genuinely distinct chain segment EVERY time (stale-tombstone bug fixed at the root)", () => {
+  // Pre-fix: a clean end() never refreshed the sessionId-keyed tombstone left by the PRIOR
+  // eviction, so the very next reconnect on the same sessionId silently reused the exact same
+  // `#<epoch>` chain-id the still-live resumed segment was already using — a real, reproducible
+  // collision (see repro-stale-tombstone.mjs / repro-stale-tombstone-repeat.mjs), not merely a
+  // theoretical one. Post-fix: chain identity comes from a store-global, never-reused segment
+  // counter, so a clean end() needing no tombstone refresh at all — there is nothing sessionId-
+  // keyed left to go stale.
+  let currentTime = 1000;
+  const store = createChainSessionStore({ idleTtlMs: 500, sweepIntervalMs: 999999999, now: () => currentTime });
+  const { signer, keyring } = signerAndKeyring("test-key-stale-tombstone");
+  const sessionId = "foo";
+  const tenant = "acme";
+
+  function doCall(name) {
+    const prepared = prepareSessionReceipt({ name, args: {} }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
+    commitSessionReceipt(store, sessionId, prepared.receipt);
+    return prepared.receipt;
+  }
+
+  const seg0 = doCall("payment.refund");
+  currentTime += 501; // past idleTtlMs while the host is merely idle, not gone
+  store.sweep();
+
+  const segments = [[seg0]];
+  for (let cycle = 1; cycle <= 5; cycle++) {
+    // "resume" — the still-connected host issues another call on the SAME sessionId right after
+    // an idle-TTL eviction dropped the bookkeeping.
+    const resumed = doCall("payment.refund");
+    segments.push([resumed]);
+    // "clean end()" — host disconnects normally (e.g. server.onclose).
+    store.end(sessionId);
+    // "reconnect" — the SAME sessionId reconnects immediately, well within idleTtlMs, with NO
+    // intervening sweep/eviction in between — exactly the case the stale-tombstone bug missed.
+    const reconnected = doCall("payment.refund");
+    segments.push([reconnected]);
+    // Evict again before the next cycle so the loop repeats the identical
+    // evict -> resume -> end -> reconnect shape every time.
+    currentTime += 501;
+    store.sweep();
+  }
+
+  const chainIds = segments.map((seg) => seg[0].scope.chain);
+  assert.equal(
+    new Set(chainIds).size,
+    chainIds.length,
+    `every eviction/end/reconnect cycle must mint a DISTINCT chain-id — got ${new Set(chainIds).size} distinct of ${chainIds.length} segments: ${JSON.stringify(chainIds)}`,
+  );
+  for (const segReceipts of segments) {
+    const v = verifyChain(segReceipts, { keyring });
+    assert.equal(v.status, "VALID", `every segment must independently verify VALID, got ${v.status} for ${segReceipts[0].scope.chain}`);
+  }
+  store.dispose();
+});
+
+test("prepareSessionReceipt: a literal sessionId crafted to look exactly like an internally-minted segment suffix never collides with the real segment it mimics", () => {
+  // Pre-fix: the default chain-id folded the resume epoch in as a bare `#<epoch>` string suffix
+  // concatenated onto whatever the caller's own sessionId happened to be — so a DIFFERENT session
+  // whose id was literally `"foo#2"` collided with `"foo"` resumed at epoch 2 (see
+  // repro-chainid-collision.mjs). Post-fix: uniqueness comes from the store-global segment
+  // counter, never from parsing sessionId text, so no sessionId content — including one crafted to
+  // literally match the exact suffix the store just minted — can ever collide with it.
+  let currentTime = 1000;
+  const store = createChainSessionStore({ idleTtlMs: 500, sweepIntervalMs: 999999999, now: () => currentTime });
+  const { signer, keyring } = signerAndKeyring("test-key-dotkey-literal-collision");
+  const tenant = "acme";
+
+  function doCall(sessionId, name) {
+    const prepared = prepareSessionReceipt({ name, args: {} }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
+    commitSessionReceipt(store, sessionId, prepared.receipt);
+    return prepared.receipt;
+  }
+
+  const fooFirst = doCall("foo", "payment.refund");
+  currentTime += 501;
+  store.sweep();
+  const fooResumed = doCall("foo", "payment.refund");
+
+  // Craft a sessionId that is EXACTLY the resumed segment's own chain-id suffix — the strongest
+  // possible attempt at a collision (an attacker/host choosing its sessionId to literally mirror
+  // what the store just handed out for an unrelated session).
+  const mintedSuffix = fooResumed.scope.chain.slice(fooResumed.scope.chain.indexOf(":") + 1);
+  const literalReceipt = doCall(mintedSuffix, "payment.refund");
+
+  assert.notEqual(
+    literalReceipt.scope.chain,
+    fooResumed.scope.chain,
+    "a literal sessionId crafted to mirror the resumed segment's own suffix must not collide with it",
+  );
+  assert.notEqual(literalReceipt.scope.chain, fooFirst.scope.chain);
+
+  assert.equal(verifyChain([fooFirst], { keyring }).status, "VALID");
+  assert.equal(verifyChain([fooResumed], { keyring }).status, "VALID");
+  assert.equal(verifyChain([literalReceipt], { keyring }).status, "VALID");
+  store.dispose();
+});
+
+test("prepareSessionReceipt/commitSessionReceipt: a session that is NEVER evicted stays on exactly one chain segment across many calls — verifyChain VALID (no regression from the segment-counter redesign)", () => {
+  const store = createChainSessionStore();
+  const { signer, keyring } = signerAndKeyring("test-key-no-evict-regression");
+  const sessionId = "session-steady";
+  const tenant = "acme";
+  const chain = [];
+  for (let i = 0; i < 4; i++) {
+    const prepared = prepareSessionReceipt(
+      { name: "payment.refund", args: { amountMinor: 10 } },
+      { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant },
+    );
+    commitSessionReceipt(store, sessionId, prepared.receipt);
+    chain.push(prepared.receipt);
+  }
+  const chainIds = new Set(chain.map((r) => r.scope.chain));
+  assert.equal(chainIds.size, 1, "a never-evicted session must stay on exactly one chain-id across all its calls");
+  const v = verifyChain(chain, { keyring });
+  assert.equal(v.status, "VALID");
+  assert.equal(v.count, 4);
+  store.dispose();
 });
