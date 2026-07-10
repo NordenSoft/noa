@@ -52,7 +52,7 @@
     "gen:l2-vectors": "node dist/scripts/gen-l2-vectors.js",
     "gen:federation-vectors": "node dist/scripts/gen-federation-vectors.js",
     "test": "npm run build && npm run gen:vectors && npm run gen:l2-vectors && npm run gen:federation-vectors && node --test $(find dist/test -name '*.test.js' -not -path '*/dogfood/*')",
-    "test:dogfood": "npx -y vitest@3.2.6 run test/dogfood/",
+    "test:dogfood": "vitest run test/dogfood/",
     "verify": "node dist/src/cli.js verify",
     "prepare": "npm run build",
     "prepublishOnly": "npm test && npm run test:dogfood && node impl-py/conformance.mjs"
@@ -61,6 +61,7 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "cbor2": "^2.3.0",
-    "typescript": "^5.6.0"
+    "typescript": "^5.6.0",
+    "vitest": "3.2.6"
   }
 }
