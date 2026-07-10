@@ -26,9 +26,9 @@ function defaultOnEvict(sessionId, reason) {
  * interleave two sessions' chains into one — this is the bug this module exists to make
  * structurally impossible.
  *
- * `createChainSessionStore()` owns exactly one thing: `Map<sessionId, { prev, seq, lastAccessedAt }>`.
- * It does NOT keep a receipt log/history — that is a separate, deployment-specific concern
- * (persistence, audit export, `verifyChain` replay) layered on top by the caller, exactly as
+ * `createChainSessionStore()` owns exactly one thing: `Map<sessionId, { prev, seq, lastAccessedAt,
+ * chainEpoch }>`. It does NOT keep a receipt log/history — that is a separate, deployment-specific
+ * concern (persistence, audit export, `verifyChain` replay) layered on top by the caller, exactly as
  * examples/mcp-preflight/preflight.mjs's own `main()` keeps its `chain` array outside `preCheck`.
  *
  * `advance()` only ever moves a session's `{prev, seq}` FORWARD, never back — a caller that needs
@@ -44,6 +44,34 @@ function defaultOnEvict(sessionId, reason) {
  *     first (never silently exceeds the cap).
  * Both paths call `onEvict(sessionId, reason)` (default: a stderr warning) so an operator can see it.
  *
+ * CHAIN-EPOCH / tombstones (eviction ≠ chain corruption): idle-TTL and cap eviction drop a
+ * session's `{prev, seq}` bookkeeping, but the HOST may still be there — it was merely idle (TTL)
+ * or merely the least-recently-touched of several concurrent sessions (cap). A resume on the SAME
+ * `sessionId` after either eviction path must NOT silently reuse the same default chain identity at
+ * a fresh `seq=0`: a persisted receipt log spanning both the pre-eviction and post-eviction receipts
+ * would then carry two receipts claiming the same `scope.chain` + `seq=0`, and `verifyChain()`
+ * correctly (and unhelpfully) reports that as TAMPERED ("duplicate seq 0") — the log is not actually
+ * tampered, the store just handed out a colliding chain identity. Every EVICTION (never a clean
+ * `end()`, see below) records a small tombstone `{ epoch, tombstonedAt }` for that `sessionId`; the
+ * next `stateFor()` call for the same id reads it and starts the new segment at `chainEpoch =
+ * priorEpoch + 1`. The caller-facing default chain-id (built in `prepareSessionReceipt` below) folds
+ * this epoch in ONLY when it's >1 (`#2`, `#3`, …), so a session that is never evicted keeps today's
+ * exact default naming (`${tenant}:${sessionId}`, no suffix) — zero behavior change for the common
+ * case. An operator/verifier who persists ALL receipts for a long-lived, occasionally-evicted
+ * sessionId into one log must therefore GROUP BY `scope.chain` before calling `verifyChain()` (each
+ * group is its own honestly-independent, fully-verifiable segment) — exactly the same discipline a
+ * multi-session log already requires today, since two DIFFERENT sessionIds already get two different
+ * `scope.chain` ids.
+ *
+ * `end()` (a clean host-side disconnect, e.g. `server.onclose`) is deliberately NOT tombstoned: it
+ * signals the chain is intentionally finished, not "the host might still be there" — a brand-new
+ * connection later reusing the same `sessionId` (rare; proxy.mjs's own default mints a fresh
+ * `randomUUID()` per process) legitimately starts a fresh chain at epoch 1, exactly as before.
+ *
+ * The tombstone map is itself bounded exactly like `sessions` — the same `idleTtlMs` (a tombstone
+ * older than the TTL is pruned) and the same `maxSessions` cap (oldest tombstone evicted first past
+ * the cap) — so a resume-storming host can't grow it any more unboundedly than `sessions` itself.
+ *
  * @param {{ idleTtlMs?: number, maxSessions?: number, sweepIntervalMs?: number,
  *   now?: () => number, onEvict?: (sessionId: string, reason: "idle-ttl-expired" | "cap-exceeded") => void }} [options]
  */
@@ -54,12 +82,48 @@ export function createChainSessionStore({
   now = Date.now,
   onEvict = defaultOnEvict,
 } = {}) {
-  /** @type {Map<string, { prev: import("../../../dist/src/types.js").Receipt | null, seq: number, lastAccessedAt: number }>} */
+  /** @type {Map<string, { prev: import("../../../dist/src/types.js").Receipt | null, seq: number, lastAccessedAt: number, chainEpoch: number }>} */
   const sessions = new Map();
+
+  /** sessionId -> { epoch: number, tombstonedAt: number } — see the module docstring's
+   *  "CHAIN-EPOCH / tombstones" section. Records the epoch of the LAST evicted (never
+   *  cleanly-`end()`ed) chain segment for a sessionId, so the next resume starts a new, honest
+   *  segment instead of colliding with the old one at seq 0. Bounded by the same idleTtlMs/
+   *  maxSessions knobs as `sessions` (pruned in `pruneTombstones()`). */
+  const tombstones = new Map();
+
+  /** Prunes `tombstones` by the same two bounds as `sessions`: age past `idleTtlMs`, and — if still
+   *  over `maxSessions` after that — the single oldest tombstone (mirrors `evictOldestIdle` below,
+   *  applied to `tombstones` instead of `sessions`). A tombstone can only exceed the cap by exactly
+   *  one entry per call site (each eviction adds at most one), so a single oldest-removal suffices. */
+  function pruneTombstones() {
+    const cutoff = now() - idleTtlMs;
+    for (const [id, t] of tombstones) {
+      if (t.tombstonedAt <= cutoff) tombstones.delete(id);
+    }
+    if (maxSessions > 0 && tombstones.size > maxSessions) {
+      let oldestId = null;
+      let oldestAt = Infinity;
+      for (const [id, t] of tombstones) {
+        if (t.tombstonedAt < oldestAt) {
+          oldestAt = t.tombstonedAt;
+          oldestId = id;
+        }
+      }
+      if (oldestId !== null) tombstones.delete(oldestId);
+    }
+  }
+
+  /** Records that `sessionId`'s chain segment at `epoch` was just evicted (not cleanly ended), so
+   *  a later resume on the same id knows to start `epoch + 1`, not collide with this one. */
+  function tombstone(sessionId, epoch) {
+    tombstones.set(sessionId, { epoch, tombstonedAt: now() });
+    pruneTombstones();
+  }
 
   /** Drops the single session with the smallest `lastAccessedAt` (a no-op if empty — a
    *  misconfigured `maxSessions <= 0` with zero sessions currently held simply finds nothing to
-   *  evict rather than looping). */
+   *  evict rather than looping). Tombstones the evicted session's chain epoch (see docstring). */
   function evictOldestIdle(reason) {
     let oldestId = null;
     let oldestAt = Infinity;
@@ -70,7 +134,9 @@ export function createChainSessionStore({
       }
     }
     if (oldestId !== null) {
+      const evictedState = sessions.get(oldestId);
       sessions.delete(oldestId);
+      tombstone(oldestId, evictedState.chainEpoch);
       onEvict(oldestId, reason);
     }
   }
@@ -85,22 +151,27 @@ export function createChainSessionStore({
       return state;
     }
     if (maxSessions > 0 && sessions.size >= maxSessions) evictOldestIdle("cap-exceeded");
-    state = { prev: null, seq: 0, lastAccessedAt: now() };
+    const priorTombstone = tombstones.get(sessionId);
+    const chainEpoch = priorTombstone ? priorTombstone.epoch + 1 : 1;
+    state = { prev: null, seq: 0, lastAccessedAt: now(), chainEpoch };
     sessions.set(sessionId, state);
     return state;
   }
 
   /** Drops every session whose `lastAccessedAt` is at or before `now() - idleTtlMs`. Exposed
    *  directly (not just via the background timer) so a caller with an injected `now` can assert
-   *  TTL behavior deterministically without waiting real wall-clock time. */
+   *  TTL behavior deterministically without waiting real wall-clock time. Tombstones every dropped
+   *  session's chain epoch (see docstring) and prunes stale tombstones in the same pass. */
   function sweep() {
     const cutoff = now() - idleTtlMs;
     for (const [id, state] of sessions) {
       if (state.lastAccessedAt <= cutoff) {
         sessions.delete(id);
+        tombstone(id, state.chainEpoch);
         onEvict(id, "idle-ttl-expired");
       }
     }
+    pruneTombstones();
   }
 
   // Background safety net: a host that never calls end() (crash, forgotten clean-close) still
@@ -110,10 +181,13 @@ export function createChainSessionStore({
   if (typeof sweepTimer.unref === "function") sweepTimer.unref();
 
   return {
-    /** Current `{ prev, seq }` for a session, without mutating (creates the slot on first read). */
+    /** Current `{ prev, seq, chainEpoch }` for a session, without mutating (creates the slot on
+     *  first read). `chainEpoch` starts at 1 and only increments when a resume follows an
+     *  EVICTION (idle-TTL/cap) of this same sessionId — see the module docstring's "CHAIN-EPOCH /
+     *  tombstones" section; `prepareSessionReceipt()` below folds it into the default chain id. */
     peek(sessionId) {
       const state = stateFor(sessionId);
-      return { prev: state.prev, seq: state.seq };
+      return { prev: state.prev, seq: state.seq, chainEpoch: state.chainEpoch };
     },
     /** Records the just-built receipt for a session, advancing its seq. */
     advance(sessionId, receipt) {
@@ -121,7 +195,10 @@ export function createChainSessionStore({
       state.prev = receipt;
       state.seq += 1;
     },
-    /** Drops a session's chain state (e.g. on disconnect). */
+    /** Drops a session's chain state on a CLEAN disconnect (e.g. `server.onclose`) — deliberately
+     *  NOT tombstoned (no epoch bump): a clean close means this chain is intentionally finished,
+     *  not "the host might still be there" (that ambiguity is exactly what idle-TTL/cap eviction
+     *  carries, and is what tombstoning exists for). See the module docstring. */
     end(sessionId) {
       sessions.delete(sessionId);
     },
@@ -166,8 +243,12 @@ export function prepareSessionReceipt(toolCall, { sessionId, store, signer, poli
   if (!sessionId) throw new Error("prepareSessionReceipt: `sessionId` is required");
   if (!store) throw new Error("prepareSessionReceipt: `store` is required");
 
-  const { prev, seq } = store.peek(sessionId);
-  return preCheck(toolCall, { signer, policy, prev, seq, tenant, chain: chain ?? `${tenant ?? "default-tenant"}:${sessionId}` });
+  const { prev, seq, chainEpoch } = store.peek(sessionId);
+  // Default chain-id folds in `chainEpoch` ONLY past epoch 1 (`#2`, `#3`, …) — a session that has
+  // never been evicted keeps today's exact naming (`${tenant}:${sessionId}`), zero behavior change
+  // for the common case. See createChainSessionStore's "CHAIN-EPOCH / tombstones" docstring.
+  const defaultChain = `${tenant ?? "default-tenant"}:${sessionId}${chainEpoch > 1 ? `#${chainEpoch}` : ""}`;
+  return preCheck(toolCall, { signer, policy, prev, seq, tenant, chain: chain ?? defaultChain });
 }
 
 /**
