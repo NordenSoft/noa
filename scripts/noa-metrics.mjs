@@ -2,7 +2,7 @@
 /**
  * noa-metrics.mjs — leading-indicator metrics harness for NOA Receipt v0.1 corpora.
  *
- * Apache-2.0, part of @noa/receipt. Standalone: node >=20 stdlib only, NO third-party deps,
+ * Apache-2.0, part of noa-receipt. Standalone: node >=20 stdlib only, NO third-party deps,
  * NO imports from dist/src (so it runs without a build). It parses receipt JSON, it does NOT
  * verify signatures/hashes — the three metrics below are STRUCTURAL counts over the corpus,
  * which is all "leading indicators" need (and all the on-receipt data can support without a
