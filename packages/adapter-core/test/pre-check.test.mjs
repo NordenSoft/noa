@@ -171,6 +171,73 @@ test("preCheck: a throwing getter on toolCall.name itself ALSO never throws past
   assert.equal(r.receipt.action.id, "unknown-action", "falls back to a safe sentinel action id when even toolCall.name itself cannot be read");
 });
 
+test("preCheck: a throwing getter on toolCall.agentId never throws past preCheck (fail-closed DENY) — this field used to be read UNGUARDED inside the receipt-construction call itself, later than every other guard, so it used to escape as an uncaught exception even though args/name were already protected", () => {
+  const { signer } = signerAndKeyring("test-key-agentid-getter-throw");
+  const evilToolCall = {
+    name: "payment.refund",
+    args: { amountMinor: 100 },
+    get agentId() {
+      throw new Error("agentId-getter-boom");
+    },
+  };
+  assert.doesNotThrow(() => preCheck(evilToolCall, { signer, policy: REFUND_GUARD_POLICY }));
+  const r = preCheck(evilToolCall, { signer, policy: REFUND_GUARD_POLICY });
+  assert.equal(r.decision, "DENY", "a throwing toolCall.agentId getter must fail the whole call closed, never throw past preCheck");
+  assert.equal(r.receipt.governance.ruleId, "toolcall-read-threw");
+  assert.equal(r.receipt.agent.id, "mcp-agent", "falls back to the same sentinel an absent agentId already uses");
+});
+
+test("preCheck: a non-throwing but INVALID-SHAPED toolCall.agentId (number/empty-string/object) never throws buildReceipt either — sanitized to the same 'mcp-agent' fallback, decision unaffected (agentId is attribution-only, never read by evaluate())", () => {
+  const { signer } = signerAndKeyring("test-key-agentid-wrong-shape");
+  for (const agentId of [123, "", {}]) {
+    assert.doesNotThrow(
+      () => preCheck({ name: "payment.refund", args: { amountMinor: 100 }, agentId }, { signer, policy: REFUND_GUARD_POLICY }),
+      `agentId=${JSON.stringify(agentId)} must never throw buildReceipt`,
+    );
+    const r = preCheck({ name: "payment.refund", args: { amountMinor: 100 }, agentId }, { signer, policy: REFUND_GUARD_POLICY });
+    assert.equal(r.receipt.agent.id, "mcp-agent", `agentId=${JSON.stringify(agentId)} must sanitize to the mcp-agent fallback`);
+    assert.equal(r.decision, "ALLOW", "an invalid-shaped agentId must not change the policy decision — it is attribution-only");
+  }
+});
+
+test("preCheck: a non-string / empty / non-scalar toolCall.name never reaches buildReceipt raw — fails the WHOLE call closed (DENY) instead of throwing BuilderError on a non-empty-string action.id/canonical requirement", () => {
+  const { signer } = signerAndKeyring("test-key-name-wrong-shape");
+  for (const name of [123, "", {}]) {
+    assert.doesNotThrow(
+      () => preCheck({ name, args: { amountMinor: 1 } }, { signer, policy: REFUND_GUARD_POLICY }),
+      `name=${JSON.stringify(name)} must never throw buildReceipt`,
+    );
+    const r = preCheck({ name, args: { amountMinor: 1 } }, { signer, policy: REFUND_GUARD_POLICY });
+    assert.equal(r.decision, "DENY", `name=${JSON.stringify(name)} must fail the whole call closed`);
+    assert.equal(r.receipt.governance.ruleId, "invalid-action-name");
+    assert.equal(r.receipt.action.id, "unknown-action", "falls back to the same sentinel a raw read failure already uses");
+    assert.equal(r.receipt.governance.compliance, null, "nothing valid to commit when the action name itself cannot be trusted");
+  }
+});
+
+test("preCheck: a policy that validatePolicy rejects for an UNRELATED structural reason (unknown top-level key), but whose extra field's VALUE also independently breaks JCS canonicalization (NaN), never throws — evidence.policyHash falls back to a fixed sentinel instead of escaping as a JcsError", () => {
+  const { signer } = signerAndKeyring("test-key-policyhash-uncanonicalizable");
+  // `debugScore` trips validatePolicy's noExtraKeys check FIRST (an unrelated, unrecognized top-level
+  // field) — validatePolicy short-circuits before ever reaching its own canonicalize-recheck, so
+  // evaluate() correctly DENYs "policy-invalid" without ever calling canonicalize(). But the SAME raw
+  // policy object, independently canonicalized later for `evidence.policyHash`, still contains the
+  // NaN value and genuinely cannot be JCS-canonicalized (JCS rejects non-finite numbers) — before the
+  // fix, that second, unguarded canonicalize() call threw straight out of preCheck().
+  const uncanonicalizablePolicy = {
+    spec: "noa.policy/0.2",
+    id: "policyhash-repro",
+    requiredPaths: [],
+    rules: [{ id: "r1", when: { op: "exists", path: "action" }, then: "ALLOW" }],
+    debugScore: NaN,
+  };
+  assert.doesNotThrow(() => preCheck({ name: "payment.refund", args: {} }, { signer, policy: uncanonicalizablePolicy }));
+  const r = preCheck({ name: "payment.refund", args: {} }, { signer, policy: uncanonicalizablePolicy });
+  assert.equal(r.decision, "DENY", "evaluate() already fails this policy closed via its own validatePolicy check");
+  assert.equal(r.evidence.ruleFired, "policy-invalid");
+  assert.equal(typeof r.evidence.policyHash, "string");
+  assert.match(r.evidence.policyHash, /^sha256:/, "falls back to a fixed sentinel hash rather than throwing");
+});
+
 test("preCheck: full args are visible to the policy under an args.* prefix — a new rule can read args.recipient", () => {
   const { signer } = signerAndKeyring("test-key-9");
   // A policy that ONLY the args-projection change makes expressible: deny any refund whose

@@ -236,6 +236,42 @@ function canonicalParamsHash(args) {
   }
 }
 
+/** Fixed, greppable sentinel for `evidence.policyHash` when `policyHash(policy)` itself throws —
+ *  see `safePolicyHash` below for exactly when that can happen and why it is an operator/config
+ *  error, not a normal outcome. */
+const UNCANONICALIZABLE_POLICY_SENTINEL_HASH = sha256Prefixed("noa-mcp-adapter-core:policyHash-uncanonicalizable-policy");
+
+/**
+ * Fail-closed wrapper around `policyHash(policy)` for `preCheck()`'s `evidence` block.
+ *
+ * `evaluate(policy, inputs)` (used for the actual decision, earlier in `preCheck`) NEVER throws —
+ * it runs `validatePolicy(policy)` first and returns a DENY `"policy-invalid"` verdict for anything
+ * that validator rejects. For a policy `validatePolicy` ACCEPTS, that same validator's own final
+ * check already asserts `canonicalize(policy)` succeeds (see src/policy/validate.ts), so
+ * `policyHash()` — which canonicalizes the identical object — is guaranteed not to throw in that
+ * case either. The residual gap is a policy `validatePolicy` REJECTS for a reason UNRELATED to
+ * canonicalizability (e.g. an unknown top-level key, or a duplicate rule id) that trips one of the
+ * validator's EARLIER structural checks and short-circuits before its own canonicalize-recheck ever
+ * runs (`if (errors.length === 0) { try canonicalize(p) ... } }`) — `evaluate()` still correctly
+ * DENYs `"policy-invalid"` for that policy (the decision is safe), but if that SAME object also
+ * happens to be genuinely non-canonicalizable in its own right (e.g. a value nested past JCS's
+ * MAX_DEPTH, or a `NaN`/`Infinity` tucked into an unrelated/unknown field), an UNGUARDED
+ * `policyHash(policy)` call independently throws a `JcsError` on it — this used to escape
+ * `preCheck()` uncaught, a crash on what is fundamentally an operator/policy-config mistake, not a
+ * caller-input attack, but `preCheck()`'s own "never throws" contract must hold for it too. Falls
+ * back to the fixed `UNCANONICALIZABLE_POLICY_SENTINEL_HASH` sentinel rather than raising — the
+ * decision itself is already DENY by the time this runs (via `evaluate()`'s own policy-invalid
+ * fail-close), so this wrapper only needs to keep `preCheck()` from crashing while computing
+ * diagnostic evidence for that already-safe decision.
+ */
+function safePolicyHash(policy) {
+  try {
+    return policyHash(policy);
+  } catch {
+    return UNCANONICALIZABLE_POLICY_SENTINEL_HASH;
+  }
+}
+
 /**
  * The Policy Decision Point. Pure + deterministic (beyond the caller-supplied `ts`, which is a
  * real wall-clock read — the underlying `evaluate()` itself remains pure/deterministic).
@@ -260,33 +296,62 @@ export function preCheck(
   if (!signer) throw new Error("preCheck: `signer` is required");
   if (!policy) throw new Error("preCheck: `policy` is required (no implicit default policy)");
 
-  // FAIL-CLOSED READ GUARD (checked BEFORE anything else): `toolCall.name`/`toolCall.args` used to
-  // be read directly, UNGUARDED, at this exact spot — before ANY of the enumeration guards below
-  // (findAmbiguousDottedArgKey / flattenArgsToPolicyInputs, both already wrapped in their own
-  // try/catch) ever run. A caller embedding this package in-process (documented as usable by "any
-  // MCP integration: proxy, gateway, in-process guard") can legitimately hand it a `toolCall`/
-  // `args` shape carrying a throwing getter or Proxy trap (never producible by `JSON.parse`, but a
-  // live JS object built by that caller's own code can contain one) — e.g. an `args` object whose
-  // `amountMinor` property is `{ get amountMinor() { throw ... } }`. Reading it unguarded here
-  // would throw straight out of `preCheck()`, before reaching ANY fail-closed guard — violating
-  // this module's own "never throws, only DENY" contract. `safeName`/`safeArgs`/`safeAmountMinor`
-  // are captured ONCE, inside this one try/catch, and reused EVERYWHERE below (the receipt's
-  // `action.id`/`canonical` included, and every later `toolCall.args` read) instead of re-reading
-  // `toolCall.name`/`toolCall.args` a second time — a second unguarded read would reopen the exact
-  // same gap for a throwing `name`/`args` getter (getters re-invoke on every access, they are not
-  // cached), and would also let a live getter hand different call-sites inconsistent views of the
-  // "same" args for a single decision.
+  // FAIL-CLOSED READ GUARD (checked BEFORE anything else): `toolCall.name`/`toolCall.args`/
+  // `toolCall.agentId` used to be read directly, UNGUARDED — `name`/`args`/`amountMinor` at this
+  // exact spot (before ANY of the enumeration guards below ever run) and `agentId` even later,
+  // inside the receipt-construction call at the bottom of this function. A caller embedding this
+  // package in-process (documented as usable by "any MCP integration: proxy, gateway, in-process
+  // guard") can legitimately hand it a `toolCall`/`args` shape carrying a throwing getter or Proxy
+  // trap (never producible by `JSON.parse`, but a live JS object built by that caller's own code
+  // can contain one) on ANY of these fields — e.g. an `args` object whose `amountMinor` property is
+  // `{ get amountMinor() { throw ... } }`, or a `toolCall` whose `agentId` getter throws. Reading
+  // any of them unguarded would throw straight out of `preCheck()`, before reaching ANY fail-closed
+  // guard — violating this module's own "never throws, only DENY" contract. `safeName`/`safeArgs`/
+  // `safeAmountMinor`/`safeAgentId` are captured ONCE, inside this ONE try/catch, and reused
+  // EVERYWHERE below (the receipt's `action.id`/`canonical`/`agent.id` included, and every later
+  // `toolCall.args` read) instead of re-reading `toolCall.name`/`toolCall.args`/`toolCall.agentId` a
+  // second time — a second unguarded read would reopen the exact same gap for a throwing getter
+  // (getters re-invoke on every access, they are not cached), and would also let a live getter hand
+  // different call-sites inconsistent views of the "same" call for a single decision.
   let safeName;
   let safeArgs;
   let safeAmountMinor;
+  let safeAgentId;
   let toolCallReadThrew = false;
   try {
     safeName = toolCall.name;
     safeArgs = toolCall.args;
     safeAmountMinor = safeArgs?.amountMinor;
+    safeAgentId = toolCall.agentId;
   } catch {
     toolCallReadThrew = true;
   }
+
+  // ACTION-NAME SHAPE GUARD: a raw read that itself SUCCEEDED can still hand back a `name` that is
+  // not a valid, non-empty string (a number, a plain object, `""`, ...). `evaluate()`'s own
+  // integer/string-only scalar assertion already fails a NON-SCALAR `name` (e.g. an object) closed
+  // to DENY internally, but a scalar-but-wrong-shape `name` (a number, or an empty string) sails
+  // through evaluation untouched and then reaches `buildReceipt` below as `action.id`/
+  // `action.canonical` — both of which `buildReceipt`'s own structural re-validation REQUIRES to be
+  // non-empty strings (see src/schema.ts). Before this guard, that mismatch threw a `BuilderError`
+  // straight out of `preCheck()` — a crash on a merely mis-shaped (not evil/throwing) `name`, not
+  // even an adversarial one. Fixed the same way as a throwing read: force the WHOLE call fail-closed
+  // DENY, and always feed `buildReceipt` the same safe sentinel (`"unknown-action"`) a raw read
+  // failure already uses — a `name` that can't be trusted enough to evaluate a policy against can
+  // also never be trusted enough to build a receipt with.
+  const nameInvalid = !toolCallReadThrew && (typeof safeName !== "string" || safeName.length === 0);
+  // The receipt's `action.id`/`action.canonical` value, resolved ONCE: the safe sentinel whenever
+  // the raw read itself threw OR the read succeeded but `name` isn't a usable non-empty string;
+  // `safeName` (guaranteed a valid non-empty string here) otherwise.
+  const safeActionId = toolCallReadThrew || nameInvalid ? "unknown-action" : safeName;
+  // `toolCall.agentId` is ATTRIBUTION metadata only — never read by `evaluate()`/policy matching
+  // (see the receipt-construction comment below), so an invalid shape here does not need to force
+  // the DECISION closed the way an invalid `name` does; it only needs to never reach `buildReceipt`
+  // as a non-string/empty value (the same structural requirement `action.id` has). Falls back to
+  // the SAME sentinel an absent `agentId` already used (`"mcp-agent"`) rather than inventing a
+  // second, differently-worded sentinel for what is semantically the same "no trustworthy agent id
+  // given" case.
+  const safeAgentIdForReceipt = typeof safeAgentId === "string" && safeAgentId.length > 0 ? safeAgentId : "mcp-agent";
 
   // The CLOSED-WORLD decision inputs. `action`/`amountMinor` are the original, hand-picked fields
   // (kept unchanged for backward compatibility — an existing policy reading top-level
@@ -337,6 +402,11 @@ export function preCheck(
     // Highest-priority fail-closed check: the raw `toolCall.name`/`toolCall.args` read itself
     // threw, BEFORE anything below could even run against real data — see the guard above.
     ev = { verdict: "DENY", ruleFired: "toolcall-read-threw", engine: "toolcall-read-guard" };
+  } else if (nameInvalid) {
+    // Second-priority fail-closed check: the raw read succeeded, but `name` itself is not a valid
+    // non-empty string — see the ACTION-NAME SHAPE GUARD above. Forced closed before args are ever
+    // considered, same posture as a read that threw outright.
+    ev = { verdict: "DENY", ruleFired: "invalid-action-name", engine: "toolcall-read-guard" };
   } else if (argsEnumerationThrew) {
     ev = { verdict: "DENY", ruleFired: "args-enumeration-threw", engine: "args-flatten-ambiguity-guard" };
   } else if (ambiguousArgKey !== null) {
@@ -354,13 +424,14 @@ export function preCheck(
   }
   const decision = ev.verdict === "ALLOW" ? "ALLOW" : "DENY";
 
-  // Commit the policy+inputs ONLY when the raw toolCall read succeeded AND the inputs are
-  // canonicalizable, unambiguous, AND args could be enumerated at all. Malformed inputs (e.g. a
-  // float amount), a dotted-key ambiguity, a fully-uncanonicalizable args (a circular reference),
-  // a toolCall read that itself threw, or an args enumeration that itself threw → fail-closed DENY
-  // with NO compliance block (there is nothing valid to commit/replay).
+  // Commit the policy+inputs ONLY when the raw toolCall read succeeded, `name` itself is a usable
+  // non-empty string, AND the inputs are canonicalizable, unambiguous, AND args could be enumerated
+  // at all. Malformed inputs (e.g. a float amount), an invalid action name, a dotted-key ambiguity,
+  // a fully-uncanonicalizable args (a circular reference), a toolCall read that itself threw, or an
+  // args enumeration that itself threw → fail-closed DENY with NO compliance block (there is
+  // nothing valid to commit/replay).
   let compliance = null;
-  if (!toolCallReadThrew && !argsEnumerationThrew && ambiguousArgKey === null && !argsUncanonicalizable) {
+  if (!toolCallReadThrew && !nameInvalid && !argsEnumerationThrew && ambiguousArgKey === null && !argsUncanonicalizable) {
     try {
       compliance = complianceCommit(policy, inputs);
     } catch {
@@ -373,18 +444,20 @@ export function preCheck(
       id: `rcpt_${seq}`,
       ts: ts ?? new Date().toISOString(),
       scope: { tenant, chain: chain ?? `${tenant}:mcp` },
+      // `safeAgentIdForReceipt` (not a fresh `toolCall.agentId` re-read — see the guard above) so a
+      // throwing `agentId` getter can never surface here, and an invalid-shaped-but-non-throwing
+      // `agentId` can never reach `buildReceipt`'s own non-empty-string requirement either.
       // `toolCall.agentId` is the ONLY source for this field — never `toolCall.args` (a caller
       // that reads a request's own arguments into `agentId` would let the CALLER spoof its own
       // attribution; see packages/mcp-proxy's create-proxy-server.mjs, which sources this from a
       // static proxy-config value / the session id, never from the forwarded tool arguments).
-      agent: { id: toolCall.agentId ?? "mcp-agent", model: null, principal: "POLICY" },
+      agent: { id: safeAgentIdForReceipt, model: null, principal: "POLICY" },
       action: {
-        // `safeName` (not a fresh `toolCall.name` re-read — see the guard above) so a throwing
-        // `name` getter can never surface here either; `?? "unknown-action"` covers both
-        // `toolCallReadThrew` (safeName never got assigned) and a legitimately absent name, since
-        // `buildReceipt`'s own structural check requires a non-empty string here.
-        id: safeName ?? "unknown-action",
-        canonical: safeName ?? "unknown-action",
+        // `safeActionId` (not a fresh `toolCall.name` re-read — see the guard above) so a throwing
+        // OR invalid-shaped `name` can never surface here either; it is already guaranteed a
+        // non-empty string (either `safeName` itself, or the `"unknown-action"` sentinel).
+        id: safeActionId,
+        canonical: safeActionId,
         riskClass: decision === "DENY" ? "HIGH" : "LOW",
         paramsHash,
         reversible: false,
@@ -409,7 +482,7 @@ export function preCheck(
   return {
     decision,
     receipt,
-    evidence: { policyHash: policyHash(policy), engine: ev.engine, ruleFired: ev.ruleFired, inputs },
+    evidence: { policyHash: safePolicyHash(policy), engine: ev.engine, ruleFired: ev.ruleFired, inputs },
   };
 }
 
