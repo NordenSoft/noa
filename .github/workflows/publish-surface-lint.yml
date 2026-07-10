@@ -1,0 +1,25 @@
+name: publish-surface-lint
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      # npm ci runs the `prepare` hook (npm run build), which is required: the linter scans the
+      # files npm would ACTUALLY ship (via `npm pack --dry-run --json`), including dist/src/*.js.
+      - run: npm ci
+      - name: Lint the published npm tarball surface (K4 internal-process jargon + K5 security-marketing claims)
+        run: npm run lint:publish-surface

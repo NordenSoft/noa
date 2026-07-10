@@ -123,8 +123,8 @@ truth or safety.
   not a guarantee of behavioral honesty.
 - **Signer-asserted timestamps:** `ts` is set by the signer and is therefore backdatable. The
   verifier only warns on non-monotonic `ts`; do not treat timestamps as trusted wall-clock.
-- **Keyring is the root of trust:** every guarantee collapses if the verifier's keyring is
-  wrong. Distributing/securing/updating the keyring is out of band and out of scope for v0.1.
+- **Keyring is the root of trust:** every property above stops holding if the verifier's keyring
+  is wrong. Distributing/securing/updating the keyring is out of band and out of scope for v0.1.
 - **Unknown `kid` is reported `TAMPERED` (fail-closed tradeoff):** when a keyring is supplied, a
   signature by a key not in it (receipt OR checkpoint) is `TAMPERED`. This is deliberate
   (no silent trust-on-first-use of attacker input). The cost: a *legitimately rotated* key looks

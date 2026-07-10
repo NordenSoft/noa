@@ -225,8 +225,8 @@ anchor — transparency log / receiver-attestation — which is **v1.0** (§7).
 - **v0.1 (now):** format + hardened JCS + mandatory Ed25519 + key-pinning + offline verifier
   + checkpoints + JSON-Schema + conformance suite.
 - **v0.2:** key-rotation policy; MCP-proxy reference emitter; HMAC params profile.
-- **v1.0:** external anchor (transparency log / receiver-attestation) → tamper-PROOF;
-  neutral-foundation governance.
+- **v1.0:** external anchor (transparency log / receiver-attestation) → tamper-evident,
+  independently witnessed; neutral-foundation governance.
 - **Non-goals (v0.x):** does NOT detect hallucination; does NOT undo irreversible real-world
   effects (it *gates before* them); does NOT replace your model or your framework.
 

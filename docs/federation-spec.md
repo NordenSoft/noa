@@ -48,7 +48,7 @@ seq N' from 'records after seq N were deleted.'"*
 > real and named, not waved away.
 
 This is the **v1.0** item on the receipt-spec roadmap (§7: *"external anchor (transparency log /
-receiver-attestation) → tamper-PROOF; neutral-foundation governance"*).
+receiver-attestation) → tamper-evident, independently witnessed; neutral-foundation governance"*).
 
 ---
 
