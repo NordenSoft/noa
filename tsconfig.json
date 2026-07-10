@@ -9,6 +9,7 @@
     "declaration": true,
     "declarationMap": false,
     "sourceMap": false,
+    "removeComments": true,
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "noImplicitOverride": true,
