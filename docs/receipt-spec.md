@@ -205,7 +205,7 @@ the checkpoint is authorized by the chain **OPENER** — its `sig.kid` MUST be a
 **The authority is the opener, NOT the mutable head** — this is deliberate: a `scope.chain` is a
 *shared* partition with no opener/ownership binding, so any co-trusted key holder can APPEND its own
 receipt onto a victim's prefix, become the head, drop the victim's tail, and forge a checkpoint over
-its OWN head (the **re-heading** attack, round-10 audit). Binding to the head would then check the
+its OWN head (the **re-heading** attack). Binding to the head would then check the
 attacker's checkpoint against the attacker's OWN authorized `agent.id` → `VALID` while the victim's
 tail is erased. The opener cannot be re-written by an appended tail, so genesis-binding rejects the
 re-heading checkpoint as `UNTRUSTED` and strictly subsumes the legitimate opener-checkpoint case
@@ -302,7 +302,7 @@ carrier's own `chain.hash` + Ed25519 signature first; a non-authentic carrier �
 `verifyChain([...], { keyring })` and requiring `VALID` first. Reporting "compliant" off an un-authenticated
 carrier is a conformance violation.
 
-**ATTRIBUTION — KID-LEVEL vs AGENT-LEVEL (round-17 #1):** `{ keyring }` carrier-auth is *kid-level* — it
+**ATTRIBUTION — KID-LEVEL vs AGENT-LEVEL:** `{ keyring }` carrier-auth is *kid-level* — it
 proves "a keyring-trusted key signed this carrier", NOT "THIS `agent.id` signed it". In a multi-key keyring a
 co-trusted key can sign a receipt claiming `agent.id=victim` and still pass carrier-auth, which is exactly the
 cross-agent impersonation `verifyChain` rejects as `UNTRUSTED` *only* when also given an identityManifest. To

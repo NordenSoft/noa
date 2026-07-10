@@ -2,8 +2,8 @@
  * NOA Policy DSL v0.2 — the L2 "policy-compliance" rule format.
  *
  * Deliberately TINY and deterministic-BY-CONSTRUCTION so a verifier can re-run it offline and
- * get a byte-identical verdict on any machine (the round-3 panel's #1 build-risk was determinism
- * leakage). The DSL therefore has:
+ * get a byte-identical verdict on any machine (determinism leakage was the #1 build-risk this
+ * design closes). The DSL therefore has:
  *   - NO floats (integers only, safe range) — kills number-serialization divergence
  *   - NO iteration / dynamic key access — kills set/map ordering divergence + closed-world holes
  *   - NO regex / locale / case-folding — kills RE2-vs-PCRE + Turkish-İ divergence
@@ -51,8 +51,8 @@ export const POLICY_SPEC = "noa.policy/0.2" as const;
 export const DEFAULT_VERDICT: Verdict = "DENY";
 
 /** sha256:<hex> over the canonical (JCS) policy — the published, hash-pinned identity.
- *  PRECONDITION: `p` must be a `validatePolicy`-accepted policy. The validator now asserts
- *  canonicalizability (round-4 audit), so for any accepted policy this never throws; on a
+ *  PRECONDITION: `p` must be a `validatePolicy`-accepted policy. The validator asserts
+ *  canonicalizability, so for any accepted policy this never throws; on a
  *  non-canonicalizable policy (e.g. nested past depth `MAX_DEPTH`) it fail-closes with a typed
  *  `JcsError` rather than returning a hash — a refusal, never a wrong identity. */
 export function policyHash(p: Policy): string {

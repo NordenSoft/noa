@@ -78,7 +78,7 @@ test("B4: complianceCommit RECORDS the re-run verdict (ALLOW + DENY)", () => {
   assert.equal(complianceCommit(POLICY, { action: "payment.refund", amountMinor: 100_000_000 }).verdict, "DENY");
 });
 
-test("B4: a receipt committing the OPPOSITE verdict is REJECTED (verdict reconciliation — round-11 MEDIUM)", () => {
+test("B4: a receipt committing the OPPOSITE verdict is REJECTED (verdict reconciliation)", () => {
   const inputs = { action: "payment.refund", amountMinor: 4200 }; // re-runs to ALLOW
   const r = receiptWith(inputs, "EXECUTED");
   assert.equal(r.governance.compliance?.verdict, "ALLOW"); // commit recorded the true decision
@@ -111,9 +111,9 @@ test("B4: a receipt with NO compliance block → ok:false (nothing to prove)", (
   assert.equal(verifyReceiptCompliance(r, POLICY, { action: "payment.refund", amountMinor: 1 }).ok, false);
 });
 
-// ── round-12 #1 (HIGH): carrier AUTHENTICITY. The L2 proof runs over governance.compliance, which is
+// ── carrier AUTHENTICITY: the L2 proof runs over governance.compliance, which is
 // attacker-mutable on a non-authentic receipt. Passing { keyring } authenticates the carrier first. ──
-test("round-12 #1: with a keyring, an AUTHENTIC carrier passes the L2 proof", () => {
+test("with a keyring, an AUTHENTIC carrier passes the L2 proof", () => {
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring });
@@ -121,7 +121,7 @@ test("round-12 #1: with a keyring, an AUTHENTIC carrier passes the L2 proof", ()
   assert.equal(res.policyVerdict, "ALLOW");
 });
 
-test("round-12 #1: with a keyring, a TAMPERED carrier (corrupt signature) is REJECTED — not authentic", () => {
+test("with a keyring, a TAMPERED carrier (corrupt signature) is REJECTED — not authentic", () => {
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const broken = JSON.parse(JSON.stringify(r));
@@ -132,7 +132,7 @@ test("round-12 #1: with a keyring, a TAMPERED carrier (corrupt signature) is REJ
   assert.match(res.reason ?? "", /not authenticated|hash mismatch|malformed/);
 });
 
-test("round-12 #1: weaponized — swapping the WHOLE compliance block is caught by carrier auth", () => {
+test("weaponized — swapping the WHOLE compliance block is caught by carrier auth", () => {
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const permissive: Policy = { spec: "noa.policy/0.2", id: "evil", requiredPaths: [], rules: [{ id: "x", when: { op: "exists", path: "action" }, then: "ALLOW" }] };
@@ -144,7 +144,7 @@ test("round-12 #1: weaponized — swapping the WHOLE compliance block is caught 
   assert.equal(verifyReceiptCompliance(swapped, permissive, inputs, { keyring }).ok, false);
 });
 
-test("round-12 #1: with a keyring, an unknown signing kid is REJECTED", () => {
+test("with a keyring, an unknown signing kid is REJECTED", () => {
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring: {} });
@@ -152,8 +152,8 @@ test("round-12 #1: with a keyring, an unknown signing kid is REJECTED", () => {
   assert.match(res.reason ?? "", /not in keyring/);
 });
 
-// ── round-13 ───────────────────────────────────────────────────────────────
-test("round-13 #1 (HIGH): a FLIPPING governance.compliance accessor cannot beat carrier auth (TOCTOU snapshot)", () => {
+// ── TOCTOU / fail-closed hardening ───────────────────────────────────────────
+test("a FLIPPING governance.compliance accessor cannot beat carrier auth (TOCTOU snapshot)", () => {
   const inputs = { action: "payment.refund", amountMinor: 100_000_000 }; // POLICY → DENY
   const r = receiptWith(inputs, "BLOCKED"); // honest signed block: complianceCommit(POLICY,inputs).verdict === DENY
   const honest = r.governance.compliance!;
@@ -167,7 +167,7 @@ test("round-13 #1 (HIGH): a FLIPPING governance.compliance accessor cannot beat 
   assert.equal(verifyReceiptCompliance(live as never, permissive, inputs, { keyring }).ok, false);
 });
 
-test("round-13 #3/#7: fail-closed — null / undefined / throwing-accessor receipts → ok:false, never throws", () => {
+test("fail-closed — null / undefined / throwing-accessor receipts → ok:false, never throws", () => {
   assert.doesNotThrow(() => assert.equal(verifyReceiptCompliance(null as never, POLICY, { action: "x", amountMinor: 1 }).ok, false));
   assert.doesNotThrow(() => assert.equal(verifyReceiptCompliance(undefined as never, POLICY, { action: "x", amountMinor: 1 }).ok, false));
   let res!: ReturnType<typeof verifyReceiptCompliance>;
@@ -176,12 +176,12 @@ test("round-13 #3/#7: fail-closed — null / undefined / throwing-accessor recei
   assert.equal(res.ok, false);
 });
 
-// ── round-16 #6 (MEDIUM): the `inputs` argument is read TWICE — by the inputsHash check (canonicalize) AND
+// ── the `inputs` argument is read TWICE — by the inputsHash check (canonicalize) AND
 // by the evaluate() re-run. A flipping `amountMinor` getter could present the COMMITTED value to the hash
 // check (so inputsHash matches) and a DIFFERENT value to evaluate (so the re-run produces a verdict the
 // receipt never committed) → a false COMPLIANT. Snapshotting inputs ONCE reads each getter exactly once, so
 // the hashed inputs and the evaluated inputs are byte-identical → no split. ──────────────────────────────
-test("round-16 #6: a flipping `inputs` getter cannot split inputsHash from the re-run (snapshot reads once)", () => {
+test("a flipping `inputs` getter cannot split inputsHash from the re-run (snapshot reads once)", () => {
   // Honest receipt: commits ALLOW-inputs (amountMinor 4200 → ALLOW), records verdict ALLOW.
   const committed = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(committed, "EXECUTED");
@@ -214,7 +214,7 @@ test("round-16 #6: a flipping `inputs` getter cannot split inputsHash from the r
   assert.equal(reads <= 1, true, "the flipping getter must fire at most once (snapshot reads inputs exactly once)");
 });
 
-// ── round-17 #1 (HIGH): L2 carrier-auth via { keyring } is KID-LEVEL — it proves "a keyring-trusted key
+// ── L2 carrier-auth via { keyring } is KID-LEVEL — it proves "a keyring-trusted key
 // signed", NOT "THIS agent.id signed". In a multi-key keyring a co-trusted key can sign a receipt claiming
 // agent.id=victim and pass carrier-auth (ok:true) while verifyChain([...],{keyring,identityManifest}) returns
 // UNTRUSTED on the SAME receipt. Passing { keyring, identityManifest } binds the signer to the agent. ──────
@@ -238,14 +238,14 @@ test("round-16 #6: a flipping `inputs` getter cannot split inputsHash from the r
   }
   const inputs = { action: "payment.refund", amountMinor: 4200 };
 
-  test("round-17 #1: AUTHORIZED (agent.id, kid) pairing → ok:true with { keyring, identityManifest }", () => {
+  test("AUTHORIZED (agent.id, kid) pairing → ok:true with { keyring, identityManifest }", () => {
     const r = compReceiptFor("alice", { kid: aliceK.kid, privateKey: aliceK.privateKey });
     const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring: bothKr, identityManifest: manifest });
     assert.equal(res.ok, true, res.reason);
     assert.equal(res.policyVerdict, "ALLOW");
   });
 
-  test("round-17 #1: IMPERSONATION — agent.id=alice signed by bob → ok:false with identityManifest (verifyChain agrees: UNTRUSTED)", () => {
+  test("IMPERSONATION — agent.id=alice signed by bob → ok:false with identityManifest (verifyChain agrees: UNTRUSTED)", () => {
     // bob (a co-trusted key) signs a receipt claiming agent.id=alice. The carrier is genuine + bob-key is in
     // the keyring → carrier-auth ALONE (kid-level) passes. That is exactly the gap.
     const imp = compReceiptFor("alice", { kid: bobK.kid, privateKey: bobK.privateKey });
@@ -264,7 +264,7 @@ test("round-16 #6: a flipping `inputs` getter cannot split inputsHash from the r
     assert.equal(vc.status, "UNTRUSTED");
   });
 
-  test("round-17 #1: identityManifest WITHOUT keyring is a no-op (binding gates an AUTHENTICATED carrier only)", () => {
+  test("identityManifest WITHOUT keyring is a no-op (binding gates an AUTHENTICATED carrier only)", () => {
     // No keyring ⇒ no carrier-auth ⇒ the identity binding does not run; the L2 hashes still line up → ok:true
     // (kid-level, exactly as before). This documents that the manifest gates an authenticated carrier, never a
     // standalone agent-claim on an un-authenticated receipt.
@@ -272,7 +272,7 @@ test("round-16 #6: a flipping `inputs` getter cannot split inputsHash from the r
     assert.equal(verifyReceiptCompliance(imp, POLICY, inputs, { identityManifest: manifest }).ok, true);
   });
 
-  test("round-17 #1: a malformed identityManifest is fail-closed (ok:false), never silently ignored", () => {
+  test("a malformed identityManifest is fail-closed (ok:false), never silently ignored", () => {
     const r = compReceiptFor("alice", { kid: aliceK.kid, privateKey: aliceK.privateKey });
     // not an object
     assert.equal(verifyReceiptCompliance(r, POLICY, inputs, { keyring: bothKr, identityManifest: ["alice-key"] as never }).ok, false);

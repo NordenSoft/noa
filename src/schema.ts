@@ -75,7 +75,7 @@ export function validateReceiptShape(value: unknown): SchemaResult {
   const r = value;
 
   // Fail-closed: a caller-supplied LIVE object with a throwing/side-effecting accessor must yield a
-  // structural rejection, never escape as a raw throw (mirrors the fail-closed Python validator) — round-12.
+  // structural rejection, never escape as a raw throw (mirrors the fail-closed Python validator).
   try {
   checkExactKeys(
     r,

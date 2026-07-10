@@ -82,7 +82,7 @@ writeFileSync(join(dir, "wrong-keyring.json"), JSON.stringify({ [kp.kid]: otherK
 expect("TAMPERED (sig fails under wrong pubkey)", pyVerify([chainPath, join(dir, "wrong-keyring.json")]).code, 2);
 
 // ── Attack vectors: Python must match the TS reference's SECURITY verdicts, not just the happy path ──
-// NOTE (round-11 HIGH, identityManifest TOCTOU): the TS in-process API can be handed a manifest that is a
+// NOTE (identityManifest TOCTOU hardening): the TS in-process API can be handed a manifest that is a
 // LIVE object with accessor (getter) entries — or an array whose element getter flips on the second read —
 // returning ['alice-key'] to the validation pass and ['bob-key'] to enforcement (cross-agent impersonation
 // that would verify VALID/ok:true). The TS verifier defends this by SNAPSHOTTING the manifest into a plain
@@ -122,11 +122,11 @@ const dupPath = join(dir, "dup.json");
 writeFileSync(dupPath, dupText);
 expect("MALFORMED (duplicate JSON key, strict parse)", pyVerify([dupPath, keyringPath]).code, 3);
 
-// ── STRUCTURAL parity (round-9 audit): receipts that are STRUCTURALLY-INVALID but CRYPTO-CONSISTENT ──
+// ── STRUCTURAL parity: receipts that are STRUCTURALLY-INVALID but CRYPTO-CONSISTENT ──
 // The hashed surface covers ALL fields, so a keyring-trusted producer can sign a receipt with a
 // smuggled field / bad enum / sig.alg!="ed25519" / wrong spec. The TS reference runs validateReceiptShape
-// as step 1 of verifyChain → MALFORMED. The independent Python verifier MUST agree (was VALID before the
-// port — the divergence this audit closes). Each vector mutates a VALID receipt, then re-hashes + re-signs
+// as step 1 of verifyChain → MALFORMED. The independent Python verifier MUST agree. Each vector mutates
+// a VALID receipt, then re-hashes + re-signs
 // so chain integrity + Ed25519 signature stay GENUINE (only the STRUCTURE is out-of-spec).
 function reseal(obj) {
   // RE-COMPUTE chain.hash and RE-SIGN over the canonical hash-input so the receipt is crypto-consistent.
@@ -149,7 +149,7 @@ function structParity(label, mutate) {
   expect(`${label} [PY verifier]`, pyVerify([p, keyringPath]).code, 3);
 }
 
-// 7b. RE-HEADING truncation (round-10 audit): a scope.chain is a SHARED partition with no opener/
+// 7b. RE-HEADING truncation: a scope.chain is a SHARED partition with no opener/
 // ownership binding, so a co-trusted key can APPEND its own receipt onto a victim's prefix, BECOME the
 // head, DROP the victim's incriminating tail, and forge a checkpoint over its OWN head. The old §5b
 // head-binding "validated" the attacker against its OWN authorized agent.id → VALID + tailChecked while
@@ -213,13 +213,13 @@ structParity("MALFORMED (bad enum: action.riskClass)", (m) => { m.action.riskCla
 structParity('MALFORMED (sig.alg="rsa")', (m) => { m.sig.alg = "rsa"; });
 // 11. Wrong spec string.
 structParity("MALFORMED (wrong spec)", (m) => { m.spec = "noa.receipt/9.9"; });
-// 12. round-14 #1 — trailing-newline in an OPAQUE regex-validated field. Python's re `$` matched before a
+// 12. trailing-newline in an OPAQUE regex-validated field. Python's re `$` matched before a
 // single trailing \n (.match), accepting "value\n" that TS + the JSON Schema reject → VALID(PY)/MALFORMED(TS)
 // on identical SIGNED bytes. .fullmatch now makes both reject. (reseal keeps the receipt crypto-genuine.)
 structParity("MALFORMED (trailing-newline paramsHash, regex fullmatch)", (m) => { m.action.paramsHash = sha256Prefixed("z") + "\n"; });
 structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts = "2026-06-21T10:00:00.000Z\n"; });
 
-// ── B4 on-receipt compliance WITH verdict (round-12 #5/#8): a receipt carrying governance.compliance
+// ── B4 on-receipt compliance WITH verdict: a receipt carrying governance.compliance
 // (incl. the optional `verdict`) is NOA's OWN B4 output. Both verifiers MUST accept it. Before the port fix
 // the Python validator omitted `verdict` from the optional-key list, so an authentic NOA B4 receipt verified
 // VALID in TS but MALFORMED in Python — a verifier that rejects its own producer's receipts. ──
@@ -241,7 +241,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   expect("VALID    (B4 compliance receipt w/ verdict) [PY verifier]", pyVerify([compPath, keyringPath]).code, 0);
 }
 
-// ── Signature canonicality (round-12 #2 malleability, #3 non-canonical base64). sig.value is NOT covered by
+// ── Signature canonicality (S-malleability + non-canonical base64). sig.value is NOT covered by
 // the receipt hash, so these mutate ONLY the signature encoding (hash + content stay intact); both verifiers
 // MUST reject (TAMPERED). Before the fixes the Python verifier accepted a malleated S (no S<L check) and
 // rejected non-canonical base64 that TS accepted — two consensus divergences on identical input bytes. ──
@@ -271,9 +271,9 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   expect("TAMPERED (non-canonical base64 sig) [PY verifier]", pyVerify([ncPath, keyringPath]).code, 2);
 }
 
-// ── round-13 cross-impl parity: base64 canonicality (sig + key) + non-object keyring ──
+// ── cross-impl parity: base64 canonicality (sig + key) + non-object keyring ──
 {
-  // #6 keyring as a JSON list (non-object) → MALFORMED in both. (round-15 #7: this comment used to claim
+  // keyring as a JSON list (non-object) → MALFORMED in both. (This comment used to claim
   // "in both" while asserting ONLY the Python side — and TS verifyChain did NOT actually validate the keyring;
   // an array `keyring[kid]` returned undefined → an unknown-kid TAMPERED, NOT MALFORMED. Now TS rejects a
   // non-object keyring up front (verify.ts), so BOTH reach MALFORMED, and BOTH sides are asserted here.)
@@ -322,7 +322,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   }
 }
 
-// ── round-14 #2: strict_load_text parity with safeParse — oversized ints (> 2^53-1) + NaN/Infinity. Python's
+// ── strict_load_text parity with safeParse — oversized ints (> 2^53-1) + NaN/Infinity. Python's
 // json defaults parsed these (then graded TAMPERED); TS safeParse rejects (MALFORMED). Both must now reach
 // the SAME verdict class (MALFORMED) at the parser. ──
 {
@@ -345,7 +345,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   expect("MALFORMED (NaN literal, strict parse) [PY verifier]", pyVerify([nanPath, keyringPath]).code, 3);
 }
 
-// ── round-15: Unicode-digit RFC-3339 regex divergence. The RFC-3339 patterns (ts / approval.at, and the
+// ── Unicode-digit RFC-3339 regex divergence. The RFC-3339 patterns (ts / approval.at, and the
 // checkpoint ts) used bare `\d`. Python's `re` `\d` matches the ENTIRE Unicode decimal-number category (Nd)
 // — Arabic-Indic ٢٠٢٦, fullwidth ２０２６, etc. — while ECMA-262 `\d` (the dialect the normative JSON-Schema
 // `pattern` uses, and src/schema.ts/verify.ts) is ASCII [0-9] ONLY. A crypto-genuine receipt/checkpoint
@@ -371,7 +371,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
   expect("TAMPERED (Unicode-digit checkpoint ts) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", cpUPath]).code, 2);
 }
 
-// ── round-15 CLASS B: Python over-accepted vs the TS safeParse / in-process API on exotic-but-malformed
+// ── Python over-accepted vs the TS safeParse / in-process API on exotic-but-malformed
 // AUXILIARY trust files (keyring / identity / checkpoint), not just receipts. The TS CLI parses EVERY file
 // with safeParse (lone-surrogate reject) and the in-process API treats `opts.X !== undefined` as PRESENT
 // (so a null identity/checkpoint is "present but not an object" → MALFORMED). Python's json.loads + CLI
@@ -412,7 +412,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
 // in-process API treats `opts.identityManifest !== undefined` as PRESENT → null is not an object → MALFORMED
 // (keeps the impersonation defense; a null manifest must NOT silently degrade to "no manifest"). The Python
 // CLI loaded `null` → None → verify_chain read it as "not supplied" → VALID (silent drop) until the _main
-// guard (round-15 #6). Both must now reject a given-but-null identity. (checkpoint=null mirrors this.)
+// guard. Both must now reject a given-but-null identity. (checkpoint=null mirrors this.)
 {
   const nullIdentPath = join(dir, "identity-null.json");
   writeFileSync(nullIdentPath, "null");
@@ -426,14 +426,14 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
   const nullCpPath = join(dir, "checkpoint-null.json");
   writeFileSync(nullCpPath, "null");
   const tsNullCp = verifyChain(chain, { keyring, checkpoint: null }).status;
-  // checkpoint:null → opts.checkpoint !== undefined is TRUE → the non-object guard (round-17 #3) → MALFORMED.
+  // checkpoint:null → opts.checkpoint !== undefined is TRUE → the non-object guard → MALFORMED.
   const tsNullCpOk = tsNullCp === "MALFORMED";
   console.log(`${tsNullCpOk ? "✓" : "✗"} MALFORMED (checkpoint provided as null) [TS verifyChain]: ${tsNullCp} (want MALFORMED)`);
   if (!tsNullCpOk) failures++;
   expect("MALFORMED (checkpoint file = null) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", nullCpPath]).code, 3);
 }
 
-// round-17 #3 — a NON-OBJECT (but valid-JSON) checkpoint: a JSON array / number / string. TS used to route it
+// a NON-OBJECT (but valid-JSON) checkpoint: a JSON array / number / string. TS used to route it
 // into verifyCheckpoint → "malformed checkpoint" → TAMPERED (exit 2); Python's _main returns MALFORMED (exit 3)
 // on a non-dict checkpoint. A non-object checkpoint is STRUCTURALLY malformed → MALFORMED is canonical. Both
 // impls must now agree on MALFORMED for the SAME malformed input. (null is covered just above; this pins the
@@ -456,7 +456,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
   expect("MALFORMED (checkpoint is a JSON number) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint", numCpPath]).code, 3);
 }
 
-// round-16 #2/#3 — a TRAILING `--checkpoint` / `--identity` with NO following path. Silently dropping the
+// a TRAILING `--checkpoint` / `--identity` with NO following path. Silently dropping the
 // control would FAIL-OPEN (the verifier returns VALID/exit 0 over an unchecked tail / unbound identity),
 // whereas the TS CLI returns usage (exit 4). The Python _main must mirror the TS CLI: emit usage + exit 4.
 expect("USAGE (trailing --checkpoint, no path) [PY verifier]", pyVerify([chainPath, keyringPath, "--checkpoint"]).code, 4);
@@ -465,7 +465,7 @@ expect("USAGE (trailing --identity, no path) [PY verifier]", pyVerify([chainPath
 expect("USAGE (--checkpoint is the last token, no keyring) [PY verifier]", pyVerify([chainPath, "--checkpoint"]).code, 4);
 expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerify([chainPath, "--identity"]).code, 4);
 
-// ── round-18 #1: id length is bounded in CODE POINTS, not UTF-16 code units. An astral char is 1 code point
+// ── id length is bounded in CODE POINTS, not UTF-16 code units. An astral char is 1 code point
 // but 2 UTF-16 units. The TS schema used to read r.id.length (units), falsely rejecting an astral id at the
 // boundary that the Python verifier (len() = code points) + the normative schema (maxLength = code points)
 // accept — a consensus split on identical SIGNED bytes. Now BOTH measure code points. reseal keeps it genuine.
@@ -497,7 +497,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   expect("MALFORMED (id = 129 astral chars, over cap) [PY verifier]", pyVerify([bad129Path, keyringPath]).code, 3);
 }
 
-// ── round-18 #2: low-order / non-canonical PUBLIC KEY consensus pin. node:crypto/OpenSSL verify is cofactored
+// ── low-order / non-canonical PUBLIC KEY consensus pin. node:crypto/OpenSSL verify is cofactored
 // and ACCEPTS a small-subgroup public key; the independent strict-equation Python reference can reject it →
 // VALID(TS)/TAMPERED(PY) on identical signed bytes. Both impls now reject the 8 canonical small-order point
 // encodings AND any non-canonical y ≥ q encoding. A keyring whose pubkey is a low-order point → both TAMPERED

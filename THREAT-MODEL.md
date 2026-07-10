@@ -36,10 +36,10 @@ truth or safety.
 | T9 | Smuggle PII/data in an **unknown** field | `additionalProperties:false` everywhere | `schema.test`, `malformed/pii-smuggle` |
 | T10 | Malicious input → verifier DoS/pollution | depth/size bounds, `__proto__` reject, no eval/network | `safe-json.test`, `malformed/deep-nest` |
 | T11 | Cross-protocol signature reuse | domain-separated signing preimage (`NOA-Receipt-v0.1-sig:`) | `roundtrip.test`, conformance |
-| T12 | "Compliant" claimed off a **forged** carrier (L2) | `verifyReceiptCompliance(…, { keyring })` authenticates the carrier (own-hash + Ed25519) BEFORE the L2 check; or require `verifyChain → VALID` first | `policy/compliance.test` (round-12 #1) |
-| T13 | L2 verdict the receipt **never re-derives** | committed `verdict` (ALLOW\|DENY) is reconciled against a re-run of the evaluator → `ok:false` on mismatch | `policy/compliance.test` (round-11) |
-| T14 | Ed25519 signature malleability (`S' = S+L`) | both reference verifiers reject non-canonical `S ≥ L` and non-canonical point/base64 encodings | `conformance` (round-12 #2/#3) |
-| T15 | Low-order / non-canonical **public key** consensus split (cofactored OpenSSL accepts a small-subgroup key the strict RFC-8032 equation rejects → `VALID` in one impl, `TAMPERED` in the other on identical signed bytes) | both reference verifiers reject the 8 canonical small-order point encodings (torsion subgroup of order dividing 8) AND any non-canonical `y ≥ q` public-key encoding, decoding `A` with identical strictness | `keys.test`, `conformance` (round-18 #2) |
+| T12 | "Compliant" claimed off a **forged** carrier (L2) | `verifyReceiptCompliance(…, { keyring })` authenticates the carrier (own-hash + Ed25519) BEFORE the L2 check; or require `verifyChain → VALID` first | `policy/compliance.test` (carrier authenticity) |
+| T13 | L2 verdict the receipt **never re-derives** | committed `verdict` (ALLOW\|DENY) is reconciled against a re-run of the evaluator → `ok:false` on mismatch | `policy/compliance.test` (verdict reconciliation) |
+| T14 | Ed25519 signature malleability (`S' = S+L`) | both reference verifiers reject non-canonical `S ≥ L` and non-canonical point/base64 encodings | `conformance` (S-malleability + non-canonical-base64 vectors) |
+| T15 | Low-order / non-canonical **public key** consensus split (cofactored OpenSSL accepts a small-subgroup key the strict RFC-8032 equation rejects → `VALID` in one impl, `TAMPERED` in the other on identical signed bytes) | both reference verifiers reject the 8 canonical small-order point encodings (torsion subgroup of order dividing 8) AND any non-canonical `y ≥ q` public-key encoding, decoding `A` with identical strictness | `keys.test`, `conformance` (small-order + non-canonical public-key vectors) |
 
 > Note on T9: this stops PII in **unknown** fields. It does NOT stop a caller putting PII in a
 > **known** opaque string (e.g. `approval.by`, `agent.model`). Those fields are opaque by
@@ -66,7 +66,7 @@ truth or safety.
   re-heading sub-threat below. *Full fix:* external anchor / transparency
   log in v1.0. Without an anchor, offline verification cannot distinguish "nothing happened
   after seq N" from "records after seq N were deleted."
-- **Re-heading truncation among co-trusted keys (T-tail-reheading, round-10 audit):** a `scope.chain`
+- **Re-heading truncation among co-trusted keys (T-tail-reheading):** a `scope.chain`
   is a *shared* partition with no opener/ownership binding, so a co-trusted key holder can APPEND its
   own receipt onto a victim's prefix, BECOME the head, DROP the victim's incriminating tail, and forge
   a checkpoint over its OWN head. Earlier the checkpoint §5b binding checked the kid against the **head**

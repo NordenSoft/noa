@@ -170,7 +170,7 @@ party who would have had to co-sign the fabrication.
 
 ### Scope precision — what the verifier reconciles, and what it does not
 
-A cross-family adversarial review surfaced three honest boundaries that callers must not over-read.
+An adversarial review surfaced three honest boundaries that callers must not over-read.
 None is a bug in the intended use (honest in-process fixtures, a receiver keyring holding only the
 intended counterparty, a carrier authenticated either inline or via a prior `verifyChain → VALID`);
 all three are stated here so the PROVES claim is not read as stronger than the mechanism.

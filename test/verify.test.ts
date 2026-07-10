@@ -182,15 +182,15 @@ test("empty array -> MALFORMED", () => {
   assert.equal(verifyChain([]).status, "MALFORMED");
 });
 
-// ── round-12 audit regressions ──────────────────────────────────────────────
-test("round-12 #9: verifyCheckpoint is fail-closed on null/non-object (malformed, never throws)", () => {
+// ── structural fail-closed regressions ───────────────────────────────────────
+test("verifyCheckpoint is fail-closed on null/non-object (malformed, never throws)", () => {
   assert.equal(verifyCheckpoint(null as unknown as Checkpoint, keyring), "malformed checkpoint");
   assert.equal(verifyCheckpoint(undefined as unknown as Checkpoint, keyring), "malformed checkpoint");
   assert.equal(verifyCheckpoint("x" as unknown as Checkpoint, keyring), "malformed checkpoint");
   assert.equal(verifyCheckpoint([] as unknown as Checkpoint, keyring), "malformed checkpoint");
 });
 
-test("round-12 #11: checkpoint is strictly schema-validated (unknown field / bad ts / bad headHash → malformed)", () => {
+test("checkpoint is strictly schema-validated (unknown field / bad ts / bad headHash → malformed)", () => {
   assert.equal(verifyCheckpoint(checkpoint, keyring), "ok"); // genuine checkpoint still authenticates
   const extra = { ...checkpoint, smuggled: "ssn=123-45-6789" } as unknown as Checkpoint;
   assert.equal(verifyCheckpoint(extra, keyring), "malformed checkpoint"); // additionalProperties:false even in the SIGNED surface
@@ -200,20 +200,20 @@ test("round-12 #11: checkpoint is strictly schema-validated (unknown field / bad
   assert.equal(verifyCheckpoint(badHead, keyring), "malformed checkpoint"); // headHash must be sha256:<64hex>
 });
 
-test("round-12 #3: a non-canonical base64 signature is TAMPERED (sig.value must round-trip to canonical)", () => {
+test("a non-canonical base64 signature is TAMPERED (sig.value must round-trip to canonical)", () => {
   const chain = structuredClone(load("valid-chain.json")) as Array<Record<string, any>>;
   // embedded whitespace: Buffer.from decodes leniently to the SAME 64 bytes, but it is not canonical base64.
   chain[0]!.sig.value = chain[0]!.sig.value.slice(0, 4) + " " + chain[0]!.sig.value.slice(4);
   assert.equal(verifyChain(chain, { keyring }).status, "TAMPERED");
 });
 
-test("round-12 #10: verifyChain on a receipt with a throwing accessor → MALFORMED (never throws out)", () => {
+test("verifyChain on a receipt with a throwing accessor → MALFORMED (never throws out)", () => {
   let res!: ReturnType<typeof verifyChain>;
   assert.doesNotThrow(() => { res = verifyChain([{ get spec() { throw new Error("boom"); } }], { keyring }); });
   assert.equal(res.status, "MALFORMED");
 });
 
-test("round-18 #3: an array-like with a throwing `length` getter → MALFORMED (never throws out)", () => {
+test("an array-like with a throwing `length` getter → MALFORMED (never throws out)", () => {
   // The early length/maxReceipts bounds read receipts.length on the LIVE array BEFORE the structuredClone
   // snapshot. Array.isArray() sees THROUGH a Proxy to its array target (so it returns true here), but the
   // Proxy's `length` get-trap throws — so a raw Error would escape before the snapshot could neutralize it.
@@ -228,14 +228,14 @@ test("round-18 #3: an array-like with a throwing `length` getter → MALFORMED (
   assert.match(res.reason ?? "", /length is not readable/);
 });
 
-test("round-13 #4: checkpoint sig sub-object is strict (extra field / bad alg → malformed)", () => {
+test("checkpoint sig sub-object is strict (extra field / bad alg → malformed)", () => {
   const sigExtra = { ...checkpoint, sig: { ...checkpoint.sig, smuggled: "ssn=123" } } as unknown as Checkpoint;
   assert.equal(verifyCheckpoint(sigExtra, keyring), "malformed checkpoint"); // additionalProperties on sig
   const badAlg = { ...checkpoint, sig: { ...checkpoint.sig, alg: "rsa" } } as unknown as Checkpoint;
   assert.equal(verifyCheckpoint(badAlg, keyring), "malformed checkpoint"); // unvalidated alg closed
 });
 
-test("round-13 #8: throwing identityManifest / array-element accessors → MALFORMED (never throws)", () => {
+test("throwing identityManifest / array-element accessors → MALFORMED (never throws)", () => {
   const arr: unknown[] = [];
   Object.defineProperty(arr, "0", { enumerable: true, configurable: true, get() { throw new Error("boom"); } });
   let r1!: ReturnType<typeof verifyChain>;
@@ -248,8 +248,8 @@ test("round-13 #8: throwing identityManifest / array-element accessors → MALFO
   assert.equal(r2.status, "MALFORMED");
 });
 
-// ── round-15 audit regressions (live-object TOCTOU snapshot-once + non-object keyring) ──────────────
-test("round-15 #2: a flipping checkpoint accessor cannot yield VALID over a truncated tail (snapshot defeats it)", () => {
+// ── live-object TOCTOU snapshot-once + non-object keyring regressions ────────────────
+test("a flipping checkpoint accessor cannot yield VALID over a truncated tail (snapshot defeats it)", () => {
   // The chain presents seq 0..2; the legit checkpoint asserts head=seq2. A truncating attacker presents a
   // checkpoint whose highestSeq/headHash FLIP on read: returning the legit head (seq2/realHash) to the
   // signature/validation path, but the truncated head to the tail-match. Snapshotting the checkpoint ONCE
@@ -270,7 +270,7 @@ test("round-15 #2: a flipping checkpoint accessor cannot yield VALID over a trun
   assert.equal(res.tailChecked, false, "tail must not be reported as checked over a flipped/truncated head");
 });
 
-test("round-15 #5: verifyCheckpoint with a throwing accessor → 'malformed checkpoint' (never throws a raw Error)", () => {
+test("verifyCheckpoint with a throwing accessor → 'malformed checkpoint' (never throws a raw Error)", () => {
   const evil: any = {
     spec: "noa.checkpoint/0.1", chain: "c", highestSeq: 0, ts: "2026-06-21T10:00:00.000Z",
     sig: { alg: "ed25519", kid: "k", value: "x" },
@@ -281,7 +281,7 @@ test("round-15 #5: verifyCheckpoint with a throwing accessor → 'malformed chec
   assert.equal(verdict, "malformed checkpoint");
 });
 
-test("round-15 #9: a flipping agent.id accessor cannot produce a false VALID attribution (snapshot reads once)", () => {
+test("a flipping agent.id accessor cannot produce a false VALID attribution (snapshot reads once)", () => {
   // A genuine single-receipt chain whose agent.id FLIPS between reads: returns the real (manifest-authorized)
   // id to the structural/sig path, but a different id later. structuredClone reads each field exactly once, so
   // the value enforced is the value validated — no split that could mis-attribute a VALID result.
@@ -308,7 +308,7 @@ test("round-15 #9: a flipping agent.id accessor cannot produce a false VALID att
   }
 });
 
-test("round-15 #7: a non-object keyring (array / null) → MALFORMED (parity with the Python verifier)", () => {
+test("a non-object keyring (array / null) → MALFORMED (parity with the Python verifier)", () => {
   const arrKr = verifyChain(load("valid-chain.json"), { keyring: [] as unknown as Keyring });
   assert.equal(arrKr.status, "MALFORMED");
   assert.match(arrKr.reason ?? "", /keyring must be an object/);
@@ -319,8 +319,8 @@ test("round-15 #7: a non-object keyring (array / null) → MALFORMED (parity wit
   assert.equal(verifyChain(load("valid-chain.json"), { keyring }).status, "VALID");
 });
 
-// ── round-16 audit regressions ───────────────────────────────────────────────
-test("round-16 #1 (HIGH): a flipping keyring getter cannot authenticate the walk with one key and a forged checkpoint with another (snapshot defeats it)", () => {
+// ── keyring/opts snapshot regressions ─────────────────────────────────────────
+test("a flipping keyring getter cannot authenticate the walk with one key and a forged checkpoint with another (snapshot defeats it)", () => {
   // Real signed material: a 3-receipt chain signed by the LEGIT key. An attacker truncates the tail (keeps
   // the legit prefix, intact + legit-signed), then forges a checkpoint over the TRUNCATED head signed by its
   // OWN (attacker) key but LABELED with the legit kid. A flipping `keyring[legitKid]` getter returns the legit
@@ -372,7 +372,7 @@ test("round-16 #1 (HIGH): a flipping keyring getter cannot authenticate the walk
   assert.equal(good.tailChecked, true);
 });
 
-test("round-16 #4: verifyChain / verifyChainText with null (or garbage) opts do not throw — treated as no-options", () => {
+test("verifyChain / verifyChainText with null (or garbage) opts do not throw — treated as no-options", () => {
   // A default-param only fills a MISSING arg, not an explicit null/garbage → reading opts.maxReceipts off null
   // used to raise a raw TypeError (and verifyChainText forwards opts, inheriting the throw).
   let r1!: ReturnType<typeof verifyChain>;
@@ -388,8 +388,8 @@ test("round-16 #4: verifyChain / verifyChainText with null (or garbage) opts do 
   assert.equal(verifyChain(load("valid-chain.json"), { keyring }).status, "VALID");
 });
 
-test("round-17 #2/#4: a throwing-getter opts OR a Symbol maxReceipts → MALFORMED (never a raw throw)", () => {
-  // #2: a hostile accessor on ANY opts field (read before/outside the old guarded clones) used to escape as a
+test("a throwing-getter opts OR a Symbol maxReceipts → MALFORMED (never a raw throw)", () => {
+  // a hostile accessor on ANY opts field (read before/outside the old guarded clones) used to escape as a
   // raw TypeError. The whole-opts snapshot fires every getter once into accessor-free data → MALFORMED.
   for (const field of ["maxReceipts", "keyring", "checkpoint", "identityManifest"] as const) {
     const evil: Record<string, unknown> = {};
@@ -404,7 +404,7 @@ test("round-17 #2/#4: a throwing-getter opts OR a Symbol maxReceipts → MALFORM
   }
 
   // #4: a Symbol-typed maxReceipts is NON-CLONEABLE → structuredClone(opts) throws → caught → MALFORMED
-  // (the round-16 #4 fix normalized null/non-object opts, but a Symbol VALUE inside an object opts still
+  // (null/non-object opts are already normalized above, but a Symbol VALUE inside an object opts still
   // escaped as a raw TypeError before the blanket snapshot).
   let rSym!: ReturnType<typeof verifyChain>;
   assert.doesNotThrow(() => { rSym = verifyChain(load("valid-chain.json"), { maxReceipts: Symbol("x") } as never); });
@@ -415,7 +415,7 @@ test("round-17 #2/#4: a throwing-getter opts OR a Symbol maxReceipts → MALFORM
   assert.equal(verifyChain(load("valid-chain.json"), { keyring, maxReceipts: 10 }).status, "VALID");
 });
 
-test("round-17 #3: a non-object checkpoint → MALFORMED (parity with the Python CLI, not TAMPERED)", () => {
+test("a non-object checkpoint → MALFORMED (parity with the Python CLI, not TAMPERED)", () => {
   // TS used to route a non-object checkpoint into verifyCheckpoint → 'malformed checkpoint' → TAMPERED (exit 2),
   // while the Python _main guard returns MALFORMED (exit 3) — a cross-impl split on the SAME malformed input.
   // verifyChain now rejects a non-object checkpoint as MALFORMED BEFORE routing, mirroring Python.

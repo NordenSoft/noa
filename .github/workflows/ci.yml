@@ -22,7 +22,7 @@ jobs:
           node-version: ${{ matrix.node }}
           cache: npm
       # The cross-impl conformance proof shells out to the independent Python verifier (impl-py/noa_verify.py),
-      # so python3 must be on PATH for that gate to run (round-15 #8).
+      # so python3 must be on PATH for that gate to run.
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
