@@ -41,10 +41,14 @@ const VECTOR_CLASSES = [
   "tenant",
 ];
 
-// Ordered, first-match-wins. Narrow/specific patterns are listed before the broad "structural"
-// catch-all so they aren't swallowed by it. See conformance/MATRIX.md for the rationale behind
-// each judgment call (e.g. why `sig.alg="rsa"` is "structural" but "sig fails under wrong pubkey"
-// is "sig").
+// Ordered, first-match-wins. Narrow/specific patterns first, then an EXPLICIT positive allow-list
+// for the "structural" class (shape/schema/enum/spec/parse/usage/baseline accept-reject). There is
+// deliberately NO `.*` catch-all: a label that matches nothing here returns null and is reported
+// as UNCLASSIFIED, which FAILS the run. A blanket `[/.*/, "structural"]` (the earlier form) would
+// silently bucket a newly-added or mislabeled vector into "structural" and mark it green — exactly
+// the kind of "a new attack vector was added but never actually assigned to its security class"
+// blind spot this matrix exists to prevent. See conformance/MATRIX.md for the per-class rationale
+// (e.g. why `sig.alg="rsa"` is "structural" but "sig fails under wrong pubkey" is "sig").
 const CLASS_RULES = [
   [/scope\.tenant/i, "tenant"],
   [/key swap/i, "key-swap"],
@@ -55,13 +59,18 @@ const CLASS_RULES = [
   [/astral|surrogate|arabic-indic|fullwidth digit|unicode digit|unicode-digit|code-point/i, "unicode"],
   [/content altered/i, "hash"],
   [/non-canonical base64 sig|trailing-bits non-canonical sig base64|sig fails under wrong pubkey/i, "sig"],
-  // everything else (shape/schema/enum/spec/parse/usage/baseline accept-reject) falls through here
-  [/.*/, "structural"],
+  // Explicit structural allow-list (NOT a catch-all): every current structural label is named here.
+  // Adding a new structural vector to conformance.mjs requires adding its keyword here on purpose —
+  // otherwise it surfaces as unclassified → FAIL, forcing a conscious classification decision.
+  [
+    /ts-signed chain|\(no keyring\)|smuggled unknown field|bad enum|sig\.alg|wrong spec|trailing-newline|compliance receipt|keyring is a json|oversized int|nan literal|identity provided as null|identity file = null|checkpoint provided as null|checkpoint file = null|checkpoint is a json|^usage/i,
+    "structural",
+  ],
 ];
 
 function classify(label) {
   for (const [re, cls] of CLASS_RULES) if (re.test(label)) return cls;
-  return null; // unreachable given the catch-all, kept for defensiveness
+  return null; // genuinely unrecognized label → unclassified → the run FAILS (see buildMatrix/hardFail)
 }
 
 function implOf(label) {

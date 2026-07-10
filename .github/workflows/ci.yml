@@ -43,6 +43,12 @@ jobs:
             git status --porcelain conformance/
             exit 1
           fi
+      - name: Conformance matrix is up to date (no drift)
+        # Regenerates conformance/MATRIX.md from conformance.mjs's own output and fails if it differs
+        # from the committed copy (or if any vector could not be classified into a security class).
+        # Same "regenerate + git-diff" discipline as the vector-drift check above, applied to the
+        # derived TS↔Python pass/fail matrix so it can never silently go stale against the harness.
+        run: node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md
       - name: Self-check the CLI exit-code contract
         run: |
           set -e

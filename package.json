@@ -54,8 +54,9 @@
     "test": "npm run build && npm run gen:vectors && npm run gen:l2-vectors && npm run gen:federation-vectors && node --test $(find dist/test -name '*.test.js' -not -path '*/dogfood/*')",
     "test:dogfood": "vitest run test/dogfood/",
     "verify": "node dist/src/cli.js verify",
+    "check:matrix": "node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md",
     "prepare": "npm run build",
-    "prepublishOnly": "npm test && npm run test:dogfood && node impl-py/conformance.mjs"
+    "prepublishOnly": "npm test && npm run test:dogfood && node impl-py/conformance.mjs && npm run check:matrix"
   },
   "dependencies": {},
   "devDependencies": {
