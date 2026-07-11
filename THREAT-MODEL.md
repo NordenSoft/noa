@@ -123,6 +123,14 @@ truth or safety.
   not a guarantee of behavioral honesty.
 - **Signer-asserted timestamps:** `ts` is set by the signer and is therefore backdatable. The
   verifier only warns on non-monotonic `ts`; do not treat timestamps as trusted wall-clock.
+- **Signer-asserted timestamps (opt-in mitigation):** `packages/tsa-anchor` (Apache-2.0, opt-in —
+  the core `noa-receipt` package gains no new dependency) can request an RFC 3161 trusted timestamp
+  over a witness anchor from an independent Time-Stamping Authority.
+  TSA proves the anchor existed at time T — it does not prove receipts' own `ts` fields. It only
+  covers anchors that already went through the opt-in witness-federation path
+  (`--anchors`/`--trust-set`); a chain with no anchor has no TSA coverage. Full cryptographic
+  verification of a TSA token's own certificate chain is `openssl ts -verify` (documented in
+  `packages/tsa-anchor/README.md`), not reimplemented in-package.
 - **Keyring is the root of trust:** every property above stops holding if the verifier's keyring
   is wrong. Distributing/securing/updating the keyring is out of band and out of scope for v0.1.
 - **Unknown `kid` is reported `TAMPERED` (fail-closed tradeoff):** when a keyring is supplied, a
