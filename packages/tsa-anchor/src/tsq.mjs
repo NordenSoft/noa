@@ -4,7 +4,7 @@
  * (it never verifies a signature — see verify.mjs's docstring for why, and README.md for the
  * documented `openssl ts -verify` command that does).
  */
-import { DerError, encInteger, encOid, encNull, encOctetString, encBoolean, encSequence, derDecode, readInteger, readOid, readGeneralizedTime } from "./der.mjs";
+import { DerError, encInteger, encOid, encNull, encOctetString, encBoolean, encSequence, derDecode, readInteger, readIntegerBig, readOid, readGeneralizedTime } from "./der.mjs";
 
 export const SHA256_OID = "2.16.840.1.101.3.4.2.1";
 const ID_SIGNED_DATA = "1.2.840.113549.1.7.2";
@@ -94,5 +94,18 @@ export function parseTimeStampResp(buf) {
   }
   const genTime = readGeneralizedTime(tstInfo.children[4]);
 
-  return { granted: true, statusCode, status, hashAlgOid, hashedMessage: hashedMessageNode.content, genTime };
+  // Optional nonce (RFC 3161 TSTInfo, after genTime). The trailing optional fields are accuracy
+  // (SEQUENCE), ordering (BOOLEAN), nonce (INTEGER), tsa/[0], extensions/[1]; the nonce is the only
+  // universal-primitive INTEGER among them, so the first bare INTEGER after index 4 is it. Returned
+  // as a BigInt (nonces are up to 64-bit) or undefined when the TSA did not echo one.
+  let nonce;
+  for (let k = 5; k < tstInfo.children.length; k++) {
+    const ch = tstInfo.children[k];
+    if (ch.tagClass === 0 && !ch.constructed && ch.tagNumber === 0x02) {
+      nonce = readIntegerBig(ch);
+      break;
+    }
+  }
+
+  return { granted: true, statusCode, status, hashAlgOid, hashedMessage: hashedMessageNode.content, genTime, nonce };
 }

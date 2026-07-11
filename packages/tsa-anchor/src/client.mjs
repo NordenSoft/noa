@@ -78,6 +78,18 @@ export async function stampAnchor(anchor, opts) {
       `stampAnchor: TSA response messageImprint does not match the submitted anchor hash (sent ${digest.toString("hex")}, got ${parsed.hashedMessage.toString("hex")})`,
     );
   }
+  // Anti-replay freshness: RFC 3161 §2.4.2 requires the TSA to echo the request nonce verbatim. If
+  // we sent one, reject a token that omits it or returns a different value — that token could be a
+  // replayed/substituted response for the same digest rather than a fresh stamp of THIS request.
+  if (nonce !== undefined) {
+    const sent = BigInt(nonce);
+    if (parsed.nonce === undefined) {
+      throw new TsaError(`stampAnchor: TSA ${opts.tsaUrl} did not echo the request nonce (RFC 3161 requires it) — replay-freshness cannot be confirmed`);
+    }
+    if (parsed.nonce !== sent) {
+      throw new TsaError(`stampAnchor: TSA ${opts.tsaUrl} echoed nonce ${parsed.nonce} != the ${sent} we sent (possible replayed/substituted response)`);
+    }
+  }
 
   return {
     anchorHash: anchorHash(anchor),

@@ -63,3 +63,25 @@ test("stampAnchor: includeNonce:false omits the nonce (still succeeds against th
     await mock.close();
   }
 });
+
+test("stampAnchor: the TSA's echoed nonce must equal the one we sent (anti-replay freshness)", async () => {
+  const mock = await startMockTsa({ mode: "ok" }); // compliant mock echoes the request nonce
+  try {
+    const stamp = await stampAnchor(mkAnchor(), { tsaUrl: mock.url, nonceValue: 0x0123456789abcdefn });
+    // the stored token must actually carry our exact nonce back (proves the freshness check has teeth)
+    const { parseTimeStampResp } = await import("../src/tsq.mjs");
+    const parsed = parseTimeStampResp(Buffer.from(stamp.tsr, "base64"));
+    assert.equal(parsed.nonce, 0x0123456789abcdefn);
+  } finally {
+    await mock.close();
+  }
+});
+
+test("stampAnchor: a TSA that DROPS the request nonce throws TsaError (replay-freshness unconfirmed)", async () => {
+  const mock = await startMockTsa({ mode: "drop-nonce" }); // RFC-noncompliant: never echoes the nonce
+  try {
+    await assert.rejects(() => stampAnchor(mkAnchor(), { tsaUrl: mock.url }), TsaError);
+  } finally {
+    await mock.close();
+  }
+});

@@ -50,6 +50,11 @@ Precisely:
 - A chain with no witness anchor has no TSA coverage at all — this package only ever timestamps
   anchors that already went through the opt-in witness-federation path
   (`noa verify --anchors/--trust-set` in the parent package).
+- `stampAnchor` sends a random RFC 3161 nonce by default and rejects a response that does not echo
+  it back verbatim — a stamp-time anti-replay freshness check, so a validly-formed but replayed
+  token for the same digest cannot be accepted. `verifyStamp`, running offline against the stored
+  bytes, has no original request to compare against and therefore does **not** re-check nonce
+  freshness; that check is established once, by the client, at stamping time.
 - `noa-tsa verify` (and `verify.mjs`'s `verifyStamp`) is a **structural parse-and-compare**: it
   recomputes the anchor hash, DER-parses the stored `.tsr`, and checks the token's own
   `messageImprint` matches. It does **not** validate the CMS `SignerInfo` signature or the TSA's
