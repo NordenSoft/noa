@@ -1,5 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import {
   DerError,
   encInteger,
@@ -137,8 +138,11 @@ test("fail-closed: truncated / indefinite-length / over-depth input never throws
 // Best-effort independent cross-check against the system's own openssl, when present — genuinely
 // independent ground truth (a second, unrelated implementation), gracefully skipped otherwise.
 function opensslAvailable() {
+  // NB: this is an ESM module ("type":"module") — `require` is NOT defined here, so the previous
+  // `require("node:child_process")` threw ReferenceError on EVERY machine, was swallowed by the
+  // catch, and made this cross-check silently skip forever (hiding the exact OID bug fixed in the
+  // preceding commit). Use the statically-imported execFileSync instead.
   try {
-    const { execFileSync } = require("node:child_process");
     execFileSync("openssl", ["version"], { stdio: "ignore" });
     return true;
   } catch {
@@ -146,7 +150,6 @@ function opensslAvailable() {
   }
 }
 test("cross-check vs `openssl ts -query` for the same digest (best-effort, skipped if openssl is absent)", { skip: !opensslAvailable() }, async () => {
-  const { execFileSync } = await import("node:child_process");
   const { mkdtempSync, writeFileSync, readFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
