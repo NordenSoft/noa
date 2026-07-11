@@ -523,6 +523,74 @@ test("createChainSessionStore: exceeding maxSessions evicts the single oldest-id
   store.dispose();
 });
 
+test("createChainSessionStore: a cap eviction that empties the NEW session's OWN tenant bucket must not silently discard the new session's chain state (detached-bucket data loss)", () => {
+  // REGRESSION: the existing cap tests above keep MORE THAN ONE session in the (single, default)
+  // tenant bucket, so evicting the oldest never empties that bucket — the bug this guards against
+  // fires ONLY when the evicted session is the LAST one in the SAME tenant the brand-new session
+  // belongs to. stateFor() captured `const bucket = bucketFor(tenant)` BEFORE the cap eviction ran;
+  // evictOldestIdle then dropped that tenant's only session and (bucket.size === 0) DETACHED the
+  // bucket from tenantBuckets — yet stateFor still wrote the new state into that now-orphaned
+  // bucket. The write "succeeded" locally but was unreachable: the next lookup minted a fresh
+  // segment (seq/prev reset = chain continuity silently broken) and totalSessions over-counted,
+  // exceeding maxSessions. Assertions are anchored on the OBSERVABLE contract (a written chain head
+  // is still readable; the cap holds), not on any internal bucket-handling detail — so a future
+  // refactor that reintroduces the loss via a different mechanism still turns this test red.
+  const store = createChainSessionStore({ maxSessions: 1, onEvict: () => {} });
+
+  // Seed S1: the ONLY (hence oldest-idle) session in the default tenant's bucket.
+  store.peek("S1");
+  assert.equal(store.size, 1);
+
+  // Request S2 in the SAME tenant. cap=1 is hit -> S1 (the bucket's only session) is evicted ->
+  // its bucket goes empty and is detached. advance() then records S2's chain head (seq 0 -> 1).
+  const committed = store.advance("S2", { fake: "receipt-for-S2" });
+  assert.equal(committed, true, "advance reports it recorded S2's chain head");
+  const written = store.peek("S2");
+  const writtenSegmentId = written.segmentId;
+
+  // Read S2 back. Its chain head MUST still be there — this is the data-loss the bug caused.
+  const readBack = store.peek("S2");
+  assert.equal(readBack.seq, 1, "S2's committed seq survives a later lookup — chain NOT silently reset to a fresh seq=0 segment");
+  assert.ok(readBack.prev !== null, "S2's chain head (prev) survives a later lookup — not silently dropped");
+  assert.equal(readBack.segmentId, writtenSegmentId, "S2 stays on the SAME segment it was written on — no silent fresh-segment mint");
+  assert.equal(store.size, 1, "store.size stays within maxSessions=1 — the detached bucket did not leak and the cap was not silently exceeded");
+  store.dispose();
+});
+
+test("prepareSessionReceipt/commitSessionReceipt: a cap eviction emptying an active session's own tenant bucket keeps its chain committable and continuous — verifyChain VALID (real prepare/commit path)", () => {
+  // Same detached-bucket bug, exercised through the REAL production path (prepare -> persist ->
+  // commit, as packages/mcp-proxy uses). Pre-fix: prepare() peek()'d S2 into a detached bucket, so
+  // the matching commit's `tenantBuckets.get(tenant)` came back undefined and advance() dropped the
+  // commit as "torn down" (returned false) — the caller's persisted receipt then had NO committed
+  // store counterpart, and the next call minted a DIFFERENT chain-id, silently fragmenting one
+  // logical chain into singleton seq-0 segments.
+  const store = createChainSessionStore({ maxSessions: 1 });
+  const { signer, keyring } = signerAndKeyring("test-key-cap-detach");
+  const tenant = "acme";
+
+  function doCall(sessionId, name) {
+    const prepared = prepareSessionReceipt({ name, args: {} }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
+    const didCommit = commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
+    return { receipt: prepared.receipt, didCommit };
+  }
+
+  // Seed S1 (the only session in `tenant`'s bucket).
+  doCall("S1", "payment.refund");
+  // S2 in the same tenant: cap=1 evicts S1, emptying+detaching the tenant bucket during prepare().
+  const c1 = doCall("S2", "payment.refund");
+  assert.equal(c1.didCommit, true, "S2's first receipt commits — the prepare/commit pair targets the bucket tenantBuckets actually holds, not a detached one");
+  // A second S2 call must CONTINUE the same chain segment (seq advances), not open a new one.
+  const c2 = doCall("S2", "payment.refund");
+  assert.equal(c2.didCommit, true, "S2's second receipt commits onto its live segment");
+  assert.equal(c1.receipt.scope.chain, c2.receipt.scope.chain, "both S2 receipts share ONE chain-id — the chain is not silently fragmented into singleton segments");
+  assert.equal(c1.receipt.chain.seq, 0);
+  assert.equal(c2.receipt.chain.seq, 1, "S2's chain advances 0 -> 1 across calls — continuity preserved");
+
+  const v = verifyChain([c1.receipt, c2.receipt], { keyring });
+  assert.equal(v.status, "VALID", "S2's two-receipt chain verifies VALID end-to-end");
+  store.dispose();
+});
+
 test("prepareSessionReceipt/commitSessionReceipt: idle-TTL eviction of a still-active session opens a NEW chain segment — every segment verifies VALID (no fabricated TAMPERED)", () => {
   let currentTime = 1000;
   const store = createChainSessionStore({ idleTtlMs: 500, sweepIntervalMs: 999999999, now: () => currentTime });

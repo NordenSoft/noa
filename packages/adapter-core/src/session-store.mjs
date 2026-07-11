@@ -243,7 +243,18 @@ export function createChainSessionStore({
     if (maxSessions > 0 && totalSessions >= maxSessions) evictOldestIdle("cap-exceeded");
     segmentCounter += 1;
     state = { prev: null, seq: 0, lastAccessedAt: now(), segmentId: segmentCounter };
-    bucket.set(sessionId, state);
+    // RE-RESOLVE the bucket AFTER the cap eviction, never reuse the `bucket` captured above:
+    // `evictOldestIdle` drops the single oldest session GLOBALLY, and if that session was the
+    // LAST one in THIS tenant's bucket (e.g. maxSessions is small and this new session's own
+    // tenant held exactly the oldest-idle session), evictOldestIdle's `if (bucket.size === 0)
+    // tenantBuckets.delete(oldestTenant)` DETACHED the captured bucket from `tenantBuckets`.
+    // Writing this fresh state into that detached bucket would silently lose it — the very next
+    // `bucketFor(tenant)` mints a NEW empty bucket, so the state just written is unreachable
+    // (fresh segment on next lookup: seq/prev reset, chain continuity broken; the detached bucket
+    // also leaks and `totalSessions` over-counts, exceeding the cap). `bucketFor(tenant)` returns
+    // the still-attached bucket when nothing was detached, or re-creates+re-attaches one when it
+    // was — always writing into the bucket `tenantBuckets` actually holds.
+    bucketFor(tenant).set(sessionId, state);
     totalSessions += 1;
     return state;
   }
