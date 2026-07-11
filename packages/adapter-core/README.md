@@ -37,7 +37,7 @@ repo's build output. See [`src/pre-check.mjs`](src/pre-check.mjs) for the import
   forever. `segmentId`/`instanceToken` together make every default chain-id this store instance
   ever hands out globally unique — see "Honest limits" below and `src/session-store.mjs`'s own
   docstring ("SEGMENT IDENTITY" / "CROSS-PROCESS-RESTART SEGMENT IDENTITY" / "COMMIT-TIME SEGMENT
-  CHECK" / "MULTI-TENANT ISOLATION" sections) for the exact guarantees and the races each one
+  CHECK" / "MULTI-TENANT ISOLATION" sections) for the exact behaviour and the races each one
   closes. `dispose()` stops the background sweep timer (already `unref`'d, so it never keeps an
   otherwise-idle process alive on its own). `peek(sessionId, tenant)` / `advance(sessionId, receipt,
   expectedSegmentId, tenant)` / `end(sessionId, tenant)` all default `tenant` to `"default-tenant"`
@@ -84,7 +84,7 @@ repo's build output. See [`src/pre-check.mjs`](src/pre-check.mjs) for the import
   "duplicate seq 0" TAMPERED for two unrelated segments that happened to mint the same chain-id) —
   it does not make the two segments into one chain. True cross-restart continuity of a SINGLE
   logical chain would require persisting the session's `{prev,seq}` position itself (not just the
-  signing key a `--key-file` persists) — a roadmap item (round-2), not current behavior.
+  signing key a `--key-file` persists) — a future roadmap item, not current behavior.
 - **`args.*` projection is capped at depth 32 / 2,000 total scalar paths — a field past either cap
   is silently OMITTED, not fail-closed.** `flattenArgsToPolicyInputs` (src/pre-check.mjs) stops
   descending once a tool call's arguments nest past `MAX_ARGS_FLATTEN_DEPTH` (32) or once
@@ -114,7 +114,7 @@ repo's build output. See [`src/pre-check.mjs`](src/pre-check.mjs) for the import
   through this module's actual read path.** `JSON.parse('{"args":{"__proto__":{"amountMinor":1}}}')`
   creates `"__proto__"` as an ORDINARY, OWN, enumerable data property on the parsed object (NOT the
   special prototype-mutating accessor `{__proto__: ...}` object-literal syntax triggers) — this is a
-  well-known, spec-guaranteed property of `JSON.parse`'s internal `[[DefineOwnProperty]]`-based
+  well-known, spec-defined property of `JSON.parse`'s internal `[[DefineOwnProperty]]`-based
   object construction, verified against this exact payload shape: `Object.getPrototypeOf(parsed.args)
   === Object.prototype` (unpolluted), a completely unrelated `({}).amountMinor` stays `undefined`
   (no global leak), and `parsed.args.amountMinor` reads the LITERAL sibling key, never anything from

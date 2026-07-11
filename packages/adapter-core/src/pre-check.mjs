@@ -210,7 +210,7 @@ const UNCANONICALIZABLE_ARGS_SENTINEL_HASH = sha256Prefixed("noa-mcp-adapter-cor
  * JCS refuses (a float parameter, a very deeply nested structure). Falls back to
  * `stableStringifyFallback` in that case — deliberately NOT a raw `JSON.stringify(value)` fallback
  * (that would hash by the ORIGINAL object's own key insertion order, breaking the
- * key-order-independence guarantee for exactly the args shapes that need the fallback in the first
+ * key-order-independence property for exactly the args shapes that need the fallback in the first
  * place). If even the fallback can't represent `value` (a circular reference), the fixed
  * `UNCANONICALIZABLE_ARGS_SENTINEL_HASH` is returned instead — `preCheck`'s "malformed input never
  * throws" contract holds even for circular content that would make BOTH `canonicalize()` and a
@@ -245,7 +245,7 @@ const UNCANONICALIZABLE_POLICY_SENTINEL_HASH = sha256Prefixed("noa-mcp-adapter-c
  * it runs `validatePolicy(policy)` first and returns a DENY `"policy-invalid"` verdict for anything
  * that validator rejects. For a policy `validatePolicy` ACCEPTS, that same validator's own final
  * check already asserts `canonicalize(policy)` succeeds (see src/policy/validate.ts), so
- * `policyHash()` — which canonicalizes the identical object — is guaranteed not to throw in that
+ * `policyHash()` — which canonicalizes the identical object — does not throw in that
  * case either. The residual gap is a policy `validatePolicy` REJECTS for a reason UNRELATED to
  * canonicalizability (e.g. an unknown top-level key, or a duplicate rule id) that trips one of the
  * validator's EARLIER structural checks and short-circuits before its own canonicalize-recheck ever
@@ -339,7 +339,7 @@ export function preCheck(
   const nameInvalid = !toolCallReadThrew && (typeof safeName !== "string" || safeName.length === 0);
   // The receipt's `action.id`/`action.canonical` value, resolved ONCE: the safe sentinel whenever
   // the raw read itself threw OR the read succeeded but `name` isn't a usable non-empty string;
-  // `safeName` (guaranteed a valid non-empty string here) otherwise.
+  // `safeName` (already a valid non-empty string here) otherwise.
   const safeActionId = toolCallReadThrew || nameInvalid ? "unknown-action" : safeName;
   // `toolCall.agentId` is ATTRIBUTION metadata only — never read by `evaluate()`/policy matching
   // (see the receipt-construction comment below), so an invalid shape here does not need to force
@@ -451,7 +451,7 @@ export function preCheck(
       agent: { id: safeAgentIdForReceipt, model: null, principal: "POLICY" },
       action: {
         // `safeActionId` (not a fresh `toolCall.name` re-read — see the guard above) so a throwing
-        // OR invalid-shaped `name` can never surface here either; it is already guaranteed a
+        // OR invalid-shaped `name` can never surface here either; it is already a
         // non-empty string (either `safeName` itself, or the `"unknown-action"` sentinel).
         id: safeActionId,
         canonical: safeActionId,

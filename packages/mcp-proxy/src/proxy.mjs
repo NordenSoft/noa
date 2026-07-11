@@ -126,7 +126,7 @@ const READONLY_NOFOLLOW = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
  *     bits set — a private key file the operator left world/group-readable is refused, not silently
  *     trusted.
  *   - The create-path's `writeFileSync(..., { flag: "wx" })` (`O_CREAT|O_EXCL|O_WRONLY`) is
- *     POSIX-guaranteed to refuse to create THROUGH a symlink at the target path — dangling or
+ *     POSIX-specified to refuse to create THROUGH a symlink at the target path — dangling or
  *     not — even if one is planted in the gap between the `openSync` check above and this write:
  *     it fails closed with `EEXIST` instead of silently redirecting the newly-generated private key.
  */
