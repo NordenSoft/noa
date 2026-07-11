@@ -57,6 +57,9 @@ would have spawned it directly. The proxy:
 ## Run it yourself
 
 ```bash
+(cd ../adapter-core && npm install)  # first: the file:../adapter-core dep resolves its own
+                                     # noa-receipt dependency from adapter-core's node_modules;
+                                     # npm does not install it across the file: link boundary
 npm install
 node src/proxy.mjs -- node src/demo-downstream.mjs
 # then point any MCP host/inspector at this process over stdio
@@ -65,6 +68,7 @@ node src/proxy.mjs -- node src/demo-downstream.mjs
 ## Test
 
 ```bash
+(cd ../adapter-core && npm install)  # same prerequisite as above
 npm install
 npm test   # node test/smoke.mjs — real child processes, real MCP Client/Server, no mocks
 ```

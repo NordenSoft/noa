@@ -15,8 +15,10 @@ repo's build output. See [`src/pre-check.mjs`](src/pre-check.mjs) for the import
   Runs the deterministic L2 policy evaluator over `{ action, amountMinor, "args.<path>"... }`
   (the FULL tool-call arguments, flattened to scalar-only dotted paths under an `args.` prefix —
   so a policy rule can read `args.recipient`, `args.shipping.country`, etc, not just the two
-  hand-picked fields; a value that isn't a valid policy scalar, e.g. a float or `null`, is simply
-  omitted rather than smuggled in raw — see `flattenArgsToPolicyInputs` in
+  hand-picked fields; a finite number outside the safe-integer range — a float, a huge integer —
+  is projected as a canonical decimal STRING so rules can still match it, and only a value with
+  no faithful scalar projection (`null`, `NaN`, `±Infinity`) is omitted rather than smuggled in
+  raw — see `flattenArgsToPolicyInputs` in
   [`src/pre-check.mjs`](src/pre-check.mjs) for exactly why), builds a signed receipt (ALLOW →
   `EXECUTED`, DENY → `BLOCKED`) with a JCS-canonical, key-order-independent `action.paramsHash`
   (falling back to `JSON.stringify` only for the rarer args shape JCS refuses — e.g. a float —

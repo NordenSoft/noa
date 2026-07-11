@@ -37,10 +37,10 @@
     "provenance": true
   },
   "scripts": {
-    "test": "node --test"
+    "test": "node --test",
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "noa-receipt": "^0.4.0"
-  },
-  "devDependencies": {}
+  }
 }

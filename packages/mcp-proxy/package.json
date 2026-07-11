@@ -36,11 +36,11 @@
     "provenance": true
   },
   "scripts": {
-    "test": "node test/smoke.mjs"
+    "test": "node test/smoke.mjs",
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "noa-mcp-adapter-core": "file:../adapter-core"
-  },
-  "devDependencies": {}
+  }
 }

@@ -78,6 +78,11 @@ jobs:
       - name: mcp-proxy smoke test (packages/mcp-proxy)
         # Real-transport smoke test: fail-closed DENY, live tools/list reflection, session
         # isolation, persist-then-commit ordering, and CLI double-stdio integration.
+        # Must run AFTER the adapter-core step above: mcp-proxy links adapter-core via
+        # file:../adapter-core, and Node resolves adapter-core's own noa-receipt dependency
+        # from packages/adapter-core/node_modules — populated only by that step's `npm ci`
+        # (npm does not install a file: dep's dependencies across the link boundary).
+        # Do not split these two steps into parallel jobs.
         run: |
           cd packages/mcp-proxy
           npm ci
