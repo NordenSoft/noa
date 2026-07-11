@@ -68,11 +68,12 @@ jobs:
         # `npm test` (node:test) deliberately excludes them; this gates their runtime behaviour.
         run: npm run test:dogfood
       - name: adapter-core unit tests (packages/adapter-core)
-        # No package-lock.json here (dependencies: {}) — `npm ci` would refuse without one, so
-        # `npm install` is correct. Needs the root build above: it imports the built dist/ directly.
+        # package-lock.json is committed here — adapter-core now depends on the published
+        # noa-receipt registry package instead of importing the repo's built dist/ directly, so
+        # `npm ci` is correct (and no longer needs the root build step above for this dependency).
         run: |
           cd packages/adapter-core
-          npm install
+          npm ci
           npm test
       - name: mcp-proxy smoke test (packages/mcp-proxy)
         # Real-transport smoke test: fail-closed DENY, live tools/list reflection, session
