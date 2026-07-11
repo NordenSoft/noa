@@ -135,6 +135,22 @@ test("fail-closed: truncated / indefinite-length / over-depth input never throws
   assert.throws(() => derDecode(Buffer.from([0x30, 0x05, 0x02, 0x01, 0x01])), DerError); // declared len 5, only 3 content bytes present
 });
 
+test("strict DER: non-minimal LENGTH (long form for a value < 128) is rejected", () => {
+  // 0x02 (INTEGER) 0x81 0x01 (long-form length = 1, but 1 fits short form) 0x01 — BER-legal, DER-illegal.
+  assert.throws(() => derDecode(Buffer.from([0x02, 0x81, 0x01, 0x01])), DerError);
+  // a genuinely long value (>= 128 octets) still decodes: 0x81 0x80 == 128, with 128 content bytes.
+  const big = Buffer.concat([Buffer.from([0x04, 0x81, 0x80]), Buffer.alloc(128, 0x00)]);
+  assert.equal(derDecode(big).content.length, 128);
+});
+
+test("strict DER: non-minimal INTEGER (zero-length / redundant leading 0x00) is rejected", () => {
+  assert.throws(() => readInteger(derDecode(Buffer.from([0x02, 0x00]))), DerError); // zero-length INTEGER
+  assert.throws(() => readInteger(derDecode(Buffer.from([0x02, 0x02, 0x00, 0x01]))), DerError); // redundant 0x00 pad on +1
+  // the LEGITIMATE sign-pad (0x00 before a high-bit byte) must still decode — value 128.
+  assert.equal(readInteger(derDecode(Buffer.from([0x02, 0x02, 0x00, 0x80]))), 128);
+  assert.equal(readInteger(derDecode(Buffer.from([0x02, 0x01, 0x00]))), 0); // single 0x00 is a valid zero
+});
+
 // Best-effort independent cross-check against the system's own openssl, when present — genuinely
 // independent ground truth (a second, unrelated implementation), gracefully skipped otherwise.
 function opensslAvailable() {

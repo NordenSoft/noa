@@ -156,6 +156,9 @@ function decodeAt(c, depth, maxDepth) {
     if (numOctets > 1 && c.buf[c.i + 1] === 0x00) throw new DerError("non-minimal (non-canonical) length encoding");
     length = 0;
     for (let k = 0; k < numOctets; k++) length = length * 256 + c.buf[c.i + 1 + k];
+    // DER (X.690 §10.1) requires the SHORTEST length form: a value < 128 MUST use short form, so a
+    // long form that decodes to < 128 is non-minimal (BER, not DER) and is rejected fail-closed.
+    if (length < 0x80) throw new DerError("non-minimal length: long form used for a value < 128 (DER requires short form)");
     c.i += 1 + numOctets;
   }
   if (c.i + length > c.buf.length) throw new DerError("value overruns buffer");
@@ -185,7 +188,13 @@ export function derDecode(buf, opts = {}) {
 // ── decode helpers ───────────────────────────────────────────────────────────────────────────
 export function readIntegerBig(node) {
   if (!node || node.tagClass !== 0 || node.constructed || node.tagNumber !== 0x02) throw new DerError("not an INTEGER");
-  if (node.content.length > 0 && (node.content[0] & 0x80) !== 0) {
+  // DER (X.690 §8.3): INTEGER content is >= 1 octet, and the first two octets must not be all-zero
+  // (redundant leading 0x00 on a positive value) — both are non-minimal encodings, rejected fail-closed.
+  if (node.content.length === 0) throw new DerError("zero-length INTEGER (DER requires at least one content octet)");
+  if (node.content.length > 1 && node.content[0] === 0x00 && (node.content[1] & 0x80) === 0) {
+    throw new DerError("non-minimal INTEGER: redundant leading 0x00 octet");
+  }
+  if ((node.content[0] & 0x80) !== 0) {
     throw new DerError("readIntegerBig: negative INTEGER not supported (unexpected for RFC 3161 fields)");
   }
   let v = 0n;
