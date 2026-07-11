@@ -1,0 +1,50 @@
+{
+  "name": "noa-tsa-anchor",
+  "version": "0.1.0",
+  "description": "Opt-in RFC 3161 trusted-timestamp sidecar for noa-receipt witness anchors — an independent Time-Stamping Authority's proof that a signed anchor existed by time T, alongside (never replacing) the anchor's own signer-asserted ts.",
+  "keywords": [
+    "ai-agent",
+    "governance",
+    "receipt",
+    "hash-chain",
+    "provenance",
+    "rfc3161",
+    "timestamping",
+    "witness"
+  ],
+  "homepage": "https://noatrust.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NordenSoft/noa.git",
+    "directory": "packages/tsa-anchor"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs"
+  },
+  "bin": {
+    "noa-tsa": "src/cli.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "node --test",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "noa-receipt": "file:../.."
+  }
+}

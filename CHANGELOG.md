@@ -6,6 +6,19 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`packages/tsa-anchor`** (new opt-in package, `noa-tsa-anchor` on npm — not yet published):
+  requests and structurally verifies an RFC 3161 trusted timestamp over a witness anchor
+  (`buildAnchor`/`anchorForChainHead` output, `src/federation/anchor.ts`) from an independent
+  Time-Stamping Authority — an external time authority's proof a signed anchor existed by time T,
+  layered on top of (never replacing) the anchor's own signer-asserted `ts`. Zero runtime
+  dependencies beyond `noa-receipt` itself; ships its own minimal RFC 3161 DER (ASN.1)
+  encoder/decoder rather than a general-purpose ASN.1 library. Full cryptographic verification of a
+  TSA token's own certificate chain is documented as an `openssl ts -verify` command, not
+  reimplemented in-package. The core `noa-receipt` package and its federation toolkit
+  (`src/federation/*`) are UNCHANGED.
+
 ## [0.4.0] - 2026-07-10
 
 ### Security
