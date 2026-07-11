@@ -61,19 +61,61 @@
  *
  *        Negation markers: /not|never|n't|without/i inside the term's own sentence.
  *
- * EXIT CODES: 0 = clean. 1 = findings (printed as file:line — term — snippet). 2 = usage / the
- * tarball dry-run itself failed.
+ * EXIT CODES: 0 = clean. 1 = findings (printed as file:line — term — snippet). 2 = usage
+ * (unknown flag, missing `--dir` value) / the tarball dry-run itself failed (includes a
+ * `--dir` target that doesn't exist or isn't a package — `npm pack` fails there too).
  *
  * Usage:
- *   node scripts/lint-published-surface.mjs
+ *   node scripts/lint-published-surface.mjs [--dir <path>]
+ *
+ *   --dir <path>  Lint a package directory other than the repo root — e.g. a workspace package
+ *                 (`packages/<name>`) about to be published to npm on its own. Accepts a path
+ *                 relative to the repo root or an absolute path. The tarball dry-run runs with
+ *                 that directory as cwd (so it lints THAT package.json's `files` field) and
+ *                 every scanned file path is resolved under it. Omitted => lints the repo root,
+ *                 unchanged from prior behavior (this is what `npm run lint:publish-surface` /
+ *                 the `prepublishOnly` chain invoke).
  */
 
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { resolve, dirname } from "node:path";
+import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+
+// ---------------------------------------------------------------------------
+// 0. Arg parsing — `--dir <path>` (or `--dir=<path>`) is the only recognized flag. Anything else,
+//    or `--dir` with no value, is a usage error (exit 2). No flag => root behavior, untouched.
+// ---------------------------------------------------------------------------
+function usageError(message) {
+  process.stderr.write(
+    `lint-published-surface: ${message}\n\n` +
+      `Usage:\n  node scripts/lint-published-surface.mjs [--dir <path>]\n`,
+  );
+  process.exit(2);
+}
+
+function parseArgs(argv) {
+  let dir; // undefined => repo root (default, unchanged behavior)
+  for (let i = 0; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === "--dir") {
+      const value = argv[i + 1];
+      if (value === undefined || value.startsWith("--")) {
+        usageError("--dir requires a path argument.");
+      }
+      dir = value;
+      i++;
+    } else if (arg.startsWith("--dir=")) {
+      dir = arg.slice("--dir=".length);
+      if (dir === "") usageError("--dir requires a path argument.");
+    } else {
+      usageError(`Unknown argument: ${arg}`);
+    }
+  }
+  return dir;
+}
 
 // A hyphen/underscore-tolerant word boundary: delimiters are anything that is NOT a letter or
 // digit (so `-`, `_`, whitespace, punctuation all delimit), while `corpus` does NOT match `opus`.
@@ -122,12 +164,14 @@ const LIST_MARKER_RE = /^(?:[-*+]|\d+\.)\s+/;
 
 // ---------------------------------------------------------------------------
 // 1. Resolve the published file list from npm itself (single source of truth, hermetic).
+//    `cwd` is the package directory being linted — the repo root by default, or whatever
+//    `--dir` resolved to.
 // ---------------------------------------------------------------------------
-function resolvePackedFiles() {
+function resolvePackedFiles(cwd) {
   let raw;
   try {
     raw = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
-      cwd: REPO_ROOT,
+      cwd,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
     });
@@ -274,10 +318,13 @@ function scanK5(file, text) {
 // main
 // ---------------------------------------------------------------------------
 function main() {
-  const paths = resolvePackedFiles();
+  const rawDir = parseArgs(process.argv.slice(2));
+  const targetRoot = rawDir === undefined ? REPO_ROOT : isAbsolute(rawDir) ? rawDir : resolve(REPO_ROOT, rawDir);
+
+  const paths = resolvePackedFiles(targetRoot);
   const allFindings = [];
   for (const relPath of paths) {
-    const abs = resolve(REPO_ROOT, relPath);
+    const abs = resolve(targetRoot, relPath);
     let text;
     try {
       text = readFileSync(abs, "utf8");
