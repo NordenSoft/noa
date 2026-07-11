@@ -170,7 +170,7 @@ export function createChainSessionStore({
   now = Date.now,
   onEvict = defaultOnEvict,
 } = {}) {
-  /** @type {Map<string, Map<string, { prev: import("../../../dist/src/types.js").Receipt | null, seq: number, lastAccessedAt: number, segmentId: number }>>}
+  /** @type {Map<string, Map<string, { prev: import("noa-receipt").Receipt | null, seq: number, lastAccessedAt: number, segmentId: number }>>}
    *  tenant -> Map<sessionId, state> — see the "MULTI-TENANT ISOLATION" docstring above for why this
    *  is nested rather than a single string-concatenated key. */
   const tenantBuckets = new Map();
@@ -378,8 +378,8 @@ export function createChainSessionStore({
  * @param {{
  *   sessionId: string,
  *   store: ReturnType<typeof createChainSessionStore>,
- *   signer: import("../../../dist/src/builder.js").Signer,
- *   policy: import("../../../dist/src/policy/dsl.js").Policy,
+ *   signer: import("noa-receipt").Signer,
+ *   policy: import("noa-receipt").Policy,
  *   tenant?: string,
  *   chain?: string,
  * }} options
@@ -453,8 +453,8 @@ export function commitSessionReceipt(store, sessionId, receipt, segmentId, tenan
  * @param {{
  *   sessionId: string,
  *   store: ReturnType<typeof createChainSessionStore>,
- *   signer: import("../../../dist/src/builder.js").Signer,
- *   policy: import("../../../dist/src/policy/dsl.js").Policy,
+ *   signer: import("noa-receipt").Signer,
+ *   policy: import("noa-receipt").Policy,
  *   tenant?: string,
  *   chain?: string,
  * }} options

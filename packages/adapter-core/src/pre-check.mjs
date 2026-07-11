@@ -4,16 +4,13 @@
  *
  * Sits between an MCP host and its tool servers. For EVERY tool call it runs the
  * DETERMINISTIC policy evaluator `evaluate(policy, inputs)` (noa-receipt's offline-replayable
- * policy engine, imported from the built library) and returns a SIGNED receipt of the
+ * policy engine, imported from the noa-receipt package) and returns a SIGNED receipt of the
  * ALLOW/DENY decision. FAIL-CLOSED: any policy/input error resolves to DENY, never a throw,
  * never a silent allow.
  *
- * Coupling note (recorded per the task's own instruction to document the choice): this module
- * imports noa-receipt via a RELATIVE path into the repo root's built output
- * (`../../../dist/src/index.js`), not a `file:` package dependency. This package is not meant to
- * be published or used outside this repo checkout; a relative import keeps the coupling
- * explicit and avoids an extra npm-link/symlink step for what is a proof-of-architecture
- * skeleton. Root `npm run build` must have produced `dist/` before this module is imported.
+ * Dependency note: this module consumes noa-receipt as a published registry dependency
+ * (`^0.4.0`, see package.json), imported by its package name. The receipt builder, policy
+ * evaluator, and hash helpers below all resolve from that package's public entry point.
  */
 import {
   buildReceipt,
@@ -22,8 +19,8 @@ import {
   complianceCommit,
   verifyReceiptCompliance,
   canonicalize,
-} from "../../../dist/src/index.js";
-import { sha256Prefixed } from "../../../dist/src/hash.js";
+  sha256Prefixed,
+} from "noa-receipt";
 
 /** Cap on how deep `flattenArgsToPolicyInputs` will descend into nested args, and on how many
  *  scalar paths it will emit — a defensive bound against a maliciously deep/huge tool-call
@@ -280,9 +277,9 @@ function safePolicyHash(policy) {
  *
  * @param {{ name: string, args?: Record<string, unknown>, agentId?: string }} toolCall
  * @param {{
- *   signer: import("../../../dist/src/builder.js").Signer,
- *   policy: import("../../../dist/src/policy/dsl.js").Policy,
- *   prev?: import("../../../dist/src/types.js").Receipt | null,
+ *   signer: import("noa-receipt").Signer,
+ *   policy: import("noa-receipt").Policy,
+ *   prev?: import("noa-receipt").Receipt | null,
  *   seq?: number,
  *   tenant?: string,
  *   chain?: string,

@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPair, verifyChain } from "../../../dist/src/index.js";
+import { generateKeyPair, verifyChain } from "noa-receipt";
 import { preCheck } from "../src/pre-check.mjs";
 import { createChainSessionStore, preCheckSession, prepareSessionReceipt, commitSessionReceipt } from "../src/session-store.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
