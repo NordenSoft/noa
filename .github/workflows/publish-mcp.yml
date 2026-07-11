@@ -1,0 +1,84 @@
+name: publish-mcp
+
+# Trusted Publishing (OIDC) — NO NPM_TOKEN, no expiring secret to rotate. Same mechanism as
+# publish.yml, but for the two packages under packages/: noa-mcp-adapter-core and noa-mcp-proxy.
+# Because these are TWO SEPARATE npm package names, each needs its OWN one-time registry-side
+# setup on npmjs.com before the first tag push will work:
+#   noa-mcp-adapter-core → Settings → Publishing access / Trusted Publisher → GitHub Actions
+#     Organization or user: NordenSoft
+#     Repository:           noa
+#     Workflow filename:    publish-mcp.yml
+#     (Environment:         leave blank)
+#   noa-mcp-proxy → repeat the exact same steps (same repo, same workflow filename).
+# After both are registered, ship a new release with NO token, ever:
+#   git tag mcp-v0.1.0 && git push origin mcp-v0.1.0
+# The tag push triggers this job, which tests, lints, and publishes adapter-core, THEN mcp-proxy —
+# in that order, because mcp-proxy's own package.json depends on adapter-core via a repo-local
+# `file:../adapter-core` reference for local dev/test, which gets swapped to the just-published
+# registry version immediately before mcp-proxy's own publish step.
+
+on:
+  push:
+    tags:
+      - 'mcp-v*'
+  workflow_dispatch: {}   # also allow a manual run from the Actions tab
+
+permissions:
+  contents: read
+  id-token: write   # REQUIRED: lets the job mint the OIDC token npm exchanges for
+                    # short-lived publish credentials (also what enables --provenance)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+          cache-dependency-path: |
+            packages/adapter-core/package-lock.json
+            packages/mcp-proxy/package-lock.json
+
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node still ships npm 10.x.
+      # Pin to the 11.x line: `npm@latest` is now npm@12, which requires node >= 22 (EBADENGINE on
+      # this node-20 runner). npm 11.x is >= 11.5.1 (OIDC-capable) AND node-20-compatible.
+      - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1; pin 11.x — npm 12 needs node 22+)
+        run: npm install -g npm@11
+
+      - name: adapter-core test gate (never publish broken)
+        working-directory: packages/adapter-core
+        run: |
+          npm ci
+          npm test
+
+      - name: mcp-proxy test gate (never publish broken)
+        working-directory: packages/mcp-proxy
+        run: |
+          npm ci
+          npm test
+
+      - name: Lint the published surface — adapter-core (K4 internal-process jargon + K5 security-marketing claims)
+        run: node scripts/lint-published-surface.mjs --dir packages/adapter-core
+
+      - name: Lint the published surface — mcp-proxy (K4 internal-process jargon + K5 security-marketing claims)
+        run: node scripts/lint-published-surface.mjs --dir packages/mcp-proxy
+
+      - name: Publish adapter-core to npm via OIDC (no token, with provenance)
+        working-directory: packages/adapter-core
+        run: npm publish --provenance --access public
+
+      - name: Point mcp-proxy at the just-published adapter-core registry version
+        # packages/mcp-proxy/package.json declares noa-mcp-adapter-core as "file:../adapter-core"
+        # for local dev/test against the sibling package on disk. The published tarball must
+        # depend on the real registry package instead — adapter-core was just published (previous
+        # step) at this version, so ^0.1.0 resolves.
+        working-directory: packages/mcp-proxy
+        run: npm pkg set 'dependencies.noa-mcp-adapter-core=^0.1.0'
+
+      - name: Publish mcp-proxy to npm via OIDC (no token, with provenance)
+        working-directory: packages/mcp-proxy
+        run: npm publish --provenance --access public
