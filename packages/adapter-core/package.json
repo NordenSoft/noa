@@ -1,8 +1,22 @@
 {
   "name": "noa-mcp-adapter-core",
   "version": "0.1.0",
-  "private": true,
   "description": "Shared, testable MCP pre-flight decision engine — extracted from examples/mcp-preflight/preflight.mjs so any MCP integration (proxy, gateway, in-process guard) can call the same preCheck() instead of re-deriving it.",
+  "keywords": [
+    "ai-agent",
+    "governance",
+    "receipt",
+    "hash-chain",
+    "provenance",
+    "mcp",
+    "policy"
+  ],
+  "homepage": "https://noatrust.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NordenSoft/noa.git",
+    "directory": "packages/adapter-core"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "main": "src/index.mjs",
@@ -12,9 +26,21 @@
   "engines": {
     "node": ">=20"
   },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "test": "node --test"
   },
-  "dependencies": {},
+  "dependencies": {
+    "noa-receipt": "^0.4.0"
+  },
   "devDependencies": {}
 }
