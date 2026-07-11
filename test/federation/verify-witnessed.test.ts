@@ -172,3 +172,63 @@ test("malformed input: a non-array chain is MALFORMED and the witness head is IN
   assert.equal(res.witness.classification, "INVALID_INPUT");
   assert.equal(res.witness.complete, false);
 });
+
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// Quorum INDEPENDENCE: one physical witness key must never satisfy a quorum on its own, even if it is
+// pinned under two different kids. Pre-fix the trust-set only rejected duplicate KIDS; the SAME pubkey
+// under two kids let a single key's anchor verify under both and tally as two confirmations toward q.
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+test("quorum independence: the same witness pubkey pinned under two kids is rejected (one key is not two witnesses)", () => {
+  const { receipts, keyring } = fixture();
+  // WIT1's pubkey pinned under its real kid AND a second, differently-labelled kid.
+  const clonedTrust: TrustSet = {
+    witnesses: [pin(WIT1), { kid: WIT1.kid + "-clone", pubkey: WIT1.publicKey }],
+    quorum: 2,
+  };
+  // The single physical witness signs its real anchor, then a copy relabelled with the clone kid. The
+  // anchor signature covers {chain,highestSeq,headHash,ts} only (NOT sig.kid), so the relabelled copy still
+  // verifies against WIT1's one pubkey — pre-fix this counted as 2 distinct confirmations (a false quorum).
+  const a1 = anchorForChainHead(receipts, W1S, { ts: NOW });
+  const a2 = { ...a1, sig: { ...a1.sig, kid: WIT1.kid + "-clone" } };
+  const res = verifyChainWitnessed(receipts, keyring, { anchors: [a1, a2], trustSet: clonedTrust });
+  assert.equal(res.witness.complete, false);
+  assert.equal(res.witness.classification, "INVALID_INPUT");
+  assert.match(res.witness.reason, /same witness pubkey under two kids/);
+});
+
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// Snapshot-once: a hostile getter must not make verifyChain validate one head while the witness step
+// confirms a DIFFERENT head. Pre-fix, verifyChain read the caller's live objects and deriveHead re-read
+// them, so a flip-on-read getter could diverge the two. Post-fix a single structuredClone freezes the
+// input for BOTH steps.
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+test("snapshot-once: a flip-on-read head-hash getter cannot diverge the verified head from the witnessed head", () => {
+  const { receipts, keyring, head } = fixture();
+  const realHash = head.chain.hash;
+  const fakeHash = "sha256:" + "f".repeat(64);
+  // Anchors that would confirm the FAKE head (what an attacker wants the witness step to accept).
+  const anchors = [
+    buildAnchor({ chain: CHAIN, highestSeq: head.chain.seq, headHash: fakeHash, ts: NOW }, W1S),
+    buildAnchor({ chain: CHAIN, highestSeq: head.chain.seq, headHash: fakeHash, ts: NOW }, W2S),
+  ];
+  // Replace the head receipt with one whose chain.hash flips to fakeHash after the first read.
+  let reads = 0;
+  const hostileHead = {
+    ...head,
+    chain: {
+      seq: head.chain.seq,
+      prevHash: head.chain.prevHash,
+      get hash() {
+        reads += 1;
+        return reads === 1 ? realHash : fakeHash;
+      },
+    },
+  };
+  const hostile = [receipts[0], receipts[1], hostileHead] as unknown as readonly unknown[];
+  const res = verifyChainWitnessed(hostile, keyring, { anchors, trustSet: TS3 });
+  // The witness step must NOT report QUORUM_CONFIRMED over the fake head: the single frozen snapshot means
+  // the head the witnesses are checked against is the same one verifyChain saw — the fake-head anchors do
+  // not match it, so completeness fails closed.
+  assert.equal(res.witness.complete, false, "a flipping getter must not smuggle a fake head past the witness check");
+  assert.notEqual(res.witness.classification, "QUORUM_CONFIRMED");
+});

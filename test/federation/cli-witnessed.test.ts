@@ -1,7 +1,7 @@
-import { test } from "node:test";
+import { test, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -79,6 +79,11 @@ writeFileSync(P.trust, JSON.stringify(trustSet));
 writeFileSync(P.quorum, JSON.stringify(quorumAnchors));
 writeFileSync(P.truncated, JSON.stringify(truncatedAnchors));
 writeFileSync(P.below, JSON.stringify(belowQuorumAnchors));
+
+// Only public keys + signed artifacts are written here (no private key material), but the temp dir is
+// still removed after the suite so a `npm test` run does not leave orphaned dirs under the OS tmpdir —
+// matching the cleanup convention in packages/mcp-proxy/test/smoke.mjs.
+after(() => rmSync(dir, { recursive: true, force: true }));
 
 function run(args: string[]): number {
   const r = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });

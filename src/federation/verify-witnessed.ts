@@ -115,22 +115,41 @@ export function verifyChainWitnessed(
   if (opts.maxReceipts !== undefined) verifyOpts.maxReceipts = opts.maxReceipts;
   if (opts.requireTenantConsistency !== undefined) verifyOpts.requireTenantConsistency = opts.requireTenantConsistency;
 
-  // 1. Offline receipt-chain verification — the existing verifier, called UNCHANGED.
-  const chainResult: VerifyResult =
-    typeof chain === "string" ? verifyChainText(chain, verifyOpts) : verifyChain(chain, verifyOpts);
+  // Snapshot the input ONCE so the chain verifier (step 1) and the head-derivation (step 2) read the SAME
+  // frozen bytes. For the object path this is load-bearing: without it, verifyChain reads the caller's live
+  // objects and deriveHead reads them AGAIN, so a hostile getter could return one head to verifyChain (→
+  // chain.status VALID over head A) and a different head to deriveHead (→ witness confirms head B). Cloning
+  // once executes any getter a single time and freezes the result, upholding the package's "snapshot reads
+  // once" invariant (see verify.ts's flipping-getter defenses). Text is already immutable. A non-cloneable
+  // hostile input collapses to an empty snapshot: verifyChain → MALFORMED, deriveHead → INVALID_HEAD (both
+  // fail-closed).
+  let receipts: string | readonly unknown[];
+  if (typeof chain === "string") {
+    receipts = chain;
+  } else {
+    try {
+      receipts = structuredClone(chain) as readonly unknown[];
+    } catch {
+      receipts = [];
+    }
+  }
 
-  // 2. Derive H from the SAME input, then apply the §4 acceptance rule over the caller's anchor snapshot.
+  // 1. Offline receipt-chain verification — the existing verifier, called UNCHANGED (over the snapshot).
+  const chainResult: VerifyResult =
+    typeof receipts === "string" ? verifyChainText(receipts, verifyOpts) : verifyChain(receipts, verifyOpts);
+
+  // 2. Derive H from the SAME snapshot, then apply the §4 acceptance rule over the caller's anchor snapshot.
   //    (Text is re-parsed here only to read the head; verifyChainText is not asked to expose internals — the
   //    chain verifier stays a black box. A parse failure yields an INVALID_INPUT head, fail-closed.)
   let parsed: unknown;
-  if (typeof chain === "string") {
+  if (typeof receipts === "string") {
     try {
-      parsed = safeParse(chain);
+      parsed = safeParse(receipts);
     } catch {
       parsed = null;
     }
   } else {
-    parsed = chain;
+    parsed = receipts;
   }
   const head = deriveHead(parsed);
   const witness = verifyCompleteness(

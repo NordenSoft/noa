@@ -279,9 +279,13 @@ export function verifyCompleteness(
   if (q <= 1) return r(false, "INVALID_INPUT", `quorum must be > 1 (got ${q}); a single witness is not a quorum`);
   if (q > k) return r(false, "INVALID_INPUT", `quorum q=${q} exceeds pinned witness count k=${k} (unsatisfiable)`);
 
-  // Pin the witnesses into a kid -> pubkey map, REJECTING duplicate kids (distinctness, §2.2): a trust-set
-  // that pins the same witness twice is not k distinct witnesses and would inflate the effective k.
+  // Pin the witnesses into a kid -> pubkey map, REJECTING duplicate kids AND duplicate pubkeys (distinctness,
+  // §2.2): a trust-set that pins the same witness twice is not k distinct witnesses and would inflate the
+  // effective k. Distinctness must hold at the KEY level, not just the label level — pinning one physical
+  // witness key under two different kids would otherwise let that key's single anchor signature verify under
+  // both kids and be tallied as TWO confirmations toward q, silently collapsing the quorum's independence.
   const pinned = new Map<string, string>();
+  const seenPubkeys = new Set<string>();
   for (const w of trustSet.witnesses) {
     if (typeof w !== "object" || w === null) return r(false, "INVALID_INPUT", "trustSet.witnesses[] entry is not an object");
     if (typeof w.kid !== "string" || w.kid.length === 0) return r(false, "INVALID_INPUT", "witness.kid must be a non-empty string");
@@ -289,7 +293,9 @@ export function verifyCompleteness(
       return r(false, "INVALID_INPUT", `witness "${w.kid}" pubkey must be a non-empty base64 SPKI string`);
     }
     if (pinned.has(w.kid)) return r(false, "INVALID_INPUT", `trustSet pins duplicate witness kid "${w.kid}" (witnesses must be distinct)`);
+    if (seenPubkeys.has(w.pubkey)) return r(false, "INVALID_INPUT", `trustSet pins the same witness pubkey under two kids (witnesses must be distinct KEYS, not just distinct ids)`);
     pinned.set(w.kid, w.pubkey);
+    seenPubkeys.add(w.pubkey);
   }
 
   if (!Array.isArray(anchors)) return r(false, "INVALID_INPUT", "anchors must be an array");
@@ -312,6 +318,12 @@ export function verifyCompleteness(
     if (typeof a.chain !== "string") continue;
     if (typeof a.highestSeq !== "number" || !Number.isSafeInteger(a.highestSeq) || a.highestSeq < 0) continue;
     if (typeof a.headHash !== "string" || !HASH_RE.test(a.headHash)) continue;
+    // ts is structurally only required to be a non-empty string here (buildAnchor is stricter and always
+    // emits RFC3339). A non-RFC3339 ts is handled fail-closed downstream WITHOUT dropping the anchor early:
+    // under a freshness policy parseAnchorTsMs returns null ⇒ the confirm is downgraded to STALE (does not
+    // count toward the fresh quorum); with no policy, ts is contractually irrelevant (§10, currency is the
+    // caller's burden) and the confirm still requires an exact (seq, headHash) match to H, so a garbage ts
+    // grants a signing witness no extra power. Keeping the anchor here preserves that graded STALE semantics.
     if (typeof a.ts !== "string" || a.ts.length === 0) continue;
     const sig = a.sig;
     if (typeof sig !== "object" || sig === null) continue;
