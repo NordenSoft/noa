@@ -232,3 +232,26 @@ test("snapshot-once: a flip-on-read head-hash getter cannot diverge the verified
   assert.equal(res.witness.complete, false, "a flipping getter must not smuggle a fake head past the witness check");
   assert.notEqual(res.witness.classification, "QUORUM_CONFIRMED");
 });
+
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+// DoS bound: an over-maxReceipts array must be rejected via the length bound BEFORE the snapshot clone
+// (and before any head-derivation traversal) — the snapshot-once clone must not become an O(n) DoS lever
+// that runs past the caller's maxReceipts. Deterministic: a getter counter that must never fire.
+// ──────────────────────────────────────────────────────────────────────────────────────────────
+test("DoS bound: an over-maxReceipts array is rejected without cloning or traversing it (no O(n) work past the bound)", () => {
+  let touches = 0;
+  const sentinel = {
+    get chain() {
+      touches += 1;
+      return { seq: 0, hash: "sha256:" + "0".repeat(64) };
+    },
+  };
+  // length 3 with maxReceipts:1 ⇒ over bound. The wrapper must reject via the length check before any
+  // structuredClone or deriveHead reads element properties, so the sentinel's getter fires ZERO times.
+  const arr = [sentinel, sentinel, sentinel] as unknown as readonly unknown[];
+  const res = verifyChainWitnessed(arr, undefined, { anchors: [], trustSet: TS3, maxReceipts: 1 });
+  assert.equal(res.chain.status, "MALFORMED");
+  assert.match(res.chain.reason ?? "", /too many receipts/);
+  assert.equal(res.witness.classification, "INVALID_INPUT");
+  assert.equal(touches, 0, "an over-bound array must not be cloned or traversed (no O(n) work past maxReceipts)");
+});

@@ -51,7 +51,7 @@ export interface VerifyResult {
   warnings: string[];
 }
 
-const DEFAULT_MAX_RECEIPTS = 1_000_000;
+export const DEFAULT_MAX_RECEIPTS = 1_000_000;
 
 function fail(
   status: VerifyStatus,

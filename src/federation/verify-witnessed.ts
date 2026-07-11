@@ -17,7 +17,7 @@
  * one, or a valid chain with an unmet quorum for a complete one.
  */
 
-import { verifyChain, verifyChainText, type VerifyResult, type VerifyOptions } from "../verify.js";
+import { verifyChain, verifyChainText, DEFAULT_MAX_RECEIPTS, type VerifyResult, type VerifyOptions } from "../verify.js";
 import { safeParse } from "../safe-json.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
 import type { Checkpoint } from "../types.js";
@@ -115,17 +115,34 @@ export function verifyChainWitnessed(
   if (opts.maxReceipts !== undefined) verifyOpts.maxReceipts = opts.maxReceipts;
   if (opts.requireTenantConsistency !== undefined) verifyOpts.requireTenantConsistency = opts.requireTenantConsistency;
 
-  // Snapshot the input ONCE so the chain verifier (step 1) and the head-derivation (step 2) read the SAME
-  // frozen bytes. For the object path this is load-bearing: without it, verifyChain reads the caller's live
-  // objects and deriveHead reads them AGAIN, so a hostile getter could return one head to verifyChain (→
-  // chain.status VALID over head A) and a different head to deriveHead (→ witness confirms head B). Cloning
-  // once executes any getter a single time and freezes the result, upholding the package's "snapshot reads
-  // once" invariant (see verify.ts's flipping-getter defenses). Text is already immutable. A non-cloneable
-  // hostile input collapses to an empty snapshot: verifyChain → MALFORMED, deriveHead → INVALID_HEAD (both
-  // fail-closed).
+  // Bound the work BEFORE any O(n) clone/traversal, mirroring verify.ts's "don't clone a >maxReceipts array"
+  // DoS guard: for an array input, read length behind a guard and, if it exceeds maxReceipts (or the length
+  // getter is hostile), pass the ORIGINAL array straight to verifyChain — which rejects it cheaply as
+  // MALFORMED at the same bound — and skip the snapshot AND the head-derivation entirely (head → INVALID_HEAD,
+  // fail-closed). Without this, a witnessed-mode caller (e.g. the CLI over a parsed receipts array) would pay
+  // the full structuredClone cost of an attacker-chosen array length before the bound ever applied.
+  const maxReceipts = opts.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
+  let overBound = false;
+  if (Array.isArray(chain)) {
+    let n: number;
+    try {
+      n = chain.length;
+    } catch {
+      n = Infinity; // hostile length getter → treat as over-bound; verifyChain's own guard also fails closed
+    }
+    if (n > maxReceipts) overBound = true;
+  }
+
+  // Snapshot the object input ONCE (within-bound only) so the chain verifier (step 1) and the head-derivation
+  // (step 2) read the SAME frozen bytes. Load-bearing for the object path: without it, verifyChain reads the
+  // caller's live objects and deriveHead reads them AGAIN, so a hostile getter could return one head to
+  // verifyChain (→ chain.status VALID over head A) and a different head to deriveHead (→ witness confirms head
+  // B). Cloning once executes any getter a single time and freezes the result, upholding the package's
+  // "snapshot reads once" invariant (verify.ts's flipping-getter defenses). Text is already immutable; an
+  // over-bound or non-array or non-cloneable input is passed through / collapsed to fail closed.
   let receipts: string | readonly unknown[];
-  if (typeof chain === "string") {
-    receipts = chain;
+  if (typeof chain === "string" || overBound || !Array.isArray(chain)) {
+    receipts = chain as string | readonly unknown[];
   } else {
     try {
       receipts = structuredClone(chain) as readonly unknown[];
@@ -139,19 +156,25 @@ export function verifyChainWitnessed(
     typeof receipts === "string" ? verifyChainText(receipts, verifyOpts) : verifyChain(receipts, verifyOpts);
 
   // 2. Derive H from the SAME snapshot, then apply the §4 acceptance rule over the caller's anchor snapshot.
+  //    An over-bound array short-circuits to INVALID_HEAD so we never re-traverse an attacker-sized array.
   //    (Text is re-parsed here only to read the head; verifyChainText is not asked to expose internals — the
   //    chain verifier stays a black box. A parse failure yields an INVALID_INPUT head, fail-closed.)
-  let parsed: unknown;
-  if (typeof receipts === "string") {
-    try {
-      parsed = safeParse(receipts);
-    } catch {
-      parsed = null;
-    }
+  let head: ChainHead;
+  if (overBound) {
+    head = INVALID_HEAD;
   } else {
-    parsed = receipts;
+    let parsed: unknown;
+    if (typeof receipts === "string") {
+      try {
+        parsed = safeParse(receipts);
+      } catch {
+        parsed = null;
+      }
+    } else {
+      parsed = receipts;
+    }
+    head = deriveHead(parsed);
   }
-  const head = deriveHead(parsed);
   const witness = verifyCompleteness(
     head,
     opts.anchors,
