@@ -87,7 +87,6 @@ import { writeFileSync, readFileSync, promises as fsp } from "node:fs";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile } from "noa-mcp-adapter-core";
-import { createRemoteSigner } from "noa-signer-sidecar/client.mjs";
 import { createProxyServer } from "./create-proxy-server.mjs";
 import { TRANSFER_GUARD_POLICY } from "./policy.mjs";
 
@@ -197,6 +196,25 @@ async function main() {
   let signer;
   let signerPublicKey;
   if (opts.signerSocket) {
+    // noa-signer-sidecar is an OPTIONAL dependency, imported LAZILY here — ONLY on the opt-in
+    // --signer-socket branch. The default (in-process key) path never touches it, so the common
+    // install can omit the sidecar package entirely (e.g. before it is even published to the
+    // registry). If --signer-socket is used but the package is absent, surface an actionable
+    // install hint rather than a raw ERR_MODULE_NOT_FOUND. (client.mjs imports only node:net, so an
+    // ERR_MODULE_NOT_FOUND naming this specifier can ONLY mean the package itself is missing; any
+    // other resolution failure is genuinely unexpected and propagates unchanged.)
+    let createRemoteSigner;
+    try {
+      ({ createRemoteSigner } = await import("noa-signer-sidecar/client.mjs"));
+    } catch (err) {
+      if (err?.code === "ERR_MODULE_NOT_FOUND" && String(err?.message).includes("noa-signer-sidecar")) {
+        throw new Error(
+          "proxy.mjs: --signer-socket requires the optional 'noa-signer-sidecar' package, which is not installed — " +
+            "install it with: npm install noa-signer-sidecar",
+        );
+      }
+      throw err;
+    }
     // Fail-closed at startup: an unreachable/misconfigured sidecar must stop this process before
     // it ever starts serving the host — see createRemoteSigner's own "fail closed AT
     // CONSTRUCTION" doc comment. main().catch() below turns this rejection into the same

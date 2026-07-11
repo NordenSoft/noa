@@ -41,7 +41,9 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
-    "noa-mcp-adapter-core": "file:../adapter-core",
+    "noa-mcp-adapter-core": "file:../adapter-core"
+  },
+  "optionalDependencies": {
     "noa-signer-sidecar": "file:../signer-sidecar"
   }
 }

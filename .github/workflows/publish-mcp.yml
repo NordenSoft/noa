@@ -116,6 +116,19 @@ jobs:
           V="$(node -p "require('../adapter-core/package.json').version")"
           npm pkg set "dependencies.noa-mcp-adapter-core=^$V"
 
+      - name: Point mcp-proxy's OPTIONAL signer-sidecar dep at a published range (kept optional)
+        # noa-signer-sidecar is an optionalDependency (used only on the opt-in --signer-socket path),
+        # declared "file:../signer-sidecar" for local dev/test. The published tarball must carry a
+        # registry range instead. The version is read from signer-sidecar's own package.json, NOT
+        # hardcoded. It stays OPTIONAL: this workflow does NOT publish signer-sidecar, so until that
+        # package is on the registry a consumer's install simply SKIPS it (optional installs never
+        # fail the whole install); once it is published, a later reinstall picks it up. mcp-proxy's
+        # default (in-process key) path needs it never — only --signer-socket lazy-imports it.
+        working-directory: packages/mcp-proxy
+        run: |
+          SV="$(node -p "require('../signer-sidecar/package.json').version")"
+          npm pkg set "optionalDependencies.noa-signer-sidecar=^$SV"
+
       - name: Publish mcp-proxy to npm via OIDC (no token, with provenance)
         # Same skip-if-published rerun guard as adapter-core above.
         working-directory: packages/mcp-proxy
