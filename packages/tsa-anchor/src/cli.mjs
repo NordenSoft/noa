@@ -47,7 +47,14 @@ function readJsonFile(path) {
   } catch {
     usage(`cannot read file: ${path}`);
   }
-  return safeParse(text, { maxLength: MAX_FILE_BYTES });
+  try {
+    return safeParse(text, { maxLength: MAX_FILE_BYTES });
+  } catch (e) {
+    // Malformed JSON is EXIT.MALFORMED (3) with a clean one-line message — never an uncaught
+    // safeParse throw dumping a raw stack and exiting 1 (which contradicts the header's exit table).
+    process.stderr.write(`error: malformed JSON in ${path}: ${e.message}\n`);
+    process.exit(EXIT.MALFORMED);
+  }
 }
 
 function parseFlags(args, spec) {
@@ -111,22 +118,30 @@ function cmdVerify(args) {
   if (typeof sidecar !== "object" || sidecar === null) usage("--tsr file must contain a JSON object (anchorHash -> stamp record)");
 
   let mismatches = 0;
+  let malformed = 0;
   const results = [];
   for (const a of anchors) {
     let key;
     try {
       key = anchorHash(a);
     } catch (e) {
-      results.push({ ok: false, reason: `malformed anchor entry: ${e.message}` });
+      results.push({ ok: false, code: "MALFORMED", reason: `malformed anchor entry: ${e.message}` });
       mismatches++;
+      malformed++;
       continue;
     }
     const record = sidecar[key];
     const res = record ? verifyStamp(a, record) : { ok: false, reason: "no stamp for this anchor in the .tsr file" };
     results.push({ anchorHash: key, chain: a?.chain, highestSeq: a?.highestSeq, ...res });
-    if (!res.ok) mismatches++;
+    if (!res.ok) {
+      mismatches++;
+      if (res.code === "MALFORMED") malformed++;
+    }
   }
   process.stdout.write(JSON.stringify({ results, mismatches }, null, 2) + "\n");
+  // A bad-DER/bad-base64 (or malformed anchor) input is EXIT.MALFORMED (3) per the header table —
+  // distinct from a well-formed-but-non-matching stamp, which is EXIT.MISMATCH (1).
+  if (malformed > 0) return EXIT.MALFORMED;
   return mismatches === 0 ? EXIT.OK : EXIT.MISMATCH;
 }
 
