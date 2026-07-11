@@ -1,0 +1,61 @@
+{
+  "name": "noa-signer",
+  "version": "0.1.0",
+  "description": "Portable, framework-agnostic Ed25519 receipt-signing core for noa-receipt — every shell (PWA, native app, server) imports this ONE module so a receipt signed anywhere is byte-identical to what noa-receipt itself would have produced. Zero platform-SDK imports (no DOM, no React-Native, no Telegram) — @noble/curves is the signing driver, so the same code runs in a browser, a service worker, or Node.",
+  "keywords": [
+    "ai-agent",
+    "governance",
+    "receipt",
+    "hash-chain",
+    "provenance",
+    "ed25519",
+    "signing",
+    "jcs",
+    "rfc8785",
+    "rfc8032"
+  ],
+  "homepage": "https://noatrust.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NordenSoft/noa.git",
+    "directory": "packages/signer-core"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist/src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "mock-shell": "npm run build && node scripts/mock-shell-harness.mjs",
+    "prepublishOnly": "npm test && npm run mock-shell"
+  },
+  "dependencies": {
+    "@noble/curves": "2.2.0",
+    "@noble/hashes": "2.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "noa-receipt": "file:../..",
+    "typescript": "^5.6.0"
+  }
+}

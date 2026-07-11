@@ -1,0 +1,11 @@
+NOA Signer Core — portable Ed25519 receipt-signing core for noa-receipt
+
+Copyright the noa-receipt contributors.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This package mirrors, byte-for-byte, the receipt-signing preimage and JCS canonicalization
+rules defined by the parent `noa-receipt` package (src/signing.ts, src/canonicalize.ts,
+src/jcs.ts, src/types.ts) so that every shell (PWA, native app, server) that imports THIS
+module produces signatures and receipts identical to what `noa-receipt` itself produces. See
+this package's README.md for the parity gates that enforce that guarantee mechanically.
