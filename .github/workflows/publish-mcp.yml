@@ -93,10 +93,17 @@ jobs:
       - name: Lint the published surface — mcp-proxy (K4 internal-process jargon + K5 security-marketing claims)
         run: node scripts/lint-published-surface.mjs --dir packages/mcp-proxy
 
-      - name: Publish adapter-core to npm via OIDC (no token, with provenance)
+      - name: Publish adapter-core to npm (with provenance)
+        # BOOTSTRAP: these two package names do not exist on the registry yet, and a trusted
+        # publisher can only be configured on an EXISTING package. So the FIRST publish authenticates
+        # with a short-lived granular token (secrets.NPM_TOKEN) while still attaching provenance via
+        # the job's id-token. Once both packages exist, register their trusted publishers, delete
+        # NPM_TOKEN, and drop the NODE_AUTH_TOKEN env below to return to token-free OIDC publishing.
         # Skip-if-published makes a rerun after a partial failure safe: if adapter-core landed
         # but mcp-proxy's publish failed, rerunning the workflow must not die here with E409.
         working-directory: packages/adapter-core
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           V="$(node -p "require('./package.json').version")"
           if [ -n "$(npm view "noa-mcp-adapter-core@$V" version 2>/dev/null || true)" ]; then
@@ -116,9 +123,11 @@ jobs:
           V="$(node -p "require('../adapter-core/package.json').version")"
           npm pkg set "dependencies.noa-mcp-adapter-core=^$V"
 
-      - name: Publish mcp-proxy to npm via OIDC (no token, with provenance)
-        # Same skip-if-published rerun guard as adapter-core above.
+      - name: Publish mcp-proxy to npm (with provenance)
+        # Same bootstrap-token + skip-if-published rerun guard as adapter-core above.
         working-directory: packages/mcp-proxy
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           V="$(node -p "require('./package.json').version")"
           if [ -n "$(npm view "noa-mcp-proxy@$V" version 2>/dev/null || true)" ]; then
