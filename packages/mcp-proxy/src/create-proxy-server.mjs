@@ -204,7 +204,7 @@ export async function createProxyServer({
       // persist (above) was in flight — and drop it instead of corrupting the next segment's seq;
       // see noa-mcp-adapter-core's createChainSessionStore "COMMIT-TIME SEGMENT CHECK" docstring.
       // `prepared.tenant` (the store's own RESOLVED effective tenant this receipt was prepared
-      // against — not the possibly-omitted `tenant` closure variable) guarantees this commit lands
+      // against — not the possibly-omitted `tenant` closure variable) ensures this commit lands
       // in the exact same tenant bucket `prepareSessionReceipt` peeked from; see "MULTI-TENANT
       // ISOLATION" in the same docstring.
       const committed = commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);

@@ -99,7 +99,7 @@ npm test   # node test/smoke.mjs — real child processes, real MCP Client/Serve
   independently-verifiable segment), exactly as `noa-mcp-adapter-core`'s README documents. True
   cross-restart continuity of a SINGLE logical chain would additionally require persisting the
   session's `{prev,seq}` position itself (not just the signing key) — this package does not do
-  that; it is a roadmap item (round-2), not current behavior.
+  that; it is a future roadmap item, not current behavior.
 - **No downstream `inputSchema` validation.** The proxy forwards `request.params.arguments`
   through `preCheck`'s policy engine (which only ever sees the scalar paths it projects — see
   `noa-mcp-adapter-core`'s README) and, on ALLOW, straight to the downstream tool. It does NOT

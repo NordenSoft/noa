@@ -67,7 +67,7 @@ function defaultOnEvict(sessionId, reason) {
  * theoretical one; and (2) because the epoch suffix was string-concatenated onto whatever the caller
  * passed as `sessionId`, a sessionId that itself CONTAINS the delimiter (e.g. the literal session id
  * `"foo#2"`) could collide with an unrelated, internally-epoch-suffixed `"foo"` at epoch 2 — the
- * uniqueness guarantee depended on parsing/matching sessionId text, which a caller's own sessionId
+ * uniqueness property depended on parsing/matching sessionId text, which a caller's own sessionId
  * choice could always defeat.
  *
  * The fix replaces BOTH: chain identity is no longer derived from parsing sessionId text or from a
@@ -170,7 +170,7 @@ export function createChainSessionStore({
   now = Date.now,
   onEvict = defaultOnEvict,
 } = {}) {
-  /** @type {Map<string, Map<string, { prev: import("../../../dist/src/types.js").Receipt | null, seq: number, lastAccessedAt: number, segmentId: number }>>}
+  /** @type {Map<string, Map<string, { prev: import("noa-receipt").Receipt | null, seq: number, lastAccessedAt: number, segmentId: number }>>}
    *  tenant -> Map<sessionId, state> — see the "MULTI-TENANT ISOLATION" docstring above for why this
    *  is nested rather than a single string-concatenated key. */
   const tenantBuckets = new Map();
@@ -378,8 +378,8 @@ export function createChainSessionStore({
  * @param {{
  *   sessionId: string,
  *   store: ReturnType<typeof createChainSessionStore>,
- *   signer: import("../../../dist/src/builder.js").Signer,
- *   policy: import("../../../dist/src/policy/dsl.js").Policy,
+ *   signer: import("noa-receipt").Signer,
+ *   policy: import("noa-receipt").Policy,
  *   tenant?: string,
  *   chain?: string,
  * }} options
@@ -453,8 +453,8 @@ export function commitSessionReceipt(store, sessionId, receipt, segmentId, tenan
  * @param {{
  *   sessionId: string,
  *   store: ReturnType<typeof createChainSessionStore>,
- *   signer: import("../../../dist/src/builder.js").Signer,
- *   policy: import("../../../dist/src/policy/dsl.js").Policy,
+ *   signer: import("noa-receipt").Signer,
+ *   policy: import("noa-receipt").Policy,
  *   tenant?: string,
  *   chain?: string,
  * }} options
@@ -462,7 +462,7 @@ export function commitSessionReceipt(store, sessionId, receipt, segmentId, tenan
 export function preCheckSession(toolCall, options) {
   const result = prepareSessionReceipt(toolCall, options);
   // `result.tenant` (the RESOLVED effective tenant `prepareSessionReceipt` peeked against), not
-  // `options.tenant` directly — guarantees the commit targets the exact same tenant bucket the
+  // `options.tenant` directly — ensures the commit targets the exact same tenant bucket the
   // prepare step read from, even when `options.tenant` was omitted (see createChainSessionStore's
   // "MULTI-TENANT ISOLATION" docstring).
   commitSessionReceipt(options.store, options.sessionId, result.receipt, result.segmentId, result.tenant);

@@ -1,8 +1,22 @@
 {
   "name": "noa-mcp-proxy",
   "version": "0.1.0",
-  "private": true,
   "description": "Transparent MCP proxy-middleware: sits between an MCP host and an EXISTING, unmodified downstream tool server, dynamically reflects its tool surface, and gates every tools/call through noa-mcp-adapter-core's preCheck before forwarding — fail-closed on DENY, malformed input, or a broken downstream connection.",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "proxy",
+    "ai-agent",
+    "governance",
+    "receipt",
+    "provenance"
+  ],
+  "homepage": "https://noatrust.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NordenSoft/noa.git",
+    "directory": "packages/mcp-proxy"
+  },
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
@@ -10,6 +24,16 @@
   },
   "engines": {
     "node": ">=20"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "test": "node test/smoke.mjs"
