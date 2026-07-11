@@ -2,8 +2,11 @@
 
 [![CI](https://github.com/NordenSoft/noa/actions/workflows/ci.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/ci.yml)
 
-238 tests green, including TS↔Python cross-implementation conformance in CI — the independent
+278 tests green, including TS↔Python cross-implementation conformance in CI — the independent
 Python reference verifier is required to agree with the TS verifier on every conformance vector.
+
+**Published on npm (Apache-2.0):** `noa-receipt` 0.5.0 · `noa-mcp-adapter-core` 0.2.0 · `noa-mcp-proxy` 0.2.0
+— install and use today, no account. `npx noa-receipt verify <chain>` verifies offline.
 
 > **What this repo is:** the open-source of **one organ** of NOA — the **governance &
 > receipt layer**: the part that gates an AI agent's real-world actions and issues a
@@ -133,7 +136,8 @@ into a full deferred → rejected → executed story.
 - ✅ **Receipt spec (v0.1)** — mandatory Ed25519, key-pinning, genesis + tail-truncation rules.
 - ✅ **Offline verifier** — library + `noa verify` CLI, zero runtime deps, hostile-input hardened.
 - ✅ **JSON-Schema + conformance suite** — 14 attack + 9 malformed vectors, all rejected.
-- 🚧 **SDK `noa.guard()` · MCP proxy · hosted control-plane** — examples in [`examples/`](https://github.com/NordenSoft/noa/tree/main/examples), hardening in progress.
+- ✅ **MCP proxy (`noa-mcp-proxy`) + tool-gating SDK core (`noa-mcp-adapter-core`)** — live on npm (0.2.0), including the runtime **human-approval gate** (`--approval-rules`: a risky call is held as a signed DEFERRED receipt until a human approves, producing a DEFERRED→ALLOWED→EXECUTED chain).
+- 🚧 **Hosted control-plane + the one-tap approval app** — on the roadmap, not shipped.
 - ⚠️ **0.2.0 (breaking):** COSE_Sign1 alg-id `-8` (generic EdDSA) → `-19` (Ed25519, RFC 9864) — closes the Ed448 alg-confusion surface; old `{1:-8}` envelopes no longer verify.
 - This is **early access**, and it is **one organ** of NOA — not the whole brain. The full
   agent-cognition platform (cognition, memory, BYO-agent hosting) is separate and proprietary.
