@@ -115,7 +115,7 @@ function cmdVerify(args) {
   const anchors = readJsonFile(flags["--anchors"]);
   const sidecar = readJsonFile(flags["--tsr"]);
   if (!Array.isArray(anchors)) usage("--anchors file must contain a JSON array of anchors");
-  if (typeof sidecar !== "object" || sidecar === null) usage("--tsr file must contain a JSON object (anchorHash -> stamp record)");
+  if (typeof sidecar !== "object" || sidecar === null || Array.isArray(sidecar)) usage("--tsr file must contain a JSON object (anchorHash -> stamp record)");
 
   let mismatches = 0;
   let malformed = 0;

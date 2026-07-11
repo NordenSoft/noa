@@ -78,6 +78,19 @@ test("CLI verify: exit 1 when the .tsr file has no stamp for the anchor", async 
   assert.equal(result.status, 1);
 });
 
+test("CLI verify: a JSON-array .tsr (not an object map) -> exit 4 (USAGE), not a bogus mismatch", async () => {
+  // typeof [] === "object", so the old `typeof sidecar !== "object" || sidecar === null` guard let a
+  // JSON array through; every `sidecar[anchorHash]` lookup then read undefined and the run exited 1
+  // (MISMATCH) instead of the documented 4 (USAGE) — symmetric with the --anchors Array.isArray guard.
+  const dir = mkdtempSync(join(tmpdir(), "noa-tsa-cli-"));
+  const anchorsPath = mkAnchorsFile(dir);
+  const tsrPath = join(dir, "arr.tsr.json");
+  writeFileSync(tsrPath, "[1,2,3]", "utf8");
+  const result = await run(["verify", "--anchors", anchorsPath, "--tsr", tsrPath]);
+  assert.equal(result.status, 4, result.stdout + result.stderr);
+  assert.match(result.stderr, /--tsr file must contain a JSON object/);
+});
+
 test("CLI stamp: exit 2 when the TSA is unreachable", async () => {
   const dir = mkdtempSync(join(tmpdir(), "noa-tsa-cli-"));
   const anchorsPath = mkAnchorsFile(dir);
