@@ -75,6 +75,24 @@ test("readOid: mirror-decodes the multi-byte first sub-identifier (round-trip, n
   assert.equal(readOid(derDecode(Buffer.from([0x06, 0x03, 0x88, 0x37, 0x03]))), "2.999.3");
 });
 
+test("strict DER: non-minimal OID sub-identifier (leading 0x80 continuation octet) is rejected", () => {
+  // X.690 §8.19.2: the FIRST octet of a base-128 sub-identifier group must not be 0x80 (a redundant
+  // leading-zero continuation). Both of these "decode" to a small arc but are non-minimal (BER, not
+  // DER) — they were silently ACCEPTED before this fix, inconsistent with the module's other strict
+  // checks (minimal length, minimal INTEGER). Applies to EVERY group, not just the first.
+  assert.throws(() => readOid(derDecode(Buffer.from([0x06, 0x02, 0x80, 0x00]))), DerError);        // 80 00     -> was 0.0
+  assert.throws(() => readOid(derDecode(Buffer.from([0x06, 0x03, 0x80, 0x81, 0x00]))), DerError);  // 80 81 00  -> was 2.48
+  // Controls — legitimate multi-octet groups whose leading octet is NOT 0x80 must still decode, so
+  // the guard does not over-reject any valid OID:
+  assert.equal(readOid(derDecode(Buffer.from([0x06, 0x02, 0x88, 0x37]))), "2.999");                 // combined 1079 = 88 37
+  assert.equal(readOid(derDecode(Buffer.from([0x06, 0x02, 0x81, 0x00]))), "2.48");                  // value 128 = 81 00 (minimal form)
+  assert.equal(readOid(derDecode(Buffer.from([0x06, 0x03, 0x88, 0x37, 0x03]))), "2.999.3");         // multi-byte first group + trailing arc
+  assert.equal(
+    readOid(derDecode(Buffer.from([0x06, 0x09, 0x60, 0x86, 0x48, 0x01, 0x65, 0x03, 0x04, 0x02, 0x01]))),
+    SHA256_OID,
+  );
+});
+
 test("encNull / encOctetString / encBoolean: primitive TLVs", () => {
   assert.deepEqual(encNull(), Buffer.from([0x05, 0x00]));
   assert.deepEqual(encOctetString(Buffer.from([1, 2, 3])), Buffer.from([0x04, 0x03, 1, 2, 3]));

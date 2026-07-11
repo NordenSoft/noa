@@ -221,6 +221,11 @@ export function readOid(node) {
   let pending = false;
   for (let k = 0; k < bytes.length; k++) {
     const b = bytes[k];
+    // X.690 §8.19.2: the first octet of any sub-identifier must not be 0x80 — that is a redundant
+    // leading-zero continuation byte, so a group that opens with it is non-minimal (BER, not DER)
+    // and is rejected fail-closed to match this module's other strict-DER checks (minimal length,
+    // minimal INTEGER). `pending === false` marks the start of a fresh base-128 group.
+    if (!pending && b === 0x80) throw new DerError("non-minimal OID sub-identifier: leading 0x80 octet");
     acc = acc * 128 + (b & 0x7f);
     pending = true;
     if ((b & 0x80) === 0) {
