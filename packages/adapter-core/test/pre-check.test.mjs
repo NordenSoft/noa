@@ -2,8 +2,9 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, verifyChain } from "noa-receipt";
 import { preCheck } from "../src/pre-check.mjs";
-import { createChainSessionStore, preCheckSession, prepareSessionReceipt, commitSessionReceipt } from "../src/session-store.mjs";
+import { createChainSessionStore, preCheckSession, prepareSessionReceipt, commitSessionReceipt, adoptApprovedReceipt } from "../src/session-store.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
+import { buildApprovalReceipt } from "../src/approval-decision.mjs";
 
 function signerAndKeyring(kid) {
   const kp = generateKeyPair(kid);
@@ -809,4 +810,136 @@ test("prepareSessionReceipt/commitSessionReceipt: a session that is NEVER evicte
   assert.equal(v.status, "VALID");
   assert.equal(v.count, 4);
   store.dispose();
+});
+
+test("preCheck: approvalRules omitted -> behavior byte-identical to before (backward compatible)", () => {
+  const { signer, keyring } = signerAndKeyring("test-key-r4-noop");
+  const withoutOpt = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer, policy: REFUND_GUARD_POLICY });
+  assert.equal(withoutOpt.decision, "ALLOW");
+  assert.equal(withoutOpt.receipt.governance.verdict, "EXECUTED");
+  const withEmptyArray = preCheck(
+    { name: "payment.refund", args: { amountMinor: 4200 } },
+    { signer, policy: REFUND_GUARD_POLICY, approvalRules: [] },
+  );
+  assert.equal(withEmptyArray.decision, "ALLOW");
+  const v = verifyChain([withoutOpt.receipt], { keyring });
+  assert.equal(v.status, "VALID");
+});
+
+test("preCheck: an ALLOW that matches an approvalRule is held DEFERRED, never executed, compliance still committed", () => {
+  const { signer, keyring } = signerAndKeyring("test-key-r4-deferred");
+  const approvalRules = [
+    { id: "big-refund-needs-human", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } },
+  ];
+  const r = preCheck(
+    { name: "payment.refund", args: { amountMinor: 4200 } },
+    { signer, policy: REFUND_GUARD_POLICY, approvalRules },
+  );
+  assert.equal(r.decision, "DEFERRED");
+  assert.equal(r.receipt.governance.verdict, "DEFERRED");
+  assert.equal(r.receipt.governance.ruleId, "approval:big-refund-needs-human");
+  assert.equal(r.receipt.governance.approval, null);
+  assert.equal(r.receipt.action.riskClass, "HIGH");
+  assert.notEqual(r.receipt.governance.compliance, null, "the underlying policy DID allow — compliance is still committed");
+  assert.equal(r.receipt.governance.compliance.verdict, "ALLOW", "L2 compliance verdict is the POLICY's own ALLOW, independent of the governance-level DEFERRED hold");
+  assert.equal(r.evidence.approvalRuleFired, "big-refund-needs-human");
+  const v = verifyChain([r.receipt], { keyring });
+  assert.equal(v.status, "VALID");
+});
+
+test("preCheck: a DENY is untouched by approvalRules (nothing to hold — already refused); a no-threshold rule gates every match", () => {
+  const { signer } = signerAndKeyring("test-key-r4-deny-untouched");
+  const denyUntouched = preCheck(
+    { name: "payment.refund", args: { amountMinor: 100_000_000 } }, // >= block-million -> DENY
+    { signer, policy: REFUND_GUARD_POLICY, approvalRules: [{ id: "any-refund-needs-human", match: { type: "exact", action: "payment.refund" } }] },
+  );
+  assert.equal(denyUntouched.decision, "DENY");
+  assert.equal(denyUntouched.receipt.governance.verdict, "BLOCKED");
+  assert.equal(denyUntouched.evidence.approvalRuleFired, null);
+
+  const allTinyRefundsHeld = preCheck(
+    { name: "payment.refund", args: { amountMinor: 1 } },
+    { signer, policy: REFUND_GUARD_POLICY, approvalRules: [{ id: "all-refunds-need-human", match: { type: "exact", action: "payment.refund" } }] },
+  );
+  assert.equal(allTinyRefundsHeld.decision, "DEFERRED");
+});
+
+test("preCheck: suppressApprovalHold skips the approval gate for ONE consumed-ticket retry — without it the same rule re-matches and the retry re-DEFERs forever, so EXECUTED is unreachable", () => {
+  const { signer, keyring } = signerAndKeyring("test-key-r4-suppress");
+  const approvalRules = [
+    { id: "big-refund-needs-human", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } },
+  ];
+  // Un-suppressed: the rule holds the call (this assertion is what fails BEFORE Adim 4 lands).
+  const held = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer, policy: REFUND_GUARD_POLICY, approvalRules });
+  assert.equal(held.decision, "DEFERRED", "without suppression the matching rule must hold the call");
+  // Suppressed (the proxy sets this ONLY after a single-use ticket was verified AND consumed):
+  // the SAME call passes the normal ALLOW path -> verdict EXECUTED. The L2 policy itself still
+  // runs (suppression skips ONLY the approval-hold match, never the policy decision).
+  const retried = preCheck(
+    { name: "payment.refund", args: { amountMinor: 4200 } },
+    { signer, policy: REFUND_GUARD_POLICY, approvalRules, suppressApprovalHold: true },
+  );
+  assert.equal(retried.decision, "ALLOW");
+  assert.equal(retried.receipt.governance.verdict, "EXECUTED");
+  assert.equal(retried.evidence.approvalRuleFired, null, "no approval rule fires on a suppressed call");
+  // Suppression must NOT bypass the policy: a call the L2 policy itself DENIES stays DENIED.
+  const stillDenied = preCheck(
+    { name: "payment.refund", args: { amountMinor: 100_000_000 } },
+    { signer, policy: REFUND_GUARD_POLICY, approvalRules, suppressApprovalHold: true },
+  );
+  assert.equal(stillDenied.decision, "DENY", "suppressApprovalHold skips ONLY the hold, never the policy decision");
+  const v = verifyChain([retried.receipt], { keyring });
+  assert.equal(v.status, "VALID");
+});
+
+test("adoptApprovedReceipt: advances the session's live chain position to an externally-built ALLOWED receipt when consistent", () => {
+  const { signer } = signerAndKeyring("test-key-r4-adopt-1");
+  const store = createChainSessionStore();
+  const approvalRules = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" } }];
+
+  const prepared = prepareSessionReceipt({ name: "payment.refund", args: { amountMinor: 100 } }, { sessionId: "s1", store, signer, policy: REFUND_GUARD_POLICY, approvalRules });
+  commitSessionReceipt(store, "s1", prepared.receipt, prepared.segmentId, prepared.tenant);
+  assert.equal(prepared.receipt.governance.verdict, "DEFERRED");
+
+  const approverKp = generateKeyPair("test-key-r4-adopt-approver");
+  const { receipt: allowed } = buildApprovalReceipt({ deferredReceipt: prepared.receipt, by: "HUMAN:x@y.z", ts: "2026-07-11T11:00:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
+
+  const peeked = store.peek("s1", prepared.tenant);
+  const adopted = adoptApprovedReceipt(store, "s1", allowed, peeked.segmentId, prepared.tenant);
+  assert.equal(adopted?.id, allowed.id);
+  assert.equal(store.peek("s1", prepared.tenant).seq, 2, "seq advanced past the ALLOWED receipt (deferred=0 -> allowed=1 -> next seq=2)");
+  assert.equal(store.peek("s1", prepared.tenant).prev.id, allowed.id);
+});
+
+test("adoptApprovedReceipt: refuses (returns null, never throws) when the session has moved on since the DEFERRED receipt", () => {
+  const { signer } = signerAndKeyring("test-key-r4-adopt-2");
+  const store = createChainSessionStore();
+  const approvalRules = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" } }];
+
+  const prepared = prepareSessionReceipt({ name: "payment.refund", args: { amountMinor: 100 } }, { sessionId: "s2", store, signer, policy: REFUND_GUARD_POLICY, approvalRules });
+  commitSessionReceipt(store, "s2", prepared.receipt, prepared.segmentId, prepared.tenant);
+
+  // Session moves on with an unrelated call before the approval arrives (simulated directly at
+  // the store level — proves the store-level refusal is an independent second layer of defense,
+  // on top of the proxy's own "block the session while pending" rule).
+  const laterPrepared = prepareSessionReceipt({ name: "email.send", args: {} }, { sessionId: "s2", store, signer, policy: REFUND_GUARD_POLICY });
+  commitSessionReceipt(store, "s2", laterPrepared.receipt, laterPrepared.segmentId, laterPrepared.tenant);
+
+  const approverKp = generateKeyPair("test-key-r4-adopt-approver-2");
+  const { receipt: allowed } = buildApprovalReceipt({ deferredReceipt: prepared.receipt, by: "HUMAN:x@y.z", ts: "2026-07-11T11:00:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
+
+  const adopted = adoptApprovedReceipt(store, "s2", allowed, prepared.segmentId, prepared.tenant);
+  assert.equal(adopted, null, "seq has moved past what the ALLOWED receipt expects -> refuse, never silently graft");
+});
+
+test("index.mjs: R4 public surface is exported from the package root", async () => {
+  const pkg = await import("../src/index.mjs");
+  for (const name of [
+    "matchApprovalRule", "validateApprovalRules", "tryIdentifyToolCallForTicketLookup",
+    "recordDeferred", "recordApproved", "recordDenied", "consumeApprovalTicket", "findOutstanding", "loadPendingIndex",
+    "buildApprovalReceipt", "buildDenialReceipt", "adoptApprovedReceipt", "canonicalParamsHash",
+  ]) {
+    assert.equal(typeof pkg[name], "function", `index.mjs must export "${name}"`);
+  }
+  assert.equal(typeof pkg.PendingStoreError, "function", "PendingStoreError (a class) must also be exported");
 });

@@ -37,7 +37,7 @@ export {
   type Keyring,
   type IdentityManifest,
 } from "./keys.js";
-export { buildReceipt, buildCheckpoint, BuilderError, type Signer, type BuildInput } from "./builder.js";
+export { buildReceipt, buildReceiptAsync, buildCheckpoint, BuilderError, type Signer, type RemoteSigner, type BuildInput } from "./builder.js";
 export {
   verifyChain,
   verifyChainText,

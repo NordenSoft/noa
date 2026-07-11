@@ -19,14 +19,14 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { generateKeyPair, createChainSessionStore, verifyChain } from "noa-mcp-adapter-core";
+import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalReceipt, recordApproved } from "noa-mcp-adapter-core";
 import { createProxyServer } from "../src/create-proxy-server.mjs";
-import { TRANSFER_GUARD_POLICY } from "../src/policy.mjs";
+import { TRANSFER_GUARD_POLICY, APPROVAL_RULES } from "../src/policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEMO_DOWNSTREAM = path.join(__dirname, "..", "src", "demo-downstream.mjs");
@@ -56,7 +56,7 @@ function readCounts(countsFile) {
  * create-proxy-server.mjs module the CLI ships, connected to a real Client over an
  * InMemoryTransport linked pair.
  */
-async function makeSession({ sessionId, store, extraTool = false, countsFile, onReceipt: customOnReceipt, agentId }) {
+async function makeSession({ sessionId, store, extraTool = false, countsFile, onReceipt: customOnReceipt, agentId, policy, approvalRules, pendingStorePath, approverKeyring, approverIdentityManifest }) {
   const env = { ...process.env };
   if (extraTool) env.NOA_DEMO_EXTRA_TOOL = "1";
   if (countsFile) env.NOA_DEMO_COUNTS_FILE = countsFile;
@@ -96,11 +96,15 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile, on
     sessionId,
     downstreamTransport,
     signer,
-    policy: TRANSFER_GUARD_POLICY,
+    policy: policy ?? TRANSFER_GUARD_POLICY,
     store,
     tenant: "smoke-tenant",
     agentId,
     onReceipt,
+    approvalRules,
+    pendingStorePath,
+    approverKeyring,
+    approverIdentityManifest,
   });
 
   const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
@@ -562,6 +566,98 @@ async function main() {
   await sessQ.close();
 
   // ---------------------------------------------------------------------------------------
+  // SCENARIO R (R4): a transfer_funds >= the approval threshold is DEFERRED (never forwarded);
+  // an offline "human" mints an ALLOWED receipt + ticket via adapter-core's own primitives
+  // directly (standing in for `noa-approve approve`, unit-tested on its own in adapter-core); the
+  // agent retries the EXACT same call; the proxy consumes the ticket and forwards; the final
+  // 3-receipt chain (DEFERRED -> ALLOWED -> EXECUTED) verifies VALID.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario R — DEFERRED -> ALLOWED(ticket) -> EXECUTED, one chain, verifyChain VALID");
+  const storeR = createChainSessionStore();
+  const countsR = tmpPath("counts-R.json");
+  const pendingStorePathR = tmpPath("pending-R.jsonl");
+  // The approver's keypair is provisioned BEFORE the proxy starts: the proxy must be configured with
+  // the TRUSTED approver keyring (its public key) so it can authenticate approvals. `attackerKp` is
+  // an untrusted key — anyone can mint a structurally-perfect ALLOWED receipt with it, but it is NOT
+  // in the proxy's approver keyring, so its approvals must be refused.
+  const approverKp = generateKeyPair("smoke:session-R:approver");
+  const attackerKp = generateKeyPair("smoke:session-R:attacker");
+  const sessR = await makeSession({
+    sessionId: "session-R",
+    store: storeR,
+    countsFile: countsR,
+    approvalRules: APPROVAL_RULES,
+    pendingStorePath: pendingStorePathR,
+    approverKeyring: { [approverKp.kid]: approverKp.publicKey },
+    approverIdentityManifest: { "human-approval-cli": [approverKp.kid] },
+  });
+
+  const denyDeferred = await expectDeny(sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } }));
+  ok("(r) call 1: transfer_funds >= threshold -> held (MCP error), never a silent success", denyDeferred.denied);
+  ok("(r) call 1: downstream transfer_funds handler NEVER invoked while held", readCounts(countsR).transfer_funds === 0);
+  ok("(r) call 1: exactly 1 receipt recorded so far, verdict DEFERRED", sessR.receipts.length === 1 && sessR.receipts[0].governance.verdict === "DEFERRED");
+
+  const denyUnrelated = await expectDeny(sessR.client.callTool({ name: "echo", arguments: { text: "unrelated-while-pending" } }));
+  ok("(r) an UNRELATED call on the SAME session is rejected while the approval is outstanding (session blocked)", denyUnrelated.denied);
+  ok("(r) unrelated-call rejection is still not silently forwarded", readCounts(countsR).echo === 0);
+
+  const deferredReceiptR = sessR.receipts[0];
+
+  // FORGED-APPROVAL REJECTION (CRITICAL): an attacker who can WRITE the pending-store file mints a
+  // fully structurally-valid ALLOWED receipt (correct hash, correct seq/prevHash continuity, filled
+  // approval block) — but signs it with their OWN untrusted key. The proxy must authenticate the
+  // approver signature against its trusted keyring and REFUSE this, never executing the transfer.
+  const { receipt: forgedAllowedR, ticket: forgedTicketR, ticketExpiresAt: forgedExpiresAtR } = buildApprovalReceipt({
+    deferredReceipt: deferredReceiptR,
+    by: "HUMAN:attacker-pretending@nowhere.invalid",
+    ts: new Date().toISOString(),
+    signer: { kid: attackerKp.kid, privateKey: attackerKp.privateKey },
+  });
+  recordApproved(pendingStorePathR, { id: deferredReceiptR.id, by: "HUMAN:attacker-pretending@nowhere.invalid", ticket: forgedTicketR, ticketExpiresAt: forgedExpiresAtR, allowedReceipt: forgedAllowedR, tenant: "smoke-tenant", sessionId: "session-R" });
+  const denyForged = await expectDeny(sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } }));
+  ok("(r) a FORGED approval signed by an UNTRUSTED key is REFUSED — never adopted, never executed", denyForged.denied);
+  ok("(r) the forged approval did NOT forward to the downstream (transfer count still 0)", readCounts(countsR).transfer_funds === 0);
+  ok("(r) the forged approval added NO ALLOWED/EXECUTED receipt (still just the 1 DEFERRED)", sessR.receipts.length === 1);
+
+  const { receipt: allowedR, ticket: ticketR, ticketExpiresAt: ticketExpiresAtR } = buildApprovalReceipt({
+    deferredReceipt: deferredReceiptR,
+    by: "HUMAN:approver@example.com",
+    ts: new Date().toISOString(),
+    signer: { kid: approverKp.kid, privateKey: approverKp.privateKey },
+  });
+  recordApproved(pendingStorePathR, { id: deferredReceiptR.id, by: "HUMAN:approver@example.com", ticket: ticketR, ticketExpiresAt: ticketExpiresAtR, allowedReceipt: allowedR, tenant: "smoke-tenant", sessionId: "session-R" });
+
+  const rExecuted = await sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } });
+  ok("(r) call 3: the EXACT same retried call is now forwarded and succeeds", /transferred 5000/.test(rExecuted.content?.[0]?.text ?? ""));
+  ok("(r) call 3: downstream handler invoked EXACTLY once (the retry, not the held attempt)", readCounts(countsR).transfer_funds === 1);
+  ok("(r) exactly 3 receipts total: DEFERRED, ALLOWED (adopted), EXECUTED", sessR.receipts.length === 3);
+  ok(
+    "(r) verdict sequence is [DEFERRED, ALLOWED, EXECUTED]",
+    JSON.stringify(sessR.receipts.map((r) => r.governance.verdict)) === JSON.stringify(["DEFERRED", "ALLOWED", "EXECUTED"]),
+  );
+  // AGENT-LEVEL IDENTITY BINDING: with only { keyring }, attribution is kid-level — any trusted
+  // key may claim any agent.id. The identityManifest pins the proxy agent's kid to "session-R"
+  // (agentId defaults to sessionId here) and the approver's kid to "human-approval-cli", so a
+  // co-trusted key can never impersonate the human approval seat.
+  const proxyKidR = Object.keys(sessR.keyring)[0];
+  const vR = verifyChain(sessR.receipts, {
+    keyring: { ...sessR.keyring, [approverKp.kid]: approverKp.publicKey },
+    identityManifest: { "session-R": [proxyKidR], "human-approval-cli": [approverKp.kid] },
+  });
+  ok(`(r) the full 3-receipt chain (2 different signing agents) verifies VALID with agent-level identity binding — status=${vR.status}`, vR.status === "VALID" && vR.count === 3);
+  const vRForged = verifyChain(sessR.receipts, {
+    keyring: { ...sessR.keyring, [approverKp.kid]: approverKp.publicKey },
+    identityManifest: { "session-R": [proxyKidR], "human-approval-cli": [proxyKidR] },
+  });
+  ok(`(r) a manifest authorizing the AGENT's own kid for the human-approval seat is rejected UNTRUSTED — status=${vRForged.status}`, vRForged.status === "UNTRUSTED");
+
+  const denyReplay = await expectDeny(sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } }));
+  ok("(r) replaying the SAME call again (ticket already consumed) is held/denied again, never re-forwarded", denyReplay.denied);
+  ok("(r) downstream handler STILL invoked only once after the replay attempt", readCounts(countsR).transfer_funds === 1);
+
+  await sessR.close();
+
+  // ---------------------------------------------------------------------------------------
   // BONUS F: the LITERAL host-config from the report, spawned as a real OS process on BOTH
   // hops (host → proxy.mjs → demo-downstream.mjs), proving the zero-code-change integration
   // claim end-to-end, not just at the in-process factory level used above.
@@ -656,6 +752,67 @@ async function main() {
   ok(`(n) run 2's receipt (after restart) ALSO verifies VALID under the SAME persisted key (status=${vRun2.status})`, vRun2.status === "VALID");
 
   // ---------------------------------------------------------------------------------------
+  // BONUS R: a persisted --session-dir survives a CLI restart with the receipt chain STAYING
+  // ONE continuous chain (same scope.chain, seq keeps counting up) — not just the same kid
+  // (Bonus N above). Without --session-dir, noa-mcp-adapter-core's createChainSessionStore always
+  // mints a fresh instanceToken/segment on every process start; --session-dir opts out of that.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus R — a persisted --session-dir survives a CLI restart with ONE continuous chain");
+  const sessionDirPath = tmpPath("cli-session-dir");
+  const rKeyFilePath = tmpPath("cli-session-dir-key.json");
+  const rLogRun1 = tmpPath("cli-session-dir-run1.jsonl");
+  const rLogRun2 = tmpPath("cli-session-dir-run2.jsonl");
+  const rSessionId = "cli-session-dir-session";
+
+  const rRun1Transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      PROXY_CLI, "--session-id", rSessionId, "--key-file", rKeyFilePath, "--session-dir", sessionDirPath,
+      "--receipt-log", rLogRun1, "--", process.execPath, DEMO_DOWNSTREAM,
+    ],
+  });
+  const rRun1 = new Client({ name: "cli-smoke-host-r1", version: "1.0.0" }, { capabilities: {} });
+  await rRun1.connect(rRun1Transport);
+  await rRun1.callTool({ name: "echo", arguments: { text: "r-run1-call1" } });
+  await rRun1.callTool({ name: "echo", arguments: { text: "r-run1-call2" } });
+  await rRun1.close();
+  await new Promise((r) => setTimeout(r, 150));
+
+  const rRun2Transport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      PROXY_CLI, "--session-id", rSessionId, "--key-file", rKeyFilePath, "--session-dir", sessionDirPath,
+      "--receipt-log", rLogRun2, "--", process.execPath, DEMO_DOWNSTREAM,
+    ],
+  });
+  const rRun2 = new Client({ name: "cli-smoke-host-r2", version: "1.0.0" }, { capabilities: {} });
+  await rRun2.connect(rRun2Transport);
+  await rRun2.callTool({ name: "echo", arguments: { text: "r-run2-call1" } });
+  await rRun2.callTool({ name: "echo", arguments: { text: "r-run2-call2" } });
+  await rRun2.close();
+  await new Promise((r) => setTimeout(r, 150));
+
+  const rKey = JSON.parse(fs.readFileSync(rKeyFilePath, "utf8"));
+  const rReceiptsRun1 = fs.readFileSync(rLogRun1, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  const rReceiptsRun2 = fs.readFileSync(rLogRun2, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  ok("(r) run 1 produced 2 receipts", rReceiptsRun1.length === 2);
+  ok("(r) run 2 produced 2 receipts", rReceiptsRun2.length === 2);
+
+  const rChainIds = new Set([...rReceiptsRun1, ...rReceiptsRun2].map((rcpt) => rcpt.scope.chain));
+  ok("(r) all 4 receipts (across the restart) share the exact SAME scope.chain", rChainIds.size === 1);
+
+  const rCombined = [...rReceiptsRun1, ...rReceiptsRun2];
+  const rSeqs = rCombined.map((rcpt) => rcpt.chain.seq);
+  ok(`(r) seq is continuous 0..3 across the restart — got [${rSeqs.join(",")}]`, JSON.stringify(rSeqs) === JSON.stringify([0, 1, 2, 3]));
+
+  const rKeyring = { [rKey.kid]: rKey.publicKey };
+  const vCombined = verifyChain(rCombined, { keyring: rKeyring });
+  ok(`(r) the COMBINED 4-receipt log (both runs) verifies as ONE VALID chain — status=${vCombined.status}`, vCombined.status === "VALID");
+  ok("(r) verifyChain sees all 4 receipts, not 2 disjoint segments", vCombined.count === 4);
+
+  fs.rmSync(sessionDirPath, { recursive: true, force: true });
+
+  // ---------------------------------------------------------------------------------------
   // BONUS O: --key-file symlink-attack guard (CWE-367 / TOCTOU) — the real CLI process, spawned
   // against three attacker-planted paths, must fail closed (non-zero exit) in every case and must
   // NEVER clobber an existing file's content/permissions nor redirect the freshly-generated private
@@ -744,6 +901,111 @@ async function main() {
     startupFailed = true;
   }
   ok("(G) createProxyServer rejects when the downstream can't start — fail-closed, no partial proxy", startupFailed);
+
+  // ---------------------------------------------------------------------------------------
+  // BONUS S — --signer-socket real CLI integration: sidecar.mjs + proxy.mjs + demo-downstream.mjs
+  // as THREE real OS processes. Proves noa-mcp-proxy's remote-signer path signs a real receipt
+  // under the sidecar's own key end-to-end, with zero code path shared with the local --key-file
+  // path beyond the signer-shape branch in create-proxy-server.mjs.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus S — --signer-socket real CLI integration (sidecar + proxy + downstream, 3 processes)");
+  const SIDECAR_CLI = path.join(__dirname, "..", "..", "signer-sidecar", "src", "sidecar.mjs");
+
+  function spawnSidecarForProxyTest(keyFile, socketPath) {
+    return new Promise((resolve, reject) => {
+      const proc = spawn(process.execPath, [SIDECAR_CLI, "--key-file", keyFile, "--socket", socketPath], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+      let stderr = "";
+      let settled = false;
+      proc.stderr.on("data", (c) => {
+        stderr += c.toString("utf8");
+        if (!settled && /listening on/.test(stderr)) {
+          settled = true;
+          resolve(proc);
+        }
+      });
+      proc.once("exit", (code) => {
+        if (!settled) reject(new Error(`sidecar exited early (code ${code}): ${stderr}`));
+      });
+      const timer = setTimeout(() => {
+        if (!settled) reject(new Error(`sidecar did not report "listening" in time: ${stderr}`));
+      }, 5000);
+      timer.unref?.();
+    });
+  }
+
+  const sidecarSocketS = tmpPath("signer-s.sock");
+  const sidecarKeyFileS = tmpPath("signer-s-key.json");
+  const sidecarProcS = await spawnSidecarForProxyTest(sidecarKeyFileS, sidecarSocketS);
+  const receiptLogS = tmpPath("signer-s-receipts.jsonl");
+  const keyringFileS = tmpPath("signer-s-keyring.json");
+
+  const cliSignerTransport = new StdioClientTransport({
+    command: process.execPath,
+    args: [
+      PROXY_CLI, "--session-id", "signer-socket-session", "--signer-socket", sidecarSocketS,
+      "--receipt-log", receiptLogS, "--keyring-file", keyringFileS,
+      "--", process.execPath, DEMO_DOWNSTREAM,
+    ],
+  });
+  const cliSignerClient = new Client({ name: "signer-socket-smoke-host", version: "1.0.0" }, { capabilities: {} });
+  await cliSignerClient.connect(cliSignerTransport);
+
+  const echoS = await cliSignerClient.callTool({ name: "echo", arguments: { text: "via-sidecar" } });
+  ok("(S) echo via the --signer-socket CLI path -> ALLOW", echoS.content?.[0]?.text === "via-sidecar");
+
+  await cliSignerClient.close();
+  await new Promise((r) => setTimeout(r, 150));
+
+  const keyringS = JSON.parse(fs.readFileSync(keyringFileS, "utf8"));
+  const receiptsS = fs.readFileSync(receiptLogS, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+  ok("(S) exactly 1 receipt persisted", receiptsS.length === 1);
+  const vS = verifyChain(receiptsS, { keyring: keyringS });
+  ok(`(S) the receipt verifies VALID under the SIDECAR's own keyring-file (status=${vS.status})`, vS.status === "VALID");
+
+  const sidecarIdentityS = JSON.parse(fs.readFileSync(sidecarKeyFileS, "utf8"));
+  ok("(S) the receipt's signing kid is the SIDECAR's kid, not a locally-generated one", receiptsS[0].sig.kid === sidecarIdentityS.kid);
+
+  // --signer-socket and --key-file are mutually exclusive — proxy.mjs must refuse to start.
+  let mutexFailedS = false;
+  try {
+    await execFileAsync(process.execPath, [
+      PROXY_CLI, "--session-id", "mutex-probe", "--signer-socket", sidecarSocketS, "--key-file", tmpPath("mutex-key.json"),
+      "--", process.execPath, DEMO_DOWNSTREAM,
+    ], { timeout: 5000 });
+  } catch {
+    mutexFailedS = true;
+  }
+  ok("(S) --signer-socket + --key-file together fails closed (mutually exclusive)", mutexFailedS);
+
+  // ---------------------------------------------------------------------------------------
+  // BONUS T — sidecar killed MID-SESSION: the NEXT call through --signer-socket must be DENIED
+  // (fail-closed), never hang and never silently fall back to a local key.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus T — sidecar killed mid-session -> the NEXT call is DENIED, not a proxy crash");
+  const sidecarSocketT = tmpPath("signer-t.sock");
+  const sidecarKeyFileT = tmpPath("signer-t-key.json");
+  const sidecarProcT = await spawnSidecarForProxyTest(sidecarKeyFileT, sidecarSocketT);
+
+  const cliSignerTransportT = new StdioClientTransport({
+    command: process.execPath,
+    args: [PROXY_CLI, "--session-id", "signer-socket-session-t", "--signer-socket", sidecarSocketT, "--", process.execPath, DEMO_DOWNSTREAM],
+  });
+  const cliSignerClientT = new Client({ name: "signer-socket-smoke-host-t", version: "1.0.0" }, { capabilities: {} });
+  await cliSignerClientT.connect(cliSignerTransportT);
+
+  const echoT1 = await cliSignerClientT.callTool({ name: "echo", arguments: { text: "before-kill" } });
+  ok("(T) call 1 (sidecar alive) succeeds", echoT1.content?.[0]?.text === "before-kill");
+
+  sidecarProcT.kill("SIGKILL");
+  await new Promise((r) => setTimeout(r, 200));
+
+  const denyT = await expectDeny(cliSignerClientT.callTool({ name: "echo", arguments: { text: "after-kill" } }));
+  ok("(T) call 2 (sidecar killed mid-session) is DENIED, not hung and not a silent local-key fallback", denyT.denied);
+
+  await cliSignerClientT.close();
+  sidecarProcS.kill("SIGTERM");
 
   fs.rmSync(workDir, { recursive: true, force: true });
 

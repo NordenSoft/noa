@@ -44,3 +44,12 @@ export const TRANSFER_GUARD_POLICY = {
     },
   ],
 };
+
+/**
+ * R4 demo approval-gate fixture: any `transfer_funds` >= 5000 minor units is held for a human
+ * (DEFERRED) even though TRANSFER_GUARD_POLICY's own L2 decision for that amount is ALLOW — a
+ * SEPARATE, post-policy layer (adapter-core's approval-rules.mjs), never a replacement for L2.
+ */
+export const APPROVAL_RULES = [
+  { id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } },
+];

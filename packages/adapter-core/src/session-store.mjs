@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { preCheck } from "./pre-check.mjs";
+import { preCheck, preCheckAsync } from "./pre-check.mjs";
 
 /** 1 hour: a session that has issued no call in this long is considered abandoned. */
 const DEFAULT_IDLE_TTL_MS = 60 * 60 * 1000;
@@ -15,10 +15,10 @@ const DEFAULT_SWEEP_INTERVAL_MS = 5 * 60 * 1000;
  *  this store's tenant-aware entry points (`peek`/`advance`/`end`/`prepareSessionReceipt`), so an
  *  existing single-tenant caller that never passes `tenant` at all sees IDENTICAL behavior to
  *  before this store became tenant-aware (see the "MULTI-TENANT ISOLATION" docstring below). */
-const DEFAULT_TENANT = "default-tenant";
+export const DEFAULT_TENANT = "default-tenant";
 
-function defaultOnEvict(sessionId, reason) {
-  console.warn(`noa-mcp-adapter-core: session store evicted session "${sessionId}" (${reason})`);
+function defaultOnEvict(sessionId, reason, tenant) {
+  console.warn(`noa-mcp-adapter-core: session store evicted session "${sessionId}" (tenant "${tenant}", ${reason})`);
 }
 
 /**
@@ -161,7 +161,11 @@ function defaultOnEvict(sessionId, reason) {
  * this store became tenant-aware.
  *
  * @param {{ idleTtlMs?: number, maxSessions?: number, sweepIntervalMs?: number,
- *   now?: () => number, onEvict?: (sessionId: string, reason: "idle-ttl-expired" | "cap-exceeded") => void }} [options]
+ *   now?: () => number,
+ *   onEvict?: (sessionId: string, reason: "idle-ttl-expired" | "cap-exceeded", tenant: string) => void,
+ *   instanceToken?: string,
+ *   seedSessions?: Array<{ tenant?: string, sessionId: string, prev?: import("noa-receipt").Receipt | null, seq?: number, segmentId: number }>,
+ *   segmentCounterFloor?: number }} [options]
  */
 export function createChainSessionStore({
   idleTtlMs = DEFAULT_IDLE_TTL_MS,
@@ -169,6 +173,9 @@ export function createChainSessionStore({
   sweepIntervalMs = Math.min(idleTtlMs, DEFAULT_SWEEP_INTERVAL_MS),
   now = Date.now,
   onEvict = defaultOnEvict,
+  instanceToken: instanceTokenOverride,
+  seedSessions = [],
+  segmentCounterFloor = 0,
 } = {}) {
   /** @type {Map<string, Map<string, { prev: import("noa-receipt").Receipt | null, seq: number, lastAccessedAt: number, segmentId: number }>>}
    *  tenant -> Map<sessionId, state> — see the "MULTI-TENANT ISOLATION" docstring above for why this
@@ -193,16 +200,113 @@ export function createChainSessionStore({
    *  creation of a sessionId, or ANY reincarnation after `end()`/idle-TTL/cap eviction) is assigned
    *  the NEXT value here as its `segmentId`, which is what the default chain-id is actually built
    *  from (see `prepareSessionReceipt` below) — never a sessionId-keyed epoch, never sessionId text
-   *  parsing. Starts at 0 so the first-ever segment is `segmentId = 1`. */
-  let segmentCounter = 0;
+   *  parsing. Starts at 0 so the first-ever segment is `segmentId = 1` — UNLESS `segmentCounterFloor`
+   *  was given (see below), in which case it starts there instead. */
+  let segmentCounter = Number.isInteger(segmentCounterFloor) && segmentCounterFloor > 0 ? segmentCounterFloor : 0;
 
   /** This store instance's unique identity, minted ONCE via `randomUUID()` at construction — see
    *  the module docstring's "CROSS-PROCESS-RESTART SEGMENT IDENTITY" section. Folded into every
    *  default chain-id this store instance hands out (see `prepareSessionReceipt`), so two SEPARATE
    *  store instances (two process lifetimes) can never collide on the same default chain-id even
    *  for the exact same sessionId + segmentId=1 (each instance's own `segmentCounter` independently
-   *  starts at 0). */
-  const instanceToken = randomUUID();
+   *  starts at 0).
+   *
+   *  `instanceTokenOverride` (additive, optional): a caller that itself persists this store's
+   *  identity across process restarts — e.g. a file-backed session store resuming a prior run —
+   *  passes the SAME token back in here instead of letting a fresh one be minted, so a resumed
+   *  session's default chain-id is IDENTICAL, seg-for-seg, to what it was before the restart. Only
+   *  a caller that has independently ensured "one live store per token at a time" (a lockfile,
+   *  as `noa-mcp-adapter-core`'s own `createFileSessionStore` does) should ever pass this — reusing
+   *  a token across two SIMULTANEOUSLY-live store instances would reopen exactly the collision this
+   *  token exists to prevent. Omitting it keeps the original, backward-compatible behavior. */
+  const instanceToken = instanceTokenOverride ?? randomUUID();
+
+  /** Pre-populates live session state — e.g. a file-backed session store replaying its persisted
+   *  log at construction so a resumed (tenant, sessionId) picks up exactly where a prior process
+   *  lifetime left off, instead of `stateFor()` minting a fresh segment for it on next use. A KEPT
+   *  entry (see the cap note below) becomes this store's live state for `(tenant, sessionId)`
+   *  EXACTLY as if `stateFor()` had created it and `advance()` had been called `seq` times — and
+   *  `segmentCounter` is fast-forwarded past EVERY seed's `segmentId` (kept or dropped — see below)
+   *  so a LATER brand-new segment (first-ever, or a reincarnation after `end()`/eviction) can never
+   *  collide with a resumed one (see the SEGMENT IDENTITY / CROSS-PROCESS-RESTART SEGMENT IDENTITY
+   *  docstring sections above). Omitting it (the default, `[]`) is a no-op — original behavior,
+   *  nothing seeded.
+   *
+   *  CAP-AWARE SEEDING: seeding must never itself hand this store instance more live sessions than
+   *  its own `maxSessions` allows — a caller can legitimately replay MORE distinct sessions than
+   *  `maxSessions` from accumulated state (e.g. `createFileSessionStore`'s `reloadAll()` replaying a
+   *  long-running `--session-dir`'s full disk history at restart). `seedSessions` carries no
+   *  per-entry recency field (no wall-clock timestamp; `lastAccessedAt` below is set to the SAME
+   *  `now()` for every kept seed), so when `seedSessions.length > maxSessions` this keeps only the
+   *  LAST `maxSessions` entries of the array as given (in array order) and drops the rest — a caller
+   *  with a genuine oldest-first ordering keeps its most-recently-active sessions this way, and even
+   *  a caller with no such ordering (e.g. an arbitrary directory-traversal order) still gets a store
+   *  that never exceeds its own cap, exactly the invariant `stateFor()`'s own eviction-on-create path
+   *  already upholds for every session minted AFTER construction. A dropped seed is NOT silently
+   *  lost: it is logged loudly (see below) and simply starts a brand-new segment the next time that
+   *  `(tenant, sessionId)` is seen — the same outcome any other eviction produces. (`createFileSessionStore`'s
+   *  own `reloadAll()` is exactly the "genuine oldest-first ordering" caller this promise depends on —
+   *  WITHIN a single tenant's own file: each tenant's `live` Map is built by deleting then re-setting
+   *  each sessionId's entry on every touch, so that tenant's OWN sessions land in `seedSessions` in
+   *  LAST-touch order, not first-appearance. For a single-tenant caller -- or whenever every tenant's
+   *  sessions together fit under `maxSessions`, so nothing here gets truncated at all -- this
+   *  array-order truncation does keep the most-recently-active sessions on a scale-down restart.
+   *
+   *  HONEST LIMIT -- CROSS-TENANT ORDERING: `reloadAll()`'s outer loop visits tenant files in
+   *  `readdirSync(dir)` order (filesystem/directory-enumeration order over
+   *  `tenant-<sha256(tenant)>.jsonl` filenames) -- NOT any cross-tenant recency signal; a session's
+   *  actual last-touch position is only ever compared against OTHER sessions in the SAME tenant's
+   *  file, never across tenants. `seedSessions` is therefore [tenant A's sessions, last-touch order]
+   *  concatenated with [tenant B's sessions, last-touch order] concatenated with ..., in whatever
+   *  order `readdirSync` happens to enumerate the tenant files. When MORE THAN ONE tenant is present
+   *  and their combined session count exceeds `maxSessions`, the `.slice(-maxSessions)` truncation
+   *  above keeps whichever TENANTS happen to sort last in that enumeration order -- not the tenants
+   *  (or sessions) that were actually most recently active. A tenant whose sessions are genuinely
+   *  stale can therefore survive a scale-down restart while a different tenant's genuinely fresher
+   *  session is dropped wholesale, purely as a function of directory-enumeration order. The cap
+   *  invariant itself is never violated (this store instance never ends up holding more than
+   *  `maxSessions` live sessions after seeding, exactly as documented above) -- only the CHOICE of
+   *  which sessions survive stops being true cross-tenant recency once more than one tenant shares
+   *  the cap. A dropped seed is still handled exactly like any other eviction (see above): logged,
+   *  and it simply starts a brand-new segment the next time that `(tenant, sessionId)` is seen.
+   *  Closing this fully would require `reloadAll()` to track each session's actual last-touch
+   *  position globally and sort `seedSessions` by it BEFORE truncation (a real cross-tenant merge)
+   *  instead of concatenating per-tenant slices in directory-enumeration order -- out of scope for
+   *  this store's current file-per-tenant layout; see `createFileSessionStore`'s own "HONEST LIMITS"
+   *  section for the matching disclosure there.) */
+  for (const seed of seedSessions) {
+    if (!seed || typeof seed.sessionId !== "string" || seed.sessionId.length === 0) {
+      throw new Error("createChainSessionStore: seedSessions entries must have a non-empty sessionId");
+    }
+    if (!Number.isInteger(seed.segmentId) || seed.segmentId < 1) {
+      throw new Error(`createChainSessionStore: seedSessions entry for "${seed.sessionId}" has an invalid segmentId`);
+    }
+    // Fast-forward past EVERY seed's segmentId — even one the cap below ends up dropping — so a
+    // brand-new segment minted after seeding can never collide with a segmentId this store's
+    // caller has historically used (see the docstring above).
+    if (seed.segmentId > segmentCounter) segmentCounter = seed.segmentId;
+  }
+  const seedsToLoad =
+    maxSessions > 0 && seedSessions.length > maxSessions ? seedSessions.slice(-maxSessions) : seedSessions;
+  if (seedsToLoad.length < seedSessions.length) {
+    console.warn(
+      `noa-mcp-adapter-core: createChainSessionStore seeded with ${seedSessions.length} sessions but ` +
+        `maxSessions is ${maxSessions} -- dropped the oldest ${seedSessions.length - seedsToLoad.length} ` +
+        `(kept the last ${maxSessions} in array order). Dropped sessions will start a brand-new segment ` +
+        `the next time they are seen, exactly like any other eviction.`,
+    );
+  }
+  for (const seed of seedsToLoad) {
+    const seedTenant = seed.tenant ?? DEFAULT_TENANT;
+    const seedBucket = bucketFor(seedTenant);
+    seedBucket.set(seed.sessionId, {
+      prev: seed.prev ?? null,
+      seq: Number.isInteger(seed.seq) ? seed.seq : 0,
+      lastAccessedAt: now(),
+      segmentId: seed.segmentId,
+    });
+    totalSessions += 1;
+  }
 
   /** Drops the single session with the smallest `lastAccessedAt`, GLOBALLY across every tenant
    *  bucket (the cap bounds this store instance's total memory, not any one tenant's slice of it —
@@ -226,7 +330,7 @@ export function createChainSessionStore({
       bucket.delete(oldestId);
       totalSessions -= 1;
       if (bucket.size === 0) tenantBuckets.delete(oldestTenant);
-      onEvict(oldestId, reason);
+      onEvict(oldestId, reason, oldestTenant);
     }
   }
 
@@ -269,7 +373,7 @@ export function createChainSessionStore({
         if (state.lastAccessedAt <= cutoff) {
           bucket.delete(id);
           totalSessions -= 1;
-          onEvict(id, "idle-ttl-expired");
+          onEvict(id, "idle-ttl-expired", tenant);
         }
       }
       if (bucket.size === 0) tenantBuckets.delete(tenant);
@@ -373,9 +477,25 @@ export function createChainSessionStore({
 }
 
 /**
- * Phase 1 of 2 — READ-ONLY. Peeks the session's current chain position and runs `preCheck`
- * against it. Does NOT touch the store: the session's `{prev, seq}` is unchanged after this
- * returns, so calling this any number of times without following up with
+ * Shared session-position resolution for both `prepareSessionReceipt` (sync signing) and
+ * `prepareSessionReceiptAsync` (async/remote signing) — everything preCheck/preCheckAsync need
+ * BEFORE the decision itself (the store peek + default chain-id), with none of the actual
+ * signing concern.
+ */
+function resolveSessionContext(sessionId, { store, tenant, chain }, callerLabel) {
+  if (!sessionId) throw new Error(`${callerLabel}: \`sessionId\` is required`);
+  if (!store) throw new Error(`${callerLabel}: \`store\` is required`);
+
+  const effectiveTenant = tenant ?? DEFAULT_TENANT;
+  const { prev, seq, segmentId, instanceToken } = store.peek(sessionId, effectiveTenant);
+  const defaultChain = `${effectiveTenant}:${sessionId}#${instanceToken}-seg${segmentId}`;
+  return { effectiveTenant, prev, seq, segmentId, chain: chain ?? defaultChain };
+}
+
+/**
+ * Phase 1 of 2 — READ-ONLY (sync signing). Peeks the session's current chain position and runs
+ * `preCheck` against it. Does NOT touch the store: the session's `{prev, seq}` is unchanged after
+ * this returns, so calling this any number of times without following up with
  * `commitSessionReceipt()` never consumes a seq slot.
  *
  * Split out from `preCheckSession()` so a caller that must durably persist a receipt (e.g. an
@@ -395,37 +515,31 @@ export function createChainSessionStore({
  *   chain?: string,
  * }} options
  */
-export function prepareSessionReceipt(toolCall, { sessionId, store, signer, policy, tenant, chain }) {
-  if (!sessionId) throw new Error("prepareSessionReceipt: `sessionId` is required");
-  if (!store) throw new Error("prepareSessionReceipt: `store` is required");
+export function prepareSessionReceipt(toolCall, { sessionId, store, signer, policy, tenant, chain, approvalRules, suppressApprovalHold }) {
+  const ctx = resolveSessionContext(sessionId, { store, tenant, chain }, "prepareSessionReceipt");
+  const result = preCheck(toolCall, { signer, policy, prev: ctx.prev, seq: ctx.seq, tenant: ctx.effectiveTenant, chain: ctx.chain, approvalRules, suppressApprovalHold });
+  return { ...result, segmentId: ctx.segmentId, tenant: ctx.effectiveTenant };
+}
 
-  // Resolved ONCE, reused for BOTH the store lookup (`store.peek`, tenant-bucket-selecting — see
-  // createChainSessionStore's "MULTI-TENANT ISOLATION" docstring) and the default chain-id string
-  // below, so the two can never diverge (matches `preCheck()`'s own "default-tenant" default when
-  // `tenant` is omitted).
-  const effectiveTenant = tenant ?? DEFAULT_TENANT;
-  const { prev, seq, segmentId, instanceToken } = store.peek(sessionId, effectiveTenant);
-  // Default chain-id folds in BOTH `instanceToken` (this STORE INSTANCE's own identity — see
-  // createChainSessionStore's "CROSS-PROCESS-RESTART SEGMENT IDENTITY" docstring, closes the
-  // cross-restart collision) and `segmentId` (this store instance's globally-unique, never-reused
-  // segment counter — see "SEGMENT IDENTITY"), never just past some threshold: uniqueness comes
-  // from the token+counter pair, never from parsing/matching `sessionId` text, so no sessionId
-  // content can ever be crafted to collide with it. `instanceToken` is placed BEFORE `seg${segmentId}`
-  // so `segmentId` stays the chain-id's trailing digit run (see the docstring for why that ordering
-  // matters).
-  const defaultChain = `${effectiveTenant}:${sessionId}#${instanceToken}-seg${segmentId}`;
-  // Pass the RESOLVED `effectiveTenant` (not the possibly-null raw option): `preCheck`'s own
-  // `tenant = "default-tenant"` is a JS default parameter that only fires on `undefined`, so a
-  // literal `null` would otherwise reach `buildReceipt` and throw instead of failing closed —
-  // keeping preCheck's "never throws, only DENY" contract intact for a null tenant too.
-  const result = preCheck(toolCall, { signer, policy, prev, seq, tenant: effectiveTenant, chain: chain ?? defaultChain });
-  // `segmentId` AND `tenant` (the resolved `effectiveTenant`, not the possibly-omitted raw option)
-  // travel alongside the prepared result so `commitSessionReceipt` can verify — AT COMMIT TIME —
-  // that the session's live state is still this SAME (tenant, segment) (see
-  // createChainSessionStore's "COMMIT-TIME SEGMENT CHECK" AND "MULTI-TENANT ISOLATION" docstrings
-  // for the races this closes: a caller that re-passes `result.tenant` back into
-  // `commitSessionReceipt` can never accidentally commit into the WRONG tenant's bucket).
-  return { ...result, segmentId, tenant: effectiveTenant };
+/**
+ * Async twin of `prepareSessionReceipt` for a `RemoteSigner` (or a local `Signer` used
+ * asynchronously) — see `preCheckAsync`. Same two-phase prepare/commit contract as
+ * `prepareSessionReceipt`; `commitSessionReceipt` (below) is unchanged and works with either.
+ *
+ * @param {{ name: string, args?: Record<string, unknown>, agentId?: string }} toolCall
+ * @param {{
+ *   sessionId: string,
+ *   store: ReturnType<typeof createChainSessionStore>,
+ *   signer: import("noa-receipt").Signer | import("noa-receipt").RemoteSigner,
+ *   policy: import("noa-receipt").Policy,
+ *   tenant?: string,
+ *   chain?: string,
+ * }} options
+ */
+export async function prepareSessionReceiptAsync(toolCall, { sessionId, store, signer, policy, tenant, chain, approvalRules, suppressApprovalHold }) {
+  const ctx = resolveSessionContext(sessionId, { store, tenant, chain }, "prepareSessionReceiptAsync");
+  const result = await preCheckAsync(toolCall, { signer, policy, prev: ctx.prev, seq: ctx.seq, tenant: ctx.effectiveTenant, chain: ctx.chain, approvalRules, suppressApprovalHold });
+  return { ...result, segmentId: ctx.segmentId, tenant: ctx.effectiveTenant };
 }
 
 /**
@@ -478,4 +592,34 @@ export function preCheckSession(toolCall, options) {
   // "MULTI-TENANT ISOLATION" docstring).
   commitSessionReceipt(options.store, options.sessionId, result.receipt, result.segmentId, result.tenant);
   return result;
+}
+
+/**
+ * Advances a session's LIVE chain position to an EXTERNALLY-built receipt (e.g. the ALLOWED
+ * decision receipt minted by approve-cli.mjs in a SEPARATE process).
+ *
+ * FAIL-CLOSED CONSISTENCY CHECK (never a blind store.advance()): refuses — returns `null`, never
+ * throws — unless the session's CURRENT live state is EXACTLY what `approvedReceipt` claims as
+ * its `prev`: `approvedReceipt.chain.prevHash` must equal the store's current `prev.chain.hash`
+ * (or both null at genesis) AND `approvedReceipt.chain.seq` must equal the store's current `seq`.
+ * Without this, an approvedReceipt built against a STALE session position (moved on / evicted /
+ * reincarnated / raced) would silently graft onto the wrong point — see "COMMIT-TIME SEGMENT
+ * CHECK" above for the analogous protection on the ordinary commit path; `expectedSegmentId`
+ * reuses that SAME mechanism.
+ *
+ * @param {ReturnType<typeof createChainSessionStore>} store
+ * @param {string} sessionId
+ * @param {import("noa-receipt").Receipt} approvedReceipt
+ * @param {number} expectedSegmentId
+ * @param {string} [tenant]
+ * @returns {import("noa-receipt").Receipt | null}
+ */
+export function adoptApprovedReceipt(store, sessionId, approvedReceipt, expectedSegmentId, tenant = DEFAULT_TENANT) {
+  const { prev, seq, segmentId } = store.peek(sessionId, tenant);
+  if (segmentId !== expectedSegmentId) return null;
+  const expectedPrevHash = prev ? prev.chain.hash : null;
+  if (approvedReceipt.chain.prevHash !== expectedPrevHash) return null;
+  if (approvedReceipt.chain.seq !== seq) return null;
+  const advanced = store.advance(sessionId, approvedReceipt, expectedSegmentId, tenant);
+  return advanced ? approvedReceipt : null;
 }

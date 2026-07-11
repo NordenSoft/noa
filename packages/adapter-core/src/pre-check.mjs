@@ -14,6 +14,7 @@
  */
 import {
   buildReceipt,
+  buildReceiptAsync,
   evaluate,
   policyHash,
   complianceCommit,
@@ -21,6 +22,7 @@ import {
   canonicalize,
   sha256Prefixed,
 } from "noa-receipt";
+import { matchApprovalRule } from "./approval-rules.mjs";
 
 /** Cap on how deep `flattenArgsToPolicyInputs` will descend into nested args, and on how many
  *  scalar paths it will emit — a defensive bound against a maliciously deep/huge tool-call
@@ -270,14 +272,18 @@ function safePolicyHash(policy) {
 }
 
 /**
- * The Policy Decision Point. Pure + deterministic (beyond the caller-supplied `ts`, which is a
- * real wall-clock read — the underlying `evaluate()` itself remains pure/deterministic).
- * Returns `{ decision, receipt, evidence }`. `evidence` (policyHash + inputs) is what a third
- * party re-runs to reproduce the verdict offline.
+ * The DECISION half of the Policy Decision Point, shared by `preCheck` (sync signing) and
+ * `preCheckAsync` (async/remote signing) -- everything up to but NOT including the actual
+ * `buildReceipt`/`buildReceiptAsync` call. `signer` never appears in this function: the ONLY
+ * signer-dependent step in the ORIGINAL preCheck() was its final `buildReceipt(..., signer)`
+ * call, so this extraction is purely mechanical -- moves code, changes nothing about WHAT gets
+ * decided, only WHERE the receipt gets built and signed.
+ *
+ * Returns `{ buildInput, decision, evidence }` -- `buildInput` is the exact object literal the
+ * original preCheck() passed as `buildReceipt`'s first argument.
  *
  * @param {{ name: string, args?: Record<string, unknown>, agentId?: string }} toolCall
  * @param {{
- *   signer: import("noa-receipt").Signer,
  *   policy: import("noa-receipt").Policy,
  *   prev?: import("noa-receipt").Receipt | null,
  *   seq?: number,
@@ -286,11 +292,7 @@ function safePolicyHash(policy) {
  *   ts?: string,
  * }} options
  */
-export function preCheck(
-  toolCall,
-  { signer, policy, prev = null, seq = 0, tenant = "default-tenant", chain, ts } = {},
-) {
-  if (!signer) throw new Error("preCheck: `signer` is required");
+function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "default-tenant", chain, ts, approvalRules, suppressApprovalHold = false }) {
   if (!policy) throw new Error("preCheck: `policy` is required (no implicit default policy)");
 
   // FAIL-CLOSED READ GUARD (checked BEFORE anything else): `toolCall.name`/`toolCall.args`/
@@ -324,68 +326,16 @@ export function preCheck(
     toolCallReadThrew = true;
   }
 
-  // ACTION-NAME SHAPE GUARD: a raw read that itself SUCCEEDED can still hand back a `name` that is
-  // not a valid, non-empty string (a number, a plain object, `""`, ...). `evaluate()`'s own
-  // integer/string-only scalar assertion already fails a NON-SCALAR `name` (e.g. an object) closed
-  // to DENY internally, but a scalar-but-wrong-shape `name` (a number, or an empty string) sails
-  // through evaluation untouched and then reaches `buildReceipt` below as `action.id`/
-  // `action.canonical` — both of which `buildReceipt`'s own structural re-validation REQUIRES to be
-  // non-empty strings (see src/schema.ts). Before this guard, that mismatch threw a `BuilderError`
-  // straight out of `preCheck()` — a crash on a merely mis-shaped (not evil/throwing) `name`, not
-  // even an adversarial one. Fixed the same way as a throwing read: force the WHOLE call fail-closed
-  // DENY, and always feed `buildReceipt` the same safe sentinel (`"unknown-action"`) a raw read
-  // failure already uses — a `name` that can't be trusted enough to evaluate a policy against can
-  // also never be trusted enough to build a receipt with.
   const nameInvalid = !toolCallReadThrew && (typeof safeName !== "string" || safeName.length === 0);
-  // The receipt's `action.id`/`action.canonical` value, resolved ONCE: the safe sentinel whenever
-  // the raw read itself threw OR the read succeeded but `name` isn't a usable non-empty string;
-  // `safeName` (already a valid non-empty string here) otherwise.
   const safeActionId = toolCallReadThrew || nameInvalid ? "unknown-action" : safeName;
-  // `toolCall.agentId` is ATTRIBUTION metadata only — never read by `evaluate()`/policy matching
-  // (see the receipt-construction comment below), so an invalid shape here does not need to force
-  // the DECISION closed the way an invalid `name` does; it only needs to never reach `buildReceipt`
-  // as a non-string/empty value (the same structural requirement `action.id` has). Falls back to
-  // the SAME sentinel an absent `agentId` already used (`"mcp-agent"`) rather than inventing a
-  // second, differently-worded sentinel for what is semantically the same "no trustworthy agent id
-  // given" case.
   const safeAgentIdForReceipt = typeof safeAgentId === "string" && safeAgentId.length > 0 ? safeAgentId : "mcp-agent";
 
-  // The CLOSED-WORLD decision inputs. `action`/`amountMinor` are the original, hand-picked fields
-  // (kept unchanged for backward compatibility — an existing policy reading top-level
-  // `amountMinor` keeps working exactly as before, float-and-all fail-closed). `args.*` is the
-  // FULL tool-call argument surface, flattened to scalar-only dotted paths (see
-  // flattenArgsToPolicyInputs above) so a policy can additionally read e.g. `args.recipient`.
-  // `amountMinor` is optional: tools that don't carry a monetary amount simply omit it, and any
-  // policy rule reading it treats "absent" as a non-match rather than a required field (unless
-  // the policy itself lists it in requiredPaths). When the raw read above itself threw, there is
-  // nothing valid to project at all — `inputs` stays empty and the branch below fails closed.
   const inputs = toolCallReadThrew ? {} : { action: safeName, amountMinor: safeAmountMinor };
   if (inputs.amountMinor === undefined) delete inputs.amountMinor;
 
-  // Computed EARLY (not just when building the receipt below) so a truly uncanonicalizable `args`
-  // (a circular reference — see canonicalParamsHash's docstring) can force the WHOLE call's
-  // decision fail-closed, not merely avoid throwing during hash computation. Safe even when
-  // `toolCallReadThrew` — `safeArgs` is simply `undefined` in that case, and canonicalParamsHash
-  // treats an absent `args` as `{}`.
   const paramsHash = canonicalParamsHash(safeArgs);
   const argsUncanonicalizable = paramsHash === UNCANONICALIZABLE_ARGS_SENTINEL_HASH;
 
-  // FLATTEN-AMBIGUITY GUARD (checked BEFORE any args are projected): a raw arg key containing a
-  // literal "." is indistinguishable, once flattened, from a nested path — see
-  // findAmbiguousDottedArgKey's docstring for the decoy-collision this closes. Fail the ENTIRE call
-  // closed, unconditionally, rather than let a policy see one of two colliding values by accident
-  // of iteration/insertion order.
-  //
-  // Both this scan AND the flatten step below descend into every enumerable value in `args` —
-  // ordinarily just plain data, but a caller embedding this package in-process (documented as
-  // usable by "any MCP integration: proxy, gateway, in-process guard") can legitimately hand it an
-  // `args` object carrying a throwing getter or Proxy trap (never producible by `JSON.parse`, but
-  // a live JS object built by that caller's own code can contain one). Reading such a property
-  // throws the MOMENT either traversal reaches it — `preCheck`'s "never throws" contract (already
-  // honored for a genuinely uncanonicalizable/circular `args` shape via `canonicalParamsHash`
-  // above) must hold here too: a throw during either traversal fails the WHOLE call closed (DENY,
-  // no compliance commit — the same "nothing valid to evaluate/replay" posture as the other
-  // fail-closed paths), never escapes as an uncaught exception to the caller.
   let ambiguousArgKey = null;
   let argsEnumerationThrew = false;
   try {
@@ -396,13 +346,8 @@ export function preCheck(
 
   let ev;
   if (toolCallReadThrew) {
-    // Highest-priority fail-closed check: the raw `toolCall.name`/`toolCall.args` read itself
-    // threw, BEFORE anything below could even run against real data — see the guard above.
     ev = { verdict: "DENY", ruleFired: "toolcall-read-threw", engine: "toolcall-read-guard" };
   } else if (nameInvalid) {
-    // Second-priority fail-closed check: the raw read succeeded, but `name` itself is not a valid
-    // non-empty string — see the ACTION-NAME SHAPE GUARD above. Forced closed before args are ever
-    // considered, same posture as a read that threw outright.
     ev = { verdict: "DENY", ruleFired: "invalid-action-name", engine: "toolcall-read-guard" };
   } else if (argsEnumerationThrew) {
     ev = { verdict: "DENY", ruleFired: "args-enumeration-threw", engine: "args-flatten-ambiguity-guard" };
@@ -421,12 +366,17 @@ export function preCheck(
   }
   const decision = ev.verdict === "ALLOW" ? "ALLOW" : "DENY";
 
-  // Commit the policy+inputs ONLY when the raw toolCall read succeeded, `name` itself is a usable
-  // non-empty string, AND the inputs are canonicalizable, unambiguous, AND args could be enumerated
-  // at all. Malformed inputs (e.g. a float amount), an invalid action name, a dotted-key ambiguity,
-  // a fully-uncanonicalizable args (a circular reference), a toolCall read that itself threw, or an
-  // args enumeration that itself threw → fail-closed DENY with NO compliance block (there is
-  // nothing valid to commit/replay).
+  // R4 — post-preCheck human-approval gate. Runs only when decision===ALLOW (a DENY is already
+  // refused; nothing to hold). `inputs` is the SAME already-flattened snapshot evaluate() used.
+  // approvalRules omitted/empty -> byte-identical prior behavior.
+  //
+  // `suppressApprovalHold` skips ONLY this hold-match, never the policy decision above — the
+  // caller (an MCP proxy) sets it for exactly ONE call, immediately after a single-use approval
+  // ticket for that same call was verified AND consumed. Without it, the consumed-ticket retry
+  // would re-match the same rule and re-DEFER forever, making EXECUTED unreachable.
+  const heldRule = decision === "ALLOW" && !suppressApprovalHold ? matchApprovalRule(approvalRules, safeActionId, inputs) : null;
+  const finalDecision = heldRule ? "DEFERRED" : decision;
+
   let compliance = null;
   if (!toolCallReadThrew && !nameInvalid && !argsEnumerationThrew && ambiguousArgKey === null && !argsUncanonicalizable) {
     try {
@@ -436,51 +386,82 @@ export function preCheck(
     }
   }
 
-  const receipt = buildReceipt(
-    {
-      id: `rcpt_${seq}`,
-      ts: ts ?? new Date().toISOString(),
-      scope: { tenant, chain: chain ?? `${tenant}:mcp` },
-      // `safeAgentIdForReceipt` (not a fresh `toolCall.agentId` re-read — see the guard above) so a
-      // throwing `agentId` getter can never surface here, and an invalid-shaped-but-non-throwing
-      // `agentId` can never reach `buildReceipt`'s own non-empty-string requirement either.
-      // `toolCall.agentId` is the ONLY source for this field — never `toolCall.args` (a caller
-      // that reads a request's own arguments into `agentId` would let the CALLER spoof its own
-      // attribution; see packages/mcp-proxy's create-proxy-server.mjs, which sources this from a
-      // static proxy-config value / the session id, never from the forwarded tool arguments).
-      agent: { id: safeAgentIdForReceipt, model: null, principal: "POLICY" },
-      action: {
-        // `safeActionId` (not a fresh `toolCall.name` re-read — see the guard above) so a throwing
-        // OR invalid-shaped `name` can never surface here either; it is already a
-        // non-empty string (either `safeName` itself, or the `"unknown-action"` sentinel).
-        id: safeActionId,
-        canonical: safeActionId,
-        riskClass: decision === "DENY" ? "HIGH" : "LOW",
-        paramsHash,
-        reversible: false,
-        rollbackRef: null,
-      },
-      // verdict records the OUTCOME; ruleId records WHICH policy rule fired; compliance COMMITS
-      // the policy + inputs by hash so the decision is re-checkable ON the receipt, not just
-      // out-of-band.
-      governance: {
-        mode: "on",
-        verdict: decision === "ALLOW" ? "EXECUTED" : "BLOCKED",
-        ruleId: ev.ruleFired ?? "default-deny",
-        approval: null,
-        sandboxed: false,
-        compliance,
-      },
+  const buildInput = {
+    id: `rcpt_${seq}`,
+    ts: ts ?? new Date().toISOString(),
+    scope: { tenant, chain: chain ?? `${tenant}:mcp` },
+    agent: { id: safeAgentIdForReceipt, model: null, principal: "POLICY" },
+    action: {
+      id: safeActionId,
+      canonical: safeActionId,
+      riskClass: finalDecision === "ALLOW" ? "LOW" : "HIGH", // R4: a held call is elevated risk, same class as DENY
+      paramsHash,
+      reversible: false,
+      rollbackRef: null,
     },
-    prev,
-    signer,
-  );
+    governance: {
+      mode: "on",
+      verdict: finalDecision === "ALLOW" ? "EXECUTED" : finalDecision === "DEFERRED" ? "DEFERRED" : "BLOCKED",
+      ruleId: heldRule ? `approval:${heldRule.id}` : (ev.ruleFired ?? "default-deny"),
+      approval: null,
+      sandboxed: false,
+      compliance,
+    },
+  };
 
   return {
-    decision,
-    receipt,
-    evidence: { policyHash: safePolicyHash(policy), engine: ev.engine, ruleFired: ev.ruleFired, inputs },
+    buildInput,
+    decision: finalDecision,
+    evidence: { policyHash: safePolicyHash(policy), engine: ev.engine, ruleFired: ev.ruleFired, inputs, approvalRuleFired: heldRule ? heldRule.id : null },
   };
 }
 
+/**
+ * The Policy Decision Point (sync signing). Pure + deterministic (beyond the caller-supplied `ts`,
+ * which is a real wall-clock read — the underlying decision logic itself remains pure/deterministic).
+ * Returns `{ decision, receipt, evidence }`. `evidence` (policyHash + inputs) is what a third
+ * party re-runs to reproduce the verdict offline.
+ *
+ * @param {{ name: string, args?: Record<string, unknown>, agentId?: string }} toolCall
+ * @param {{
+ *   signer: import("noa-receipt").Signer,
+ *   policy: import("noa-receipt").Policy,
+ *   prev?: import("noa-receipt").Receipt | null,
+ *   seq?: number,
+ *   tenant?: string,
+ *   chain?: string,
+ *   ts?: string,
+ * }} options
+ */
+export function preCheck(toolCall, { signer, policy, prev = null, seq = 0, tenant = "default-tenant", chain, ts, approvalRules, suppressApprovalHold = false } = {}) {
+  if (!signer) throw new Error("preCheck: `signer` is required");
+  const plan = computeReceiptPlan(toolCall, { policy, prev, seq, tenant, chain, ts, approvalRules, suppressApprovalHold });
+  const receipt = buildReceipt(plan.buildInput, prev, signer);
+  return { decision: plan.decision, receipt, evidence: plan.evidence };
+}
+
+/**
+ * Async twin of `preCheck` for a `RemoteSigner` (`{ kid, sign }` — e.g. `packages/signer-sidecar`'s
+ * client) or a local `Signer` used asynchronously. Identical decision logic (`computeReceiptPlan`,
+ * shared with `preCheck` — never duplicated), only the final signing step is awaited.
+ *
+ * @param {{ name: string, args?: Record<string, unknown>, agentId?: string }} toolCall
+ * @param {{
+ *   signer: import("noa-receipt").Signer | import("noa-receipt").RemoteSigner,
+ *   policy: import("noa-receipt").Policy,
+ *   prev?: import("noa-receipt").Receipt | null,
+ *   seq?: number,
+ *   tenant?: string,
+ *   chain?: string,
+ *   ts?: string,
+ * }} options
+ */
+export async function preCheckAsync(toolCall, { signer, policy, prev = null, seq = 0, tenant = "default-tenant", chain, ts, approvalRules, suppressApprovalHold = false } = {}) {
+  if (!signer) throw new Error("preCheckAsync: `signer` is required");
+  const plan = computeReceiptPlan(toolCall, { policy, prev, seq, tenant, chain, ts, approvalRules, suppressApprovalHold });
+  const receipt = await buildReceiptAsync(plan.buildInput, prev, signer);
+  return { decision: plan.decision, receipt, evidence: plan.evidence };
+}
+
 export { verifyReceiptCompliance };
+export { canonicalParamsHash };

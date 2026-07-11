@@ -41,8 +41,30 @@ would have spawned it directly. The proxy:
 | `--receipt-log <path>` | (none) | append each receipt as one JSON line, written via a non-blocking, per-file-ordered `fs.promises.appendFile` |
 | `--keyring-file <path>` | (none) | write `{ [kid]: publicKey }` once at startup for an external verifier |
 | `--key-file <path>` (or `NOA_MCP_PROXY_KEY_FILE` env) | (none — fresh keypair every run) | load a persisted signing identity, or generate + save one (mode `0600`) if the path doesn't exist yet — a restart against the same path reuses the same `kid` |
+| `--signer-socket <path>` | (none) | use a process-isolated remote signer ([`noa-signer-sidecar`](../signer-sidecar)) over this Unix domain socket instead of an in-process private key. Mutually exclusive with `--key-file`/`NOA_MCP_PROXY_KEY_FILE`. Fails closed at startup if the sidecar is unreachable, and fails closed per-call if the sidecar dies mid-session |
 | `--session-idle-ttl-ms <n>` | 1 hour | override the session store's idle-TTL sweep |
 | `--max-sessions <n>` | 10,000 | override the session store's max-sessions cap |
+| `--session-dir <path>` | (none — in-memory only) | opt-in file-backed session store (see "Honest limits" above): persists each session's chain position across a restart so the chain stays ONE continuous segment instead of starting fresh every time. Only one live process may point at a given `--session-dir` at once. |
+| `--approval-rules <path>` | (none — gate off) | JSON array of human-approval rules (adapter-core's `approvalRules`). A tool call matching a rule is HELD (`DEFERRED`) — never forwarded — until a human approves it out-of-band with `noa-approve`. |
+| `--pending-store <path>` | (none) | JSONL operational index the `DEFERRED` holds are recorded into and `noa-approve` resolves against. |
+| `--approver-keyring <path>` | (none — **required** when the gate is on) | `{ [kid]: publicKey }` JSON of TRUSTED approver keys. An approval's Ed25519 signature is verified against this **before** the held action is adopted onto the live chain and forwarded. The proxy **refuses to start** if `--approval-rules`/`--pending-store` is given without it — a gate that could adopt unverifiable approvals would be fail-open. |
+| `--approver-identity <path>` | (none) | optional `{ [agentId]: kid[] }` identity manifest pinning which kid may sign for the approval seat, so a co-trusted key cannot impersonate the human approver. |
+
+## Human-approval gate (R4)
+
+Enable the gate by giving `--approval-rules`, `--pending-store`, and (required) `--approver-keyring`:
+
+1. A tool call matching an approval rule is **held** — the proxy returns an MCP error carrying the
+   `DEFERRED` receipt id and records the hold in the pending store; the downstream tool is never
+   invoked, and the whole session is blocked except the exact matching retry.
+2. A human resolves it out-of-band with `noa-approve approve --id <receiptId> --pending-store <path>
+   --key-file <approverKey>` (or `deny`), which mints a signed `ALLOWED` receipt + a single-use,
+   TTL'd ticket.
+3. The agent retries the identical call. The proxy consumes the ticket, **verifies the approver's
+   signature against `--approver-keyring`** (plus the `ALLOWED` verdict, the approval block, the
+   session chain, and — if given — `--approver-identity`), adopts the `ALLOWED` receipt onto the
+   live chain, and forwards the call. The final `DEFERRED -> ALLOWED -> EXECUTED` chain verifies
+   `VALID` offline. A forged or untrusted-signed approval is refused and never executes.
 
 ## Layout
 
@@ -92,18 +114,27 @@ npm test   # node test/smoke.mjs — real child processes, real MCP Client/Serve
   a restart begins a new signing identity unless `--key-file` (or `NOA_MCP_PROXY_KEY_FILE`) is
   explicitly given. Key ROTATION (retiring an old `kid` while keeping old receipts verifiable
   under a multi-key keyring) is not implemented — a real rotation policy is a deployment concern.
-- **`--key-file` gives restart-continuity of the SIGNING IDENTITY, not of one CHAIN.** Reusing the
-  same `--key-file` across a restart keeps every receipt (before AND after the restart) verifiable
-  under the SAME `kid`/external keyring — but a restart still begins a NEW, distinct receipt-chain
-  segment (a different `scope.chain`), even when `--session-id` is also held stable across the
-  restart: `noa-mcp-adapter-core`'s `createChainSessionStore` mints a fresh per-process-lifetime
-  token specifically so two separate process lifetimes can never collide on the same default
-  chain-id. It is NOT one continuous chain resuming where the pre-restart process left off — group
-  receipts by `scope.chain` before calling `verifyChain()` on a merged log (each group is its own
-  independently-verifiable segment), exactly as `noa-mcp-adapter-core`'s README documents. True
-  cross-restart continuity of a SINGLE logical chain would additionally require persisting the
-  session's `{prev,seq}` position itself (not just the signing key) — this package does not do
-  that; it is a future roadmap item, not current behavior.
+- **`--key-file` gives restart-continuity of the SIGNING IDENTITY, not of one CHAIN — unless you
+  ALSO configure `--session-dir`.** Reusing the same `--key-file` across a restart keeps every
+  receipt (before AND after the restart) verifiable under the SAME `kid`/external keyring — but by
+  DEFAULT a restart still begins a NEW, distinct receipt-chain segment (a different `scope.chain`),
+  even when `--session-id` is also held stable across the restart: `noa-mcp-adapter-core`'s
+  `createChainSessionStore` mints a fresh per-process-lifetime token specifically so two separate
+  process lifetimes can never collide on the same default chain-id. By default this is NOT one
+  continuous chain resuming where the pre-restart process left off — group receipts by
+  `scope.chain` before calling `verifyChain()` on a merged log (each group is its own
+  independently-verifiable segment), exactly as `noa-mcp-adapter-core`'s README documents.
+  Concretely, without a persisted session store, every receipt emitted by a freshly (re)started
+  process has `chain.prevHash: null` and `chain.seq: 0` — a verifier merging logs across a restart
+  sees a brand-new chain-start each time, not a continuation of the one before it.
+  **Opt-in fix: `--session-dir <path>`** (see the Flags table below) points the proxy at a
+  file-backed session store (`noa-mcp-adapter-core`'s `createFileSessionStore`) that persists each
+  session's `{prev,seq}` position — and the `instanceToken`/segment identity `scope.chain` is built
+  from — to disk, reloading it at the next startup. With `--session-dir` configured, a restart
+  resumes the SAME segment: `chain.seq` keeps counting up and `chain.prevHash` correctly points at
+  the last pre-restart receipt instead of resetting to null. `--session-dir` and `--key-file` are
+  independent knobs — `--session-dir` alone still generates a fresh signing key every restart
+  unless `--key-file` is ALSO given; use both together for a fully restart-durable proxy.
 - **No downstream `inputSchema` validation.** The proxy forwards `request.params.arguments`
   through `preCheck`'s policy engine (which only ever sees the scalar paths it projects — see
   `noa-mcp-adapter-core`'s README) and, on ALLOW, straight to the downstream tool. It does NOT
@@ -118,3 +149,10 @@ npm test   # node test/smoke.mjs — real child processes, real MCP Client/Serve
   export pointing at `dist/esm/index.js`, but that file is not actually present in the published
   package — `node -e "import('@modelcontextprotocol/sdk')"` fails with `Cannot find module`.
   Always import from the concrete subpath, matching this package's own usage.
+- **`--signer-socket` is opt-in; the default remains an in-process key.** Without this flag,
+  `proxy.mjs`'s prior behavior is completely unchanged — the private key still lives in this
+  process (ephemeral by default, or persisted via `--key-file`). Choosing `--signer-socket`
+  removes the private key from this process's memory entirely, at the cost of one extra local
+  Unix-domain-socket round trip per receipt signature — see
+  [`noa-signer-sidecar`](../signer-sidecar)'s own "Honest limits" for what process isolation does
+  and does not protect against.

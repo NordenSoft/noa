@@ -62,7 +62,15 @@ export class BuilderError extends Error {
  *    AFTER hashing/signing, not before: `validateReceiptShape` requires `chain.hash` and
  *    `sig.value` to already be populated in their final form.)
  */
-export function buildReceipt(input: BuildInput, prev: Receipt | null, signer: Signer): Receipt {
+/**
+ * Shared draft construction for both `buildReceipt` (sync) and `buildReceiptAsync` (remote/async
+ * signer) — everything EXCEPT the actual signature bytes. `kid` is the only signer-derived field
+ * needed at this stage (the private key / remote sign() call happens strictly after this
+ * returns), so this helper never touches the signer object itself — keeping it usable by BOTH a
+ * local `Signer` and a `RemoteSigner` caller with zero duplication of the structuredClone /
+ * seq / prevHash / draft-shape logic.
+ */
+function buildDraft(input: BuildInput, prev: Receipt | null, kid: string): { draft: Receipt; hashInput: string } {
   let cloned: Pick<BuildInput, "id" | "ts" | "scope" | "agent" | "action" | "governance">;
   try {
     cloned = structuredClone({
@@ -89,13 +97,18 @@ export function buildReceipt(input: BuildInput, prev: Receipt | null, signer: Si
     action: cloned.action,
     governance: cloned.governance,
     chain: { seq, prevHash, hash: "" },
-    sig: { alg: "ed25519", kid: signer.kid, value: "" },
+    sig: { alg: "ed25519", kid, value: "" },
   };
 
   const hashInput = receiptHashInput(draft);
   draft.chain.hash = "sha256:" + sha256Hex(hashInput);
-  draft.sig.value = signEd25519(signer.privateKey, signingMessage(RECEIPT_SIG_DOMAIN, hashInput));
+  return { draft, hashInput };
+}
 
+/** Shared post-signing validation for both `buildReceipt` and `buildReceiptAsync` — see the A3
+ *  guarantee this package's docstring (above `BuilderError`) documents: a caller must never
+ *  receive a validly-SIGNED-but-structurally-malformed receipt. */
+function finalizeReceipt(draft: Receipt): Receipt {
   const shape = validateReceiptShape(draft);
   if (!shape.ok) {
     throw new BuilderError(
@@ -103,8 +116,48 @@ export function buildReceipt(input: BuildInput, prev: Receipt | null, signer: Si
       shape.errors,
     );
   }
-
   return draft;
+}
+
+export function buildReceipt(input: BuildInput, prev: Receipt | null, signer: Signer): Receipt {
+  const { draft, hashInput } = buildDraft(input, prev, signer.kid);
+  draft.sig.value = signEd25519(signer.privateKey, signingMessage(RECEIPT_SIG_DOMAIN, hashInput));
+  return finalizeReceipt(draft);
+}
+
+/**
+ * A signer that does NOT hold the private key in this process — e.g. an RPC client to a separate,
+ * process-isolated signing daemon (see `packages/signer-sidecar`). `sign()` receives the EXACT
+ * pre-image bytes `buildReceipt` would otherwise hand to `signEd25519` directly (already
+ * domain-tagged via `signingMessage()` — the remote side never needs to know which artifact kind
+ * or domain tag it is signing, keeping it a generic Ed25519 signing oracle) and must return the
+ * base64 Ed25519 signature over those exact bytes. A rejected/thrown `sign()` propagates straight
+ * out of `buildReceiptAsync` uncaught — this is the fail-closed contract a remote signer's
+ * caller relies on (a dead/unreachable signer must fail the WHOLE receipt build, never silently
+ * fall back or fabricate a signature).
+ */
+export interface RemoteSigner {
+  kid: string;
+  sign: (message: Buffer) => Promise<string>;
+}
+
+function isRemoteSigner(signer: Signer | RemoteSigner): signer is RemoteSigner {
+  return typeof (signer as RemoteSigner).sign === "function";
+}
+
+/**
+ * Async twin of `buildReceipt`, additive and non-breaking: accepts EITHER a local `Signer`
+ * (`{ kid, privateKey }`, signed in-process exactly like `buildReceipt` does) OR a `RemoteSigner`
+ * (`{ kid, sign }`, signed by awaiting an external call). Shares `buildDraft`/`finalizeReceipt`
+ * with `buildReceipt` — for a local `Signer`, the two functions produce byte-identical output;
+ * `buildReceipt` itself is completely unchanged and remains the right choice for every existing
+ * synchronous caller.
+ */
+export async function buildReceiptAsync(input: BuildInput, prev: Receipt | null, signer: Signer | RemoteSigner): Promise<Receipt> {
+  const { draft, hashInput } = buildDraft(input, prev, signer.kid);
+  const message = signingMessage(RECEIPT_SIG_DOMAIN, hashInput);
+  draft.sig.value = isRemoteSigner(signer) ? await signer.sign(message) : signEd25519((signer as Signer).privateKey, message);
+  return finalizeReceipt(draft);
 }
 
 const CHECKPOINT_HASH_RE = /^sha256:[0-9a-f]{64}$/;

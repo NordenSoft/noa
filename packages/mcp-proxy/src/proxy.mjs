@@ -47,16 +47,47 @@
  *   --session-idle-ttl-ms <n>  override the session store's idle-TTL sweep (default: 1 hour;
  *                              see noa-mcp-adapter-core's createChainSessionStore).
  *   --max-sessions <n>         override the session store's max-sessions cap (default: 10,000).
+ *   --session-dir <path>       opt-in file-backed session store (noa-mcp-adapter-core's
+ *                              createFileSessionStore): persists each session's chain position to
+ *                              disk under this directory, so a restart resumes the SAME chain
+ *                              segment instead of starting a fresh one (unlike the default
+ *                              in-memory store, which always mints a fresh segment on restart —
+ *                              see this package's README "Honest limits"). Independent of
+ *                              --key-file: --session-dir alone still generates a fresh signing
+ *                              key every restart unless --key-file is ALSO given; combine both
+ *                              for a fully restart-durable proxy. Only one live process may point
+ *                              at a given --session-dir at a time (lockfile-enforced).
+ *   --signer-socket <path>     use a remote signer (packages/signer-sidecar's client) reachable
+ *                              at this Unix domain socket path instead of a local, in-process
+ *                              private key — the private key never lives in THIS process when
+ *                              this flag is given. Mutually exclusive with --key-file /
+ *                              NOA_MCP_PROXY_KEY_FILE (the sidecar owns its own --key-file
+ *                              independently). Fails closed at startup if the sidecar is
+ *                              unreachable — see createRemoteSigner's own doc comment.
+ *   --approval-rules <path>    JSON array of human-approval rules (adapter-core's approvalRules): a
+ *                              matching tool call is HELD (DEFERRED), never forwarded, until a human
+ *                              approves it out-of-band with `noa-approve`.
+ *   --pending-store <path>     JSONL operational index of outstanding approvals the DEFERRED holds
+ *                              are recorded into and `noa-approve` resolves against.
+ *   --approver-keyring <path>  REQUIRED whenever --approval-rules/--pending-store is set: a
+ *                              `{ [kid]: publicKey }` JSON of TRUSTED approver keys. An approval's
+ *                              Ed25519 signature is verified against this before the held action is
+ *                              adopted + forwarded — the proxy REFUSES TO START without it (a gate
+ *                              that could adopt unverifiable approvals would be fail-open).
+ *   --approver-identity <path> optional `{ [agentId]: kid[] }` identity manifest pinning which kid
+ *                              may sign for the approval seat, so a co-trusted key cannot impersonate
+ *                              the human approver.
  *
  * Fail-closed at startup: if the downstream command cannot be spawned or fails MCP
  * initialization, this process logs to stderr and exits non-zero WITHOUT ever starting to serve
  * the host — there is no partially-working proxy state.
  */
 import { randomUUID } from "node:crypto";
-import { readFileSync, writeFileSync, chmodSync, openSync, fstatSync, closeSync, promises as fsp, constants as fsConstants } from "node:fs";
+import { writeFileSync, readFileSync, promises as fsp } from "node:fs";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { generateKeyPair, createChainSessionStore } from "noa-mcp-adapter-core";
+import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile } from "noa-mcp-adapter-core";
+import { createRemoteSigner } from "noa-signer-sidecar/client.mjs";
 import { createProxyServer } from "./create-proxy-server.mjs";
 import { TRANSFER_GUARD_POLICY } from "./policy.mjs";
 
@@ -65,8 +96,10 @@ function parseArgs(argv) {
   if (sepIndex === -1) {
     throw new Error(
       "usage: proxy.mjs [--session-id <id>] [--tenant <name>] [--agent-id <id>] " +
-        "[--receipt-log <path>] [--keyring-file <path>] [--key-file <path>] " +
-        "[--session-idle-ttl-ms <n>] [--max-sessions <n>] -- <downstream-command> [downstream-args...]",
+        "[--receipt-log <path>] [--keyring-file <path>] [--key-file <path>] [--signer-socket <path>] " +
+        "[--session-idle-ttl-ms <n>] [--max-sessions <n>] [--session-dir <path>] " +
+        "[--approval-rules <path>] [--pending-store <path>] [--approver-keyring <path>] [--approver-identity <path>] " +
+        "-- <downstream-command> [downstream-args...]",
     );
   }
   const own = argv.slice(0, sepIndex);
@@ -80,8 +113,14 @@ function parseArgs(argv) {
     receiptLog: null,
     keyringFile: null,
     keyFile: null,
+    signerSocket: null,
     sessionIdleTtlMs: null,
     maxSessions: null,
+    sessionDir: null,
+    approvalRulesFile: null,
+    pendingStore: null,
+    approverKeyringFile: null,
+    approverIdentityFile: null,
   };
   for (let i = 0; i < own.length; i++) {
     const flag = own[i];
@@ -92,98 +131,37 @@ function parseArgs(argv) {
     else if (flag === "--receipt-log") opts.receiptLog = value;
     else if (flag === "--keyring-file") opts.keyringFile = value;
     else if (flag === "--key-file") opts.keyFile = value;
+    else if (flag === "--signer-socket") opts.signerSocket = value;
     else if (flag === "--session-idle-ttl-ms") opts.sessionIdleTtlMs = Number(value);
     else if (flag === "--max-sessions") opts.maxSessions = Number(value);
+    else if (flag === "--session-dir") opts.sessionDir = value;
+    else if (flag === "--approval-rules") opts.approvalRulesFile = value;
+    else if (flag === "--pending-store") opts.pendingStore = value;
+    else if (flag === "--approver-keyring") opts.approverKeyringFile = value;
+    else if (flag === "--approver-identity") opts.approverIdentityFile = value;
     else throw new Error(`proxy.mjs: unknown flag "${flag}"`);
   }
   return { opts, downstreamCommand: downstream[0], downstreamArgs: downstream.slice(1) };
 }
 
-// O_NOFOLLOW (POSIX-only; `0` on a platform lacking it, in which case this degrades to a plain
-// read-only open — no worse than the pre-fix behavior on that platform, but the O_EXCL create-path
-// below stays protective everywhere Node runs, since O_EXCL's symlink refusal is POSIX-universal).
-const READONLY_NOFOLLOW = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
-
 /**
  * Loads a persisted `{ kid, privateKey, publicKey }` signing identity from `keyFile`, or generates
- * one and persists it (mode 0600 — it holds a private key) if the file doesn't exist yet. Without
- * a `keyFile` at all, keeps the prior behavior exactly: a fresh keypair every call, kid tied to
- * this run's `sessionId`.
- *
- * SYMLINK / TOCTOU HARDENING (CWE-367): the prior implementation was `existsSync(keyFile)` ->
- * `readFileSync`/`writeFileSync` — both calls FOLLOW a symlink sitting at `keyFile`, and neither
- * checks the existing file's permissions. An attacker with write access to the DIRECTORY holding
- * `keyFile` (but not to wherever the operator actually intends the secret to live) could plant a
- * symlink there — pointing either at an EXISTING file (get it silently clobbered with new key
- * material + forced to 0600) or at a location that does NOT exist yet (get the newly-generated
- * PRIVATE KEY redirected to an attacker-readable path). Fixed by:
- *   - A single `openSync(keyFile, O_RDONLY | O_NOFOLLOW)` replaces `existsSync` + `readFileSync`
- *     entirely: this is simultaneously the "does something exist here" check AND the read, with NO
- *     separate check-then-open gap for a race to land in. `O_NOFOLLOW` makes the open itself fail
- *     (`ELOOP`) if `keyFile` is a symlink, whether it resolves to an existing target or is dangling.
- *   - The resulting fd is `fstatSync`'d (not a second `lstatSync`/`statSync` on the PATH, which
- *     would reopen the TOCTOU window) to confirm it's a regular file with no group/other permission
- *     bits set — a private key file the operator left world/group-readable is refused, not silently
- *     trusted.
- *   - The create-path's `writeFileSync(..., { flag: "wx" })` (`O_CREAT|O_EXCL|O_WRONLY`) is
- *     POSIX-specified to refuse to create THROUGH a symlink at the target path — dangling or
- *     not — even if one is planted in the gap between the `openSync` check above and this write:
- *     it fails closed with `EEXIST` instead of silently redirecting the newly-generated private key.
+ * one and persists it if the file doesn't exist yet. Delegates the actual CWE-367/TOCTOU-hardened
+ * load/create logic to noa-mcp-adapter-core's loadOrCreateKeyFile (moved there so
+ * packages/signer-sidecar's sidecar.mjs can reuse the exact same hardening — see that module's
+ * own docstring for the symlink/loose-permission guard detail). Without a `keyFile` at all, keeps
+ * the prior behavior exactly: a fresh keypair every call, kid tied to this run's `sessionId`.
  */
 function loadOrCreateSigner({ keyFile, sessionId }) {
   if (!keyFile) {
     const kp = generateKeyPair(`noa-mcp-proxy:${sessionId}`);
     return { kid: kp.kid, privateKey: kp.privateKey, publicKey: kp.publicKey };
   }
-
-  let fd = null;
-  try {
-    fd = openSync(keyFile, READONLY_NOFOLLOW);
-  } catch (err) {
-    if (err.code === "ELOOP") {
-      throw new Error(
-        `proxy.mjs: --key-file "${keyFile}" is a symlink — refusing to follow it (CWE-367 symlink-attack guard). Point --key-file directly at the intended regular file.`,
-      );
-    }
-    if (err.code !== "ENOENT") throw err;
-    // fall through: genuinely nothing at this path yet — the create branch below runs.
-  }
-
-  if (fd !== null) {
-    try {
-      const st = fstatSync(fd);
-      if (!st.isFile()) {
-        throw new Error(`proxy.mjs: --key-file "${keyFile}" is not a regular file — refusing to load a signing identity from a special file`);
-      }
-      if ((st.mode & 0o077) !== 0) {
-        throw new Error(
-          `proxy.mjs: --key-file "${keyFile}" is readable/writable by group or others (mode 0${(st.mode & 0o777).toString(8)}) — refusing to load a private key from a loosely-permissioned file. chmod 600 it first.`,
-        );
-      }
-      let raw;
-      try {
-        raw = JSON.parse(readFileSync(fd, "utf8"));
-      } catch (err) {
-        throw new Error(`proxy.mjs: --key-file "${keyFile}" is not valid JSON (${err.message})`);
-      }
-      if (!raw || typeof raw.kid !== "string" || typeof raw.privateKey !== "string" || typeof raw.publicKey !== "string") {
-        throw new Error(`proxy.mjs: --key-file "${keyFile}" is malformed (expected { kid, privateKey, publicKey })`);
-      }
-      return raw;
-    } finally {
-      closeSync(fd);
-    }
-  }
-
-  // First run against this path: generate a stable kid ONCE (not tied to sessionId — the whole
-  // point of a persisted key is that it outlives any one session) and persist it.
-  const kp = generateKeyPair(`noa-mcp-proxy:${randomUUID()}`);
-  const record = { kid: kp.kid, privateKey: kp.privateKey, publicKey: kp.publicKey };
-  writeFileSync(keyFile, JSON.stringify(record, null, 2), { mode: 0o600, flag: "wx" });
-  // Belt-and-suspenders: writeFileSync's `mode` option only governs the permissions a NEWLY
-  // created file gets (subject to umask); an explicit chmod pins it to 0600 regardless.
-  chmodSync(keyFile, 0o600);
-  return record;
+  return loadOrCreateKeyFile({
+    keyFile,
+    mintKeyPair: () => generateKeyPair(`noa-mcp-proxy:${randomUUID()}`),
+    callerLabel: "proxy.mjs",
+  });
 }
 
 /**
@@ -207,16 +185,39 @@ function createSequentialFileAppender(path) {
 async function main() {
   const { opts, downstreamCommand, downstreamArgs } = parseArgs(process.argv.slice(2));
   const sessionId = opts.sessionId ?? randomUUID();
-
   const keyFile = opts.keyFile ?? process.env.NOA_MCP_PROXY_KEY_FILE ?? null;
-  const kp = loadOrCreateSigner({ keyFile, sessionId });
-  const signer = { kid: kp.kid, privateKey: kp.privateKey };
-  if (opts.keyringFile) writeFileSync(opts.keyringFile, JSON.stringify({ [kp.kid]: kp.publicKey }), "utf8");
 
-  const store = createChainSessionStore({
+  if (opts.signerSocket && keyFile) {
+    throw new Error(
+      "proxy.mjs: --signer-socket and --key-file (or NOA_MCP_PROXY_KEY_FILE) are mutually exclusive — " +
+        "the sidecar owns its OWN --key-file independently; pick exactly one signing mode.",
+    );
+  }
+
+  let signer;
+  let signerPublicKey;
+  if (opts.signerSocket) {
+    // Fail-closed at startup: an unreachable/misconfigured sidecar must stop this process before
+    // it ever starts serving the host — see createRemoteSigner's own "fail closed AT
+    // CONSTRUCTION" doc comment. main().catch() below turns this rejection into the same
+    // non-zero-exit fatal path every other startup failure already uses.
+    const remoteSigner = await createRemoteSigner({ socketPath: opts.signerSocket });
+    signer = { kid: remoteSigner.kid, sign: remoteSigner.sign };
+    signerPublicKey = remoteSigner.publicKey;
+  } else {
+    const kp = loadOrCreateSigner({ keyFile, sessionId });
+    signer = { kid: kp.kid, privateKey: kp.privateKey };
+    signerPublicKey = kp.publicKey;
+  }
+  if (opts.keyringFile) writeFileSync(opts.keyringFile, JSON.stringify({ [signer.kid]: signerPublicKey }), "utf8");
+
+  const sessionStoreOptions = {
     ...(opts.sessionIdleTtlMs != null && Number.isFinite(opts.sessionIdleTtlMs) ? { idleTtlMs: opts.sessionIdleTtlMs } : {}),
     ...(opts.maxSessions != null && Number.isFinite(opts.maxSessions) ? { maxSessions: opts.maxSessions } : {}),
-  });
+  };
+  const store = opts.sessionDir
+    ? createFileSessionStore(opts.sessionDir, sessionStoreOptions)
+    : createChainSessionStore(sessionStoreOptions);
 
   const appendReceiptLine = opts.receiptLog ? createSequentialFileAppender(opts.receiptLog) : null;
   const onReceipt = appendReceiptLine
@@ -224,6 +225,24 @@ async function main() {
     : undefined;
 
   const downstreamTransport = new StdioClientTransport({ command: downstreamCommand, args: downstreamArgs });
+
+  let approvalRules;
+  if (opts.approvalRulesFile) approvalRules = JSON.parse(readFileSync(opts.approvalRulesFile, "utf8"));
+
+  // FAIL-CLOSED at startup: the human-approval gate (--approval-rules and/or --pending-store) can
+  // adopt an approver's ALLOWED receipt onto the live chain and forward the held action. Adopting
+  // one requires authenticating the approver's signature, which needs a trusted approver keyring.
+  // Refuse to start the gate without --approver-keyring rather than ever adopt an unverifiable
+  // approval (createProxyServer enforces the same invariant; this gives a precise CLI-level error).
+  if ((opts.approvalRulesFile || opts.pendingStore) && !opts.approverKeyringFile) {
+    throw new Error(
+      "proxy.mjs: --approval-rules/--pending-store enable the human-approval gate, which adopts an approver's signed ALLOWED receipt onto the live chain — refusing to start without --approver-keyring <path> (a { kid: publicKey } JSON of trusted approver keys) to verify approval signatures (fail-closed).",
+    );
+  }
+  let approverKeyring;
+  if (opts.approverKeyringFile) approverKeyring = JSON.parse(readFileSync(opts.approverKeyringFile, "utf8"));
+  let approverIdentityManifest;
+  if (opts.approverIdentityFile) approverIdentityManifest = JSON.parse(readFileSync(opts.approverIdentityFile, "utf8"));
 
   let proxy;
   try {
@@ -236,6 +255,10 @@ async function main() {
       tenant: opts.tenant,
       agentId: opts.agentId ?? undefined,
       onReceipt,
+      approvalRules,
+      pendingStorePath: opts.pendingStore ?? undefined,
+      approverKeyring,
+      approverIdentityManifest,
     });
   } catch (err) {
     // Fail-closed at startup: never expose a half-connected proxy to the host.

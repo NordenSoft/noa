@@ -27,6 +27,20 @@ repo's build output. See [`src/pre-check.mjs`](src/pre-check.mjs) for the import
   `toolCall.agentId` is the ONLY source for `receipt.agent.id` — never `toolCall.args` — so a
   caller reading a request's own arguments into it would let the request spoof its own
   attribution; see `packages/mcp-proxy`'s create-proxy-server.mjs for a static, proxy-config value.
+- `preCheckAsync(toolCall, { signer, policy, prev, seq, tenant, chain, ts })` /
+  `prepareSessionReceiptAsync(toolCall, { sessionId, store, signer, policy, tenant, chain })` —
+  async twins of `preCheck`/`prepareSessionReceipt`, additive and non-breaking. Accept a
+  `RemoteSigner` (`{ kid, sign: (message: Buffer) => Promise<string> }` — e.g.
+  `packages/signer-sidecar`'s client) in addition to a local `Signer`, so a process-isolated
+  signing daemon can satisfy the exact same decision logic without holding the private key in
+  this process. A rejecting `sign()` (the remote signer is unreachable, timed out, or explicitly
+  refused) propagates as a rejection out of `preCheckAsync`/`prepareSessionReceiptAsync` — the
+  caller must treat this exactly like any other prepare failure (fail closed, no receipt, no seq
+  consumed); see `packages/mcp-proxy`'s `create-proxy-server.mjs` for the reference integration.
+- `loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel })` — the CWE-367/TOCTOU-hardened
+  `--key-file` loader shared by `packages/mcp-proxy`'s `proxy.mjs` and `packages/signer-sidecar`'s
+  `sidecar.mjs`, so both callers get the exact same symlink/loose-permission guards from one
+  implementation. See `src/key-file.mjs`'s own docstring for the hardening detail.
 - `createChainSessionStore({ idleTtlMs, maxSessions, sweepIntervalMs, now, onEvict })` — owns
   `Map<tenant, Map<sessionId, { prev, seq, lastAccessedAt, segmentId }>>` (tenant-nested — see
   "MULTI-TENANT ISOLATION" below) plus one store-instance-scoped `instanceToken` (constant across

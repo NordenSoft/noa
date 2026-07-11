@@ -75,14 +75,24 @@ jobs:
           cd packages/adapter-core
           npm ci
           npm test
+      - name: signer-sidecar smoke test (packages/signer-sidecar)
+        # Real 2-process smoke test (sidecar.mjs child process + client.mjs). Must run AFTER
+        # adapter-core's own `npm ci` above (same file:../adapter-core node_modules-population
+        # reason the mcp-proxy step below already documents) and BEFORE mcp-proxy's own step
+        # (mcp-proxy's --signer-socket integration test spawns THIS package's sidecar.mjs
+        # directly by relative path, so it must already have its own node_modules populated).
+        run: |
+          cd packages/signer-sidecar
+          npm ci
+          npm test
       - name: mcp-proxy smoke test (packages/mcp-proxy)
         # Real-transport smoke test: fail-closed DENY, live tools/list reflection, session
         # isolation, persist-then-commit ordering, and CLI double-stdio integration.
-        # Must run AFTER the adapter-core step above: mcp-proxy links adapter-core via
-        # file:../adapter-core, and Node resolves adapter-core's own noa-receipt dependency
-        # from packages/adapter-core/node_modules — populated only by that step's `npm ci`
+        # Must run AFTER the adapter-core AND signer-sidecar steps above: mcp-proxy links both
+        # via file:../adapter-core and file:../signer-sidecar, and Node resolves each one's own
+        # dependencies from ITS OWN node_modules — populated only by that package's own `npm ci`
         # (npm does not install a file: dep's dependencies across the link boundary).
-        # Do not split these two steps into parallel jobs.
+        # Do not split these three steps into parallel jobs.
         run: |
           cd packages/mcp-proxy
           npm ci

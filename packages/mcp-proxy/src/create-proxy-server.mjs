@@ -52,13 +52,24 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { ListToolsRequestSchema, CallToolRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
-import { prepareSessionReceipt, commitSessionReceipt } from "noa-mcp-adapter-core";
+import {
+  prepareSessionReceipt,
+  prepareSessionReceiptAsync,
+  commitSessionReceipt,
+  adoptApprovedReceipt,
+  canonicalParamsHash,
+  tryIdentifyToolCallForTicketLookup,
+  recordDeferred,
+  findOutstanding,
+  consumeApprovalTicket,
+  verifyApprovalReceipt,
+} from "noa-mcp-adapter-core";
 
 /**
  * @param {{
  *   sessionId: string,
  *   downstreamTransport: import("@modelcontextprotocol/sdk/shared/transport.js").Transport,
- *   signer: { kid: string, privateKey: string },
+ *   signer: { kid: string, privateKey: string } | { kid: string, sign: (message: Buffer) => Promise<string> },
  *   policy: object,
  *   store: ReturnType<typeof import("noa-mcp-adapter-core").createChainSessionStore>,
  *   tenant?: string,
@@ -66,7 +77,14 @@ import { prepareSessionReceipt, commitSessionReceipt } from "noa-mcp-adapter-cor
  *   onReceipt?: (sessionId: string, receipt: object) => (void | Promise<void>),
  *   serverInfo?: { name: string, version: string },
  *   downstreamInfo?: { name: string, version: string },
- * }} config
+ *   approvalRules?: object[],
+ *   pendingStorePath?: string,
+ *   approverKeyring?: Record<string, string>,
+ *   approverIdentityManifest?: Record<string, string[]>,
+ * }} config — when the human-approval gate is enabled (`approvalRules`/`pendingStorePath`), a
+ *   non-empty `approverKeyring` (trusted approver `{ kid: publicKey }`) is REQUIRED; the optional
+ *   `approverIdentityManifest` (`{ agentId: kid[] }`) additionally pins which kid may sign for the
+ *   approval seat.
  * @returns {Promise<{ server: Server, downstream: Client }>}
  */
 export async function createProxyServer({
@@ -80,12 +98,26 @@ export async function createProxyServer({
   onReceipt,
   serverInfo = { name: "noa-mcp-proxy", version: "0.1.0" },
   downstreamInfo = { name: "noa-mcp-proxy(downstream-client)", version: "0.1.0" },
+  approvalRules,
+  pendingStorePath,
+  approverKeyring,
+  approverIdentityManifest,
 }) {
   if (!sessionId) throw new Error("createProxyServer: `sessionId` is required");
   if (!downstreamTransport) throw new Error("createProxyServer: `downstreamTransport` is required");
   if (!signer) throw new Error("createProxyServer: `signer` is required");
   if (!policy) throw new Error("createProxyServer: `policy` is required");
   if (!store) throw new Error("createProxyServer: `store` is required");
+  // FAIL-CLOSED CONFIG: the human-approval gate (enabled by `approvalRules` and/or a
+  // `pendingStorePath`) can adopt an approver's ALLOWED receipt onto the live chain and forward the
+  // held action. That adoption MUST verify the approver's signature (see `verifyApprovalReceipt`),
+  // which requires a trusted approver keyring. Refusing to start without one makes it structurally
+  // impossible to run a gate that would adopt approvals it cannot authenticate — never fail-open.
+  if ((pendingStorePath || approvalRules) && (!approverKeyring || typeof approverKeyring !== "object" || Array.isArray(approverKeyring) || Object.keys(approverKeyring).length === 0)) {
+    throw new Error(
+      "createProxyServer: the human-approval gate (`approvalRules`/`pendingStorePath`) requires a non-empty `approverKeyring` of trusted approver public keys — refusing to start a gate that would adopt approvals without verifying their signatures",
+    );
+  }
 
   const downstream = new Client(downstreamInfo, { capabilities: {} });
   // Fail-closed at connect time: if the downstream can't be reached or fails MCP initialization,
@@ -138,8 +170,13 @@ export async function createProxyServer({
     // Queued (never run immediately) — see the module docstring's "Session lifecycle" paragraph
     // above for the mid-flight-commit race this closes. `runExclusiveForSession`'s own
     // self-draining logic deletes THIS session's `sessionCallQueues` entry once this queued
-    // end-task settles (as long as no newer call queued behind it since); `.catch(() => {})` is
-    // defense-in-depth only — `store.end()` is a plain `Map.delete`, it cannot actually reject.
+    // end-task settles (as long as no newer call queued behind it since). The DEFAULT in-memory
+    // store's `end()` is a plain `Map.delete` and cannot reject — but a store whose `end()`
+    // performs durable I/O (noa-mcp-adapter-core's createFileSessionStore, --session-dir) CAN, if
+    // its own tombstone write fails (see that module's own docstring). `onclose` has no MCP
+    // request left to reject (the host already disconnected) — the failure is surfaced as a loud
+    // stderr log instead of a silently-swallowed no-op, so an operator can still see that this
+    // session's chain continuity broke, rather than have it vanish with zero trace.
     runExclusiveForSession(sessionId, () => {
       // `tenant` (the SAME closure value every prepareSessionReceipt/commitSessionReceipt call for
       // this session already uses) — omitting it would default to the store's DEFAULT_TENANT and
@@ -147,7 +184,9 @@ export async function createProxyServer({
       // tenant (see noa-mcp-adapter-core's createChainSessionStore "MULTI-TENANT ISOLATION"
       // docstring).
       store.end(sessionId, tenant);
-    }).catch(() => {});
+    }).catch((err) => {
+      console.error(`noa-mcp-proxy: session "${sessionId}" (tenant "${tenant}") end() failed to persist on disconnect (${err.message})`);
+    });
   };
 
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
@@ -172,12 +211,121 @@ export async function createProxyServer({
     // above), so a persist that takes real async time (e.g. a non-blocking fs.promises.appendFile)
     // can never let a SECOND concurrent call for this SAME session observe the store's
     // un-advanced {prev,seq} before the first call has actually committed.
+    const effectiveAgentId = agentId ?? sessionId;
+
     const { decision, receipt } = await runExclusiveForSession(sessionId, async () => {
+      // R4 — human-approval gate: opt-in via pendingStorePath (omitting it is byte-identical to
+      // pre-R4 behavior). An outstanding request BLOCKS the whole session except the exact matching
+      // retry — this is what keeps DEFERRED/ALLOWED/EXECUTED contiguous-seq in ONE scope.chain.
+      // This whole gate runs INSIDE the per-session exclusive
+      // queue, so two concurrent tools/call for the SAME session can never both pass the
+      // findOutstanding check before either consumes the ticket.
+      //
+      // Set to true ONLY after a single-use ticket for THIS EXACT call was verified AND consumed
+      // below; prepareSessionReceipt passes it to preCheck, which then skips the approval-rule
+      // match for this ONE call. Without it, the consumed-ticket retry would re-match the same
+      // rule and re-DEFER forever — EXECUTED would be unreachable.
+      let suppressApprovalHold = false;
+      if (pendingStorePath) {
+        let outstanding;
+        try {
+          outstanding = findOutstanding(pendingStorePath, { tenant, agentId: effectiveAgentId, sessionId });
+        } catch (err) {
+          // FAIL-CLOSED: an unreadable/corrupt pending store (loadPendingIndex refuses on a torn
+          // line — see pending-store.mjs) must reject the call, never silently proceed as if no
+          // approval were outstanding.
+          throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: pending store unreadable (${err.message}) — call rejected closed`);
+        }
+        if (outstanding) {
+          const identified = tryIdentifyToolCallForTicketLookup(toolCall, canonicalParamsHash);
+          const matchesThisCall = identified && outstanding.actionId === identified.actionId && outstanding.paramsHash === identified.paramsHash;
+          if (!(outstanding.status === "approved" && matchesThisCall)) {
+            throw new McpError(
+              ErrorCode.InvalidRequest,
+              `noa-mcp-proxy: session has an outstanding human-approval request "${outstanding.id}" (status ${outstanding.status}) — resolve it before issuing new calls on this session`,
+              { receiptId: outstanding.id, status: outstanding.status },
+            );
+          }
+          let consumedRecord;
+          try {
+            consumedRecord = consumeApprovalTicket(pendingStorePath, outstanding.id, Date.now(), { sessionId, tenant });
+          } catch (err) {
+            throw new McpError(ErrorCode.InvalidRequest, `noa-mcp-proxy: DENY — approval ticket for "${request.params.name}" could not be consumed (${err.message})`, { receiptId: outstanding.id });
+          }
+          // CRITICAL — cryptographically verify the approver's ALLOWED receipt BEFORE it touches the
+          // live chain. adoptApprovedReceipt only checks structural seq/prevHash continuity; without
+          // this, anyone able to WRITE the pending-store file (the same file this proxy appends its
+          // own events to) could forge an unsigned/garbage-signed "approved" event whose only correct
+          // fields are exactly that structural continuity — and the held action would EXECUTE with no
+          // real human approval. This authenticates the approver's Ed25519 signature against the
+          // configured trusted approver keyring (+ optional identity manifest), the ALLOWED verdict,
+          // the human approval block, and the session chain (see THREAT-MODEL.md T6). Fail-closed: the
+          // single-use ticket is already consumed, so a forged/invalid approval simply burns it and
+          // the call is refused — never executes.
+          const headBeforeAdopt = store.peek(sessionId, tenant);
+          // `expectedAction` binds the cryptographically-verified approval to the EXACT held action:
+          // the ALLOWED receipt's own action.id/paramsHash MUST equal what was actually held
+          // (`outstanding`, recorded from the DEFERRED receipt). matchesThisCall above already proved
+          // the RETRY equals `outstanding`, so this closes the last gap — the approver's SIGNED
+          // action must equal the held/retried action too, or a genuine approval for a different
+          // action could authorize this one. Mismatch -> fail-closed DENY (ticket already burned).
+          const approvalCheck = verifyApprovalReceipt(consumedRecord.allowedReceipt, {
+            approverKeyring,
+            identityManifest: approverIdentityManifest,
+            expectedChain: headBeforeAdopt.prev ? headBeforeAdopt.prev.scope.chain : undefined,
+            expectedAction: { id: outstanding.actionId, paramsHash: outstanding.paramsHash },
+          });
+          if (!approvalCheck.ok) {
+            throw new McpError(
+              ErrorCode.InvalidRequest,
+              `noa-mcp-proxy: DENY — the approval for "${request.params.name}" is not a valid signed human approval (${approvalCheck.reason}) — refusing to execute`,
+              { receiptId: outstanding.id },
+            );
+          }
+          // Persist the adopted ALLOWED receipt into THIS proxy's own receipt log BEFORE adopting:
+          // the log must stay gap-free/verifiable — without this line it would carry seq 0
+          // (DEFERRED) and seq 2 (EXECUTED) with a hole at seq 1, and verifyChain on the log would
+          // report a fabricated seq-gap TAMPERED for a chain that was never tampered with. (The
+          // approve CLI's optional --receipt-log is an independent operator convenience for
+          // standalone use, not this proxy's log.) Honest fail-closed trade-off: the ticket is
+          // already consumed, so a persist failure HERE burns it — the call is rejected, the
+          // operator must re-approve; the safe direction is "never execute without a durable
+          // record", never the reverse.
+          try {
+            const persistedAllowed = onReceipt?.(sessionId, consumedRecord.allowedReceipt);
+            if (persistedAllowed && typeof persistedAllowed.then === "function") await persistedAllowed;
+          } catch (err) {
+            throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: adopted approval receipt could not be persisted (${err.message}) — call rejected closed`);
+          }
+          // Reuses `headBeforeAdopt` (peeked just above for the chain check): the onReceipt persist
+          // between here and there touches no session-chain state, so the segment id is still current.
+          const adopted = adoptApprovedReceipt(store, sessionId, consumedRecord.allowedReceipt, headBeforeAdopt.segmentId, tenant);
+          if (!adopted) {
+            throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: approval ticket consumed but the session chain has moved on — call rejected closed (receipt ${outstanding.id})`);
+          }
+          // Ticket verified, consumed, ALLOWED receipt adopted — the ONE condition under which the
+          // approval hold is suppressed for the preCheck below. The L2 policy itself still runs.
+          suppressApprovalHold = true;
+          // Falls through: the session's chain position now sits at the ALLOWED receipt, so the
+          // normal preCheck path below chains the EXECUTED receipt directly onto it.
+        }
+      }
+
       let prepared;
       try {
         // Prepare only — does NOT touch `store` yet, so a persist failure below can leave the
-        // session's chain position exactly where it was.
-        prepared = prepareSessionReceipt(toolCall, { sessionId, store, signer, policy, tenant });
+        // session's chain position exactly where it was. A `signer` carrying a `sign` function
+        // (a RemoteSigner — see packages/signer-sidecar's client) uses the async prepare path;
+        // a local `{ kid, privateKey }` signer keeps the exact original sync path unchanged. A
+        // dead/unreachable remote signer's `sign()` rejects, which surfaces here as a thrown
+        // error exactly like any other prepare failure — the SAME fail-closed `catch` below
+        // covers both signer shapes with zero additional branching. `approvalRules`/
+        // `suppressApprovalHold` thread the R4 human-approval gate through BOTH prepare paths so a
+        // remote-signer proxy can never silently bypass the hold.
+        prepared =
+          typeof signer.sign === "function"
+            ? await prepareSessionReceiptAsync(toolCall, { sessionId, store, signer, policy, tenant, approvalRules, suppressApprovalHold })
+            : prepareSessionReceipt(toolCall, { sessionId, store, signer, policy, tenant, approvalRules, suppressApprovalHold });
       } catch (err) {
         // Defense in depth: preCheck/evaluate are documented to never throw, but a component
         // sitting at the credential boundary must fail-closed on ANY unexpected exception, not
@@ -207,7 +355,22 @@ export async function createProxyServer({
       // against — not the possibly-omitted `tenant` closure variable) ensures this commit lands
       // in the exact same tenant bucket `prepareSessionReceipt` peeked from; see "MULTI-TENANT
       // ISOLATION" in the same docstring.
-      const committed = commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
+      let committed;
+      try {
+        committed = commitSessionReceipt(store, sessionId, prepared.receipt, prepared.segmentId, prepared.tenant);
+      } catch (err) {
+        // Defense in depth, mirroring the onReceipt persist-failure branch above: a store whose
+        // commit step performs durable I/O itself (e.g. noa-mcp-adapter-core's
+        // createFileSessionStore, --session-dir) can fail to write (ENOSPC, a lost filesystem,
+        // permission loss mid-run). That store's own contract POISONS itself on such a failure —
+        // the in-memory chain position has ALREADY advanced (the disk write is the second step,
+        // not the first), so this store instance can no longer durably reconstruct itself from
+        // disk; every further call on it rejects until the process restarts against the same
+        // --session-dir (see createFileSessionStore's own "FAIL-CLOSED POISON" docstring). The
+        // in-memory-only store (createChainSessionStore, the default) never throws here, so this
+        // branch is unreachable with the default store.
+        throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: receipt commit failed, call rejected (${err.message})`);
+      }
       if (!committed) {
         // Observable, never silent: the receipt was ALREADY durably persisted above (onReceipt
         // succeeded) and, for an ALLOW decision, is about to be forwarded to the downstream — but
@@ -226,6 +389,20 @@ export async function createProxyServer({
       return prepared;
     });
 
+    if (decision === "DEFERRED") {
+      // Held for a human. The receipt was already persisted (onReceipt) + committed to the live
+      // chain inside the queue above (so the session's position sits past the DEFERRED receipt,
+      // ready for the ALLOWED receipt to adopt onto it). Now record it in the pending store so the
+      // out-of-band approver (noa-approve) and the session-block check above can both see it.
+      if (pendingStorePath) {
+        try {
+          recordDeferred(pendingStorePath, { deferredReceipt: receipt, tenant, agentId: effectiveAgentId, sessionId, actionId: receipt.action.id, paramsHash: receipt.action.paramsHash });
+        } catch (err) {
+          throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: DEFERRED receipt "${receipt.id}" could not be recorded to the pending store (${err.message}) — call rejected closed`);
+        }
+      }
+      throw new McpError(ErrorCode.InvalidRequest, `noa-mcp-proxy: held for human approval, receipt ${receipt.id}`, { receiptId: receipt.id, ruleId: receipt.governance.ruleId });
+    }
     if (decision !== "ALLOW") {
       // FORWARD-YOK: the downstream tool handler is never invoked for a DENY.
       throw new McpError(

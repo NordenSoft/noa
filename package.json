@@ -1,6 +1,6 @@
 {
   "name": "noa-receipt",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "NOA Agent Action Receipt — open, offline-verifiable provenance for AI-agent actions. The governance/receipt organ only; the NOA brain is separate and proprietary.",
   "license": "Apache-2.0",
   "type": "module",
@@ -59,7 +59,6 @@
     "prepare": "npm run build",
     "prepublishOnly": "npm test && npm run test:dogfood && node impl-py/conformance.mjs && npm run lint:publish-surface && npm run check:matrix"
   },
-  "dependencies": {},
   "devDependencies": {
     "@types/node": "^22.0.0",
     "cbor2": "^2.3.0",

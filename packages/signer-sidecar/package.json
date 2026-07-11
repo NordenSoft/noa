@@ -1,0 +1,54 @@
+{
+  "name": "noa-signer-sidecar",
+  "version": "0.1.0",
+  "description": "Process-isolated Ed25519 signing oracle for noa-receipt: the private key lives ONLY in this separate process, reachable over a Unix domain socket, so a governed proxy (e.g. noa-mcp-proxy) never holds the raw key material in its own process memory.",
+  "keywords": [
+    "ai-agent",
+    "governance",
+    "receipt",
+    "hash-chain",
+    "provenance",
+    "mcp",
+    "signing",
+    "key-management"
+  ],
+  "homepage": "https://noatrust.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NordenSoft/noa.git",
+    "directory": "packages/signer-sidecar"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "noa-signer-sidecar": "src/sidecar.mjs"
+  },
+  "main": "src/client.mjs",
+  "exports": {
+    ".": "./src/client.mjs",
+    "./client": "./src/client.mjs",
+    "./client.mjs": "./src/client.mjs",
+    "./sidecar": "./src/sidecar.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "node test/smoke.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "noa-receipt": "^0.4.0",
+    "noa-mcp-adapter-core": "file:../adapter-core"
+  }
+}
