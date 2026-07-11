@@ -108,3 +108,17 @@ jobs:
           cd packages/tsa-anchor
           npm ci
           npm test
+      - name: signer-core parity gates (packages/signer-core)
+        # G1 (RFC 8032 vectors) + G2 (golden-receipt byte-parity vs noa-receipt's own
+        # buildReceipt/signEd25519) — the P1a kill-gates from .plan/MOBILE-APP-BUILD-SPEC.md §3.
+        # Same `noa-receipt: file:../..` local-repo dependency as tsa-anchor above (needs the
+        # root `dist/` already built by the earlier step); `noa-receipt` is a devDependency here
+        # ONLY (reference implementation for the G2 test) — the shipped src/ never imports it.
+        # `npm run mock-shell` is the runtime proof that the compiled core has no platform-SDK
+        # dependency (no DOM/Telegram/React-Native), complementing the compile-time `lib`
+        # boundary (tsconfig excludes "dom") this package's tsc build already enforces.
+        run: |
+          cd packages/signer-core
+          npm ci
+          npm test
+          npm run mock-shell
