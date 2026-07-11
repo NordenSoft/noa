@@ -58,6 +58,25 @@ export function encInteger(value) {
   return tlv(0x02, Buffer.from(bytes));
 }
 
+/**
+ * base-128 (a.k.a. VLQ / "big-endian base-128 with the continuation bit") encoding of ONE OID
+ * sub-identifier: 7 bits per octet, high bit set on every octet except the last, minimal (no
+ * leading 0x80 padding). Used for BOTH the combined first sub-identifier (40*arc0 + arc1) AND every
+ * subsequent arc — the first sub-identifier is NOT special-cased to a single byte, so a combined
+ * value >= 128 (e.g. joint-iso-itu-t arc `2.999`, whose 40*2+999 = 1079 needs two octets) encodes
+ * correctly per X.690 §8.19 instead of being truncated to one byte.
+ */
+function encOidArc(value) {
+  if (value === 0) return [0];
+  const digits = [];
+  let v = value;
+  while (v > 0) {
+    digits.unshift(v % 128);
+    v = Math.floor(v / 128);
+  }
+  return digits.map((d, i) => (i < digits.length - 1 ? 0x80 | d : d));
+}
+
 /** OBJECT IDENTIFIER (tag 0x06) from a dotted string, e.g. "2.16.840.1.101.3.4.2.1" (sha256). */
 export function encOid(dotted) {
   const arcs = dotted.split(".").map((s) => {
@@ -68,20 +87,8 @@ export function encOid(dotted) {
   if (arcs.length < 2) throw new DerError("encOid: an OID needs at least 2 arcs");
   const [a0, a1, ...rest] = arcs;
   if (a0 > 2 || (a0 < 2 && a1 >= 40)) throw new DerError(`encOid: invalid first two arcs "${a0}.${a1}"`);
-  const out = [a0 * 40 + a1];
-  for (const arc of rest) {
-    if (arc === 0) {
-      out.push(0);
-      continue;
-    }
-    const digits = [];
-    let v = arc;
-    while (v > 0) {
-      digits.unshift(v & 0x7f);
-      v = Math.floor(v / 128);
-    }
-    digits.forEach((d, i) => out.push(i < digits.length - 1 ? 0x80 | d : d));
-  }
+  const out = [...encOidArc(a0 * 40 + a1)]; // combined first sub-identifier — multi-byte when >= 128
+  for (const arc of rest) out.push(...encOidArc(arc));
   return tlv(0x06, Buffer.from(out));
 }
 
@@ -196,21 +203,29 @@ export function readOid(node) {
   if (!node || node.tagClass !== 0 || node.constructed || node.tagNumber !== 0x06) throw new DerError("not an OID");
   const bytes = node.content;
   if (bytes.length === 0) throw new DerError("empty OID");
-  const arcs = [Math.floor(bytes[0] / 40), bytes[0] % 40];
+  // Decode EVERY sub-identifier (including the first) as a base-128 group, then split the first
+  // group back into arc0/arc1 — the mirror of encOid: `40*arc0 + arc1` is a single value that can
+  // span multiple octets, so the old `bytes[0] / 40` single-byte split silently mis-decoded any
+  // first sub-identifier >= 128 (e.g. 2.999.x). See X.690 §8.19.
+  const groups = [];
   let acc = 0;
   let pending = false;
-  for (let k = 1; k < bytes.length; k++) {
+  for (let k = 0; k < bytes.length; k++) {
     const b = bytes[k];
     acc = acc * 128 + (b & 0x7f);
     pending = true;
     if ((b & 0x80) === 0) {
-      arcs.push(acc);
+      groups.push(acc);
       acc = 0;
       pending = false;
     }
   }
   if (pending) throw new DerError("truncated OID arc");
-  return arcs.join(".");
+  const first = groups[0];
+  // X.690: arc0 ∈ {0,1} caps the combined value at 40*arc0+39 < 80; anything >= 80 is arc0=2 (arc1 unbounded).
+  const arc0 = first < 40 ? 0 : first < 80 ? 1 : 2;
+  const arc1 = first - arc0 * 40;
+  return [arc0, arc1, ...groups.slice(1)].join(".");
 }
 
 /** DER GeneralizedTime (tag 0x18, primitive) -> ISO-8601 UTC string. */

@@ -57,6 +57,23 @@ test("encOid: sha256 OID (2.16.840.1.101.3.4.2.1) matches the well-known 9-byte 
   );
 });
 
+test("encOid: X.690 first-sub-identifier boundary — a combined 40*arc0+arc1 >= 128 encodes multi-byte", () => {
+  // Ground truth produced by an INDEPENDENT encoder (OpenSSL 3.x):
+  //   openssl asn1parse -genstr "OID:2.999.3" -noout -out - | xxd -p   =>  0603883703
+  //   openssl asn1parse -genstr "OID:2.48.0"  -noout -out - | xxd -p   =>  0603810000
+  // The old single-byte `40*a0 + a1` push truncated 2.999 (40*2+999 = 1079) to one octet (0x37).
+  assert.deepEqual(encOid("2.999.3"), Buffer.from([0x06, 0x03, 0x88, 0x37, 0x03]), "2.999.3 must encode the joint first sub-identifier (1079) as two base-128 octets");
+  assert.deepEqual(encOid("2.48.0"), Buffer.from([0x06, 0x03, 0x81, 0x00, 0x00]), "2.48.0: 40*2+48 = 128 crosses the single-octet boundary");
+});
+
+test("readOid: mirror-decodes the multi-byte first sub-identifier (round-trip, not just self-consistent)", () => {
+  for (const oid of ["2.999.3", "2.48.0", "2.16.840.1.101.3.4.2.1", "1.2.840.113549.1.7.2", "0.39.0", "1.39.999"]) {
+    assert.equal(readOid(derDecode(encOid(oid))), oid, `encOid/readOid must round-trip ${oid}`);
+  }
+  // Decode the OpenSSL-derived 2.999.3 ground-truth bytes directly (independent of our own encoder).
+  assert.equal(readOid(derDecode(Buffer.from([0x06, 0x03, 0x88, 0x37, 0x03]))), "2.999.3");
+});
+
 test("encNull / encOctetString / encBoolean: primitive TLVs", () => {
   assert.deepEqual(encNull(), Buffer.from([0x05, 0x00]));
   assert.deepEqual(encOctetString(Buffer.from([1, 2, 3])), Buffer.from([0x04, 0x03, 1, 2, 3]));
