@@ -14,6 +14,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { signEd25519 } from "../src/keys.js";
+import { canonicalize } from "../src/jcs.js";
+import { signingMessage, CHECKPOINT_SIG_DOMAIN } from "../src/signing.js";
 import {
   anchorSigningInput,
   type Anchor,
@@ -156,6 +158,23 @@ const cases: Vector[] = [
     anchors: [confirm(w1, "2026-06-23T06:00:00Z"), confirm(w2, "2026-06-23T06:00:00Z")],
     opts: { freshness: { now: NOW_MS, maxAgeMs: ONE_HOUR } },
     expect: { complete: false, classification: "STALE" },
+  },
+  {
+    name: "h-cross-domain-replay",
+    note: "§8 domain separation: a CHECKPOINT-domain signature by a pinned witness is NOT a valid anchor (wrong signing domain) -> dropped, below quorum",
+    head: HEAD, trustSet: TS3,
+    anchors: [
+      confirm(w1),
+      // A genuine Ed25519 signature by pinned witness w2, but over the CHECKPOINT domain preimage instead of
+      // the ANCHOR one. Distinct ANCHOR_SIG_DOMAIN vs CHECKPOINT_SIG_DOMAIN tags mean this never verifies as
+      // an anchor — it is dropped fail-closed, so only w1's genuine confirm counts (1 < quorum 2).
+      (() => {
+        const surface = { chain: HEAD.chain, highestSeq: HEAD.seq, headHash: HEAD.hash, ts: "2026-06-23T10:00:00Z" };
+        const value = signEd25519(w2.privateKey, signingMessage(CHECKPOINT_SIG_DOMAIN, canonicalize(surface)));
+        return { ...surface, sig: { alg: "ed25519" as const, kid: w2.kid, value } };
+      })(),
+    ],
+    expect: { complete: false, classification: "NOT_ESTABLISHED" },
   },
 ];
 
