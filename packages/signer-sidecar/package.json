@@ -48,7 +48,7 @@
     "prepublishOnly": "npm test"
   },
   "dependencies": {
-    "noa-receipt": "^0.4.0",
-    "noa-mcp-adapter-core": "file:../adapter-core"
+    "noa-mcp-adapter-core": "file:../adapter-core",
+    "noa-receipt": "^0.5.0"
   }
 }

@@ -41,6 +41,7 @@ jobs:
           cache: npm
           cache-dependency-path: |
             packages/adapter-core/package-lock.json
+            packages/signer-sidecar/package-lock.json
             packages/mcp-proxy/package-lock.json
 
       # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node still ships npm 10.x.
@@ -72,6 +73,16 @@ jobs:
 
       - name: adapter-core test gate (never publish broken)
         working-directory: packages/adapter-core
+        run: |
+          npm ci
+          npm test
+
+      - name: signer-sidecar deps + test gate (mcp-proxy's --signer-socket smoke spawns it)
+        # signer-sidecar is NOT published this release (it is mcp-proxy's OPTIONAL dependency), but
+        # mcp-proxy's own smoke test (Bonus S/T) spawns packages/signer-sidecar/src/sidecar.mjs,
+        # which needs signer-sidecar's own node_modules (noa-mcp-adapter-core via file:, noa-receipt
+        # from the registry). Must run AFTER adapter-core's npm ci populated the file: link target.
+        working-directory: packages/signer-sidecar
         run: |
           npm ci
           npm test
