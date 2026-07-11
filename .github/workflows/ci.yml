@@ -87,3 +87,14 @@ jobs:
           cd packages/mcp-proxy
           npm ci
           npm test
+      - name: tsa-anchor unit tests (packages/tsa-anchor)
+        # RFC 3161 DER encode/decode, TimeStampReq/Resp, client self-checks, verifyStamp, CLI.
+        # UNLIKE adapter-core (which uses the PUBLISHED noa-receipt), tsa-anchor depends on the
+        # LOCAL repo via `noa-receipt: file:../..`, so `npm ci` here just symlinks node_modules/
+        # noa-receipt -> the repo root, and `import "noa-receipt"` resolves to the root's built
+        # dist/ (main: dist/src/index.js). That dist/ already exists because the conformance step
+        # above ran `npm run build`. Keep this step AFTER that build — do not move it earlier.
+        run: |
+          cd packages/tsa-anchor
+          npm ci
+          npm test
