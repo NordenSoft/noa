@@ -9,7 +9,7 @@
  * documented `openssl ts -verify` command (README.md) against the .tsr bytes. verifyStamp NEVER
  * throws: any parse failure, malformed input, or mismatch returns { ok: false, reason }.
  */
-import { parseTimeStampResp } from "./tsq.mjs";
+import { parseTimeStampResp, SHA256_OID } from "./tsq.mjs";
 import { anchorHash, anchorHashDigest } from "./anchor-hash.mjs";
 
 export function verifyStamp(anchor, stampRecord) {
@@ -48,6 +48,11 @@ export function verifyStamp(anchor, stampRecord) {
   }
   if (!parsed.granted) {
     return { ok: false, reason: `TSA response did not grant the request (status=${parsed.status})` };
+  }
+  // Bind the digest comparison to sha256: expectedDigest IS a sha256, so a token that carries the
+  // same 32 bytes but claims a different hashAlgorithm OID must NOT be accepted as covering it.
+  if (parsed.hashAlgOid !== SHA256_OID) {
+    return { ok: false, reason: `TSA token uses hashAlgorithm ${parsed.hashAlgOid}, expected sha256 (${SHA256_OID})` };
   }
   if (!parsed.hashedMessage.equals(expectedDigest)) {
     return {

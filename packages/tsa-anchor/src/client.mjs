@@ -5,7 +5,7 @@
  * built-in `fetch` (stable since Node 18/20) — zero extra runtime dependencies.
  */
 import { randomBytes } from "node:crypto";
-import { buildTimeStampReq, parseTimeStampResp } from "./tsq.mjs";
+import { buildTimeStampReq, parseTimeStampResp, SHA256_OID } from "./tsq.mjs";
 import { anchorHash, anchorHashDigest } from "./anchor-hash.mjs";
 
 export class TsaError extends Error {
@@ -65,6 +65,11 @@ export async function stampAnchor(anchor, opts) {
   }
   if (!parsed.granted) {
     throw new TsaError(`stampAnchor: TSA ${opts.tsaUrl} did not grant the request (status=${parsed.status})`);
+  }
+  // We always submit a sha256 messageImprint (buildTimeStampReq defaults to SHA256_OID); a token
+  // echoing a different hashAlgorithm OID is non-conformant — reject rather than store it.
+  if (parsed.hashAlgOid !== SHA256_OID) {
+    throw new TsaError(`stampAnchor: TSA ${opts.tsaUrl} responded with hashAlgorithm ${parsed.hashAlgOid}, expected sha256 (${SHA256_OID})`);
   }
   // Fail-closed self-check: the token's OWN messageImprint must echo exactly what we submitted —
   // never trust a validly-formed token that silently diverges from the digest we asked to stamp.

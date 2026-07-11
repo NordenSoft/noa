@@ -3,12 +3,29 @@ import assert from "node:assert/strict";
 import { generateKeyPair, buildAnchor } from "noa-receipt";
 import { stampAnchor } from "../src/client.mjs";
 import { verifyStamp } from "../src/verify.mjs";
+import { anchorHashDigest } from "../src/anchor-hash.mjs";
+import { SHA256_OID } from "../src/tsq.mjs";
+import { encInteger, encOid, encNull, encOctetString, encSequence, encSet, encContext, encGeneralizedTime } from "../src/der.mjs";
 import { startMockTsa } from "./mock-tsa-server.mjs";
 
 function mkAnchor(headHashSuffix, kid) {
   const kp = generateKeyPair(kid);
   const frontier = { chain: "tenant-acme/orders", highestSeq: 5, headHash: "sha256:" + headHashSuffix.repeat(64), ts: "2026-06-23T10:00:00Z" };
   return buildAnchor(frontier, { kid: kp.kid, privateKey: kp.privateKey });
+}
+
+const ID_SIGNED_DATA = "1.2.840.113549.1.7.2";
+const ID_CT_TST_INFO = "1.2.840.113549.1.9.16.1.4";
+
+/** Forge a granted TimeStampResp with an arbitrary hashAlgorithm OID + hashedMessage (unsigned;
+ *  verify.mjs never checks the CMS signature) — used to prove the hashAlg is actually enforced. */
+function forgeToken({ hashAlgOid, hashedMessage }) {
+  const messageImprint = encSequence([encSequence([encOid(hashAlgOid), encNull()]), encOctetString(hashedMessage)]);
+  const tstInfo = encSequence([encInteger(1), encOid("1.2.3.4.5"), messageImprint, encInteger(1), encGeneralizedTime(new Date())]);
+  const encap = encSequence([encOid(ID_CT_TST_INFO), encContext(0, encOctetString(tstInfo))]);
+  const signedData = encSequence([encInteger(3), encSet([encSequence([encOid(SHA256_OID), encNull()])]), encap, encSet([])]);
+  const resp = encSequence([encSequence([encInteger(0)]), encSequence([encOid(ID_SIGNED_DATA), encContext(0, signedData)])]);
+  return resp.toString("base64");
 }
 
 test("verifyStamp: a genuine stamp over its own anchor verifies ok:true", async () => {
@@ -69,6 +86,20 @@ test("verifyStamp: REJECTS a .tsr obtained for a rejected/no-token response (nev
   const res = verifyStamp(anchor, fakeStamp);
   assert.equal(res.ok, false);
   assert.match(res.reason, /not grant/i);
+});
+
+test("verifyStamp: REJECTS a token that carries the correct digest bytes but LIES about the hashAlgorithm", () => {
+  const anchor = mkAnchor("f", "witness-verify-alg");
+  const digest = anchorHashDigest(anchor); // the anchor's real 32-byte sha256 digest
+  // A conformant token would label these bytes sha256; this one claims sha384 (2.16.840.1.101.3.4.2.2).
+  // The messageImprint bytes still equal expectedDigest, so the bytes-only check alone would pass.
+  const forged = forgeToken({ hashAlgOid: "2.16.840.1.101.3.4.2.2", hashedMessage: digest });
+  const res = verifyStamp(anchor, { tsr: forged });
+  assert.equal(res.ok, false, "a wrong-hashAlg token must not verify even when the digest bytes match");
+  assert.match(res.reason, /hashAlgorithm/i);
+  // control: the SAME bytes labelled sha256 do verify — proving the rejection is the alg, not the bytes.
+  const honest = forgeToken({ hashAlgOid: SHA256_OID, hashedMessage: digest });
+  assert.equal(verifyStamp(anchor, { tsr: honest }).ok, true);
 });
 
 test("verifyStamp: never throws — malformed/corrupted base64 returns ok:false", () => {
