@@ -618,6 +618,60 @@
         "complete": false,
         "classification": "STALE"
       }
+    },
+    {
+      "name": "h-cross-domain-replay",
+      "note": "§8 domain separation: a CHECKPOINT-domain signature by a pinned witness is NOT a valid anchor (wrong signing domain) -> dropped, below quorum",
+      "head": {
+        "chain": "tenant-acme/orders",
+        "seq": 5,
+        "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "trustSet": {
+        "witnesses": [
+          {
+            "kid": "witness-1",
+            "pubkey": "MCowBQYDK2VwAyEATLWr9q15+/WrvMr8wmnYXNJlHtS4hbWGnyQa7fCluik="
+          },
+          {
+            "kid": "witness-2",
+            "pubkey": "MCowBQYDK2VwAyEAdCK5iHWYBo4yxESKlJrbKQ0PTjW54BsO5fGh5gD+JnQ="
+          },
+          {
+            "kid": "witness-3",
+            "pubkey": "MCowBQYDK2VwAyEA84FibkHnAn6kMb/jAJ6UvdJadGvuxGiUjWw8fF3JpUs="
+          }
+        ],
+        "quorum": 2
+      },
+      "anchors": [
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-1",
+            "value": "lTVsg5l3QIzRBzDE0EIQHLKz7P1GjasFQwYmKQU85v3m1BQ/jWOCdpRfotCo/IVs4cPUzV4Mya2fIaR6oCgYAw=="
+          }
+        },
+        {
+          "chain": "tenant-acme/orders",
+          "highestSeq": 5,
+          "headHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "ts": "2026-06-23T10:00:00Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "witness-2",
+            "value": "jQhgRtje/Ti+haHE/WtmaSXN1/JwlQXfAb+PHV7+CfgqeL3uShajRa+7ERS2BV7gX7q5ZRHAxEA97KW4L7WyAg=="
+          }
+        }
+      ],
+      "expect": {
+        "complete": false,
+        "classification": "NOT_ESTABLISHED"
+      }
     }
   ]
 }

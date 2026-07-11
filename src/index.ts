@@ -73,3 +73,28 @@ export type { ReceiptCompliance } from "./types.js";
 export { coseSign1, coseSign1Verify, type CoseSigner, type CoseVerifyResult } from "./cose/cose-sign1.js";
 export { receiptToCose, receiptFromCose, type ReceiptCoseResult } from "./cose/receipt-cose.js";
 export { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, CborError, type CborValue } from "./cose/cbor.js";
+
+// Witness & transparency federation — OPT-IN and DISJOINT from the default verify path (federation-spec §4).
+// The anchor builder (producer) + the §4 acceptance rule (reference verifier) + the composed
+// witnessed-verify path. The network WIRE layer (live witness frontier queries, inclusion/consistency
+// proofs) remains DORMANT per federation-spec §10 — nothing here contacts a witness or a network.
+export { buildAnchor, anchorForChainHead, AnchorError, type AnchorFrontier } from "./federation/anchor.js";
+export {
+  verifyCompleteness,
+  anchorSigningInput,
+  ANCHOR_SIG_DOMAIN,
+  type Anchor,
+  type AnchorSig,
+  type PinnedWitness,
+  type TrustSet,
+  type ChainHead,
+  type FreshnessPolicy,
+  type CompletenessOptions,
+  type CompletenessResult,
+  type AcceptanceClassification,
+} from "./federation/acceptance.js";
+export {
+  verifyChainWitnessed,
+  type WitnessedOptions,
+  type WitnessedResult,
+} from "./federation/verify-witnessed.js";

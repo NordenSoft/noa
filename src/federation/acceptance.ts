@@ -1,11 +1,15 @@
 /**
- * Witness-federation ACCEPTANCE RULE — reference verifier (DORMANT).
+ * Witness-federation ACCEPTANCE RULE — reference verifier (offline; network WIRE layer dormant).
  *
  * This implements docs/federation-spec.md §4 ("Anchors and the acceptance rule") as a PURE,
- * offline-checkable function over a set of witness anchors the caller has already collected. It is a
- * REFERENCE verifier for the (future, v1.0) witness layer: it is deliberately NOT wired into the live
- * receipt-verify path (src/verify.ts / src/index.ts). The default receipt-verify flow is unchanged; this
- * module is exported so tests and a future opt-in path can use it.
+ * offline-checkable function over a set of witness anchors the caller has already collected. It is the
+ * REFERENCE verifier for the witness layer, now reachable through an OPT-IN, disjoint path: the anchor
+ * builder (src/federation/anchor.ts), the composed witnessed-verify entry (src/federation/verify-witnessed.ts),
+ * the `noa verify --anchors/--trust-set` CLI flags, and the src/index.ts exports. The DEFAULT receipt-verify
+ * flow (src/verify.ts verifyChain) is unchanged and never calls this. The network WIRE layer — live witness
+ * frontier queries and inclusion/consistency Merkle proofs — remains DORMANT per federation-spec §10:
+ * nothing here (or on the opt-in path) contacts a witness or a network; the caller supplies the anchor
+ * snapshot out-of-band.
  *
  * WHAT THIS DOES AND DOES NOT CHECK (honest scope — see federation-spec §7):
  *  - It checks the **non-deletion acceptance rule** of §4 over a caller-supplied snapshot of witness
