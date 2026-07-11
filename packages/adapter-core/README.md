@@ -5,10 +5,9 @@ The MCP pre-flight decision engine, extracted from
 shared, unit-tested module so more than one integration (a proxy, an in-process guard, a future
 gateway) can call the exact same `preCheck()` instead of re-deriving the receipt-building logic.
 
-Not published; not meant to be used outside this repo checkout. It couples to the repo root's
-built output via a relative import (`../../../dist/src/index.js`), so `npm run build` must have
-run at the repo root first. See [`src/pre-check.mjs`](src/pre-check.mjs) for why a relative import
-was chosen over a `file:` dependency on the root package.
+This package consumes the receipt engine as a registry dependency (`noa-receipt@^0.4.0`, see
+[`package.json`](package.json)), imported by package name rather than by a relative path into the
+repo's build output. See [`src/pre-check.mjs`](src/pre-check.mjs) for the imports.
 
 ## API
 
@@ -129,6 +128,6 @@ was chosen over a `file:` dependency on the root package.
 ## Test
 
 ```bash
-npm install     # no external deps; just wires up node --test
+npm install     # pulls in noa-receipt (the receipt engine) + wires up node --test
 npm test
 ```
