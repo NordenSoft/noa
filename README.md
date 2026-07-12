@@ -60,7 +60,7 @@ are opaque and must not contain PII; the format can't enforce that — see THREA
 {
   "spec": "noa.receipt/0.1",
   "action": { "canonical": "payment.refund", "riskClass": "HIGH" },
-  "governance": { "verdict": "EXECUTED", "approval": { "by": "you@acme.com" } },
+  "governance": { "verdict": "EXECUTED", "approval": { "by": "approver_01J9X4Q2" } },
   "chain": { "seq": 42, "prevHash": "sha256:…", "hash": "sha256:…" }
 }
 ```
