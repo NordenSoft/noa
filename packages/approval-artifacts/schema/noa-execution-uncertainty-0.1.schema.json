@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-execution-uncertainty-0.1.schema.json",
+  "title": "NOA Execution Uncertainty",
+  "description": "The gate-signed attestation of a process crash between dispatch-start and receipt-commit; backs the UNKNOWN_AFTER_DISPATCH outcome (§8 F8c, §13). An honest 'don't know', never a guessed EXECUTED/FAILED. Gate-DETERMINED (a wrapper can only HINT). bootId + uptimeResetAt are REQUIRED gate-external liveness (G3) the verifier cross-checks. Domain NOA-ExecUncertainty-v0.1-sig. Signer TYPE+ROLE = GATE + execution-signer (F15).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "grantHash", "lastKnownState", "detectedAt", "reason", "bootId", "uptimeResetAt", "sig"],
+  "properties": {
+    "spec": { "const": "noa.execution-uncertainty/0.1" },
+    "grantHash": { "$ref": "#/$defs/hash256" },
+    "lastKnownState": { "const": "DISPATCH_STARTED" },
+    "detectedAt": { "$ref": "#/$defs/rfc3339" },
+    "reason": { "const": "PROCESS_CRASH_BEFORE_RECEIPT_COMMIT" },
+    "bootId": { "type": "string", "pattern": "^.{1,256}$" },
+    "uptimeResetAt": { "$ref": "#/$defs/rfc3339" },
+    "sig": { "$ref": "#/$defs/sig" }
+  },
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "description": "challengeHash re-pointed to a different challenge (re-signed) — F1 rule-b mismatch",
+  "spec": "noa.pairing/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "cross-artifact-hash-substitution",
+  "artifact": {
+    "spec": "noa.pairing/0.1",
+    "type": "CONFIRMATION",
+    "pairingId": "pair-001",
+    "challengeHash": "sha256:5fb8247e3bfec8d0e9c20f41bdec83e2bdff0ce91903e1464654de1a108c52d4",
+    "approverKid": "approver-1-device-2",
+    "approverPublicKey": "MCowBQYDK2VwAyEANrq8SiwpHxclTXg0+xBZHhycN9Md4xQxm4Csh0DMwb8=",
+    "approverHpkePublicKey": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28",
+    "confirmedAt": "2026-07-14T11:54:00.000Z",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "approver-1-device-2",
+      "value": "jBNpd4xOiPXYmTinRN/Vc2Q/lNZbFcxUIESKARZdmYUy+MKxrUY79sj3cj3720qAIh6UtoktNDLxqod9wRSKCA=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "pairingId",
+        "value": "pair-001"
+      },
+      {
+        "path": "approverKid",
+        "value": "approver-1-device-2"
+      },
+      {
+        "path": "sig.kid",
+        "value": "approver-1-device-2"
+      }
+    ],
+    "refHashChecks": [
+      {
+        "path": "challengeHash",
+        "rule": "side",
+        "artifact": {
+          "spec": "noa.pairing/0.1",
+          "type": "CHALLENGE",
+          "pairingId": "pair-001",
+          "tenant": "tenant-acme",
+          "gateKid": "gate-prod-1",
+          "gatePublicKey": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=",
+          "tenantAuthorityKid": "tenant-authority-1",
+          "tenantAuthorityPublicKey": "MCowBQYDK2VwAyEAiZQzmnkArDMxw25BKfAc/EjIjOigCzTxWmO0Ag+Dn00=",
+          "initialKeyManifestHash": "sha256:4a783c8b76228436b6782d142ba74d7374aa1859a21c7550021c7318a471f82b",
+          "allowedRole": "approver",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "challengeNonce": "chal-nonce-01",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "bao/VeAGtS9Mk/bZXaiAGhFbcu4FbZo24706l2eKArsd6WhIocuaMzgQurKrSbH5GdJPorsiRXe7k3V0IBCsAg=="
+          }
+        }
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "confirmedAt",
+        "min": "2026-07-14T11:00:00.000Z",
+        "max": "2026-07-14T12:05:00.000Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,39 @@
+{
+  "description": "F2 (Hold Envelope rejection set): a relay-added recipients[] entry in the encrypted-display breaks the displayCiphertextHash the gate signed INSIDE the Hold Envelope — the swapped display object is verified against that envelope-committed whole-object hash → mismatch",
+  "spec": "noa.encrypted-display/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "recipients-swap",
+  "artifact": {
+    "spec": "noa.encrypted-display/0.1",
+    "tenant": "tenant-acme",
+    "holdId": "hold-001",
+    "deferredReceiptHash": "sha256:e31db8755f93a9c419313e6fdc7bbd3c892f1fc24feab19ef281bfd29b2d6c21",
+    "expiresAt": "2026-07-14T12:30:00.000Z",
+    "suite": {
+      "kem": 32,
+      "kdf": 1,
+      "aead": 3
+    },
+    "payload": {
+      "nonce": "cGF5bG9hZC1ub25jZQ",
+      "ciphertext": "Y2lwaGVydGV4dC1kaXNwbGF5"
+    },
+    "recipients": [
+      {
+        "kid": "approver-1-device-2",
+        "enc": "ZW5jLWNhcHN1bGUtYQ",
+        "wrappedCek": "d3JhcHBlZC1jZWstYQ"
+      },
+      {
+        "kid": "attacker-device",
+        "enc": "ZXZpbA",
+        "wrappedCek": "ZXZpbA"
+      }
+    ],
+    "aadHash": "sha256:cc31f7acd127c440a931032c92f4f29cbf416a5bf3f7a9635ec79841009333b6"
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "expectVirtualHash": "sha256:0e0a6ce44061509fad8787f8a1e4beedd29050a402162d1c7f2d9984c0abab51"
+  }
+}

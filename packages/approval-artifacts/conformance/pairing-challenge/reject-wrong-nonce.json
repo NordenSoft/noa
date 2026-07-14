@@ -1,0 +1,116 @@
+{
+  "description": "challengeNonce changed (re-signed) — replay",
+  "spec": "noa.pairing/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "wrong-nonce",
+  "artifact": {
+    "spec": "noa.pairing/0.1",
+    "type": "CHALLENGE",
+    "pairingId": "pair-001",
+    "tenant": "tenant-acme",
+    "gateKid": "gate-prod-1",
+    "gatePublicKey": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=",
+    "tenantAuthorityKid": "tenant-authority-1",
+    "tenantAuthorityPublicKey": "MCowBQYDK2VwAyEAiZQzmnkArDMxw25BKfAc/EjIjOigCzTxWmO0Ag+Dn00=",
+    "initialKeyManifestHash": "sha256:4a783c8b76228436b6782d142ba74d7374aa1859a21c7550021c7318a471f82b",
+    "allowedRole": "approver",
+    "expiresAt": "2026-07-14T12:30:00.000Z",
+    "challengeNonce": "attacker-nonce",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "gate-prod-1",
+      "value": "+hn2caFluUBx515LZ0bUPgAagB8A0oI0n0qxfqG3cujjpd31gzxxcBmgq0wl4VlPbzzvGrqiYRfQonj+aTKHDA=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "tenant",
+        "value": "tenant-acme"
+      },
+      {
+        "path": "challengeNonce",
+        "value": "chal-nonce-01"
+      },
+      {
+        "path": "gateKid",
+        "value": "gate-prod-1"
+      },
+      {
+        "path": "sig.kid",
+        "value": "gate-prod-1"
+      }
+    ],
+    "refHashChecks": [
+      {
+        "path": "initialKeyManifestHash",
+        "rule": "side",
+        "artifact": {
+          "spec": "noa.key-manifest/0.1",
+          "tenant": "tenant-acme",
+          "version": 2,
+          "issuedAt": "2026-07-14T09:30:00.000Z",
+          "expiresAt": "2026-07-15T09:30:00.000Z",
+          "previousManifestHash": "sha256:2bb802a8619f19d1a2ea04425da80216e7418aa86decfcc6754a8e56a6c5ad4d",
+          "keys": [
+            {
+              "kid": "gate-prod-1",
+              "type": "GATE",
+              "roles": [
+                "hold-signer",
+                "execution-signer"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=",
+              "validFrom": "2026-07-14T10:00:00.000Z",
+              "revokedAt": null
+            },
+            {
+              "kid": "approver-1-device-2",
+              "type": "APPROVER",
+              "roles": [
+                "approve-high"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEANrq8SiwpHxclTXg0+xBZHhycN9Md4xQxm4Csh0DMwb8=",
+              "hpkePublicKey": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28",
+              "validFrom": "2026-07-14T10:00:00.000Z",
+              "revokedAt": null
+            },
+            {
+              "kid": "approver-crit-5",
+              "type": "APPROVER",
+              "roles": [
+                "approve-critical"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAtN4H1lCn75RSP7yjvFOXA8mX3RNhjmPvMcGqRBjIlhY=",
+              "hpkePublicKey": "6d7d71dc3d1948fd59db600f3f342789f57c2da1998306b4a2f88a92acb18b75",
+              "validFrom": "2026-07-14T10:00:00.000Z",
+              "revokedAt": null
+            },
+            {
+              "kid": "audit-1",
+              "type": "AUDIT",
+              "roles": [
+                "audit-decrypt"
+              ],
+              "hpkePublicKey": "aa8a1771a106d1909a688bcc65fe6b56745070a56707fd7644c8233999b5d102",
+              "validFrom": "2026-07-14T10:00:00.000Z",
+              "revokedAt": null
+            }
+          ],
+          "sig": {
+            "alg": "ed25519",
+            "kid": "manifest-signer-3",
+            "value": "4vc/OxCf+pULUYydBVNcSbWan2vU0g4yifcsyUIldWZJcUQD/pqAlt1Pk841ZnPR/wPHpVUCQeSJ6Lsw94pJDg=="
+          }
+        }
+      }
+    ],
+    "mustBeAfter": [
+      {
+        "path": "expiresAt",
+        "time": "2026-07-14T12:00:00.000Z"
+      }
+    ]
+  }
+}

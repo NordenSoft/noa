@@ -1,0 +1,63 @@
+{
+  "description": "signed by an unknown key (attacker-x) not in the keyring",
+  "spec": "noa.execution-uncertainty/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "wrong-key",
+  "artifact": {
+    "spec": "noa.execution-uncertainty/0.1",
+    "grantHash": "sha256:e70785b3250fc207b6f5fa43dea2dd5c096b9c57673355f56a90baba4c13fb86",
+    "lastKnownState": "DISPATCH_STARTED",
+    "detectedAt": "2026-07-14T11:58:00.000Z",
+    "reason": "PROCESS_CRASH_BEFORE_RECEIPT_COMMIT",
+    "bootId": "boot-7f3a9c",
+    "uptimeResetAt": "2026-07-14T11:50:00.000Z",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "attacker-x",
+      "value": "NRuyEhEmvGGhSudQ3MdHtqA5QlX6/Y25Es30Bc9Wo2784RZGd4/r5MoxSFDEuJFP4nHxL7elWUMzB6sw3lwXBQ=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "bootId",
+        "value": "boot-7f3a9c"
+      },
+      {
+        "path": "uptimeResetAt",
+        "value": "2026-07-14T11:50:00.000Z"
+      }
+    ],
+    "refHashChecks": [
+      {
+        "path": "grantHash",
+        "rule": "side",
+        "artifact": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "holdEnvelopeHash": "sha256:47b71f8b8416943c129da8c326578a9f75d4ddb187f3ed1291abed337ec11e8b",
+          "approvalReceiptHash": "sha256:71a9ae2ed46fcc58cc1940f943ae90d9885d15507e35382c99a51509ef20f66b",
+          "issuedAt": "2026-07-14T11:55:00.000Z",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "grant-nonce-01",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "KwyTfvrCfvyfyL2nq4oiyAMTqQ9ArX3Sv2tzne8Z1xYPb3vaTM7vr33RsGnm5RgGXIp6n9pOJZD4O+y1CfLGCA=="
+          }
+        }
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "detectedAt",
+        "min": "2026-07-14T11:00:00.000Z",
+        "max": "2026-07-14T12:05:00.000Z"
+      }
+    ]
+  }
+}

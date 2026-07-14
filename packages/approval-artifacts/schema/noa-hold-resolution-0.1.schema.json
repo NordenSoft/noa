@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-hold-resolution-0.1.schema.json",
+  "title": "NOA Hold Resolution",
+  "description": "The gate-signed record of the instant a hold reaches a terminal state (APPROVED/DENIED/EXPIRED/CANCELLED), carrying the gate's own trusted receivedAt — the verifier's authorization-time source of truth, never the phone-written decidedAt (F10, §8). Emitted for EVERY outcome. Has no tenant field of its own; bound transitively via holdEnvelopeHash (G7). Domain NOA-HoldResolution-v0.1-sig. Signer TYPE+ROLE = GATE + execution-signer (F15).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "holdId", "holdEnvelopeHash", "decisionArtifactHash", "verdictReceiptHash", "status", "reasonCode", "receivedAt", "keyManifestVersion", "keyManifestHash", "sig"],
+  "properties": {
+    "spec": { "const": "noa.hold-resolution/0.1" },
+    "holdId": { "type": "string", "pattern": "^.{1,128}$" },
+    "holdEnvelopeHash": { "$ref": "#/$defs/hash256" },
+    "decisionArtifactHash": { "oneOf": [{ "$ref": "#/$defs/hash256" }, { "type": "null" }] },
+    "verdictReceiptHash": { "oneOf": [{ "$ref": "#/$defs/hash256" }, { "type": "null" }] },
+    "status": { "enum": ["APPROVED", "DENIED", "EXPIRED", "CANCELLED"] },
+    "reasonCode": { "oneOf": [{ "type": "string", "pattern": "^.{1,64}$" }, { "type": "null" }] },
+    "receivedAt": { "$ref": "#/$defs/rfc3339" },
+    "keyManifestVersion": { "type": "integer", "minimum": 1 },
+    "keyManifestHash": { "$ref": "#/$defs/hash256" },
+    "sig": { "$ref": "#/$defs/sig" }
+  },
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}

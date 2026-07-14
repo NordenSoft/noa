@@ -1,0 +1,96 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-key-manifest-0.1.schema.json",
+  "title": "NOA Key Manifest",
+  "description": "The delegated-manifest-signer-signed (D16-v2, §9), versioned, hash-chained, expiresAt-bearing record of typed gate/approver/audit keys. Domain NOA-KeyManifest-v0.1-sig. The signer is the root-DELEGATED manifest-signing key (verified against noa.key-delegation/0.1), NEVER the gate itself (Red Line 16). Alpha (F21) permits the tenant authority key to sign directly.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "tenant", "version", "issuedAt", "expiresAt", "previousManifestHash", "keys", "sig"],
+  "properties": {
+    "spec": { "const": "noa.key-manifest/0.1" },
+    "tenant": { "type": "string", "pattern": "^.{1,256}$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "issuedAt": { "$ref": "#/$defs/rfc3339" },
+    "expiresAt": { "$ref": "#/$defs/rfc3339" },
+    "previousManifestHash": { "oneOf": [{ "$ref": "#/$defs/hash256" }, { "type": "null" }] },
+    "keys": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/keyEntry" } },
+    "sig": { "$ref": "#/$defs/sig" }
+  },
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "ed25519Key": { "type": "string", "pattern": "^.{1,1024}$" },
+    "x25519Key": { "type": "string", "pattern": "^.{1,1024}$" },
+    "revokedAt": { "oneOf": [{ "$ref": "#/$defs/rfc3339" }, { "type": "null" }] },
+    "keyEntry": {
+      "description": "A typed key. GATE has an ed25519 publicKey (signs holds/execution); APPROVER has BOTH an ed25519 publicKey (signs decisions) and an x25519 hpkePublicKey (receives the encrypted display); AUDIT has ONLY an x25519 hpkePublicKey (decrypts reasons, never signs).",
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kid", "type", "roles", "publicKey", "validFrom", "revokedAt"],
+          "properties": {
+            "kid": { "type": "string", "pattern": "^.{1,128}$" },
+            "type": { "const": "GATE" },
+            "roles": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "enum": ["hold-signer", "execution-signer"] }
+            },
+            "publicKey": { "$ref": "#/$defs/ed25519Key" },
+            "validFrom": { "$ref": "#/$defs/rfc3339" },
+            "revokedAt": { "$ref": "#/$defs/revokedAt" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kid", "type", "roles", "publicKey", "hpkePublicKey", "validFrom", "revokedAt"],
+          "properties": {
+            "kid": { "type": "string", "pattern": "^.{1,128}$" },
+            "type": { "const": "APPROVER" },
+            "roles": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "enum": ["approve-high", "approve-critical"] }
+            },
+            "publicKey": { "$ref": "#/$defs/ed25519Key" },
+            "hpkePublicKey": { "$ref": "#/$defs/x25519Key" },
+            "validFrom": { "$ref": "#/$defs/rfc3339" },
+            "revokedAt": { "$ref": "#/$defs/revokedAt" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["kid", "type", "roles", "hpkePublicKey", "validFrom", "revokedAt"],
+          "properties": {
+            "kid": { "type": "string", "pattern": "^.{1,128}$" },
+            "type": { "const": "AUDIT" },
+            "roles": {
+              "type": "array",
+              "minItems": 1,
+              "items": { "enum": ["audit-decrypt"] }
+            },
+            "hpkePublicKey": { "$ref": "#/$defs/x25519Key" },
+            "validFrom": { "$ref": "#/$defs/rfc3339" },
+            "revokedAt": { "$ref": "#/$defs/revokedAt" }
+          }
+        }
+      ]
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}

@@ -1,0 +1,52 @@
+{
+  "tenant-authority-1": {
+    "publicKey": "MCowBQYDK2VwAyEAiZQzmnkArDMxw25BKfAc/EjIjOigCzTxWmO0Ag+Dn00=",
+    "type": "ROOT",
+    "roles": []
+  },
+  "manifest-signer-3": {
+    "publicKey": "MCowBQYDK2VwAyEA27oD5NxHqlbHBJILS5x8DuhvFh5JJ92RO4FOSkRkrnQ=",
+    "type": "DELEGATED",
+    "roles": [
+      "key-manifest-sign"
+    ]
+  },
+  "gate-prod-1": {
+    "publicKey": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=",
+    "type": "GATE",
+    "roles": [
+      "hold-signer",
+      "execution-signer"
+    ]
+  },
+  "gate-holdonly-9": {
+    "publicKey": "MCowBQYDK2VwAyEAnT8f7qe84wfWyuErLXfRBLyupvM9GLjMy1LIvFbHMto=",
+    "type": "GATE",
+    "roles": [
+      "hold-signer"
+    ]
+  },
+  "approver-1-device-2": {
+    "publicKey": "MCowBQYDK2VwAyEANrq8SiwpHxclTXg0+xBZHhycN9Md4xQxm4Csh0DMwb8=",
+    "type": "APPROVER",
+    "roles": [
+      "approve-high"
+    ]
+  },
+  "approver-crit-5": {
+    "publicKey": "MCowBQYDK2VwAyEAtN4H1lCn75RSP7yjvFOXA8mX3RNhjmPvMcGqRBjIlhY=",
+    "type": "APPROVER",
+    "roles": [
+      "approve-critical"
+    ]
+  },
+  "revoked-old-1": {
+    "publicKey": "MCowBQYDK2VwAyEA0IAN4oqVjRce8Fi9FNvG3qTdTMuvazzB65DCi6LN634=",
+    "type": "GATE",
+    "roles": [
+      "hold-signer",
+      "execution-signer"
+    ],
+    "revokedAt": "2020-01-01T00:00:00.000Z"
+  }
+}

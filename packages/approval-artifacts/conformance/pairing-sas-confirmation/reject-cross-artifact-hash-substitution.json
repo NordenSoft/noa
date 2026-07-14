@@ -1,0 +1,69 @@
+{
+  "description": "transcriptHash re-pointed away from the SAS transcript (re-signed) — F1 rule-c mismatch",
+  "spec": "noa.pairing-confirmation/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "cross-artifact-hash-substitution",
+  "artifact": {
+    "spec": "noa.pairing-confirmation/0.1",
+    "pairingId": "pair-001",
+    "transcriptHash": "sha256:ccdd35168ab474fa5764a526cfb83621351e23682c5075b2e18d56bddf96aa30",
+    "result": "SAS_MATCH_CONFIRMED",
+    "confirmedAt": "2026-07-14T11:54:30.000Z",
+    "gateKid": "gate-prod-1",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "gate-prod-1",
+      "value": "MEjQfNLFphKextgFUWrqL5PZmY2s3Cl48d/q2G6fFa4rX+beiqH/2CkNtHQZIay9yDvmDwL7LO/6m7Ul+8X+Bw=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "pairingId",
+        "value": "pair-001"
+      },
+      {
+        "path": "gateKid",
+        "value": "gate-prod-1"
+      },
+      {
+        "path": "sig.kid",
+        "value": "gate-prod-1"
+      },
+      {
+        "path": "result",
+        "value": "SAS_MATCH_CONFIRMED"
+      }
+    ],
+    "refHashChecks": [
+      {
+        "path": "transcriptHash",
+        "rule": "virtual",
+        "artifact": {
+          "spec": "noa.pairing-transcript/0.1",
+          "pairingId": "pair-001",
+          "tenant": "tenant-acme",
+          "allowedRole": "approver",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "challengeNonce": "chal-nonce-01",
+          "gateKid": "gate-prod-1",
+          "gatePublicKey": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=",
+          "tenantAuthorityKid": "tenant-authority-1",
+          "tenantAuthorityPublicKey": "MCowBQYDK2VwAyEAiZQzmnkArDMxw25BKfAc/EjIjOigCzTxWmO0Ag+Dn00=",
+          "initialKeyManifestHash": "sha256:4a783c8b76228436b6782d142ba74d7374aa1859a21c7550021c7318a471f82b",
+          "approverKid": "approver-1-device-2",
+          "approverPublicKey": "MCowBQYDK2VwAyEANrq8SiwpHxclTXg0+xBZHhycN9Md4xQxm4Csh0DMwb8=",
+          "approverHpkePublicKey": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28"
+        }
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "confirmedAt",
+        "min": "2026-07-14T11:00:00.000Z",
+        "max": "2026-07-14T12:05:00.000Z"
+      }
+    ]
+  }
+}

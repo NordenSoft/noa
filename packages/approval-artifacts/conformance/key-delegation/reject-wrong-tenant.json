@@ -1,0 +1,56 @@
+{
+  "description": "tenant changed to a foreign tenant (re-signed)",
+  "spec": "noa.key-delegation/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "wrong-tenant",
+  "artifact": {
+    "spec": "noa.key-delegation/0.1",
+    "tenant": "tenant-EVIL",
+    "delegatedKid": "manifest-signer-3",
+    "delegatedPublicKey": "MCowBQYDK2VwAyEA27oD5NxHqlbHBJILS5x8DuhvFh5JJ92RO4FOSkRkrnQ=",
+    "permissions": [
+      "key-manifest-sign"
+    ],
+    "validFrom": "2026-07-14T10:00:00.000Z",
+    "expiresAt": "2026-07-20T10:00:00.000Z",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "tenant-authority-1",
+      "value": "YUSTnkF1vJawDM/aNB9Y9aTvadcF+6Cd2wfy+jotMwVtnT+QKa+qvFeAgJdjjM7aZoARFzcuoieUXQnVcN1aDA=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "tenant",
+        "value": "tenant-acme"
+      },
+      {
+        "path": "delegatedKid",
+        "value": "manifest-signer-3"
+      },
+      {
+        "path": "delegatedPublicKey",
+        "value": "MCowBQYDK2VwAyEA27oD5NxHqlbHBJILS5x8DuhvFh5JJ92RO4FOSkRkrnQ="
+      },
+      {
+        "path": "sig.kid",
+        "value": "tenant-authority-1"
+      }
+    ],
+    "mustBeAfter": [
+      {
+        "path": "expiresAt",
+        "time": "2026-07-14T12:00:00.000Z"
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "validFrom",
+        "min": "2000-01-01T00:00:00.000Z",
+        "max": "2026-07-14T12:00:00.000Z"
+      }
+    ]
+  }
+}

@@ -1,0 +1,58 @@
+{
+  "generatedFrom": "scripts/gen-vectors.ts",
+  "now": "2026-07-14T12:00:00.000Z",
+  "tenant": "tenant-acme",
+  "totals": {
+    "files": 113
+  },
+  "bySpec": {
+    "noa.hold/0.1": {
+      "valid": 1,
+      "reject": 7
+    },
+    "noa.encrypted-display/0.1": {
+      "valid": 1,
+      "reject": 8
+    },
+    "noa.decision/0.1": {
+      "valid": 1,
+      "reject": 7
+    },
+    "noa.key-manifest/0.1": {
+      "valid": 1,
+      "reject": 7
+    },
+    "noa.key-delegation/0.1": {
+      "valid": 1,
+      "reject": 7
+    },
+    "noa.execution-grant/0.1": {
+      "valid": 1,
+      "reject": 7
+    },
+    "noa.execution-consumption/0.1": {
+      "valid": 1,
+      "reject": 7
+    },
+    "noa.execution-uncertainty/0.1": {
+      "valid": 1,
+      "reject": 7
+    },
+    "noa.hold-resolution/0.1": {
+      "valid": 1,
+      "reject": 7
+    },
+    "noa.pairing/0.1": {
+      "valid": 3,
+      "reject": 21
+    },
+    "noa.pairing-confirmation/0.1": {
+      "valid": 1,
+      "reject": 7
+    },
+    "noa.encrypted-reason/0.1": {
+      "valid": 1,
+      "reject": 7
+    }
+  }
+}

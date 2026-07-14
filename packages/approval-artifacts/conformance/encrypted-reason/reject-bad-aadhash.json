@@ -1,0 +1,27 @@
+{
+  "description": "aadHash not a sha256:<64hex>",
+  "spec": "noa.encrypted-reason/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "structural",
+  "artifact": {
+    "spec": "noa.encrypted-reason/0.1",
+    "recipientKid": "audit-1",
+    "suite": {
+      "kem": 32,
+      "kdf": 1,
+      "aead": 3
+    },
+    "enc": "ZW5jLWNhcHN1bGUtcmVhc29u",
+    "ciphertext": "Y2lwaGVydGV4dC1yZWFzb24",
+    "aadHash": "nothash"
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "recipientKid",
+        "value": "audit-1"
+      }
+    ]
+  }
+}

@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-encrypted-reason-0.1.schema.json",
+  "title": "NOA Encrypted Reason",
+  "description": "The HPKE-AEAD blob carrying the decision reason (D23, F13, §12), encrypted to the TENANT AUDIT key (not the approver device key — so audit export survives device loss). NOT Ed25519-signed and has no signing domain of its own; it is embedded as the Decision Artifact's reasonEncryption field and integrity-protected by the Decision Artifact's own signature over the whole object + the AEAD tag + AAD binding.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "recipientKid", "suite", "enc", "ciphertext", "aadHash"],
+  "properties": {
+    "spec": { "const": "noa.encrypted-reason/0.1" },
+    "recipientKid": { "type": "string", "pattern": "^.{1,128}$" },
+    "suite": { "$ref": "#/$defs/suite" },
+    "enc": { "type": "string", "pattern": "^.{1,2048}$" },
+    "ciphertext": { "type": "string", "pattern": "^.{1,65536}$" },
+    "aadHash": { "$ref": "#/$defs/hash256" }
+  },
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kem", "kdf", "aead"],
+      "properties": {
+        "kem": { "const": 32 },
+        "kdf": { "const": 1 },
+        "aead": { "enum": [2, 3] }
+      }
+    }
+  }
+}

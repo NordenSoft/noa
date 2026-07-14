@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-execution-grant-0.1.schema.json",
+  "title": "NOA Execution Grant (pre-execution)",
+  "description": "The gate's pre-execution single-use authorization that one exact param-hash may execute once (D13/D18, §8). NOT a human approval — the gate attests, the phone never mints it. Domain NOA-ExecGrant-v0.1-sig. Signer TYPE+ROLE = GATE + execution-signer (F15).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "grantId", "holdId", "paramsHash", "holdEnvelopeHash", "approvalReceiptHash", "issuedAt", "expiresAt", "maxUses", "nonce", "sig"],
+  "properties": {
+    "spec": { "const": "noa.execution-grant/0.1" },
+    "grantId": { "type": "string", "pattern": "^.{1,128}$" },
+    "holdId": { "type": "string", "pattern": "^.{1,128}$" },
+    "paramsHash": { "$ref": "#/$defs/paramsHash" },
+    "holdEnvelopeHash": { "$ref": "#/$defs/hash256" },
+    "approvalReceiptHash": { "$ref": "#/$defs/hash256" },
+    "issuedAt": { "$ref": "#/$defs/rfc3339" },
+    "expiresAt": { "$ref": "#/$defs/rfc3339" },
+    "maxUses": { "const": 1 },
+    "nonce": { "type": "string", "pattern": "^.{1,256}$" },
+    "sig": { "$ref": "#/$defs/sig" }
+  },
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "paramsHash": { "type": "string", "pattern": "^(sha256|hmac-sha256):[0-9a-f]{64}$" },
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}

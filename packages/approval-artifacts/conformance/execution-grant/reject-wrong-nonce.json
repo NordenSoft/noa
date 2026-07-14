@@ -1,0 +1,130 @@
+{
+  "description": "nonce changed (re-signed) — replay/nonce-equality fails",
+  "spec": "noa.execution-grant/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "wrong-nonce",
+  "artifact": {
+    "spec": "noa.execution-grant/0.1",
+    "grantId": "grant-001",
+    "holdId": "hold-001",
+    "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "holdEnvelopeHash": "sha256:47b71f8b8416943c129da8c326578a9f75d4ddb187f3ed1291abed337ec11e8b",
+    "approvalReceiptHash": "sha256:71a9ae2ed46fcc58cc1940f943ae90d9885d15507e35382c99a51509ef20f66b",
+    "issuedAt": "2026-07-14T11:55:00.000Z",
+    "expiresAt": "2026-07-14T12:30:00.000Z",
+    "maxUses": 1,
+    "nonce": "attacker-nonce",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "gate-prod-1",
+      "value": "aQx6d3T/O576e/EEg4KvuX7ySfMd00SnaOfvb2WZOi1DFhFMIKQ1lKF7dHlONNirO3CKe12w1TqV88NeDXufCA=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "nonce",
+        "value": "grant-nonce-01"
+      },
+      {
+        "path": "maxUses",
+        "value": 1
+      }
+    ],
+    "refHashChecks": [
+      {
+        "path": "holdEnvelopeHash",
+        "rule": "side",
+        "artifact": {
+          "spec": "noa.hold/0.1",
+          "holdId": "hold-001",
+          "deferredReceiptId": "rcpt_deferred",
+          "deferredReceiptHash": "sha256:e31db8755f93a9c419313e6fdc7bbd3c892f1fc24feab19ef281bfd29b2d6c21",
+          "mode": "ENFORCED",
+          "displayCiphertextHash": "sha256:0e0a6ce44061509fad8787f8a1e4beedd29050a402162d1c7f2d9984c0abab51",
+          "actionSchema": {
+            "id": "deploy.apply",
+            "version": 1,
+            "hash": "sha256:b14a2efd8a0fda96358a7fc47b022209225c1ee156469b83553b283d82aca05a"
+          },
+          "displayProjection": {
+            "id": "deploy.display",
+            "version": 1,
+            "hash": "sha256:4fd0b3e137ba0c0436890e079f10229767c17741b83c1fded54532aac711c07e"
+          },
+          "canonicalization": "JCS-RFC8785",
+          "keyManifestVersion": 2,
+          "keyManifestHash": "sha256:4a783c8b76228436b6782d142ba74d7374aa1859a21c7550021c7318a471f82b",
+          "tenant": "tenant-acme",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "nonce": "envelope-nonce-01",
+          "gateKid": "gate-prod-1",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "anpcxwOxrbjBgOWsN1YzKrv1/thogbCCUe617McJRcHPNMWIB+KnH145LCp2c3nEqS/etA404SFZQ0hE+eOVDg=="
+          }
+        },
+        "refEquals": [
+          {
+            "path": "tenant",
+            "value": "tenant-acme"
+          }
+        ]
+      },
+      {
+        "path": "approvalReceiptHash",
+        "rule": "receipt",
+        "artifact": {
+          "spec": "noa.receipt/0.1",
+          "id": "rcpt_allowed",
+          "ts": "2026-07-14T11:55:00.000Z",
+          "scope": {
+            "tenant": "tenant-acme",
+            "chain": "chain-acme-1"
+          },
+          "agent": {
+            "id": "approver-a",
+            "model": null,
+            "principal": "HUMAN"
+          },
+          "action": {
+            "id": "deploy.apply",
+            "canonical": "deploy.apply",
+            "riskClass": "HIGH",
+            "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reversible": false,
+            "rollbackRef": null
+          },
+          "governance": {
+            "mode": "on",
+            "verdict": "ALLOWED",
+            "ruleId": "human-approved",
+            "approval": {
+              "by": "approver-1-device-2",
+              "at": "2026-07-14T11:55:00.000Z"
+            },
+            "sandboxed": false
+          },
+          "chain": {
+            "seq": 1,
+            "prevHash": "sha256:e31db8755f93a9c419313e6fdc7bbd3c892f1fc24feab19ef281bfd29b2d6c21",
+            "hash": "sha256:71a9ae2ed46fcc58cc1940f943ae90d9885d15507e35382c99a51509ef20f66b"
+          },
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "AA=="
+          }
+        }
+      }
+    ],
+    "mustBeAfter": [
+      {
+        "path": "expiresAt",
+        "time": "2026-07-14T12:00:00.000Z"
+      }
+    ]
+  }
+}

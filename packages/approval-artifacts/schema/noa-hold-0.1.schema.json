@@ -1,0 +1,71 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-hold-0.1.schema.json",
+  "title": "NOA Hold Envelope",
+  "description": "Gate-signed artifact (D1, §8) binding the encrypted display to the exact held action, carrying projection identity (D22) and keyManifestVersion/keyManifestHash (D16-v2). Domain NOA-Hold-v0.1-sig. Signer TYPE+ROLE = GATE + hold-signer (F15).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "spec",
+    "holdId",
+    "deferredReceiptId",
+    "deferredReceiptHash",
+    "mode",
+    "displayCiphertextHash",
+    "actionSchema",
+    "displayProjection",
+    "canonicalization",
+    "keyManifestVersion",
+    "keyManifestHash",
+    "tenant",
+    "expiresAt",
+    "nonce",
+    "gateKid",
+    "sig"
+  ],
+  "properties": {
+    "spec": { "const": "noa.hold/0.1" },
+    "holdId": { "type": "string", "pattern": "^.{1,128}$" },
+    "deferredReceiptId": { "type": "string", "pattern": "^.{1,128}$" },
+    "deferredReceiptHash": { "$ref": "#/$defs/hash256" },
+    "mode": { "enum": ["RAW", "ENFORCED"] },
+    "displayCiphertextHash": { "$ref": "#/$defs/hash256" },
+    "actionSchema": { "oneOf": [{ "$ref": "#/$defs/projectionId" }, { "type": "null" }] },
+    "displayProjection": { "oneOf": [{ "$ref": "#/$defs/projectionId" }, { "type": "null" }] },
+    "canonicalization": { "const": "JCS-RFC8785" },
+    "keyManifestVersion": { "type": "integer", "minimum": 1 },
+    "keyManifestHash": { "$ref": "#/$defs/hash256" },
+    "tenant": { "type": "string", "pattern": "^.{1,256}$" },
+    "expiresAt": { "$ref": "#/$defs/rfc3339" },
+    "nonce": { "type": "string", "pattern": "^.{1,256}$" },
+    "gateKid": { "type": "string", "pattern": "^.{1,128}$" },
+    "sig": { "$ref": "#/$defs/sig" }
+  },
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "projectionId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "hash"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^.{1,128}$" },
+        "version": { "type": "integer", "minimum": 1 },
+        "hash": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" }
+      }
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}
