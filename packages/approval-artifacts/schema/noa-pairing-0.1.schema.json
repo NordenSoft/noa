@@ -1,0 +1,79 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-pairing-0.1.schema.json",
+  "title": "NOA Pairing message (CHALLENGE | CONFIRMATION | ACCEPTED)",
+  "description": "The one-time, out-of-band-verified device-pairing ceremony (D10-v2, §3). One spec, one domain (NOA-Pairing-v0.1-sig), three type-discriminated shapes. Verified by the transcript-anchored SAS + kid match, NOT via the Key Manifest (the manifest does not yet exist at first pairing). CHALLENGE/ACCEPTED are gate-signed; CONFIRMATION is phone/approver-signed; the SAS itself is NEVER transmitted (§3).",
+  "oneOf": [
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec", "type", "pairingId", "tenant", "gateKid", "gatePublicKey", "tenantAuthorityKid", "tenantAuthorityPublicKey", "initialKeyManifestHash", "allowedRole", "expiresAt", "challengeNonce", "sig"],
+      "properties": {
+        "spec": { "const": "noa.pairing/0.1" },
+        "type": { "const": "CHALLENGE" },
+        "pairingId": { "type": "string", "pattern": "^.{1,128}$" },
+        "tenant": { "type": "string", "pattern": "^.{1,256}$" },
+        "gateKid": { "type": "string", "pattern": "^.{1,128}$" },
+        "gatePublicKey": { "type": "string", "pattern": "^.{1,1024}$" },
+        "tenantAuthorityKid": { "type": "string", "pattern": "^.{1,128}$" },
+        "tenantAuthorityPublicKey": { "type": "string", "pattern": "^.{1,1024}$" },
+        "initialKeyManifestHash": { "$ref": "#/$defs/hash256" },
+        "allowedRole": { "const": "approver" },
+        "expiresAt": { "$ref": "#/$defs/rfc3339" },
+        "challengeNonce": { "type": "string", "pattern": "^.{1,256}$" },
+        "sig": { "$ref": "#/$defs/sig" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec", "type", "pairingId", "challengeHash", "approverKid", "approverPublicKey", "approverHpkePublicKey", "confirmedAt", "sig"],
+      "properties": {
+        "spec": { "const": "noa.pairing/0.1" },
+        "type": { "const": "CONFIRMATION" },
+        "pairingId": { "type": "string", "pattern": "^.{1,128}$" },
+        "challengeHash": { "$ref": "#/$defs/hash256" },
+        "approverKid": { "type": "string", "pattern": "^.{1,128}$" },
+        "approverPublicKey": { "type": "string", "pattern": "^.{1,1024}$" },
+        "approverHpkePublicKey": { "type": "string", "pattern": "^.{1,1024}$" },
+        "confirmedAt": { "$ref": "#/$defs/rfc3339" },
+        "sig": { "$ref": "#/$defs/sig" }
+      }
+    },
+    {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["spec", "type", "pairingId", "transcriptHash", "approverKid", "keyManifestVersion", "keyManifestHash", "keyDelegationHash", "delegatedManifestSignerKid", "acceptedAt", "sig"],
+      "properties": {
+        "spec": { "const": "noa.pairing/0.1" },
+        "type": { "const": "ACCEPTED" },
+        "pairingId": { "type": "string", "pattern": "^.{1,128}$" },
+        "transcriptHash": { "$ref": "#/$defs/hash256" },
+        "approverKid": { "type": "string", "pattern": "^.{1,128}$" },
+        "keyManifestVersion": { "type": "integer", "minimum": 1 },
+        "keyManifestHash": { "$ref": "#/$defs/hash256" },
+        "keyDelegationHash": { "$ref": "#/$defs/hash256" },
+        "delegatedManifestSignerKid": { "type": "string", "pattern": "^.{1,128}$" },
+        "acceptedAt": { "$ref": "#/$defs/rfc3339" },
+        "sig": { "$ref": "#/$defs/sig" }
+      }
+    }
+  ],
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}

@@ -1,0 +1,35 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-pairing-confirmation-0.1.schema.json",
+  "title": "NOA Pairing Confirmation (local SAS)",
+  "description": "The LOCAL gate process's signed record that the operator confirmed the SAS match (F12, §3) — manifest issuance MUST NOT proceed without it (closes the hosted-panel-bypass). NEVER emitted by the hosted admin console. Domain NOA-PairingConfirm-v0.1-sig. Signer = GATE.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "pairingId", "transcriptHash", "result", "confirmedAt", "gateKid", "sig"],
+  "properties": {
+    "spec": { "const": "noa.pairing-confirmation/0.1" },
+    "pairingId": { "type": "string", "pattern": "^.{1,128}$" },
+    "transcriptHash": { "$ref": "#/$defs/hash256" },
+    "result": { "const": "SAS_MATCH_CONFIRMED" },
+    "confirmedAt": { "$ref": "#/$defs/rfc3339" },
+    "gateKid": { "type": "string", "pattern": "^.{1,128}$" },
+    "sig": { "$ref": "#/$defs/sig" }
+  },
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}

@@ -1,0 +1,167 @@
+{
+  "description": "valid gate-signed Hold Envelope",
+  "spec": "noa.hold/0.1",
+  "expect": "ACCEPT",
+  "artifact": {
+    "spec": "noa.hold/0.1",
+    "holdId": "hold-001",
+    "deferredReceiptId": "rcpt_deferred",
+    "deferredReceiptHash": "sha256:e31db8755f93a9c419313e6fdc7bbd3c892f1fc24feab19ef281bfd29b2d6c21",
+    "mode": "ENFORCED",
+    "displayCiphertextHash": "sha256:0e0a6ce44061509fad8787f8a1e4beedd29050a402162d1c7f2d9984c0abab51",
+    "actionSchema": {
+      "id": "deploy.apply",
+      "version": 1,
+      "hash": "sha256:b14a2efd8a0fda96358a7fc47b022209225c1ee156469b83553b283d82aca05a"
+    },
+    "displayProjection": {
+      "id": "deploy.display",
+      "version": 1,
+      "hash": "sha256:4fd0b3e137ba0c0436890e079f10229767c17741b83c1fded54532aac711c07e"
+    },
+    "canonicalization": "JCS-RFC8785",
+    "keyManifestVersion": 2,
+    "keyManifestHash": "sha256:4a783c8b76228436b6782d142ba74d7374aa1859a21c7550021c7318a471f82b",
+    "tenant": "tenant-acme",
+    "expiresAt": "2026-07-14T12:30:00.000Z",
+    "nonce": "envelope-nonce-01",
+    "gateKid": "gate-prod-1",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "gate-prod-1",
+      "value": "anpcxwOxrbjBgOWsN1YzKrv1/thogbCCUe617McJRcHPNMWIB+KnH145LCp2c3nEqS/etA404SFZQ0hE+eOVDg=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "tenant",
+        "value": "tenant-acme"
+      },
+      {
+        "path": "nonce",
+        "value": "envelope-nonce-01"
+      },
+      {
+        "path": "gateKid",
+        "value": "gate-prod-1"
+      },
+      {
+        "path": "sig.kid",
+        "value": "gate-prod-1"
+      }
+    ],
+    "refHashChecks": [
+      {
+        "path": "deferredReceiptHash",
+        "rule": "receipt",
+        "artifact": {
+          "spec": "noa.receipt/0.1",
+          "id": "rcpt_deferred",
+          "ts": "2026-07-14T11:55:00.000Z",
+          "scope": {
+            "tenant": "tenant-acme",
+            "chain": "chain-acme-1"
+          },
+          "agent": {
+            "id": "agent-a",
+            "model": null,
+            "principal": "SERVICE"
+          },
+          "action": {
+            "id": "deploy.apply",
+            "canonical": "deploy.apply",
+            "riskClass": "HIGH",
+            "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reversible": false,
+            "rollbackRef": null
+          },
+          "governance": {
+            "mode": "on",
+            "verdict": "DEFERRED",
+            "sandboxed": false
+          },
+          "chain": {
+            "seq": 0,
+            "prevHash": null,
+            "hash": "sha256:e31db8755f93a9c419313e6fdc7bbd3c892f1fc24feab19ef281bfd29b2d6c21"
+          },
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "AA=="
+          }
+        }
+      },
+      {
+        "path": "keyManifestHash",
+        "rule": "side",
+        "artifact": {
+          "spec": "noa.key-manifest/0.1",
+          "tenant": "tenant-acme",
+          "version": 2,
+          "issuedAt": "2026-07-14T09:30:00.000Z",
+          "expiresAt": "2026-07-15T09:30:00.000Z",
+          "previousManifestHash": "sha256:2bb802a8619f19d1a2ea04425da80216e7418aa86decfcc6754a8e56a6c5ad4d",
+          "keys": [
+            {
+              "kid": "gate-prod-1",
+              "type": "GATE",
+              "roles": [
+                "hold-signer",
+                "execution-signer"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=",
+              "validFrom": "2026-07-14T10:00:00.000Z",
+              "revokedAt": null
+            },
+            {
+              "kid": "approver-1-device-2",
+              "type": "APPROVER",
+              "roles": [
+                "approve-high"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEANrq8SiwpHxclTXg0+xBZHhycN9Md4xQxm4Csh0DMwb8=",
+              "hpkePublicKey": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28",
+              "validFrom": "2026-07-14T10:00:00.000Z",
+              "revokedAt": null
+            },
+            {
+              "kid": "approver-crit-5",
+              "type": "APPROVER",
+              "roles": [
+                "approve-critical"
+              ],
+              "publicKey": "MCowBQYDK2VwAyEAtN4H1lCn75RSP7yjvFOXA8mX3RNhjmPvMcGqRBjIlhY=",
+              "hpkePublicKey": "6d7d71dc3d1948fd59db600f3f342789f57c2da1998306b4a2f88a92acb18b75",
+              "validFrom": "2026-07-14T10:00:00.000Z",
+              "revokedAt": null
+            },
+            {
+              "kid": "audit-1",
+              "type": "AUDIT",
+              "roles": [
+                "audit-decrypt"
+              ],
+              "hpkePublicKey": "aa8a1771a106d1909a688bcc65fe6b56745070a56707fd7644c8233999b5d102",
+              "validFrom": "2026-07-14T10:00:00.000Z",
+              "revokedAt": null
+            }
+          ],
+          "sig": {
+            "alg": "ed25519",
+            "kid": "manifest-signer-3",
+            "value": "4vc/OxCf+pULUYydBVNcSbWan2vU0g4yifcsyUIldWZJcUQD/pqAlt1Pk841ZnPR/wPHpVUCQeSJ6Lsw94pJDg=="
+          }
+        }
+      }
+    ],
+    "mustBeAfter": [
+      {
+        "path": "expiresAt",
+        "time": "2026-07-14T12:00:00.000Z"
+      }
+    ]
+  }
+}

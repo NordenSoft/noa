@@ -1,0 +1,56 @@
+{
+  "description": "delegatedKid/publicKey substituted to an attacker key (re-signed) — the delegation would vouch for the wrong signer (G6)",
+  "spec": "noa.key-delegation/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "cross-artifact-hash-substitution",
+  "artifact": {
+    "spec": "noa.key-delegation/0.1",
+    "tenant": "tenant-acme",
+    "delegatedKid": "attacker-x",
+    "delegatedPublicKey": "MCowBQYDK2VwAyEA+2z7Zx8KpuTyW27xFwQtY1aGaTDeE2OgzbIZ9V34vuk=",
+    "permissions": [
+      "key-manifest-sign"
+    ],
+    "validFrom": "2026-07-14T10:00:00.000Z",
+    "expiresAt": "2026-07-20T10:00:00.000Z",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "tenant-authority-1",
+      "value": "ML1ENMGEaFBEJ4AmFT12qPDWBg4cC4lwrHKFL7XIJXGyD0XWe06vJdWhrzGt256EwgulOPbCvnyx2H1T1xEvCQ=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "tenant",
+        "value": "tenant-acme"
+      },
+      {
+        "path": "delegatedKid",
+        "value": "manifest-signer-3"
+      },
+      {
+        "path": "delegatedPublicKey",
+        "value": "MCowBQYDK2VwAyEA27oD5NxHqlbHBJILS5x8DuhvFh5JJ92RO4FOSkRkrnQ="
+      },
+      {
+        "path": "sig.kid",
+        "value": "tenant-authority-1"
+      }
+    ],
+    "mustBeAfter": [
+      {
+        "path": "expiresAt",
+        "time": "2026-07-14T12:00:00.000Z"
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "validFrom",
+        "min": "2000-01-01T00:00:00.000Z",
+        "max": "2026-07-14T12:00:00.000Z"
+      }
+    ]
+  }
+}

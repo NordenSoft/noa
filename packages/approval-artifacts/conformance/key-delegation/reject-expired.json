@@ -1,0 +1,56 @@
+{
+  "description": "expiresAt in the past (re-signed) — expired delegation",
+  "spec": "noa.key-delegation/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "expired",
+  "artifact": {
+    "spec": "noa.key-delegation/0.1",
+    "tenant": "tenant-acme",
+    "delegatedKid": "manifest-signer-3",
+    "delegatedPublicKey": "MCowBQYDK2VwAyEA27oD5NxHqlbHBJILS5x8DuhvFh5JJ92RO4FOSkRkrnQ=",
+    "permissions": [
+      "key-manifest-sign"
+    ],
+    "validFrom": "2026-07-14T10:00:00.000Z",
+    "expiresAt": "2026-07-14T11:30:00.000Z",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "tenant-authority-1",
+      "value": "wO1ATMusXxsLVjkjVynq0EC7D6133RLRNBQHAmDl9HYjau4btf8Wc6yqQ9vBiyifnJ8RMPvXX9uU2vS6BWvTAg=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "tenant",
+        "value": "tenant-acme"
+      },
+      {
+        "path": "delegatedKid",
+        "value": "manifest-signer-3"
+      },
+      {
+        "path": "delegatedPublicKey",
+        "value": "MCowBQYDK2VwAyEA27oD5NxHqlbHBJILS5x8DuhvFh5JJ92RO4FOSkRkrnQ="
+      },
+      {
+        "path": "sig.kid",
+        "value": "tenant-authority-1"
+      }
+    ],
+    "mustBeAfter": [
+      {
+        "path": "expiresAt",
+        "time": "2026-07-14T12:00:00.000Z"
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "validFrom",
+        "min": "2000-01-01T00:00:00.000Z",
+        "max": "2026-07-14T12:00:00.000Z"
+      }
+    ]
+  }
+}

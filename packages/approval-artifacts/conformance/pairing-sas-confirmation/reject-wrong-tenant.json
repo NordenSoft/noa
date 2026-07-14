@@ -1,0 +1,69 @@
+{
+  "description": "pairingId does not match the ceremony (re-signed)",
+  "spec": "noa.pairing-confirmation/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "wrong-tenant",
+  "artifact": {
+    "spec": "noa.pairing-confirmation/0.1",
+    "pairingId": "pair-EVIL",
+    "transcriptHash": "sha256:5efdf7d4e2fc86fe454e330a010960cfb34573e7df05eac2d5a06fccb58e28ff",
+    "result": "SAS_MATCH_CONFIRMED",
+    "confirmedAt": "2026-07-14T11:54:30.000Z",
+    "gateKid": "gate-prod-1",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "gate-prod-1",
+      "value": "S5wWEhvOz8bM15peVergD+52vqAazE93SUL95EcOcAHYwfgFNNghUy3VPePAZTRusRPwetugGiDv8X406S4VBg=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "pairingId",
+        "value": "pair-001"
+      },
+      {
+        "path": "gateKid",
+        "value": "gate-prod-1"
+      },
+      {
+        "path": "sig.kid",
+        "value": "gate-prod-1"
+      },
+      {
+        "path": "result",
+        "value": "SAS_MATCH_CONFIRMED"
+      }
+    ],
+    "refHashChecks": [
+      {
+        "path": "transcriptHash",
+        "rule": "virtual",
+        "artifact": {
+          "spec": "noa.pairing-transcript/0.1",
+          "pairingId": "pair-001",
+          "tenant": "tenant-acme",
+          "allowedRole": "approver",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "challengeNonce": "chal-nonce-01",
+          "gateKid": "gate-prod-1",
+          "gatePublicKey": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=",
+          "tenantAuthorityKid": "tenant-authority-1",
+          "tenantAuthorityPublicKey": "MCowBQYDK2VwAyEAiZQzmnkArDMxw25BKfAc/EjIjOigCzTxWmO0Ag+Dn00=",
+          "initialKeyManifestHash": "sha256:4a783c8b76228436b6782d142ba74d7374aa1859a21c7550021c7318a471f82b",
+          "approverKid": "approver-1-device-2",
+          "approverPublicKey": "MCowBQYDK2VwAyEANrq8SiwpHxclTXg0+xBZHhycN9Md4xQxm4Csh0DMwb8=",
+          "approverHpkePublicKey": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28"
+        }
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "confirmedAt",
+        "min": "2026-07-14T11:00:00.000Z",
+        "max": "2026-07-14T12:05:00.000Z"
+      }
+    ]
+  }
+}

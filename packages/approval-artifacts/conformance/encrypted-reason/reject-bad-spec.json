@@ -1,0 +1,27 @@
+{
+  "description": "wrong spec const",
+  "spec": "noa.encrypted-reason/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "structural",
+  "artifact": {
+    "spec": "noa.encrypted-display/0.1",
+    "recipientKid": "audit-1",
+    "suite": {
+      "kem": 32,
+      "kdf": 1,
+      "aead": 3
+    },
+    "enc": "ZW5jLWNhcHN1bGUtcmVhc29u",
+    "ciphertext": "Y2lwaGVydGV4dC1yZWFzb24",
+    "aadHash": "sha256:ac582acc9a8c5d3565a079f7ad661996b02024aba8212db07a2e68ff8cfb58d2"
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "recipientKid",
+        "value": "audit-1"
+      }
+    ]
+  }
+}

@@ -1,0 +1,98 @@
+{
+  "description": "transitive tenant: attemptReceiptHash points to a foreign-tenant executed receipt",
+  "spec": "noa.execution-consumption/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "wrong-tenant",
+  "artifact": {
+    "spec": "noa.execution-consumption/0.1",
+    "grantHash": "sha256:e70785b3250fc207b6f5fa43dea2dd5c096b9c57673355f56a90baba4c13fb86",
+    "consumedAt": "2026-07-14T11:57:00.000Z",
+    "attemptReceiptHash": "sha256:e331eb7b72de2bd10de343671bdd94d0cd3c544f1d85cd2f80d9bed167833c15",
+    "result": "DISPATCHED",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "gate-prod-1",
+      "value": "HQiUr8jdzCpp/dcLFS1vEDL4XmRQGC3pS1ne0T89QlhGt0rkTzXln+Q0H8kvobdIQ309Kz1SEdFbI7yMxeHsBA=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "refHashChecks": [
+      {
+        "path": "grantHash",
+        "rule": "side",
+        "artifact": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "holdEnvelopeHash": "sha256:47b71f8b8416943c129da8c326578a9f75d4ddb187f3ed1291abed337ec11e8b",
+          "approvalReceiptHash": "sha256:71a9ae2ed46fcc58cc1940f943ae90d9885d15507e35382c99a51509ef20f66b",
+          "issuedAt": "2026-07-14T11:55:00.000Z",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "grant-nonce-01",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "KwyTfvrCfvyfyL2nq4oiyAMTqQ9ArX3Sv2tzne8Z1xYPb3vaTM7vr33RsGnm5RgGXIp6n9pOJZD4O+y1CfLGCA=="
+          }
+        }
+      },
+      {
+        "path": "attemptReceiptHash",
+        "rule": "receipt",
+        "artifact": {
+          "spec": "noa.receipt/0.1",
+          "id": "rcpt_foreign",
+          "ts": "2026-07-14T11:55:00.000Z",
+          "scope": {
+            "tenant": "tenant-EVIL",
+            "chain": "chain-evil"
+          },
+          "agent": {
+            "id": "agent-a",
+            "model": null,
+            "principal": "SERVICE"
+          },
+          "action": {
+            "id": "deploy.apply",
+            "canonical": "deploy.apply",
+            "riskClass": "HIGH",
+            "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reversible": false,
+            "rollbackRef": null
+          },
+          "governance": {
+            "mode": "on",
+            "verdict": "EXECUTED",
+            "sandboxed": false
+          },
+          "chain": {
+            "seq": 0,
+            "prevHash": null,
+            "hash": "sha256:e331eb7b72de2bd10de343671bdd94d0cd3c544f1d85cd2f80d9bed167833c15"
+          },
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "AA=="
+          }
+        },
+        "refEquals": [
+          {
+            "path": "scope.tenant",
+            "value": "tenant-acme"
+          }
+        ]
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "consumedAt",
+        "min": "2026-07-14T11:00:00.000Z",
+        "max": "2026-07-14T12:05:00.000Z"
+      }
+    ]
+  }
+}

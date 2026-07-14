@@ -1,0 +1,29 @@
+{
+  "name": "noa-approval-artifacts",
+  "version": "0.1.0",
+  "description": "The §6 side-artifact layer of the NOA Mobile Approval App: frozen JSON schemas + Ed25519/refHash signature conventions + 1-valid/7-rejection conformance vectors for the Hold Envelope, Decision, Key Manifest, Key Delegation, Execution Grant/Consumption/Uncertainty, Hold Resolution, Pairing, Pairing Confirmation, and the (unsigned) Encrypted Display/Reason blobs. Zero runtime dependencies (node:crypto only). The receipt core stays frozen in noa-receipt; this is the non-receipt half every gate/relay/phone/verifier depends on.",
+  "keywords": ["ai-agent", "governance", "approval", "hpke", "ed25519", "jcs", "rfc8785", "conformance", "json-schema"],
+  "homepage": "https://noatrust.com",
+  "repository": { "type": "git", "url": "https://github.com/NordenSoft/noa.git", "directory": "packages/approval-artifacts" },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": { "import": "./dist/src/index.js", "types": "./dist/src/index.d.ts" },
+    "./schema/*": "./schema/*"
+  },
+  "engines": { "node": ">=20" },
+  "files": ["dist/src", "schema", "conformance", "README.md", "LICENSE", "NOTICE"],
+  "publishConfig": { "access": "public" },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "gen:vectors": "npm run build && node dist/scripts/gen-vectors.js",
+    "test": "npm run build && node dist/scripts/gen-vectors.js && node --test dist/test/*.test.js",
+    "prepublishOnly": "npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}

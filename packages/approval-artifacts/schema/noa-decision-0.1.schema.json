@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-decision-0.1.schema.json",
+  "title": "NOA Decision Artifact",
+  "description": "Approver-device-signed (D7, §12) decision bound to the Hold Envelope hash, carrying the reason (F13 reasonEncryption, HPKE-encrypted to the tenant audit key, D23). Domain NOA-Decision-v0.1-sig. Signer TYPE+ROLE = APPROVER + approve-high (HIGH) or approve-critical (CRITICAL/IRREVERSIBLE), F15 — the tier is resolved from the held action's riskClass, not from this artifact.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "holdEnvelopeHash", "decision", "reasonCode", "reasonEncryption", "decidedAt", "approverKid", "sig"],
+  "properties": {
+    "spec": { "const": "noa.decision/0.1" },
+    "holdEnvelopeHash": { "$ref": "#/$defs/hash256" },
+    "decision": { "enum": ["APPROVE", "DENY"] },
+    "reasonCode": { "oneOf": [{ "enum": ["vendor-verified", "suspicious", "other"] }, { "type": "null" }] },
+    "reasonEncryption": { "oneOf": [{ "$ref": "#/$defs/encryptedReason" }, { "type": "null" }] },
+    "decidedAt": { "$ref": "#/$defs/rfc3339" },
+    "approverKid": { "type": "string", "pattern": "^.{1,128}$" },
+    "sig": { "$ref": "#/$defs/sig" }
+  },
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "encryptedReason": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "The noa.encrypted-reason/0.1 HPKE-AEAD blob (D23, F13) embedded in the Decision Artifact; NOT separately signed — the Decision Artifact's own signature covers this WHOLE object. See noa-encrypted-reason-0.1.schema.json.",
+      "required": ["spec", "recipientKid", "suite", "enc", "ciphertext", "aadHash"],
+      "properties": {
+        "spec": { "const": "noa.encrypted-reason/0.1" },
+        "recipientKid": { "type": "string", "pattern": "^.{1,128}$" },
+        "suite": { "$ref": "#/$defs/suite" },
+        "enc": { "type": "string", "pattern": "^.{1,2048}$" },
+        "ciphertext": { "type": "string", "pattern": "^.{1,65536}$" },
+        "aadHash": { "$ref": "#/$defs/hash256" }
+      }
+    },
+    "suite": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "RFC 9180 ciphersuite ids (§4): KEM DHKEM(X25519,HKDF-SHA256)=0x0020=32, KDF HKDF-SHA256=0x0001=1, AEAD ChaCha20Poly1305=0x0003=3 (locked) or AES-256-GCM=0x0002=2 (accepted alternate).",
+      "required": ["kem", "kdf", "aead"],
+      "properties": {
+        "kem": { "const": 32 },
+        "kdf": { "const": 1 },
+        "aead": { "enum": [2, 3] }
+      }
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}

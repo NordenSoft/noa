@@ -1,0 +1,98 @@
+{
+  "description": "grantHash re-pointed to a different artifact (re-signed) — F1 rule-b mismatch",
+  "spec": "noa.execution-consumption/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "cross-artifact-hash-substitution",
+  "artifact": {
+    "spec": "noa.execution-consumption/0.1",
+    "grantHash": "sha256:47b71f8b8416943c129da8c326578a9f75d4ddb187f3ed1291abed337ec11e8b",
+    "consumedAt": "2026-07-14T11:57:00.000Z",
+    "attemptReceiptHash": "sha256:4b100972b205cbdb7b266a0ebffb78d2c1db6ea5bd1443821487f4b9ede1c0a5",
+    "result": "DISPATCHED",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "gate-prod-1",
+      "value": "lepulybbQBmLBpE0rS5WmkBndFHbcfuYEHslMcwshjIA9UGDilCDOvTEePlcUIfzPbKGswH9xXyIbf+Q7FKJDQ=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "refHashChecks": [
+      {
+        "path": "grantHash",
+        "rule": "side",
+        "artifact": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "holdEnvelopeHash": "sha256:47b71f8b8416943c129da8c326578a9f75d4ddb187f3ed1291abed337ec11e8b",
+          "approvalReceiptHash": "sha256:71a9ae2ed46fcc58cc1940f943ae90d9885d15507e35382c99a51509ef20f66b",
+          "issuedAt": "2026-07-14T11:55:00.000Z",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "grant-nonce-01",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "KwyTfvrCfvyfyL2nq4oiyAMTqQ9ArX3Sv2tzne8Z1xYPb3vaTM7vr33RsGnm5RgGXIp6n9pOJZD4O+y1CfLGCA=="
+          }
+        }
+      },
+      {
+        "path": "attemptReceiptHash",
+        "rule": "receipt",
+        "artifact": {
+          "spec": "noa.receipt/0.1",
+          "id": "rcpt_exec",
+          "ts": "2026-07-14T11:55:00.000Z",
+          "scope": {
+            "tenant": "tenant-acme",
+            "chain": "chain-acme-1"
+          },
+          "agent": {
+            "id": "agent-a",
+            "model": null,
+            "principal": "SERVICE"
+          },
+          "action": {
+            "id": "deploy.apply",
+            "canonical": "deploy.apply",
+            "riskClass": "HIGH",
+            "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reversible": false,
+            "rollbackRef": null
+          },
+          "governance": {
+            "mode": "on",
+            "verdict": "EXECUTED",
+            "sandboxed": false
+          },
+          "chain": {
+            "seq": 2,
+            "prevHash": "sha256:71a9ae2ed46fcc58cc1940f943ae90d9885d15507e35382c99a51509ef20f66b",
+            "hash": "sha256:4b100972b205cbdb7b266a0ebffb78d2c1db6ea5bd1443821487f4b9ede1c0a5"
+          },
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "AA=="
+          }
+        },
+        "refEquals": [
+          {
+            "path": "scope.tenant",
+            "value": "tenant-acme"
+          }
+        ]
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "consumedAt",
+        "min": "2026-07-14T11:00:00.000Z",
+        "max": "2026-07-14T12:05:00.000Z"
+      }
+    ]
+  }
+}

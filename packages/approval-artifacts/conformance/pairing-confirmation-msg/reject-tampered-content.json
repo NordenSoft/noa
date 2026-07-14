@@ -1,0 +1,70 @@
+{
+  "description": "approverPublicKey altered after signing (stale signature)",
+  "spec": "noa.pairing/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "tampered-content",
+  "artifact": {
+    "spec": "noa.pairing/0.1",
+    "type": "CONFIRMATION",
+    "pairingId": "pair-001",
+    "challengeHash": "sha256:cd12b2b42d5684b049778af68ed0bc748642291b1dee5f231668b06c9fabd47f",
+    "approverKid": "approver-1-device-2",
+    "approverPublicKey": "MCowBQYDK2VwAyEA+2z7Zx8KpuTyW27xFwQtY1aGaTDeE2OgzbIZ9V34vuk=",
+    "approverHpkePublicKey": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28",
+    "confirmedAt": "2026-07-14T11:54:00.000Z",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "approver-1-device-2",
+      "value": "oEfmNpyi+kfA3l9W/Bopb3Ye19W2HbA6xj8O4Jt9hhpH+rwsyf7Wf/QrrUswK9iRYCvUb4doRkkbJC/4R6eLDQ=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "pairingId",
+        "value": "pair-001"
+      },
+      {
+        "path": "approverKid",
+        "value": "approver-1-device-2"
+      },
+      {
+        "path": "sig.kid",
+        "value": "approver-1-device-2"
+      }
+    ],
+    "refHashChecks": [
+      {
+        "path": "challengeHash",
+        "rule": "side",
+        "artifact": {
+          "spec": "noa.pairing/0.1",
+          "type": "CHALLENGE",
+          "pairingId": "pair-001",
+          "tenant": "tenant-acme",
+          "gateKid": "gate-prod-1",
+          "gatePublicKey": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=",
+          "tenantAuthorityKid": "tenant-authority-1",
+          "tenantAuthorityPublicKey": "MCowBQYDK2VwAyEAiZQzmnkArDMxw25BKfAc/EjIjOigCzTxWmO0Ag+Dn00=",
+          "initialKeyManifestHash": "sha256:4a783c8b76228436b6782d142ba74d7374aa1859a21c7550021c7318a471f82b",
+          "allowedRole": "approver",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "challengeNonce": "chal-nonce-01",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "bao/VeAGtS9Mk/bZXaiAGhFbcu4FbZo24706l2eKArsd6WhIocuaMzgQurKrSbH5GdJPorsiRXe7k3V0IBCsAg=="
+          }
+        }
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "confirmedAt",
+        "min": "2026-07-14T11:00:00.000Z",
+        "max": "2026-07-14T12:05:00.000Z"
+      }
+    ]
+  }
+}
