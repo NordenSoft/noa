@@ -1,0 +1,11 @@
+NOA Relay — untrusted approval transport for noa-receipt
+
+Copyright the noa-receipt contributors.
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+The relay NEVER signs and NEVER holds a private key. It routes gate-signed holds and
+encrypted-display ciphertext to the approver's device and carries the phone-signed decision
+back. A compromised relay can at worst cause denial-of-service or spam — never a forged
+approval. Grants, consumption, uncertainty, and the timeout receipt are all GATE-signed
+(build spec §8) and are intentionally absent from this package's surface (relay ≠ gate).
