@@ -1,0 +1,35 @@
+{
+  "name": "noa-approval-evidence",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The §13 Approval Evidence Bundle (noa.approval-evidence/0.1, D11-v2) + the offline `noa verify-evidence` 18-step verifier. An outcome-keyed union over a full genesis-rooted receipt chain + a reused noa.checkpoint/0.1 head anchor (F4), verified fail-closed against an EXTERNAL tenant trust root + checkpoint keyring (F7). The step-15 by-principle negative-outcome rule means NO 'nothing/cancelled/unknown' label can launder an unproven execution: without a fresh trusted checkpoint every non-executed outcome is INCONCLUSIVE. Reuses noa-receipt's verifyChain/verifyCheckpoint and noa-approval-artifacts' verifyArtifact/refHash — nothing re-implemented. Zero runtime deps beyond those two.",
+  "keywords": ["ai-agent", "governance", "approval", "evidence", "audit", "verify", "offline", "conformance"],
+  "homepage": "https://noatrust.com",
+  "repository": { "type": "git", "url": "https://github.com/NordenSoft/noa.git", "directory": "packages/evidence" },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": { "import": "./dist/src/index.js", "types": "./dist/src/index.d.ts" },
+    "./schema/*": "./schema/*"
+  },
+  "bin": {
+    "noa-verify-evidence": "dist/src/cli.js"
+  },
+  "engines": { "node": ">=20" },
+  "files": ["dist/src", "schema", "conformance", "README.md", "LICENSE", "NOTICE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "gen:fixtures": "npm run build && node dist/fixtures/gen-fixtures.js",
+    "test": "npm run build && node dist/fixtures/gen-fixtures.js && node --test dist/test/*.test.js"
+  },
+  "dependencies": {
+    "noa-receipt": "file:../..",
+    "noa-approval-artifacts": "file:../approval-artifacts"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  }
+}
