@@ -19,6 +19,7 @@ import {
   runTimeoutFlow,
   runTamperFlow,
   runParamsMismatchProbe,
+  runEncryptedDisplayRoundTrip,
 } from '../src/harness.js';
 
 test('(a) happy path: agent → gate → relay → phone(approve) → gate → EXECUTED; evidence + chain VALID', async () => {
@@ -110,4 +111,19 @@ test('(e) params mismatch: the exact-execution wrapper refuses (approve A, run B
   assert.equal(r.executeSpy.ran, false, 'the side effect NEVER ran');
   assert.equal(r.reserveCalled, false, 'the grant was NEVER reserved (refusal is strictly pre-dispatch)');
   console.log('  (e) outcome=%s ran=%o reserved=%o', r.guardResult.outcome, r.executeSpy.ran, r.reserveCalled);
+});
+
+test('(f) encrypted display: gate HPKE-seals → phone decrypts locally → EXACT plaintext; tamper refused', async () => {
+  const ctx = await setupHarness({ echo: false });
+  try {
+    const r = await runEncryptedDisplayRoundTrip(ctx);
+    assert.deepEqual(r.openedDisplay, r.knownDisplay, 'the phone decrypted EXACTLY the display the gate sealed');
+    assert.equal(r.isRealHpke, true, 'the payload is real HPKE-AEAD ciphertext, not base64(plaintext)');
+    assert.equal(r.actualDisplayHash, r.envelopeDisplayHash, 'F2: the gate-signed envelope binds the WHOLE encrypted display');
+    assert.equal(r.tamperRejected, true, 'a tampered encrypted display is refused (never rendered)');
+    assert.equal(r.tamperErrorCode, 'D2_DISPLAY_BINDING_MISMATCH', 'the refusal is the named F2-binding failure');
+    console.log('  (f) opened=%o realHpke=%o f2Bound=%o tamper=%s', r.openedDisplay, r.isRealHpke, r.actualDisplayHash === r.envelopeDisplayHash, r.tamperErrorCode);
+  } finally {
+    await teardownHarness(ctx);
+  }
 });

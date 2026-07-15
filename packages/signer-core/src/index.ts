@@ -41,3 +41,26 @@ export { signReceipt, SignError, type SignerKey } from "./sign.js";
 export { buildReceipt, buildReceiptDraft, type BuildInput } from "./builder.js";
 export { generateKeyPair, type KeyPair } from "./keygen.js";
 export { hexToBytes, bytesToHex, bytesToBase64, base64ToBytes } from "./bytes.js";
+
+// HPKE (RFC 9180 base mode) — D15-v2 encrypted display + (later) D23 encrypted reason.
+export {
+  hpkeSealBase,
+  hpkeOpenBase,
+  hpkeRandomBytes,
+  HPKE_SUITE,
+  HPKE_KEM_ID,
+  HPKE_KDF_ID,
+  HPKE_AEAD_ID,
+  type HpkeSealInput,
+  type HpkeSealOutput,
+  type HpkeOpenInput,
+} from "./hpke.js";
+export {
+  sealEncryptedDisplay,
+  openEncryptedDisplay,
+  decodeX25519PublicKey,
+  type EncryptedDisplay,
+  type DisplayRecipient,
+  type SealDisplayInput,
+  type OpenRecipient,
+} from "./encrypted-display.js";

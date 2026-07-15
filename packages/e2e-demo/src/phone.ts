@@ -40,6 +40,7 @@ import {
   type KeyDelegation,
   type DecisionArtifact,
 } from './mobile.js';
+import { openEncryptedDisplay } from 'noa-signer';
 import { spkiToRawHex } from './support.js';
 import { DemoError } from './errors.js';
 import type { Logger } from './log.js';
@@ -236,29 +237,28 @@ export class HeadlessPhone {
       riskClass: action.riskClass,
       paramsHash: action.paramsHash,
       chainSeq: Number(deferred.chain.seq),
-      display: this.readStructuralDisplay(hold.encryptedDisplay),
+      display: this.decryptDisplay(hold.encryptedDisplay),
     };
     this.log.event('phone.d2_verified', { canonical: view.canonical, riskClass: view.riskClass, chainSeq: view.chainSeq });
     return view;
   }
 
   /**
-   * Read the (structurally-sealed) display payload for human presentation. NOTE: the demo's gate
-   * uses a STRUCTURAL sealer, not real HPKE (real HPKE is @noa/signer's injected job, not yet
-   * built) — so this reads the base64 payload rather than performing an AEAD open. The cryptographic
-   * BINDING of the display to the gate-signed envelope (F2) IS verified above; the plaintext read
-   * here is presentation only and is never a trust decision.
+   * D15-v2 — locally HPKE-DECRYPT the display for human presentation. This is a REAL AEAD open: the
+   * device X25519 secret key (held only here, Red Line 1) unwraps the per-device CEK, which decrypts
+   * the display payload. The F2 binding (encryptedDisplay ↔ gate-signed envelope) is already verified
+   * by the caller BEFORE this runs, so a successful decrypt means the plaintext is exactly what the
+   * gate sealed. Fail-closed: any AEAD/binding failure throws a named D2 error — the phone never
+   * renders a raw or partially-decrypted display.
    */
-  private readStructuralDisplay(encryptedDisplay: J): J {
+  private decryptDisplay(encryptedDisplay: J): J {
     try {
-      const payload = (encryptedDisplay.payload ?? {}) as { ciphertext?: string };
-      if (typeof payload.ciphertext === 'string') {
-        return JSON.parse(Buffer.from(payload.ciphertext, 'base64').toString('utf8')) as J;
-      }
-    } catch {
-      /* presentation only — a binding-verified but unreadable structural payload is not fatal */
+      return openEncryptedDisplay(encryptedDisplay, { kid: this.device.kid, secretKey: this.hpkeSecret }) as J;
+    } catch (e) {
+      throw new DemoError('PHONE_D2', 'D2_DISPLAY_DECRYPT_FAILED', 'HPKE display decryption failed (fail-closed; never render raw)', {
+        detail: e instanceof Error ? e.message : String(e),
+      });
     }
-    return {};
   }
 
   // ── decision signing (device key) ───────────────────────────────────────────────────────────
