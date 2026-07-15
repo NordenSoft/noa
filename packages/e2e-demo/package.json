@@ -1,0 +1,29 @@
+{
+  "name": "noa-e2e-demo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Instant-Tether GOLDEN DEMO (spec §2, D3) — the end-to-end integration that wires the four already-shipped slices (relay §9 + gate §8 + evidence §13 + approval-artifacts §6) and the read-only noa-mobile phone core into ONE proven flow: a fake agent proposes a risky infra action → the gate freezes it → the relay carries it → a headless phone (real pairing ceremony + device-key Decision signature) approves → the gate grants/reserves → the exact-execution wrapper runs a harmless command → an Approval Evidence Bundle verifies offline = VALID. Orchestration + drivers only — it re-implements ZERO crypto and signs NOTHING itself; every signature comes from the gate or the phone's device key.",
+  "type": "module",
+  "engines": { "node": ">=20" },
+  "scripts": {
+    "build:deps": "npm --prefix ../signer-core run build && npm --prefix ../.. run build && npm --prefix ../approval-artifacts run build && npm --prefix ../gate run build && npm --prefix ../relay run build && npm --prefix ../evidence run build",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "demo": "tsx src/demo.ts",
+    "test": "node --import tsx --test test/*.test.ts"
+  },
+  "dependencies": {
+    "noa-approval-artifacts": "file:../approval-artifacts",
+    "noa-approval-evidence": "file:../evidence",
+    "noa-gate": "file:../gate",
+    "noa-receipt": "file:../..",
+    "noa-relay": "file:../relay",
+    "noa-signer": "file:../signer-core",
+    "@noble/curves": "2.2.0",
+    "@noble/hashes": "2.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}
