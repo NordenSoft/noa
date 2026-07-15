@@ -6,9 +6,10 @@
  * (device key). It plays the human operator for the out-of-band SAS comparison (the §3 trust anchor)
  * and cleans up every process + port at the end.
  */
-import { createGate, hashSecret, guard, type Gate, type AgentRecord, type DisplaySealer, type GateClient, type EngineResult } from 'noa-gate';
+import { createGate, hashSecret, guard, type Gate, type AgentRecord, type DisplaySealer, type EncryptedDisplay, type GateClient, type EngineResult } from 'noa-gate';
 import { createRelay, type Relay } from 'noa-relay';
-import { canonicalize, sha256Prefixed } from 'noa-approval-artifacts';
+import { sealEncryptedDisplay } from 'noa-signer';
+import { mobileRefHash } from './mobile.js';
 import type { Receipt } from 'noa-receipt';
 import type { EvidenceOutcome } from 'noa-approval-evidence';
 import { makeClock, makeIds, type Clock } from './support.js';
@@ -33,23 +34,16 @@ const GATE_AGENT_KEY = 'noa_gateagent_demo-secret-0001';
 type J = Record<string, unknown>;
 
 /**
- * DEMO STRUCTURAL display sealer — produces a structurally-valid `noa.encrypted-display/0.1` so the
- * gate can BIND it (F2). It is NOT real HPKE (real HPKE is @noa/signer's injected job, not yet
- * built); it never claims to be. Identical posture to the gate package's own test sealer: exercise
- * the binding, never fake encryption as real. The phone verifies the F2 binding, not a plaintext.
+ * REAL HPKE display sealer (D15-v2) — the gate's injected `@noa/signer` job (KURAL 5: the gate never
+ * reimplements HPKE, it only BINDS the sealed object via `displayCiphertextHash`, F2). It produces a
+ * genuine `noa.encrypted-display/0.1`: the whole human-readable display is ChaCha20Poly1305-encrypted
+ * under a random CEK, and that CEK is HPKE-wrapped (RFC 9180 base mode, X25519-HKDF-SHA256) to each
+ * recipient device's X25519 public key. Only a device holding the matching secret can read it — the
+ * gate holds no secret. This replaces the earlier structural stub end-to-end.
  */
-function demoStructuralSealer(): DisplaySealer {
-  return ({ tenant, holdId, deferredReceiptHash, expiresAt, display, recipients }) => ({
-    spec: 'noa.encrypted-display/0.1',
-    tenant,
-    holdId,
-    deferredReceiptHash,
-    expiresAt,
-    suite: { kem: 32, kdf: 1, aead: 3 },
-    payload: { nonce: 'AAAAAAAAAAAAAAAA', ciphertext: Buffer.from(JSON.stringify(display), 'utf8').toString('base64') },
-    recipients: recipients.map((r) => ({ kid: r.kid, enc: 'ZW5jYXBzdWxhdGVk', wrappedCek: 'd3JhcHBlZC1jZWs' })),
-    aadHash: sha256Prefixed(canonicalize({ tenant, holdId, deferredReceiptHash, expiresAt })),
-  });
+function realDisplaySealer(): DisplaySealer {
+  return ({ tenant, holdId, deferredReceiptHash, expiresAt, display, recipients }) =>
+    sealEncryptedDisplay({ tenant, holdId, deferredReceiptHash, expiresAt, display, recipients }) as EncryptedDisplay;
 }
 
 export interface HarnessContext {
@@ -100,7 +94,7 @@ export async function setupHarness(opts: { echo?: boolean; sink?: string[] } = {
   const gate = createGate({
     trust,
     config: { port: 0, now: () => clock.now() },
-    sealDisplay: demoStructuralSealer(),
+    sealDisplay: realDisplaySealer(),
     log: (event, fields) => {
       logger.child('gate').event(event, fields);
       if (event === 'hold.created' && typeof fields['holdId'] === 'string') gateHoldQueue.push(fields['holdId']);
@@ -384,4 +378,85 @@ export async function runParamsMismatchProbe(logger: Logger): Promise<MismatchPr
     execute,
   });
   return { guardResult, executeSpy: spy, reserveCalled: client.reserveCalled };
+}
+
+// ── scenario (f): the gate HPKE-seals the display; the phone decrypts it locally to the exact plaintext ─
+
+export interface EncryptedDisplayProbe {
+  /** The display the gate sealed (RAW mode: caller-supplied, so we have the exact expected plaintext). */
+  knownDisplay: J;
+  /** What the phone recovered by HPKE-decrypting with its device X25519 secret. */
+  openedDisplay: J;
+  /** true iff the payload is real AEAD ciphertext (the old structural stub was base64(JSON)). */
+  isRealHpke: boolean;
+  /** F2: refHash of the WHOLE encrypted-display object, and the value the gate signed into the envelope. */
+  actualDisplayHash: string;
+  envelopeDisplayHash: string;
+  /** true iff the phone REFUSED a tampered encrypted display (never rendered it). */
+  tamperRejected: boolean;
+  tamperErrorCode: string | null;
+}
+
+/**
+ * Freeze a RAW hold with a KNOWN human-readable display, let the gate seal it with real HPKE, and
+ * have the headless phone decrypt it locally (its X25519 device secret never leaves it). Proves the
+ * "gate encrypts the screen → phone opens it → shows the exact plaintext" claim end-to-end, plus the
+ * F2 whole-object binding and the fail-closed refusal of a tampered display.
+ */
+export async function runEncryptedDisplayRoundTrip(ctx: HarnessContext): Promise<EncryptedDisplayProbe> {
+  const chain = 'chain-' + ctx.ids();
+  const idem = 'idem-' + ctx.ids();
+  const knownDisplay: J = {
+    title: 'Wire transfer approval',
+    amountMinor: 420000, // integer minor units (€4,200.00)
+    currency: 'EUR',
+    to: 'ACME GmbH',
+    memo: 'invoice 2026-0715',
+  };
+  const paramsHash = 'sha256:' + 'a'.repeat(64);
+  const res = await fetch(`${ctx.gateBaseUrl}/v1/holds`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${GATE_AGENT_KEY}`, 'idempotency-key': idem },
+    body: JSON.stringify({ mode: 'RAW', action: { canonical: 'noa.custom.wire', riskClass: 'HIGH', paramsHash }, display: knownDisplay, chain }),
+  });
+  const body = (await res.json().catch(() => null)) as J | null;
+  const gateHoldId = body && typeof body['holdId'] === 'string' ? (body['holdId'] as string) : '';
+  if (res.status !== 201 || !gateHoldId) throw new DemoError('GATE', 'GATE_HOLD_FAILED', 'RAW hold for the encrypted-display probe failed', { status: res.status, body });
+
+  const hold = ctx.gate.store.getHold(gateHoldId);
+  if (!hold || !hold.holdEnvelope || !hold.deferredReceipt || !hold.encryptedDisplay) {
+    throw new DemoError('ORCHESTRATION', 'INVARIANT_VIOLATION', 'gate hold missing context for the display probe', { gateHoldId });
+  }
+  const encryptedDisplay = hold.encryptedDisplay as unknown as J;
+
+  // The phone decrypts locally as part of its D2 pre-render verification (real AEAD open inside).
+  const phoneHold: PhoneHold = { holdEnvelope: hold.holdEnvelope as unknown as J, deferredReceipt: hold.deferredReceipt as never, encryptedDisplay };
+  const view = ctx.phone.verifyHoldForRender(phoneHold, ctx.clock.iso());
+
+  // Real HPKE, not the old stub: the stub's ciphertext was base64(JSON) and would parse straight back.
+  const payload = (encryptedDisplay['payload'] ?? {}) as { ciphertext?: string };
+  let isRealHpke = true;
+  try {
+    JSON.parse(Buffer.from(String(payload.ciphertext), 'base64').toString('utf8'));
+    isRealHpke = false;
+  } catch {
+    isRealHpke = true;
+  }
+
+  const envelopeDisplayHash = String((hold.holdEnvelope as unknown as J)['displayCiphertextHash']);
+  const actualDisplayHash = mobileRefHash(encryptedDisplay);
+
+  // Negative: a tampered display must be refused by the phone (the F2 whole-object binding breaks).
+  let tamperRejected = false;
+  let tamperErrorCode: string | null = null;
+  const tampered = JSON.parse(JSON.stringify(encryptedDisplay)) as J;
+  (tampered['payload'] as { ciphertext: string }).ciphertext = Buffer.from('tampered', 'utf8').toString('base64');
+  try {
+    ctx.phone.verifyHoldForRender({ holdEnvelope: hold.holdEnvelope as unknown as J, deferredReceipt: hold.deferredReceipt as never, encryptedDisplay: tampered }, ctx.clock.iso());
+  } catch (e) {
+    tamperRejected = true;
+    tamperErrorCode = e instanceof DemoError ? e.code : 'UNKNOWN';
+  }
+
+  return { knownDisplay, openedDisplay: view.display, isRealHpke, actualDisplayHash, envelopeDisplayHash, tamperRejected, tamperErrorCode };
 }
