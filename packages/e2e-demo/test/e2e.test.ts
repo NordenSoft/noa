@@ -76,13 +76,14 @@ test('(c) timeout: no decision → gate mints a POLICY-signed BLOCKED approval-t
     assert.equal(vc.status, 'VALID', `verifyChain([DEFERRED, timeout]): ${vc.status}`);
     assert.equal(vc.count, 2);
 
-    // HONEST observed property (surfaced, not hidden): the §13 verifier enforces Hold-Envelope
-    // freshness (steps.ts:219 `expiresAt > now`). A timed-out hold's envelope is, by definition, past
-    // its expiry at verify time, so the post-expiry EXPIRED bundle is deterministically rejected at
-    // STEP_1_HOLD_ENVELOPE — the verifier correctly refuses to treat a stale-envelope bundle as fresh.
-    assert.equal(r.verdict.verdict, 'INVALID', 'post-expiry EXPIRED bundle is INVALID by envelope-freshness rule');
-    assert.equal(r.verdict.failedStep, 'STEP_1_HOLD_ENVELOPE', 'rejection is the named envelope-freshness step');
-    console.log('  (c) timeout=%o verifyChain=%o evidence(freshness)=%o', { verdict: gov.verdict, ruleId: gov.ruleId, principal: agent.principal }, { status: vc.status, count: vc.count }, { verdict: r.verdict.verdict, step: r.verdict.failedStep });
+    // The §13 verifier applies the Hold-Envelope `expiresAt > now` freshness gate ONLY to positive/
+    // still-open claims — NOT to terminal-negative outcomes (EXPIRED, DENIED), which carry their own
+    // POLICY-signed proof and must stay verifiable forever (evidence is a durable audit record). So a
+    // post-expiry EXPIRED bundle verifies VALID_FULL_CHAIN, while signature/manifest/step-15 anti-
+    // laundering checks all remain strict (see packages/evidence EXPIRED/DENIED freshness exemption).
+    assert.equal(r.verdict.verdict, 'VALID_FULL_CHAIN', 'post-expiry EXPIRED bundle verifies (terminal-negative freshness exemption)');
+    assert.equal(r.verdict.outcome, 'EXPIRED', 'the verified outcome is EXPIRED');
+    console.log('  (c) timeout=%o verifyChain=%o evidence=%o', { verdict: gov.verdict, ruleId: gov.ruleId, principal: agent.principal }, { status: vc.status, count: vc.count }, { verdict: r.verdict.verdict, outcome: r.verdict.outcome });
   } finally {
     await teardownHarness(ctx);
   }
