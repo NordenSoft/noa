@@ -524,6 +524,54 @@ for (const oc of OUTCOMES) {
   emit("reject", "step18-revoked-at-received", fixtureFrom(w, { description: "STEP_18/F10: the approver key was revoked at 11:56:15 — after the phone-written decidedAt (11:56:00) but BEFORE the gate's trusted receivedAt (11:56:30); the authorization-time check uses receivedAt → rejected", expectVerdict: "INVALID", expectStep: "STEP_18_TEMPORAL_AUTHORIZATION", expectCode: "E_TEMPORAL_AUTH", bundle: w.bundle }));
 }
 
+// ═══ 4. envelope-expiry FRESHNESS: late-audit of terminal-negative outcomes (EXPIRED/DENIED) ═══════
+// The Hold Envelope's `expiresAt` is the (short) hold window. A genuine EXPIRED/DENIED outcome is
+// audited AFTER that window has lapsed, so `now > holdEnvelope.expiresAt`. The step-1 liveness gate is
+// DROPPED for those two terminal negatives (their bundle carries its own signed timeout/blocked
+// receipt = permanent proof), but kept STRICT for every other outcome — and the negative-outcome
+// checkpoint rule (step 15) still fully applies, so the exemption opens no laundering hole.
+// NOW_LATE is 30 min past the envelope expiry (12:30) and 61 min past the checkpoint (11:59 — still
+// within the 24h max-age, so step-16 freshness for the negative outcomes passes).
+const NOW_LATE = "2026-07-14T13:00:00.000Z";
+{
+  // (a) a genuinely-EXPIRED bundle audited after the hold window lapsed: the step-1 envelope-expiry
+  //     gate is exempt for EXPIRED, the timeout receipt + fresh checkpoint carry the proof → VALID.
+  //     Before the exemption this same bundle was UNFAIRLY rejected INVALID @ STEP_1 (expiresAt <= now).
+  const wExp = buildWorld("EXPIRED");
+  emit("freshness", "expired-late-verify-valid", fixtureFrom(wExp, { description: "F5/F18: an EXPIRED bundle audited AFTER the hold window lapsed (now 13:00 > envelope.expiresAt 12:30). The step-1 envelope-expiry freshness gate does NOT apply to the terminal-negative EXPIRED outcome (its POLICY-signed timeout receipt + a fresh reconciled checkpoint are the proof) → VALID_FULL_CHAIN. Pre-fix this was UNFAIRLY INVALID @ STEP_1.", expectVerdict: "VALID_FULL_CHAIN", now: NOW_LATE }));
+
+  // (b) same, for a terminal-negative DENIED bundle.
+  const wDen = buildWorld("DENIED");
+  emit("freshness", "denied-late-verify-valid", fixtureFrom(wDen, { description: "F5/F18: a DENIED bundle audited AFTER the hold window lapsed (now 13:00 > envelope.expiresAt 12:30). The step-1 envelope-expiry freshness gate does NOT apply to the terminal-negative DENIED outcome (its approver-signed blocked receipt + a fresh reconciled checkpoint are the proof) → VALID_FULL_CHAIN. Pre-fix this was UNFAIRLY INVALID @ STEP_1.", expectVerdict: "VALID_FULL_CHAIN", now: NOW_LATE }));
+
+  // (c) REGRESSION GUARD: for a POSITIVE execution (EXECUTED) the envelope-expiry freshness gate stays
+  //     STRICT — a bundle claiming execution with a hold window that has already lapsed at verify-time
+  //     is still rejected INVALID @ STEP_1. Proves the exemption is confined to EXPIRED/DENIED.
+  const wExec = buildWorld("EXECUTED");
+  emit("freshness", "executed-late-verify-rejected", fixtureFrom(wExec, { description: "REGRESSION GUARD: an EXECUTED bundle verified after the envelope expiry (now 13:00 > expiresAt 12:30) is STILL rejected — the envelope-expiry freshness gate stays strict for positive execution outcomes (exemption confined to EXPIRED/DENIED) → INVALID @ STEP_1.", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_HOLD_ENVELOPE", now: NOW_LATE }));
+
+  // (d) ANTI-LAUNDERING GUARD: an EXPIRED bundle audited late but whose checkpoint signer is NOT in the
+  //     supplied --checkpoint-keyring has NO trusted tail anchor. The step-1 exemption lets it REACH the
+  //     real gate (step 15), which still refuses to certify a negative outcome without a trusted
+  //     checkpoint → INCONCLUSIVE @ STEP_15. Proves the exemption did not open a laundering hole.
+  const wExpNoAnchor = buildWorld("EXPIRED", { checkpointKeyring: CHECKPOINT_KEYRING_WRONG });
+  emit("freshness", "expired-late-no-anchor-inconclusive", fixtureFrom(wExpNoAnchor, { description: "ANTI-LAUNDERING GUARD: an EXPIRED bundle audited late (step-1 envelope-expiry exempt) whose checkpoint signer is NOT in --checkpoint-keyring → no trusted anchor. Step 15's negative-outcome principle still applies and refuses to certify it → INCONCLUSIVE @ STEP_15 (the EXPIRED freshness exemption is confined to the step-1 TIME-rejection; it never bypasses the trusted-checkpoint requirement).", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_15_NEGATIVE_OUTCOME_PRINCIPLE", expectCode: "E_INCONCLUSIVE_NO_CHECKPOINT", now: NOW_LATE }));
+
+  // (e) ANTI-REWARD-HACK GUARD: the exemption drops the expiresAt>now TIME-rejection ONLY. Prove the
+  //     envelope SIGNATURE check still bites for a terminal-negative: an EXPIRED bundle audited late with
+  //     a corrupted holdEnvelope signature is STILL rejected at step 1 (verifyArtifact signature layer).
+  {
+    const w = buildWorld("EXPIRED");
+    const bundle = clone(w.bundle);
+    const env = bundle.holdEnvelope as J;
+    // swap in a foreign-but-well-formed Ed25519 sig value (the deferred receipt's) → the signature no
+    // longer verifies over the envelope preimage; nothing else is perturbed, so the ONLY failing check
+    // is the signature layer (not the exempt freshness gate).
+    (env.sig as J).value = ((clone(w.bundle.deferredReceipt) as J).sig as J).value;
+    emit("freshness", "expired-late-tampered-envelope-sig", fixtureFrom(w, { description: "ANTI-REWARD-HACK GUARD: an EXPIRED bundle audited late (now 13:00 > expiresAt 12:30) with a CORRUPTED holdEnvelope signature. The freshness exemption drops ONLY the expiresAt>now time-rejection — the Ed25519 signature check is unconditional → still INVALID @ STEP_1 (E_HOLD_ENVELOPE). Proves the exemption did not weaken signature/structural verification for the exempt outcomes.", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_HOLD_ENVELOPE", bundle, now: NOW_LATE }));
+  }
+}
+
 // ─── write ───────────────────────────────────────────────────────────────────────────────────────
 rmSync(OUT, { recursive: true, force: true });
 for (const { path, fx } of files) {
