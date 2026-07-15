@@ -210,13 +210,29 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   }
 
   // Hold Envelope: GATE + hold-signer (F15), gateKid == sig.kid, bound to THIS manifest
-  // (keyManifestVersion + keyManifestHash), unexpired at now.
+  // (keyManifestVersion + keyManifestHash).
+  //
+  // The envelope-expiry FRESHNESS gate (`expiresAt > now`) is a LIVENESS assertion — it proves the
+  // hold window is still open at verify-time, which is meaningful ONLY when the claim is a positive
+  // execution (EXECUTED / EXECUTION_FAILED / …) or "the hold is still actionable". For the two
+  // TERMINAL-NEGATIVE outcomes (EXPIRED, DENIED) the hold is DEFINITIONALLY closed and the bundle
+  // already carries its own POLICY/approver-signed terminal receipt (timeout / blocked) — permanent,
+  // auditable proof that the action did NOT run. An audit performed after the (short) hold window has
+  // lapsed must still verify such a bundle; forever-auditability is the point of the evidence layer.
+  // So for EXPIRED/DENIED we DROP the `expiresAt > now` TIME-rejection ONLY — every structural check
+  // stays strict for every outcome: the signature, the tenant/gateKid equalities, and the
+  // keyManifestVersion/Hash bindings below all still run. This opens NO laundering hole: EXPIRED/DENIED
+  // are negative outcomes that STILL must clear step 15's independent trusted-fresh-checkpoint rule
+  // before they may be asserted (a compromised gate cannot dodge that by expiring the envelope). §13
+  // step 1 itself requires only "manifest unexpired"; envelope-expiry freshness is an implementation
+  // liveness add-on, so exempting terminal negatives is spec-faithful.
+  const skipEnvelopeFreshness = b.outcome === "EXPIRED" || b.outcome === "DENIED";
   const ev = verifyArtifact(b.holdEnvelope, {
     schemas: ctx.schemas,
     keyring: ctx.resolvedKeyring,
     now: ctx.now,
     equals: [{ path: "tenant", value: ctx.tenant }, { path: "gateKid", value: env.sig && asObj(env.sig)?.kid }],
-    mustBeAfter: [{ path: "expiresAt", time: ctx.now }],
+    ...(skipEnvelopeFreshness ? {} : { mustBeAfter: [{ path: "expiresAt", time: ctx.now }] }),
   });
   if (!ev.ok) return fail(S, "E_HOLD_ENVELOPE", `holdEnvelope invalid: ${ev.reason}`);
   if (env.keyManifestVersion !== manifest.version) {
