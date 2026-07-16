@@ -1,0 +1,202 @@
+############################################################
+# noa-receipt HTTP-agent-example — PROOF OF A REAL ROUND TRIP
+# Captured: 2026-07-16T11:08:36Z
+# Stack: node run-local-stack.mjs (real noa-relay on 127.0.0.1:8787
+#        + a headless auto-approver with a real Ed25519 device key)
+############################################################
+
+----- run-local-stack.mjs stdout (full session) -----
+[2026-07-16T11:08:11.459Z] relay.listening {"relayBaseUrl":"http://127.0.0.1:8787","role":"untrusted-transport"}
+[2026-07-16T11:08:11.472Z] agent.registered {"agentId":"1c8c9b2a-bef7-4885-be52-45665e3749eb","name":"http-agent-example"}
+[2026-07-16T11:08:11.495Z] device.registered {"deviceId":"346d906e-8ddb-4de1-86eb-9a91cac9359d","kid":"headless-auto-approver-1"}
+[2026-07-16T11:08:11.496Z] session.written {"sessionJsonPath":"/Users/toratoraman/noa-receipt-wt-httpx/packages/e2e-demo/examples/http-agent/session.json","sessionEnvPath":"/Users/toratoraman/noa-receipt-wt-httpx/packages/e2e-demo/examples/http-agent/session.env","keyringPath":"/Users/toratoraman/noa-receipt-wt-httpx/packages/e2e-demo/examples/http-agent/keyring.json"}
+[2026-07-16T11:08:11.496Z] stack.ready {"relayBaseUrl":"http://127.0.0.1:8787","note":"curl/python clients: POST /v1/holds with Bearer <agentApiKey> from session.env / session.json; Ctrl-C to stop"}
+[2026-07-16T11:08:18.559Z] hold.auto_decided {"holdId":"94ecb02b-8716-492c-8307-1af19047178d","canonical":"infra.restart-service","riskClass":"HIGH","verdict":"ALLOWED","relayStatus":200,"relayResult":"APPROVED"}
+[2026-07-16T11:08:19.517Z] hold.auto_decided {"holdId":"f2a0a456-f839-40fe-91ed-63ba4e9798f5","canonical":"payments.send-payout","riskClass":"HIGH","verdict":"ALLOWED","relayStatus":200,"relayResult":"APPROVED"}
+[2026-07-16T11:08:27.526Z] hold.auto_decided {"holdId":"1a3bd26e-e727-40f5-bb54-3b7904238028","canonical":"db.drop-table","riskClass":"CRITICAL","verdict":"BLOCKED","relayStatus":200,"relayResult":"DENIED"}
+[2026-07-16T11:08:30.528Z] stack.stopped 
+
+############################################################
+# PROOF RUN — 2026-07-16T11:08:17Z
+# Stack: node run-local-stack.mjs (relay on 127.0.0.1:8787, headless auto-approver)
+############################################################
+
+=================== approve.sh (pure curl + shell) ===================
+== 1. POST /v1/holds (agent auth + Idempotency-Key: shell-demo-1784200097-65679) ==
+{"holdId":"94ecb02b-8716-492c-8307-1af19047178d","status":"PENDING","expiresAt":"2026-07-16T11:23:17.547Z"}
+holdId=94ecb02b-8716-492c-8307-1af19047178d
+
+== 2. GET /v1/holds/$id/wait?timeout=10 (long-poll for the signed verdict) ==
+{"holdId":"94ecb02b-8716-492c-8307-1af19047178d","status":"APPROVED","reasonCode":"HUMAN_APPROVED","action":{"canonical":"infra.restart-service","riskClass":"HIGH","paramsHash":"sha256:af72e7d42dc52c5e6f1871d2a03807f14cf40683321425bf1388c7d8952928ae"},"expiresAt":"2026-07-16T11:23:17.547Z","decidedAt":"2026-07-16T11:08:18.559Z","decisionReceipt":{"spec":"noa.receipt/0.1","id":"verdict-94ecb02b-8716-492c-8307-1af19047178d","ts":"2026-07-16T11:08:18.508Z","scope":{"chain":"hold-94ecb02b-8716-492c-8307-1af19047178d"},"agent":{"id":"approver-human-1","model":null,"principal":"HUMAN"},"action":{"id":"act-94ecb02b-8716-492c-8307-1af19047178d","canonical":"infra.restart-service","riskClass":"HIGH","paramsHash":"sha256:af72e7d42dc52c5e6f1871d2a03807f14cf40683321425bf1388c7d8952928ae","reversible":true,"rollbackRef":null},"governance":{"mode":"approvals_on","verdict":"ALLOWED","sandboxed":false,"approval":{"by":"headless-auto-approver-1","at":"2026-07-16T11:08:18.508Z"}},"chain":{"seq":0,"prevHash":null,"hash":"sha256:c01743851547541e710c565adaed69fa3cbba2d695e1ee3c6973eb55676b10dd"},"sig":{"alg":"ed25519","kid":"headless-auto-approver-1","value":"hLNDYD6DtV4adQdMmo+mKpCLiRyv6hudOyR7I0Xw3jF8xfZMAkPMiluRFeuvaxtey1qkaEXTveo2NIdYTJLPCQ=="}},"decisionArtifact":null}
+verdict status=APPROVED
+
+== 3. replay: SAME Idempotency-Key + SAME body -> idempotent (no new hold) ==
+{"holdId":"94ecb02b-8716-492c-8307-1af19047178d","status":"APPROVED","expiresAt":"2026-07-16T11:23:17.547Z","idempotent":true}
+HTTP_STATUS:200
+
+== 4. unauthorized attempt: no Authorization header -> 401 ==
+{"error":"AGENT_AUTH_REQUIRED"}
+HTTP_STATUS:401
+
+== 4b. unauthorized attempt: garbage bearer -> 401 ==
+{"error":"INVALID_AGENT_CREDENTIAL"}
+HTTP_STATUS:401
+
+done: holdId=94ecb02b-8716-492c-8307-1af19047178d final status=APPROVED
+
+=================== approve.py (pure Python 3 stdlib) ===================
+== 1. POST /v1/holds (agent auth + Idempotency-Key: python-demo-1784200098-65674) ==
+201 {'holdId': 'f2a0a456-f839-40fe-91ed-63ba4e9798f5', 'status': 'PENDING', 'expiresAt': '2026-07-16T11:23:18.665Z'}
+holdId=f2a0a456-f839-40fe-91ed-63ba4e9798f5
+
+== 2. GET /v1/holds/{id}/wait?timeout=10 (long-poll for the signed verdict) ==
+{
+  "holdId": "f2a0a456-f839-40fe-91ed-63ba4e9798f5",
+  "status": "APPROVED",
+  "reasonCode": "HUMAN_APPROVED",
+  "action": {
+    "canonical": "payments.send-payout",
+    "riskClass": "HIGH",
+    "paramsHash": "sha256:6d986caf06c511491221009dec6def6e206705b0037a09ea568b901744c4d901"
+  },
+  "expiresAt": "2026-07-16T11:23:18.665Z",
+  "decidedAt": "2026-07-16T11:08:19.514Z",
+  "decisionReceipt": {
+    "spec": "noa.receipt/0.1",
+    "id": "verdict-f2a0a456-f839-40fe-91ed-63ba4e9798f5",
+    "ts": "2026-07-16T11:08:19.507Z",
+    "scope": {
+      "chain": "hold-f2a0a456-f839-40fe-91ed-63ba4e9798f5"
+    },
+    "agent": {
+      "id": "approver-human-1",
+      "model": null,
+      "principal": "HUMAN"
+    },
+    "action": {
+      "id": "act-f2a0a456-f839-40fe-91ed-63ba4e9798f5",
+      "canonical": "payments.send-payout",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:6d986caf06c511491221009dec6def6e206705b0037a09ea568b901744c4d901",
+      "reversible": true,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "approvals_on",
+      "verdict": "ALLOWED",
+      "sandboxed": false,
+      "approval": {
+        "by": "headless-auto-approver-1",
+        "at": "2026-07-16T11:08:19.507Z"
+      }
+    },
+    "chain": {
+      "seq": 0,
+      "prevHash": null,
+      "hash": "sha256:ffdca449d4e84f888e5cbf7a97ebf43b77f7bf89e36bde751bd74c29f114861a"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "headless-auto-approver-1",
+      "value": "xYLgkrw4WmL6UT1AAjOP2z6AOYEsuLmpTazEHQAERc1ycRHEHlCkPX9w0k4HZtJnXmYGHLc5MEqq6bJaet/fDA=="
+    }
+  },
+  "decisionArtifact": null
+}
+verdict status=APPROVED
+
+== 3. replay: SAME Idempotency-Key + SAME body -> idempotent (no new hold) ==
+200 {'holdId': 'f2a0a456-f839-40fe-91ed-63ba4e9798f5', 'status': 'APPROVED', 'expiresAt': '2026-07-16T11:23:18.665Z', 'idempotent': True} 
+
+== 4. unauthorized attempt: no Authorization header -> 401 ==
+401 {'error': 'AGENT_AUTH_REQUIRED'} 
+
+== 4b. unauthorized attempt: garbage bearer -> 401 ==
+401 {'error': 'INVALID_AGENT_CREDENTIAL'} 
+
+== 5. offline receipt verification (delegates to the `noa verify` CLI — see docstring) ==
+$ node /Users/toratoraman/noa-receipt-wt-httpx/dist/src/cli.js verify /Users/toratoraman/noa-receipt-wt-httpx/packages/e2e-demo/examples/http-agent/last-receipt-chain.json --keyring /Users/toratoraman/noa-receipt-wt-httpx/packages/e2e-demo/examples/http-agent/keyring.json
+{
+  "status": "VALID",
+  "chain": "hold-f2a0a456-f839-40fe-91ed-63ba4e9798f5",
+  "count": 1,
+  "signaturesVerified": true,
+  "tailChecked": false,
+  "warnings": [
+    "no checkpoint supplied: tail-truncation (deleting most-recent receipts) cannot be detected offline",
+    "fork/equivocation is not detectable offline: this verifies the branch you were given, not that the signer signed no other history at the same seq (needs an external witness — v1.0)",
+    "no identityManifest supplied: attribution is kid-level — a VALID result proves a keyring-trusted key signed, NOT which agent.id (cross-agent impersonation undefended in a multi-key keyring)"
+  ]
+}
+noa verify exit code: 0 (0 = VALID)
+
+done: holdId=f2a0a456-f839-40fe-91ed-63ba4e9798f5 final status=APPROVED
+
+=================== bonus: CRITICAL riskClass -> auto-BLOCKED verdict ===================
+create: {"holdId":"1a3bd26e-e727-40f5-bb54-3b7904238028","status":"PENDING","expiresAt":"2026-07-16T11:23:27.047Z"}
+{
+    "holdId": "1a3bd26e-e727-40f5-bb54-3b7904238028",
+    "status": "DENIED",
+    "reasonCode": "HUMAN_DENIED",
+    "action": {
+        "canonical": "db.drop-table",
+        "riskClass": "CRITICAL",
+        "paramsHash": "sha256:aa9c887fc5b62380aa0cecf1b152de923e5c114c89c08d769809b825b7e8851f"
+    },
+    "expiresAt": "2026-07-16T11:23:27.047Z",
+    "decidedAt": "2026-07-16T11:08:27.525Z",
+    "decisionReceipt": {
+        "spec": "noa.receipt/0.1",
+        "id": "verdict-1a3bd26e-e727-40f5-bb54-3b7904238028",
+        "ts": "2026-07-16T11:08:27.514Z",
+        "scope": {
+            "chain": "hold-1a3bd26e-e727-40f5-bb54-3b7904238028"
+        },
+        "agent": {
+            "id": "approver-human-1",
+            "model": null,
+            "principal": "HUMAN"
+        },
+        "action": {
+            "id": "act-1a3bd26e-e727-40f5-bb54-3b7904238028",
+            "canonical": "db.drop-table",
+            "riskClass": "CRITICAL",
+            "paramsHash": "sha256:aa9c887fc5b62380aa0cecf1b152de923e5c114c89c08d769809b825b7e8851f",
+            "reversible": false,
+            "rollbackRef": null
+        },
+        "governance": {
+            "mode": "approvals_on",
+            "verdict": "BLOCKED",
+            "sandboxed": false,
+            "approval": {
+                "by": "headless-auto-approver-1",
+                "at": "2026-07-16T11:08:27.514Z"
+            }
+        },
+        "chain": {
+            "seq": 0,
+            "prevHash": null,
+            "hash": "sha256:e0d264da443f789e23031dd76b6027e3264a795af5241eadb4a8bac3077d6f51"
+        },
+        "sig": {
+            "alg": "ed25519",
+            "kid": "headless-auto-approver-1",
+            "value": "7tPiNpB69hM0Z1XDS40t4a2PTf81/x7gWQev72zEN6PFPYpmPn90yHCUzMOzxPlX/+eUKv+lEQIH/GA8HBcPCg=="
+        }
+    },
+    "decisionArtifact": null
+}
+
+=================== bonus: tamper detection (mutated signature -> TAMPERED) ===================
+{
+  "status": "TAMPERED",
+  "chain": "hold-1a3bd26e-e727-40f5-bb54-3b7904238028",
+  "count": 1,
+  "signaturesVerified": false,
+  "tailChecked": false,
+  "reason": "invalid signature (kid headless-auto-approver-1)",
+  "warnings": [],
+  "badSeq": 0
+}
+tamper-verify exit code: 2  (expect non-zero = TAMPERED, never VALID)
