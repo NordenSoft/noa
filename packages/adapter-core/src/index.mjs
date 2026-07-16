@@ -7,6 +7,17 @@ export { matchApprovalRule, validateApprovalRules, tryIdentifyToolCallForTicketL
 export { recordDeferred, recordApproved, recordDenied, consumeApprovalTicket, findOutstanding, loadPendingIndex, PendingStoreError } from "./pending-store.mjs";
 export { buildApprovalReceipt, buildDenialReceipt, verifyApprovalReceipt, DEFAULT_APPROVAL_TICKET_TTL_MS } from "./approval-decision.mjs";
 export { opaqueApproverId, assertOpaqueApproverBy } from "./opaque-id.mjs";
+// §19.1 smart-default risk-ladder + §19.3 fail-closed policy-change meta-rule (policy layer, no schema change).
+export { DEFAULT_APPROVAL_RULES, RISK_CATEGORIES } from "./approval-defaults.mjs";
+export {
+  POLICY_UPDATE_ACTION_ID,
+  POLICY_UPDATE_APPROVAL_RULE,
+  POLICY_UPDATE_META_POLICY,
+  canonicalizeApprovalRules,
+  classifyPolicyChange,
+  buildPolicyChangeRequest,
+  applyPolicyChange,
+} from "./policy-change-guard.mjs";
 
 // Re-exported so downstream packages (e.g. mcp-proxy, signer-sidecar) only ever depend on
 // noa-mcp-adapter-core — noa-receipt stays a dependency of THIS package, so a consumer

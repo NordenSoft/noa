@@ -7,7 +7,7 @@
  * Runs AFTER preCheck()'s own ALLOW/DENY decision, never before/instead of it.
  */
 
-const MATCH_TYPES = new Set(["exact", "prefix"]);
+const MATCH_TYPES = new Set(["exact", "prefix", "suffix"]);
 const THRESHOLD_OPS = new Set(["ge", "gt"]);
 
 function ruleErrors(rule, idx) {
@@ -17,7 +17,7 @@ function ruleErrors(rule, idx) {
   if (typeof rule.id !== "string" || rule.id.length === 0) errors.push(`${where}.id: non-empty string`);
   const m = rule.match;
   if (!m || typeof m !== "object" || !MATCH_TYPES.has(m.type)) {
-    errors.push(`${where}.match.type: must be "exact" or "prefix"`);
+    errors.push(`${where}.match.type: must be "exact", "prefix", or "suffix"`);
   } else if (typeof m.action !== "string" || m.action.length === 0) {
     errors.push(`${where}.match.action: non-empty string`);
   }
@@ -73,6 +73,11 @@ export function matchApprovalRule(approvalRules, actionId, inputs) {
       let actionMatches = false;
       if (m.type === "exact") actionMatches = actionId === m.action;
       else if (m.type === "prefix") actionMatches = typeof actionId === "string" && actionId.startsWith(m.action);
+      // "suffix" gates by the trailing segment of an action id (e.g. ".delete" catches "db.delete",
+      // "s3.deleteObject" would NOT — endsWith is literal). Added for §19.1 risk-ladder defaults, which
+      // must gate destructive verbs that are named as suffixes across integrations. Backward-compatible:
+      // no pre-existing rule uses this type, so exact/prefix behavior is byte-identical.
+      else if (m.type === "suffix") actionMatches = typeof actionId === "string" && actionId.endsWith(m.action);
       if (!actionMatches) continue;
 
       if (rule.threshold === undefined) return rule;
