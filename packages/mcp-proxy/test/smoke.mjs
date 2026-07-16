@@ -609,11 +609,11 @@ async function main() {
   // approver signature against its trusted keyring and REFUSE this, never executing the transfer.
   const { receipt: forgedAllowedR, ticket: forgedTicketR, ticketExpiresAt: forgedExpiresAtR } = buildApprovalReceipt({
     deferredReceipt: deferredReceiptR,
-    by: "HUMAN:attacker-pretending@nowhere.invalid",
+    by: "HUMAN:hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
     ts: new Date().toISOString(),
     signer: { kid: attackerKp.kid, privateKey: attackerKp.privateKey },
   });
-  recordApproved(pendingStorePathR, { id: deferredReceiptR.id, by: "HUMAN:attacker-pretending@nowhere.invalid", ticket: forgedTicketR, ticketExpiresAt: forgedExpiresAtR, allowedReceipt: forgedAllowedR, tenant: "smoke-tenant", sessionId: "session-R" });
+  recordApproved(pendingStorePathR, { id: deferredReceiptR.id, by: "HUMAN:hmac-sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", ticket: forgedTicketR, ticketExpiresAt: forgedExpiresAtR, allowedReceipt: forgedAllowedR, tenant: "smoke-tenant", sessionId: "session-R" });
   const denyForged = await expectDeny(sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } }));
   ok("(r) a FORGED approval signed by an UNTRUSTED key is REFUSED — never adopted, never executed", denyForged.denied);
   ok("(r) the forged approval did NOT forward to the downstream (transfer count still 0)", readCounts(countsR).transfer_funds === 0);
@@ -621,11 +621,11 @@ async function main() {
 
   const { receipt: allowedR, ticket: ticketR, ticketExpiresAt: ticketExpiresAtR } = buildApprovalReceipt({
     deferredReceipt: deferredReceiptR,
-    by: "HUMAN:approver@example.com",
+    by: "HUMAN:hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
     ts: new Date().toISOString(),
     signer: { kid: approverKp.kid, privateKey: approverKp.privateKey },
   });
-  recordApproved(pendingStorePathR, { id: deferredReceiptR.id, by: "HUMAN:approver@example.com", ticket: ticketR, ticketExpiresAt: ticketExpiresAtR, allowedReceipt: allowedR, tenant: "smoke-tenant", sessionId: "session-R" });
+  recordApproved(pendingStorePathR, { id: deferredReceiptR.id, by: "HUMAN:hmac-sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", ticket: ticketR, ticketExpiresAt: ticketExpiresAtR, allowedReceipt: allowedR, tenant: "smoke-tenant", sessionId: "session-R" });
 
   const rExecuted = await sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } });
   ok("(r) call 3: the EXACT same retried call is now forwarded and succeeds", /transferred 5000/.test(rExecuted.content?.[0]?.text ?? ""));

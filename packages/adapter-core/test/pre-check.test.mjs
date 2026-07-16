@@ -902,7 +902,7 @@ test("adoptApprovedReceipt: advances the session's live chain position to an ext
   assert.equal(prepared.receipt.governance.verdict, "DEFERRED");
 
   const approverKp = generateKeyPair("test-key-r4-adopt-approver");
-  const { receipt: allowed } = buildApprovalReceipt({ deferredReceipt: prepared.receipt, by: "HUMAN:x@y.z", ts: "2026-07-11T11:00:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
+  const { receipt: allowed } = buildApprovalReceipt({ deferredReceipt: prepared.receipt, by: "HUMAN:hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", ts: "2026-07-11T11:00:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
 
   const peeked = store.peek("s1", prepared.tenant);
   const adopted = adoptApprovedReceipt(store, "s1", allowed, peeked.segmentId, prepared.tenant);
@@ -926,7 +926,7 @@ test("adoptApprovedReceipt: refuses (returns null, never throws) when the sessio
   commitSessionReceipt(store, "s2", laterPrepared.receipt, laterPrepared.segmentId, laterPrepared.tenant);
 
   const approverKp = generateKeyPair("test-key-r4-adopt-approver-2");
-  const { receipt: allowed } = buildApprovalReceipt({ deferredReceipt: prepared.receipt, by: "HUMAN:x@y.z", ts: "2026-07-11T11:00:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
+  const { receipt: allowed } = buildApprovalReceipt({ deferredReceipt: prepared.receipt, by: "HUMAN:hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", ts: "2026-07-11T11:00:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
 
   const adopted = adoptApprovedReceipt(store, "s2", allowed, prepared.segmentId, prepared.tenant);
   assert.equal(adopted, null, "seq has moved past what the ALLOWED receipt expects -> refuse, never silently graft");

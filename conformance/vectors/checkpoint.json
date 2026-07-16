@@ -2,11 +2,11 @@
   "spec": "noa.checkpoint/0.1",
   "chain": "store_demo_chain",
   "highestSeq": 2,
-  "headHash": "sha256:b919085ee106273a3eecd9b4a759626984476e73172c4cfdef8d4f98a31d04d7",
+  "headHash": "sha256:05285a7c616b5b5f686039bddc025a6bf2d2f76b401b56b6730a69ea043d31e5",
   "ts": "2026-06-20T07:46:00.000Z",
   "sig": {
     "alg": "ed25519",
     "kid": "noa-test-key-2026",
-    "value": "eKJuhLxumroQREyMExkYsosHfLwMK1rPhtShxeIR3OishIZes4XXjDF0nrRRnBBN2KfnaW0icQ2zLAimN3GcAg=="
+    "value": "d1ZStgncDFxnd4I690RsfmA5mLZ5xb+8wPAgKxcHW8s7LD/Ecyuh7KVsAFk+QAh/PqDfPJt/1oH997eEuCVIAA=="
   }
 }

@@ -64,7 +64,7 @@
       "verdict": "EXECUTED",
       "ruleId": "human-approved",
       "approval": {
-        "by": "HUMAN:owner@store.example",
+        "by": "HUMAN:hmac-sha256:ef5b31ebb954ff5a109e51c22c06ddb662d7725ceda4eb42739dd375528519b3",
         "at": "2026-06-20T07:31:08.000Z"
       },
       "sandboxed": false
@@ -72,12 +72,12 @@
     "chain": {
       "seq": 1,
       "prevHash": "sha256:98bb2287599b187e7227aca68aa84933ff34272c2ac597932a9563f9266f6c59",
-      "hash": "sha256:ec73d6805dc086e4d69bfd235a6ee007c53eb8c826d3552b5c368f6c3bccfde6"
+      "hash": "sha256:63374391d8ccab5d45b75172914a480811cff68621628a52ee60e91278592b93"
     },
     "sig": {
       "alg": "ed25519",
       "kid": "kid-attacker",
-      "value": "Jum8eR2mK6RBGxbaxEo1cinleFF4hESKEbRyTParofEpY3/q4qrJhTTBMsTVnkvWcVltWuN/QRbh8SmUc50zCA=="
+      "value": "tG9Vb6zNQeo+LBmU3h0AMfjOxWs9H5Y2XoOtzahEEtjlUDhBmXaCF9hRUGo7Y9kX3BqGBuET2u1DCch2YWD4Cw=="
     }
   },
   {
@@ -110,13 +110,13 @@
     },
     "chain": {
       "seq": 2,
-      "prevHash": "sha256:ec73d6805dc086e4d69bfd235a6ee007c53eb8c826d3552b5c368f6c3bccfde6",
-      "hash": "sha256:c11ec860b2a22639cec8a56b5b28ff04886efbc91762c40390b8820c9b24f706"
+      "prevHash": "sha256:63374391d8ccab5d45b75172914a480811cff68621628a52ee60e91278592b93",
+      "hash": "sha256:dad14bf2d0a49a223bf1a9b113ada8aa0fcedb1f470ec09e1589734a96f3bdf6"
     },
     "sig": {
       "alg": "ed25519",
       "kid": "kid-attacker",
-      "value": "WzOmd8/Mai7T6OIXjVesEqbngPCMkdfBd8n407SrQewGCfgHLgumHdB1MTmREEuMAJ4gNZsobdpPwzAJNNmEDA=="
+      "value": "pJEaAZA9zAikGUgI4DHMiuQbrg+i66E4Sz8iwrPbDQzUGrb8wOfXAZfZvluWX0p3h88D2Z5vqFYEbHjzDK2BBw=="
     }
   }
 ]

@@ -14,6 +14,7 @@ import { sha256Prefixed, sha256Hex } from "../src/hash.js";
 import { receiptHashInput } from "../src/canonicalize.js";
 import { signEd25519 } from "../src/keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../src/signing.js";
+import { opaqueApproverId } from "../src/pii.js";
 import type { Receipt, BuildInput } from "../src/index.js";
 
 /** Re-hash + re-sign a hand-mutated receipt so it is self-consistent (valid hash + sig under
@@ -63,7 +64,9 @@ const inputs: BuildInput[] = [
     scope: { tenant: "store_demo", chain: CHAIN },
     agent: { id: "agent-refunds", model: EXAMPLE_MODEL, principal: "HUMAN" },
     action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: ph("amount=4200;currency=DKK"), reversible: false, rollbackRef: null },
-    governance: { mode: "on", verdict: "EXECUTED", ruleId: "human-approved", approval: { by: "HUMAN:owner@store.example", at: "2026-06-20T07:31:08.000Z" }, sandboxed: false },
+    // D8: the approver id in a SIGNED receipt is the OPAQUE, tenant-scoped pseudonym — never a raw
+    // email. (Was `HUMAN:owner@store.example` — a raw email in signed bytes, contradicting D8.)
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "human-approved", approval: { by: "HUMAN:" + opaqueApproverId("owner@store.example", "store_demo"), at: "2026-06-20T07:31:08.000Z" }, sandboxed: false },
   },
   {
     id: "rcpt_0000000000000000000000000C",

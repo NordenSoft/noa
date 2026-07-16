@@ -4,6 +4,11 @@ import { generateKeyPair, verifyChain, buildReceipt } from "noa-receipt";
 import { preCheck } from "../src/pre-check.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
 import { buildApprovalReceipt, buildDenialReceipt, verifyApprovalReceipt } from "../src/approval-decision.mjs";
+import { opaqueApproverId } from "../src/opaque-id.mjs";
+
+// D8: the approver id in a SIGNED receipt is the OPAQUE, tenant-scoped pseudonym — never a raw email.
+// The builders now fail-closed on a `by` containing '@', so every fixture uses the opaque form.
+const OPAQUE_BY = "HUMAN:" + opaqueApproverId("jane@acme.example", "acme");
 
 function makeChainAgentAndApprover(tag) {
   const agentKp = generateKeyPair(`agent-${tag}`);
@@ -21,9 +26,10 @@ test("buildApprovalReceipt: verdict ALLOWED, governance.approval filled, chained
   const { receipt: deferred } = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer: agentSigner, policy: REFUND_GUARD_POLICY, approvalRules });
   assert.equal(deferred.governance.verdict, "DEFERRED");
 
-  const { receipt: allowed, ticket, ticketExpiresAt } = buildApprovalReceipt({ deferredReceipt: deferred, by: "HUMAN:jane@acme.example", ts: "2026-07-11T10:05:00.000Z", signer: approverSigner });
+  const { receipt: allowed, ticket, ticketExpiresAt } = buildApprovalReceipt({ deferredReceipt: deferred, by: OPAQUE_BY, ts: "2026-07-11T10:05:00.000Z", signer: approverSigner });
   assert.equal(allowed.governance.verdict, "ALLOWED");
-  assert.deepEqual(allowed.governance.approval, { by: "HUMAN:jane@acme.example", at: "2026-07-11T10:05:00.000Z" });
+  assert.deepEqual(allowed.governance.approval, { by: OPAQUE_BY, at: "2026-07-11T10:05:00.000Z" });
+  assert.ok(!JSON.stringify(allowed).includes("@"), "D8: a signed receipt must contain no raw email ('@') anywhere");
   assert.equal(allowed.agent.principal, "HUMAN");
   assert.equal(allowed.chain.seq, deferred.chain.seq + 1);
   assert.equal(allowed.chain.prevHash, deferred.chain.hash);
@@ -32,15 +38,19 @@ test("buildApprovalReceipt: verdict ALLOWED, governance.approval filled, chained
   assert.equal(verifyChain([deferred, allowed], { keyring }).status, "VALID");
 });
 
-test("buildDenialReceipt: verdict BLOCKED, reason folded into ruleId, approval filled, chained onto DEFERRED", () => {
+test("buildDenialReceipt: verdict BLOCKED, ruleId is the FIXED code 'human-denied' (D8: free-text reason NEVER folded into signed ruleId), approval filled, chained onto DEFERRED", () => {
   const { agentSigner, approverSigner, keyring } = makeChainAgentAndApprover("2");
   const approvalRules = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
   const { receipt: deferred } = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer: agentSigner, policy: REFUND_GUARD_POLICY, approvalRules });
 
-  const { receipt: denied } = buildDenialReceipt({ deferredReceipt: deferred, by: "HUMAN:jane@acme.example", reason: "looks-fraudulent", ts: "2026-07-11T10:05:00.000Z", signer: approverSigner });
+  // Pass a free-text reason to PROVE it is now ignored (regression guard against the old
+  // `human-denied:${reason}` PII/injection leak). `by` here is an already-opaque id (the CLI
+  // pseudonymizes the email upstream; this pure builder embeds `by` verbatim).
+  const { receipt: denied } = buildDenialReceipt({ deferredReceipt: deferred, by: "HUMAN:hmac-sha256:" + "a".repeat(64), reason: "looks-fraudulent", ts: "2026-07-11T10:05:00.000Z", signer: approverSigner });
   assert.equal(denied.governance.verdict, "BLOCKED");
-  assert.equal(denied.governance.ruleId, "human-denied:looks-fraudulent");
-  assert.deepEqual(denied.governance.approval, { by: "HUMAN:jane@acme.example", at: "2026-07-11T10:05:00.000Z" });
+  assert.equal(denied.governance.ruleId, "human-denied");
+  assert.ok(!JSON.stringify(denied).includes("looks-fraudulent"), "free-text reason must never appear in the signed denial receipt");
+  assert.deepEqual(denied.governance.approval, { by: "HUMAN:hmac-sha256:" + "a".repeat(64), at: "2026-07-11T10:05:00.000Z" });
   assert.equal(verifyChain([deferred, denied], { keyring }).status, "VALID");
 });
 
@@ -51,7 +61,7 @@ test("THE MONEY TEST: DEFERRED -> ALLOWED -> EXECUTED, three receipts, ONE scope
   const { receipt: deferred, decision: d1 } = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer: agentSigner, policy: REFUND_GUARD_POLICY, approvalRules });
   assert.equal(d1, "DEFERRED");
 
-  const { receipt: allowed, ticket } = buildApprovalReceipt({ deferredReceipt: deferred, by: "HUMAN:jane@acme.example", ts: "2026-07-11T10:05:00.000Z", signer: approverSigner });
+  const { receipt: allowed, ticket } = buildApprovalReceipt({ deferredReceipt: deferred, by: OPAQUE_BY, ts: "2026-07-11T10:05:00.000Z", signer: approverSigner });
   assert.ok(ticket);
 
   // This test proves the RECEIPT-LEVEL chain shape the ticket-consumption flow is required to
@@ -104,7 +114,7 @@ function makeApprovedFixture(tag) {
   const approverKp = generateKeyPair(`approver-${tag}`);
   const approvalRules = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
   const { receipt: deferred } = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer: { kid: agentKp.kid, privateKey: agentKp.privateKey }, policy: REFUND_GUARD_POLICY, approvalRules });
-  const { receipt: allowed } = buildApprovalReceipt({ deferredReceipt: deferred, by: "HUMAN:jane@acme.example", ts: "2026-07-11T10:05:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
+  const { receipt: allowed } = buildApprovalReceipt({ deferredReceipt: deferred, by: OPAQUE_BY, ts: "2026-07-11T10:05:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
   return { agentKp, approverKp, deferred, allowed, approverKeyring: { [approverKp.kid]: approverKp.publicKey } };
 }
 
@@ -149,7 +159,7 @@ test("verifyApprovalReceipt: fails closed when the verdict is not ALLOWED", () =
   const approverKp = generateKeyPair("v-verdict-approver");
   const approvalRules = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
   const { receipt: deferred } = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer: { kid: agentKp.kid, privateKey: agentKp.privateKey }, policy: REFUND_GUARD_POLICY, approvalRules });
-  const { receipt: denied } = buildDenialReceipt({ deferredReceipt: deferred, by: "HUMAN:jane@acme.example", reason: "no", ts: "2026-07-11T10:05:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
+  const { receipt: denied } = buildDenialReceipt({ deferredReceipt: deferred, by: OPAQUE_BY, reason: "no", ts: "2026-07-11T10:05:00.000Z", signer: { kid: approverKp.kid, privateKey: approverKp.privateKey } });
   const r = verifyApprovalReceipt(denied, { approverKeyring: { [approverKp.kid]: approverKp.publicKey } });
   assert.equal(r.ok, false);
   assert.match(r.reason, /verdict is not ALLOWED/);
