@@ -1,0 +1,7 @@
+# Runtime artifacts written by run-local-stack.mjs / approve.py on every run — carry a
+# per-run agent API key + device public key for a stack that no longer exists once the process
+# exits. Never commit; regenerate by running the stack again.
+session.json
+session.env
+keyring.json
+last-receipt-chain.json
