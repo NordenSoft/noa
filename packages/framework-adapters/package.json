@@ -1,0 +1,52 @@
+{
+  "name": "noa-framework-adapters",
+  "version": "0.1.0",
+  "description": "Thin, fail-closed governance decorators for AI-agent tool-calling frameworks (OpenAI function-calling tools, LangChain.js DynamicTool/StructuredTool). Wraps a tool's execute/func so every call runs through noa-mcp-adapter-core's preCheck gate before it runs: DENY blocks execution, ALLOW signs an offline-verifiable receipt and forwards the call unchanged.",
+  "keywords": [
+    "ai-agent",
+    "governance",
+    "audit",
+    "receipt",
+    "hash-chain",
+    "provenance",
+    "openai",
+    "langchain",
+    "tool-calling",
+    "function-calling",
+    "mcp"
+  ],
+  "homepage": "https://noatrust.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NordenSoft/noa.git",
+    "directory": "packages/framework-adapters"
+  },
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "src/index.mjs",
+  "exports": {
+    ".": "./src/index.mjs",
+    "./openai": "./src/openai.mjs",
+    "./langchain": "./src/langchain.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "prepublishOnly": "npm test"
+  },
+  "dependencies": {
+    "noa-mcp-adapter-core": "file:../adapter-core"
+  }
+}
