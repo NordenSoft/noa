@@ -318,6 +318,21 @@ export class RelayEngine {
     return { status: 200, body: hold.encryptedDisplay };
   }
 
+  /**
+   * Serve the gate-signed hold context (envelope + deferred receipt) VERBATIM so the approver
+   * device can re-verify every signature locally (D2). Auth parity with getDisplay: the device
+   * authorization is the SAME shared server-layer guard (valid, non-revoked `device` bearer) —
+   * this method, like getDisplay, takes no device argument and neither adds nor removes any
+   * per-hold scoping. The relay is untrusted transport: it transforms nothing and signs nothing;
+   * both artifacts are public, gate-signed bytes whose trust is anchored at the device, not here.
+   */
+  getHoldContext(id: string): EngineResult {
+    const hold = this.store.getHold(id);
+    if (!hold) return err(404, "UNKNOWN_HOLD");
+    if (!hold.holdEnvelope || !hold.deferredReceipt) return err(404, "NO_HOLD_CONTEXT");
+    return { status: 200, body: { holdEnvelope: hold.holdEnvelope, deferredReceipt: hold.deferredReceipt } };
+  }
+
   listPending(): EngineResult {
     const rows = this.store
       .listHolds({ status: "PENDING" })

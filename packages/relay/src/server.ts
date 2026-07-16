@@ -144,6 +144,7 @@ async function handle(
     (method === "POST" && /^\/v1\/devices\/[^/]+\/push$/.test(path)) ||
     (method === "GET" && path === "/v1/holds" && url.searchParams.get("status") === "pending") ||
     (method === "GET" && /^\/v1\/holds\/[^/]+\/display$/.test(path)) ||
+    (method === "GET" && /^\/v1\/holds\/[^/]+\/context$/.test(path)) ||
     (method === "POST" && /^\/v1\/holds\/[^/]+\/decision$/.test(path));
 
   if (isDeviceRoute) {
@@ -164,6 +165,9 @@ async function handle(
     }
     if (path.endsWith("/display")) {
       return respond(res, engine.getDisplay(holdIdFrom(path)));
+    }
+    if (path.endsWith("/context")) {
+      return respond(res, engine.getHoldContext(holdIdFrom(path)));
     }
     if (path.endsWith("/decision")) {
       const b = await readBody(req, res, config);
@@ -207,7 +211,7 @@ async function handle(
 }
 
 function holdIdFrom(path: string): string {
-  // /v1/holds/:id | /v1/holds/:id/display | /v1/holds/:id/wait | /v1/holds/:id/decision
+  // /v1/holds/:id | /v1/holds/:id/display | /v1/holds/:id/context | /v1/holds/:id/wait | /v1/holds/:id/decision
   return path.split("/")[3] ?? "";
 }
 
