@@ -22,10 +22,16 @@ import fs from "node:fs";
 import { execFile, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalReceipt, recordApproved } from "noa-mcp-adapter-core";
+import { ListToolsRequestSchema, CallToolRequestSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
+import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalReceipt, recordApproved, signEd25519 } from "noa-mcp-adapter-core";
 import { createProxyServer } from "../src/create-proxy-server.mjs";
+import { startHttpProxy } from "../src/http-server.mjs";
+import { verifyOutcomeReceipt, OUTCOME_RECEIPT_SPEC } from "../src/outcome-receipt.mjs";
+import { createRotatableSigner } from "../src/rotatable-signer.mjs";
 import { TRANSFER_GUARD_POLICY, APPROVAL_RULES } from "../src/policy.mjs";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -56,7 +62,7 @@ function readCounts(countsFile) {
  * create-proxy-server.mjs module the CLI ships, connected to a real Client over an
  * InMemoryTransport linked pair.
  */
-async function makeSession({ sessionId, store, extraTool = false, countsFile, onReceipt: customOnReceipt, agentId, policy, approvalRules, pendingStorePath, approverKeyring, approverIdentityManifest }) {
+async function makeSession({ sessionId, store, extraTool = false, countsFile, onReceipt: customOnReceipt, agentId, policy, approvalRules, pendingStorePath, approverKeyring, approverIdentityManifest, signer: customSigner, collectOutcomes = false }) {
   const env = { ...process.env };
   if (extraTool) env.NOA_DEMO_EXTRA_TOOL = "1";
   if (countsFile) env.NOA_DEMO_COUNTS_FILE = countsFile;
@@ -67,10 +73,18 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile, on
     env,
   });
 
-  const kp = generateKeyPair(`smoke:${sessionId}`);
-  const signer = { kid: kp.kid, privateKey: kp.privateKey };
-  const keyring = { [kp.kid]: kp.publicKey };
+  // A caller-supplied `signer` (e.g. a rotatable signer) overrides the default fresh keypair; its
+  // keyring is derived from `signer.keyring()` when available (rotation), else the single kid.
+  const kp = customSigner ? null : generateKeyPair(`smoke:${sessionId}`);
+  const signer = customSigner ?? { kid: kp.kid, privateKey: kp.privateKey };
+  const keyring = customSigner
+    ? (typeof customSigner.keyring === "function" ? customSigner.keyring() : { [customSigner.kid]: customSigner.publicKey })
+    : { [kp.kid]: kp.publicKey };
   const receipts = [];
+  // R2 — outcome receipts are collected only when a scenario opts in (collectOutcomes), so every
+  // round-1 scenario stays byte-identical: onOutcome stays undefined and the gate signs nothing extra.
+  const outcomes = [];
+  const onOutcome = collectOutcomes ? (_sid, o) => outcomes.push(o) : undefined;
   // `receipts` only ever gets a push AFTER the caller-supplied onReceipt (if any) has SETTLED
   // without throwing/rejecting — it stands in for "durably persisted", exactly like a real
   // receipt-log append would only be considered done once the write itself succeeded. When
@@ -101,6 +115,7 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile, on
     tenant: "smoke-tenant",
     agentId,
     onReceipt,
+    onOutcome,
     approvalRules,
     pendingStorePath,
     approverKeyring,
@@ -117,6 +132,7 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile, on
     server,
     downstream,
     receipts,
+    outcomes,
     keyring,
     async close() {
       await client.close();
@@ -124,6 +140,66 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile, on
     },
   };
 }
+
+/**
+ * R2 helper — a REAL inline in-memory downstream MCP server (a real SDK `Server` over a real
+ * SDK `InMemoryTransport` linked pair, the same transport the round-1 host-side scenarios use).
+ * Used for the notification scenarios (list_changed / progress) because they need multiple
+ * server->client notifications delivered reliably before a response — the SDK's stdio CLIENT read
+ * path only surfaces the FIRST such notification (an SDK/stdio property, independent of this proxy;
+ * see the Scenario V comment), which would make a stdio-based assertion flaky rather than prove the
+ * proxy's forwarding. Returns the transport to hand to createProxyServer as its downstreamTransport.
+ */
+function makeInMemoryDownstream() {
+  const tools = [
+    { name: "echo", description: "echo", inputSchema: { type: "object", properties: { text: { type: "string" } } } },
+    { name: "slow_task", description: "emit N progress then finish", inputSchema: { type: "object", properties: { steps: { type: "number" } } } },
+    { name: "add_tool", description: "append a tool + emit list_changed", inputSchema: { type: "object", properties: { toolName: { type: "string" } } } },
+    { name: "boom", description: "always throws (error-outcome probe)", inputSchema: { type: "object", properties: {} } },
+  ];
+  const server = new Server({ name: "inmem-downstream", version: "1.0.0" }, { capabilities: { tools: { listChanged: true } } });
+  server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }));
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+    const { name, arguments: args = {} } = request.params;
+    if (name === "echo") return { content: [{ type: "text", text: String(args.text ?? "") }] };
+    if (name === "boom") throw new Error("downstream boom");
+    if (name === "add_tool") {
+      const toolName = String(args.toolName ?? "runtime_tool");
+      if (!tools.some((t) => t.name === toolName)) tools.push({ name: toolName, description: "runtime", inputSchema: { type: "object", properties: {} } });
+      await server.sendToolListChanged();
+      return { content: [{ type: "text", text: `added ${toolName}` }] };
+    }
+    if (name === "slow_task") {
+      const steps = Number.isFinite(args.steps) ? Math.max(1, Math.floor(args.steps)) : 3;
+      const token = request.params?._meta?.progressToken;
+      for (let i = 1; i <= steps; i++) {
+        if (token !== undefined && token !== null) {
+          await extra.sendNotification({ method: "notifications/progress", params: { progressToken: token, progress: i, total: steps, message: `step ${i}` } });
+        }
+      }
+      return { content: [{ type: "text", text: `slow_task done in ${steps}` }] };
+    }
+    throw new Error(`inmem-downstream: unknown tool "${name}"`);
+  });
+  const [clientSide, serverSide] = InMemoryTransport.createLinkedPair();
+  server.connect(serverSide);
+  return clientSide;
+}
+
+// A policy that ALLOWs exactly the inline-downstream tools the R2 notification scenario exercises
+// (echo/slow_task/add_tool/boom). `boom` is ALLOWed so it reaches the downstream and THROWS there —
+// exercising the ERROR outcome-receipt path (a DENY would never forward, so it could not).
+const INMEM_ALLOW_POLICY = {
+  spec: "noa.policy/0.2",
+  id: "r2-inmem-allow",
+  requiredPaths: ["action"],
+  rules: [
+    { id: "a-echo", when: { op: "eq", path: "action", value: "echo" }, then: "ALLOW" },
+    { id: "a-slow", when: { op: "eq", path: "action", value: "slow_task" }, then: "ALLOW" },
+    { id: "a-add", when: { op: "eq", path: "action", value: "add_tool" }, then: "ALLOW" },
+    { id: "a-boom", when: { op: "eq", path: "action", value: "boom" }, then: "ALLOW" },
+  ],
+};
 
 async function expectDeny(promise) {
   try {
@@ -1007,6 +1083,255 @@ async function main() {
   await cliSignerClientT.close();
   sidecarProcS.kill("SIGTERM");
 
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO U (R2 #4): post-execution OUTCOME receipts. Every tool that ACTUALLY RUNS (ALLOW ->
+  // forwarded) gets a SECOND, distinct signed receipt binding tool + the decision receipt's id+hash
+  // + terminal status. It is additive: the decision-receipt count/chain is byte-unchanged (outcome
+  // receipts are NOT chained in), a DENY produces NO outcome (it never ran), and each outcome is
+  // offline-verifiable + tamper-evident.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario U (R2) — post-execution OUTCOME receipts: bound, signed, offline-verifiable, additive");
+  const storeU = createChainSessionStore();
+  const countsU = tmpPath("counts-U.json");
+  const sessU = await makeSession({ sessionId: "session-U", store: storeU, countsFile: countsU, collectOutcomes: true });
+  await sessU.client.callTool({ name: "echo", arguments: { text: "u-echo" } });
+  await sessU.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 300, to: "account-42" } });
+  await expectDeny(sessU.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 999_999_999, to: "attacker" } }));
+  ok("(u) 3 decision receipts recorded (2 ALLOW + 1 DENY) — unchanged from round-1", sessU.receipts.length === 3);
+  ok("(u) exactly 2 OUTCOME receipts — one per EXECUTED tool, NONE for the DENY (it never ran)", sessU.outcomes.length === 2);
+  ok("(u) outcome receipts carry the distinct R2 spec, not the decision spec", sessU.outcomes.every((o) => o.spec === OUTCOME_RECEIPT_SPEC && o.spec !== sessU.receipts[0].spec));
+  ok("(u) each outcome status is success", sessU.outcomes.every((o) => o.outcome.status === "success"));
+  const decU = sessU.receipts.filter((r) => r.governance.verdict === "EXECUTED");
+  ok("(u) outcome[0] verifies offline + is bound to the echo decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[0], { keyring: sessU.keyring, expectedDecisionReceipt: decU[0] }).ok === true);
+  ok("(u) outcome[1] verifies offline + is bound to the transfer decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[1], { keyring: sessU.keyring, expectedDecisionReceipt: decU[1] }).ok === true);
+  const vU = verifyChain(sessU.receipts, { keyring: sessU.keyring });
+  ok(`(u) the DECISION chain still verifies VALID (outcomes are NOT chained in) — count=${vU.count}`, vU.status === "VALID" && vU.count === 3);
+  ok("(u) an outcome checked against the WRONG decision is rejected (binding enforced)", verifyOutcomeReceipt(sessU.outcomes[0], { keyring: sessU.keyring, expectedDecisionReceipt: decU[1] }).ok === false);
+  const tamperedU = JSON.parse(JSON.stringify(sessU.outcomes[0]));
+  tamperedU.outcome.status = "error";
+  ok("(u) a status-tampered outcome fails signature verification", verifyOutcomeReceipt(tamperedU, { keyring: sessU.keyring }).ok === false);
+  ok("(u) the DENIED transfer never reached downstream (transfer count is 1 = only the small ALLOW)", readCounts(countsU).transfer_funds === 1);
+  await sessU.close();
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO V (R2 #2 + #3): list_changed forwarding + progress passthrough + the ERROR outcome
+  // path — over a REAL inline in-memory downstream (see makeInMemoryDownstream's note on why not
+  // stdio here). Proves the proxy relays EVERY progress event in order (never buffer-and-drop),
+  // forwards a downstream tools/list_changed to the host, and emits an ERROR outcome receipt when an
+  // ALLOWed tool throws downstream.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario V (R2) — list_changed forward + progress passthrough + error-outcome (in-memory downstream)");
+  const storeV = createChainSessionStore();
+  const kpV = generateKeyPair("smoke:session-V");
+  const keyringV = { [kpV.kid]: kpV.publicKey };
+  const receiptsV = [];
+  const outcomesV = [];
+  const { server: serverV } = await createProxyServer({
+    sessionId: "session-V",
+    downstreamTransport: makeInMemoryDownstream(),
+    signer: { kid: kpV.kid, privateKey: kpV.privateKey },
+    policy: INMEM_ALLOW_POLICY,
+    store: storeV,
+    tenant: "smoke-tenant",
+    onReceipt: (_s, r) => receiptsV.push(r),
+    onOutcome: (_s, o) => outcomesV.push(o),
+  });
+  const [csV, ssV] = InMemoryTransport.createLinkedPair();
+  await serverV.connect(ssV);
+  const clientV = new Client({ name: "smoke-host-v", version: "1.0.0" }, { capabilities: {} });
+  let listChangedSeen = false;
+  let resolveLCV;
+  const lcPromiseV = new Promise((r) => {
+    resolveLCV = r;
+  });
+  clientV.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+    listChangedSeen = true;
+    resolveLCV();
+  });
+  await clientV.connect(csV);
+  ok("(v) proxy advertises tools.listChanged, faithfully reflected from the downstream's capability", clientV.getServerCapabilities()?.tools?.listChanged === true);
+
+  const progressV = [];
+  const slowV = await clientV.callTool({ name: "slow_task", arguments: { steps: 5 } }, undefined, { onprogress: (p) => progressV.push(p) });
+  ok("(v) slow_task returned its real downstream result", /slow_task done in 5/.test(slowV.content?.[0]?.text ?? ""));
+  ok(`(v) host received ALL 5 progress events streamed through the proxy (got ${progressV.length}) — not buffer-and-dropped`, progressV.length === 5);
+  ok("(v) progress events arrived in order 1..5 (under the host's own progressToken)", JSON.stringify(progressV.map((p) => p.progress)) === JSON.stringify([1, 2, 3, 4, 5]));
+
+  const beforeV = (await clientV.listTools()).tools.map((t) => t.name);
+  await clientV.callTool({ name: "add_tool", arguments: { toolName: "freshly_added" } });
+  await Promise.race([lcPromiseV, new Promise((_, rej) => setTimeout(() => rej(new Error("list_changed not forwarded in time")), 3000))]);
+  ok("(v) host received the forwarded notifications/tools/list_changed", listChangedSeen);
+  const afterV = (await clientV.listTools()).tools.map((t) => t.name);
+  ok("(v) a re-list now shows the runtime-added tool (live passthrough, not a cached table)", !beforeV.includes("freshly_added") && afterV.includes("freshly_added"));
+
+  const boomV = await expectDeny(clientV.callTool({ name: "boom", arguments: {} }));
+  ok("(v) an ALLOWed tool that THROWS downstream surfaces as an error to the host (never a silent success)", boomV.denied);
+  const errOutcomeV = outcomesV.find((o) => o.outcome.status === "error");
+  ok("(v) an ERROR outcome receipt was emitted for the failed tool, naming it", Boolean(errOutcomeV) && errOutcomeV.action.id === "boom");
+  ok("(v) the error outcome captured the downstream error message", /boom/.test(errOutcomeV?.outcome.error ?? ""));
+  ok("(v) every outcome receipt (success + error) verifies offline", outcomesV.length >= 1 && outcomesV.every((o) => verifyOutcomeReceipt(o, { keyring: keyringV }).ok === true));
+  const vV = verifyChain(receiptsV, { keyring: keyringV });
+  ok(`(v) the decision chain (slow_task, add_tool, boom — all ALLOW) verifies VALID — status=${vV.status}, count=${vV.count}`, vV.status === "VALID" && vV.count === 3);
+  await clientV.close();
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO W (R2 #1): the HTTP+SSE (Streamable HTTP) transport carries a full call end-to-end with
+  // the EXACT SAME fail-closed guarantee as stdio — because it fronts the identical createProxyServer
+  // gate, not a per-transport fork. A real StreamableHTTPClientTransport host talks to a real HTTP
+  // server fronting the real stdio demo-downstream.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario W (R2) — HTTP+SSE transport carries a full call with the SAME fail-closed guarantee as stdio");
+  const storeW = createChainSessionStore();
+  const kpW = generateKeyPair("smoke:session-W");
+  const keyringW = { [kpW.kid]: kpW.publicKey };
+  const receiptsW = [];
+  const outcomesW = [];
+  const countsW = tmpPath("counts-W.json");
+  const httpW = await startHttpProxy({
+    host: "127.0.0.1",
+    port: 0,
+    makeDownstreamTransport: () =>
+      new StdioClientTransport({ command: process.execPath, args: [DEMO_DOWNSTREAM], env: { ...process.env, NOA_DEMO_COUNTS_FILE: countsW } }),
+    signer: { kid: kpW.kid, privateKey: kpW.privateKey },
+    policy: TRANSFER_GUARD_POLICY,
+    store: storeW,
+    tenant: "smoke-tenant",
+    onReceipt: (_s, r) => receiptsW.push(r),
+    onOutcome: (_s, o) => outcomesW.push(o),
+  });
+  const clientW = new Client({ name: "smoke-host-w", version: "1.0.0" }, { capabilities: {} });
+  await clientW.connect(new StreamableHTTPClientTransport(new URL(httpW.url)));
+  const toolsW = await clientW.listTools();
+  ok("(w) HTTP tools/list reflects the real downstream's 3 tools (live passthrough over HTTP)", toolsW.tools.map((t) => t.name).sort().join(",") === "echo,read_data,transfer_funds");
+  const echoW = await clientW.callTool({ name: "echo", arguments: { text: "http-hello" } });
+  ok("(w) echo over HTTP → ALLOW, real downstream result returned", echoW.content?.[0]?.text === "http-hello");
+  const denyW = await expectDeny(clientW.callTool({ name: "transfer_funds", arguments: { amountMinor: 999_999_999, to: "attacker" } }));
+  ok("(w) transfer_funds (huge) over HTTP → DENY, MCP error surfaced (fail-closed, identical to stdio)", denyW.denied && denyW.code === -32600);
+  ok("(w) the HTTP DENY never reached the downstream handler (transfer count 0)", readCounts(countsW).transfer_funds === 0);
+  ok("(w) 2 decision receipts over HTTP (echo ALLOW + transfer DENY)", receiptsW.length === 2);
+  ok("(w) HTTP decision verdicts [EXECUTED, BLOCKED]", JSON.stringify(receiptsW.map((r) => r.governance.verdict)) === JSON.stringify(["EXECUTED", "BLOCKED"]));
+  const vW = verifyChain(receiptsW, { keyring: keyringW });
+  ok(`(w) the HTTP session's decision chain verifies VALID offline — count=${vW.count}`, vW.status === "VALID" && vW.count === 2);
+  ok(
+    "(w) exactly 1 outcome receipt over HTTP (only the executed echo, not the DENY) + it verifies & binds",
+    outcomesW.length === 1 && verifyOutcomeReceipt(outcomesW[0], { keyring: keyringW, expectedDecisionReceipt: receiptsW[0] }).ok === true,
+  );
+  ok("(w) the HTTP proxy tracked exactly 1 active session while open", httpW.activeSessions() === 1);
+  await clientW.close();
+  await new Promise((r) => setTimeout(r, 100));
+  await httpW.close();
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO X (R2 #5): signing-key rotation. Rotate at a chain-SEGMENT boundary (between sessions —
+  // the only valid rotation point; a mid-chain kid swap for one agent is TAMPERED by design). The
+  // retired kid still verifies the old segment; the new kid signs the new segment; the combined
+  // keyring verifies both; the new segment does NOT verify under the old kid alone (proving the swap
+  // is real, not cosmetic).
+  // ---------------------------------------------------------------------------------------
+  section("Scenario X (R2) — signing-key rotation: old kid verifies history, new kid signs new segments");
+  const storeX = createChainSessionStore();
+  const kpXa = generateKeyPair("smoke:session-X:kidA");
+  const rotX = createRotatableSigner(kpXa);
+  const sessXa = await makeSession({ sessionId: "session-Xa", store: storeX, signer: rotX });
+  await sessXa.client.callTool({ name: "echo", arguments: { text: "xa1" } });
+  await sessXa.client.callTool({ name: "echo", arguments: { text: "xa2" } });
+  const segX_A = [...sessXa.receipts];
+  await sessXa.close();
+
+  const kpXb = generateKeyPair("smoke:session-X:kidB");
+  rotX.rotate(kpXb);
+  const sessXb = await makeSession({ sessionId: "session-Xb", store: storeX, signer: rotX });
+  await sessXb.client.callTool({ name: "echo", arguments: { text: "xb1" } });
+  await sessXb.client.callTool({ name: "echo", arguments: { text: "xb2" } });
+  const segX_B = [...sessXb.receipts];
+  await sessXb.close();
+
+  ok("(x) segment A (2 receipts) all signed by the OLD kid", segX_A.length === 2 && segX_A.every((r) => r.sig.kid === kpXa.kid));
+  ok("(x) segment B (2 receipts) all signed by the NEW kid — the new key is genuinely in use", segX_B.length === 2 && segX_B.every((r) => r.sig.kid === kpXb.kid));
+  ok("(x) rotatable keyring carries BOTH the retired + current kid", rotX.keyring()[kpXa.kid] === kpXa.publicKey && rotX.keyring()[kpXb.kid] === kpXb.publicKey && rotX.retiredKids().join() === kpXa.kid);
+  ok("(x) historical segment A still verifies under the OLD kid ALONE", verifyChain(segX_A, { keyring: { [kpXa.kid]: kpXa.publicKey } }).status === "VALID");
+  ok("(x) segment B verifies under the NEW kid alone", verifyChain(segX_B, { keyring: { [kpXb.kid]: kpXb.publicKey } }).status === "VALID");
+  ok(
+    "(x) the combined keyring verifies BOTH segments",
+    verifyChain(segX_A, { keyring: rotX.keyring() }).status === "VALID" && verifyChain(segX_B, { keyring: rotX.keyring() }).status === "VALID",
+  );
+  const segBOldOnlyX = verifyChain(segX_B, { keyring: { [kpXa.kid]: kpXa.publicKey } });
+  ok(
+    `(x) segment B does NOT verify under the OLD-kid-only keyring (new kid unknown there) — proves the swap is real, not cosmetic (status=${segBOldOnlyX.status})`,
+    segBOldOnlyX.status !== "VALID" && segBOldOnlyX.signaturesVerified === false && /kidB|not in keyring/i.test(segBOldOnlyX.reason ?? ""),
+  );
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO Y (R2 #1, fail-closed): the HTTP transport must inherit stdio's "never expose a
+  // half-connected proxy" guarantee — if the downstream can't START, no MCP session is opened and
+  // the host cannot proceed (a 502 at session start, not an ungoverned call).
+  // ---------------------------------------------------------------------------------------
+  section("Scenario Y (R2) — HTTP fail-closed when the downstream can't start (no half-wired session)");
+  const storeY = createChainSessionStore();
+  const kpY = generateKeyPair("smoke:session-Y");
+  const httpY = await startHttpProxy({
+    host: "127.0.0.1",
+    port: 0,
+    // Points at a module that does not exist — the downstream child cannot initialize.
+    makeDownstreamTransport: () =>
+      new StdioClientTransport({ command: process.execPath, args: [path.join(__dirname, "..", "src", "this-file-does-not-exist.mjs")], stderr: "ignore" }),
+    signer: { kid: kpY.kid, privateKey: kpY.privateKey },
+    policy: TRANSFER_GUARD_POLICY,
+    store: storeY,
+    tenant: "smoke-tenant",
+  });
+  const clientY = new Client({ name: "smoke-host-y", version: "1.0.0" }, { capabilities: {} });
+  let httpStartupFailed = false;
+  try {
+    await clientY.connect(new StreamableHTTPClientTransport(new URL(httpY.url)));
+    // If connect somehow slipped through, a real call must still fail closed.
+    await clientY.callTool({ name: "echo", arguments: { text: "should-not-run" } });
+  } catch {
+    httpStartupFailed = true;
+  }
+  ok("(y) HTTP host cannot establish a session when the downstream can't start — fail-closed", httpStartupFailed);
+  ok("(y) NO half-wired session was registered (0 active sessions)", httpY.activeSessions() === 0);
+  try {
+    await clientY.close();
+  } catch {
+    /* the transport may already be torn down */
+  }
+  await httpY.close();
+
+  // ---------------------------------------------------------------------------------------
+  // SCENARIO Z (R2 #4, remote signer): the outcome receipt reuses the SAME signer as the decision
+  // receipt — including a REMOTE `{ kid, sign }` signer (the sidecar shape), which drives the async
+  // build path. Proves the async emitOutcome branch signs a valid, bound, offline-verifiable outcome.
+  // ---------------------------------------------------------------------------------------
+  section("Scenario Z (R2) — outcome receipt via a REMOTE-style { kid, sign } signer (async path)");
+  const storeZ = createChainSessionStore();
+  const kpZ = generateKeyPair("smoke:session-Z");
+  const keyringZ = { [kpZ.kid]: kpZ.publicKey };
+  const remoteSignerZ = { kid: kpZ.kid, sign: async (message) => signEd25519(kpZ.privateKey, message) };
+  const receiptsZ = [];
+  const outcomesZ = [];
+  const { server: serverZ } = await createProxyServer({
+    sessionId: "session-Z",
+    downstreamTransport: makeInMemoryDownstream(),
+    signer: remoteSignerZ,
+    policy: INMEM_ALLOW_POLICY,
+    store: storeZ,
+    tenant: "smoke-tenant",
+    onReceipt: (_s, r) => receiptsZ.push(r),
+    onOutcome: (_s, o) => outcomesZ.push(o),
+  });
+  const [csZ, ssZ] = InMemoryTransport.createLinkedPair();
+  await serverZ.connect(ssZ);
+  const clientZ = new Client({ name: "smoke-host-z", version: "1.0.0" }, { capabilities: {} });
+  await clientZ.connect(csZ);
+  await clientZ.callTool({ name: "echo", arguments: { text: "z-remote" } });
+  ok("(z) remote-signer path: 1 decision receipt signed by the remote kid", receiptsZ.length === 1 && receiptsZ[0].sig.kid === kpZ.kid);
+  ok(
+    "(z) remote-signer path: 1 outcome receipt emitted via the async sign, offline-verifiable + bound to the decision",
+    outcomesZ.length === 1 && outcomesZ[0].sig.kid === kpZ.kid && verifyOutcomeReceipt(outcomesZ[0], { keyring: keyringZ, expectedDecisionReceipt: receiptsZ[0] }).ok === true,
+  );
+  await clientZ.close();
+
   fs.rmSync(workDir, { recursive: true, force: true });
 
   if (fail) {
@@ -1016,7 +1341,10 @@ async function main() {
   console.log(
     "\nSMOKE TEST PASS: every tool call through the proxy produced a fail-closed decision + a signed, " +
       "offline-verifiable receipt; DENY never reached the downstream; tools/list is a live passthrough; " +
-      "concurrent sessions stay isolated; the literal host-config CLI path works end-to-end.",
+      "concurrent sessions stay isolated; the literal host-config CLI path works end-to-end. R2: HTTP+SSE " +
+      "carries a full call with the SAME fail-closed guarantee as stdio; post-execution outcome receipts " +
+      "are emitted, bound and offline-verifiable; tools/list_changed + streaming progress are forwarded; " +
+      "signing-key rotation keeps history verifiable under the retired kid.",
   );
   process.exit(0);
 }

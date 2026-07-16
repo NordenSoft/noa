@@ -17,9 +17,21 @@
  *                              the session id, the prior behavior). Read ONLY from this flag/env —
  *                              never from a tool call's own arguments, so a host or downstream tool
  *                              can never spoof its own attribution.
- *   --receipt-log <path>       append each emitted receipt as one JSON line (JSONL), written with a
- *                              non-blocking fs.promises.appendFile so a slow disk never blocks the
- *                              event loop for other in-flight sessions.
+ *   --receipt-log <path>       append each emitted DECISION receipt as one JSON line (JSONL), written
+ *                              with a non-blocking fs.promises.appendFile so a slow disk never blocks
+ *                              the event loop for other in-flight sessions.
+ *   --outcome-log <path>       (R2) append each POST-execution OUTCOME receipt as one JSON line — the
+ *                              signed attestation of what a tool call actually DID (success/error),
+ *                              distinct from the pre-execution decision receipt in --receipt-log.
+ *                              Written with the same non-blocking appender. Verify offline with
+ *                              verifyOutcomeReceipt() against the --keyring-file.
+ *   --http-port <n>            (R2) serve over HTTP+SSE (Streamable HTTP) on this port INSTEAD of
+ *                              stdio — stdio stays the default when this is omitted. Each MCP session
+ *                              gets its own downstream connection + receipt chain, fronted by the
+ *                              exact same governed proxy as stdio (same fail-closed gate; the gate is
+ *                              not forked per transport).
+ *   --http-host <host>         (R2) bind address for --http-port (default 127.0.0.1 — loopback only;
+ *                              set 0.0.0.0 deliberately to expose beyond localhost).
  *   --keyring-file <path>      write { [kid]: publicKey } once at startup, so an external verifier
  *                              can `verifyChain`/`verify` the receipt log independently of this
  *                              process.
@@ -95,9 +107,10 @@ function parseArgs(argv) {
   if (sepIndex === -1) {
     throw new Error(
       "usage: proxy.mjs [--session-id <id>] [--tenant <name>] [--agent-id <id>] " +
-        "[--receipt-log <path>] [--keyring-file <path>] [--key-file <path>] [--signer-socket <path>] " +
+        "[--receipt-log <path>] [--outcome-log <path>] [--keyring-file <path>] [--key-file <path>] [--signer-socket <path>] " +
         "[--session-idle-ttl-ms <n>] [--max-sessions <n>] [--session-dir <path>] " +
         "[--approval-rules <path>] [--pending-store <path>] [--approver-keyring <path>] [--approver-identity <path>] " +
+        "[--http-port <n>] [--http-host <host>] " +
         "-- <downstream-command> [downstream-args...]",
     );
   }
@@ -110,6 +123,7 @@ function parseArgs(argv) {
     tenant: "default-tenant",
     agentId: null,
     receiptLog: null,
+    outcomeLog: null,
     keyringFile: null,
     keyFile: null,
     signerSocket: null,
@@ -120,6 +134,8 @@ function parseArgs(argv) {
     pendingStore: null,
     approverKeyringFile: null,
     approverIdentityFile: null,
+    httpPort: null,
+    httpHost: "127.0.0.1",
   };
   for (let i = 0; i < own.length; i++) {
     const flag = own[i];
@@ -128,6 +144,9 @@ function parseArgs(argv) {
     else if (flag === "--tenant") opts.tenant = value;
     else if (flag === "--agent-id") opts.agentId = value;
     else if (flag === "--receipt-log") opts.receiptLog = value;
+    else if (flag === "--outcome-log") opts.outcomeLog = value;
+    else if (flag === "--http-port") opts.httpPort = Number(value);
+    else if (flag === "--http-host") opts.httpHost = value;
     else if (flag === "--keyring-file") opts.keyringFile = value;
     else if (flag === "--key-file") opts.keyFile = value;
     else if (flag === "--signer-socket") opts.signerSocket = value;
@@ -242,7 +261,15 @@ async function main() {
     ? (_sessionId, receipt) => appendReceiptLine(JSON.stringify(receipt) + "\n")
     : undefined;
 
-  const downstreamTransport = new StdioClientTransport({ command: downstreamCommand, args: downstreamArgs });
+  // R2 — outcome-receipt JSONL, same non-blocking serialized appender as --receipt-log.
+  const appendOutcomeLine = opts.outcomeLog ? createSequentialFileAppender(opts.outcomeLog) : null;
+  const onOutcome = appendOutcomeLine
+    ? (_sessionId, outcomeReceipt) => appendOutcomeLine(JSON.stringify(outcomeReceipt) + "\n")
+    : undefined;
+
+  // A FRESH downstream transport per call — a transport can only be connected once. Stdio serves a
+  // single session (one factory call); HTTP calls it once per MCP session.
+  const makeDownstreamTransport = () => new StdioClientTransport({ command: downstreamCommand, args: downstreamArgs });
 
   let approvalRules;
   if (opts.approvalRulesFile) approvalRules = JSON.parse(readFileSync(opts.approvalRulesFile, "utf8"));
@@ -262,21 +289,46 @@ async function main() {
   let approverIdentityManifest;
   if (opts.approverIdentityFile) approverIdentityManifest = JSON.parse(readFileSync(opts.approverIdentityFile, "utf8"));
 
+  // Everything except the transport wiring is identical for stdio and HTTP — the gate is NOT forked
+  // per transport. This one config object feeds both paths.
+  const gateConfig = {
+    signer,
+    policy: TRANSFER_GUARD_POLICY,
+    store,
+    tenant: opts.tenant,
+    agentId: opts.agentId ?? undefined,
+    onReceipt,
+    onOutcome,
+    approvalRules,
+    pendingStorePath: opts.pendingStore ?? undefined,
+    approverKeyring,
+    approverIdentityManifest,
+  };
+
+  // R2 — HTTP+SSE transport (opt-in via --http-port). Stdio stays the default. startHttpProxy is
+  // imported LAZILY so the default stdio path never loads the HTTP server module (nor its transitive
+  // @hono/node-server chain).
+  if (opts.httpPort != null && Number.isFinite(opts.httpPort)) {
+    const { startHttpProxy } = await import("./http-server.mjs");
+    const http = await startHttpProxy({
+      host: opts.httpHost,
+      port: opts.httpPort,
+      makeDownstreamTransport,
+      sessionIdGenerator: () => randomUUID(),
+      ...gateConfig,
+    });
+    // stderr (never stdout — stdout is reserved for any future stdio use); an operator sees where it bound.
+    console.error(`noa-mcp-proxy: HTTP+SSE (Streamable HTTP) listening on ${http.url}`);
+    return; // stay alive serving HTTP — no stdio front transport is attached in this mode
+  }
+
+  // Default: stdio front transport, one session for this process.
   let proxy;
   try {
     proxy = await createProxyServer({
       sessionId,
-      downstreamTransport,
-      signer,
-      policy: TRANSFER_GUARD_POLICY,
-      store,
-      tenant: opts.tenant,
-      agentId: opts.agentId ?? undefined,
-      onReceipt,
-      approvalRules,
-      pendingStorePath: opts.pendingStore ?? undefined,
-      approverKeyring,
-      approverIdentityManifest,
+      downstreamTransport: makeDownstreamTransport(),
+      ...gateConfig,
     });
   } catch (err) {
     // Fail-closed at startup: never expose a half-connected proxy to the host.

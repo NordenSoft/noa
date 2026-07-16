@@ -23,4 +23,9 @@ export {
 // noa-mcp-adapter-core — noa-receipt stays a dependency of THIS package, so a consumer
 // does not have to add it separately. `buildReceipt` is NEW here (R4: lets a downstream build an
 // EXECUTED receipt directly if it opts out of the preCheck path — was not previously re-exported).
-export { generateKeyPair, verifyChain, signEd25519, buildReceipt } from "noa-receipt";
+// `canonicalize` + `verifyEd25519` are re-exported for R2's post-execution OUTCOME receipt
+// (packages/mcp-proxy/src/outcome-receipt.mjs): it needs the SAME JCS canonicalization + Ed25519
+// verify primitives the decision receipt is built/checked with, WITHOUT the mcp-proxy package
+// having to add a direct `noa-receipt` dependency it otherwise never carries. Purely additive —
+// no existing export changes.
+export { generateKeyPair, verifyChain, signEd25519, verifyEd25519, canonicalize, buildReceipt } from "noa-receipt";

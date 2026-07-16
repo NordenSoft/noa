@@ -51,7 +51,14 @@
  */
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import { ListToolsRequestSchema, CallToolRequestSchema, ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import {
+  ListToolsRequestSchema,
+  CallToolRequestSchema,
+  CallToolResultSchema,
+  ToolListChangedNotificationSchema,
+  ErrorCode,
+  McpError,
+} from "@modelcontextprotocol/sdk/types.js";
 import {
   prepareSessionReceipt,
   prepareSessionReceiptAsync,
@@ -64,6 +71,7 @@ import {
   consumeApprovalTicket,
   verifyApprovalReceipt,
 } from "noa-mcp-adapter-core";
+import { buildOutcomeReceipt, buildOutcomeReceiptAsync } from "./outcome-receipt.mjs";
 
 /**
  * @param {{
@@ -75,6 +83,7 @@ import {
  *   tenant?: string,
  *   agentId?: string,
  *   onReceipt?: (sessionId: string, receipt: object) => (void | Promise<void>),
+ *   onOutcome?: (sessionId: string, outcomeReceipt: object) => (void | Promise<void>),
  *   serverInfo?: { name: string, version: string },
  *   downstreamInfo?: { name: string, version: string },
  *   approvalRules?: object[],
@@ -96,6 +105,7 @@ export async function createProxyServer({
   tenant = "default-tenant",
   agentId,
   onReceipt,
+  onOutcome,
   serverInfo = { name: "noa-mcp-proxy", version: "0.1.0" },
   downstreamInfo = { name: "noa-mcp-proxy(downstream-client)", version: "0.1.0" },
   approvalRules,
@@ -125,7 +135,34 @@ export async function createProxyServer({
   // half-connected proxy state is exposed.
   await downstream.connect(downstreamTransport);
 
-  const server = new Server(serverInfo, { capabilities: { tools: {} } });
+  // R2 — list_changed reflection: only ADVERTISE `tools.listChanged` to the host if the downstream
+  // itself declares it (read from the just-completed MCP initialize handshake). Advertising a
+  // capability the downstream can never trigger would be an overclaim; faithfully mirroring it keeps
+  // the proxy's capability surface exactly as truthful as its dynamic tools/list already is.
+  const downstreamCaps = downstream.getServerCapabilities();
+  const forwardListChanged = Boolean(downstreamCaps?.tools?.listChanged);
+
+  const server = new Server(serverInfo, {
+    capabilities: { tools: forwardListChanged ? { listChanged: true } : {} },
+  });
+
+  if (forwardListChanged) {
+    // R2 (#2) — forward downstream `notifications/tools/list_changed` straight through to the host,
+    // so a host that cached tools/list knows to re-fetch. No tool table is mirrored here (the proxy
+    // has none — tools/list is always a live passthrough); this only relays the "something changed"
+    // signal. Best-effort + observable: if the host transport is momentarily not connected (the
+    // notification raced ahead of the host attaching, or the host already disconnected),
+    // server.notification() rejects — swallowing it would be silent data loss of a governance-
+    // relevant signal, so it is logged, never dropped without trace. It is NOT fail-closed in the
+    // decision sense: a list_changed relay carries no action to gate.
+    downstream.setNotificationHandler(ToolListChangedNotificationSchema, async () => {
+      try {
+        await server.sendToolListChanged();
+      } catch (err) {
+        console.error(`noa-mcp-proxy: session "${sessionId}" — failed to forward downstream tools/list_changed to host (${err.message})`);
+      }
+    });
+  }
 
   // Per-session serialization for the prepare→persist→commit critical section (see the
   // module docstring above). Keyed by sessionId so unrelated sessions never head-of-line-block
@@ -188,6 +225,36 @@ export async function createProxyServer({
       console.error(`noa-mcp-proxy: session "${sessionId}" (tenant "${tenant}") end() failed to persist on disconnect (${err.message})`);
     });
   };
+
+  // R2 (#4) — POST-execution OUTCOME receipt. Emitted ONLY when a tool actually ran (ALLOW ->
+  // forwarded), for BOTH success and error. It is a STANDALONE signed artifact (see
+  // outcome-receipt.mjs) — NOT chained into the decision hash-chain — so round-1's per-call
+  // receipt-count and {0..N-1} seq invariants stay byte-for-byte true. It reuses the SAME signer as
+  // the decision receipt (local sync path, or the remote sidecar's async `sign`).
+  //
+  // NOT fail-closed in the decision sense, DELIBERATELY: the governed ACTION was already authorized
+  // and durably recorded by its (fail-closed) decision receipt BEFORE any forward happened, and the
+  // tool has, by the time we get here, already executed. Converting a failure to record this
+  // SECONDARY attestation into a host-visible error would invite the host to retry an already-
+  // completed side-effect (a double-execute footgun strictly WORSE than a missing attestation). So a
+  // build/persist failure here is logged loudly (observable, never silent), not thrown. No-op when
+  // no `onOutcome` consumer is configured, so the round-1 default does exactly zero extra work and
+  // signs nothing extra.
+  async function emitOutcome(decisionReceipt, tool, outcome, error) {
+    if (!onOutcome) return;
+    try {
+      const outcomeReceipt =
+        typeof signer.sign === "function"
+          ? await buildOutcomeReceiptAsync({ decisionReceipt, tool, outcome, error }, signer)
+          : buildOutcomeReceipt({ decisionReceipt, tool, outcome, error }, signer);
+      const persisted = onOutcome(sessionId, outcomeReceipt);
+      if (persisted && typeof persisted.then === "function") await persisted;
+    } catch (err) {
+      console.error(
+        `noa-mcp-proxy: session "${sessionId}" — outcome receipt for tool "${tool}" (${outcome}) could not be built/recorded (${err.message}); the decision receipt still stands as the authoritative governance record`,
+      );
+    }
+  }
 
   server.setRequestHandler(ListToolsRequestSchema, async (request) => {
     // Dynamic reflection: no static table lives in this proxy. Whatever the downstream currently
@@ -416,15 +483,57 @@ export async function createProxyServer({
     // Deliberately OUTSIDE the per-session lock above: the downstream round-trip touches no
     // shared session-chain state, so letting it run unlocked keeps full concurrency for the
     // (usually slower) actual tool execution — only the chain-critical section serializes.
+    //
+    // R2 (#3) — streaming/progress passthrough: if the HOST attached an `_meta.progressToken` to
+    // this call, relay every downstream progress notification to the host AS IT ARRIVES, never
+    // buffer-and-drop. The SDK hands the DOWNSTREAM call its own internally-correlated token; each
+    // progress it reports is re-emitted to the host under the host's ORIGINAL token so the host can
+    // match it to its own request. Absent a host progressToken, the forward is byte-identical to
+    // round-1 (`downstream.callTool(request.params)`). Progress relay is best-effort — a failed
+    // relay is logged but never aborts the in-flight tool call.
+    const hostProgressToken = request.params?._meta?.progressToken;
+    // Each relayed progress notification's send-promise is collected so the handler can FLUSH them
+    // before returning the tool RESULT. Without this, the result (sent synchronously once the handler
+    // returns) can overtake the still-in-flight relayed notifications, and the host's SDK — which
+    // tears down its per-request progress handler the instant the result lands — would drop every
+    // progress event that arrives after it. Awaiting the relays first guarantees in-order delivery
+    // (all progress, THEN the result) on the same ordered transport.
+    const pendingProgressRelays = [];
+    const forwardOptions =
+      hostProgressToken !== undefined && hostProgressToken !== null
+        ? {
+            onprogress: (progress) => {
+              pendingProgressRelays.push(
+                server
+                  .notification({ method: "notifications/progress", params: { ...progress, progressToken: hostProgressToken } })
+                  .catch((err) => console.error(`noa-mcp-proxy: session "${sessionId}" — failed to relay downstream progress to host (${err.message})`)),
+              );
+            },
+          }
+        : undefined;
+
+    let downstreamResult;
     try {
-      return await downstream.callTool(request.params);
+      downstreamResult = forwardOptions
+        ? await downstream.callTool(request.params, CallToolResultSchema, forwardOptions)
+        : await downstream.callTool(request.params);
     } catch (err) {
+      if (pendingProgressRelays.length) await Promise.allSettled(pendingProgressRelays);
       // The receipt already recorded the ALLOW *decision* (governance verdict), not proof the
       // downstream call itself completed — see THREAT-MODEL.md "Truthfulness of the action". A
       // downstream failure after ALLOW must still reach the host as a failure, never a silent
-      // success.
+      // success. R2 (#4): emit the ERROR outcome receipt (best-effort) BEFORE surfacing the failure,
+      // so the audit trail binds this decision to its real terminal outcome.
+      await emitOutcome(receipt, request.params.name, "error", err);
       throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: downstream call failed after ALLOW (${err.message})`);
     }
+    // Flush all relayed progress notifications to the host BEFORE the result is sent (see the
+    // pendingProgressRelays comment above) — guarantees the host sees every progress event.
+    if (pendingProgressRelays.length) await Promise.allSettled(pendingProgressRelays);
+    // R2 (#4): the tool executed and returned — emit the SUCCESS outcome receipt (best-effort) before
+    // handing the real result back to the host.
+    await emitOutcome(receipt, request.params.name, "success", null);
+    return downstreamResult;
   });
 
   return { server, downstream };
