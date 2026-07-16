@@ -64,7 +64,7 @@
       "verdict": "EXECUTED",
       "ruleId": "human-approved",
       "approval": {
-        "by": "HUMAN:owner@store.example",
+        "by": "HUMAN:hmac-sha256:ef5b31ebb954ff5a109e51c22c06ddb662d7725ceda4eb42739dd375528519b3",
         "at": "2026-06-20T07:31:08.000Z"
       },
       "sandboxed": false
@@ -72,12 +72,12 @@
     "chain": {
       "seq": 1,
       "prevHash": "sha256:588d3e9e6bb450408323ae0648c410a0b5725294c4a4e789add87a719e3a9248",
-      "hash": "sha256:f8a6d2ed82a990793c515e8599ad915943002a86a3684cc8ec9ce09b1a44a125"
+      "hash": "sha256:7ad3110ab586f9bf840d8134f1be2fbe45595f3a3125a1ebfa9d9cd41c5beddb"
     },
     "sig": {
       "alg": "ed25519",
       "kid": "noa-test-key-2026",
-      "value": "zqYZxQm6P1SYbACwTkgTrZqR4omdKW6tY9Ih7pF945udJr0o9eRM7fxQlUlSVxDHo9Kne9mVKg7beykkjU5MAw=="
+      "value": "Hz20gANBj+fySv0Q6+UWI/rrvwZemTp1gLZwVFqEMGNtnAdKLChm//WcztcqfHITMiKF1zRaWGjJUxSfrOoSAw=="
     }
   },
   {
@@ -110,13 +110,13 @@
     },
     "chain": {
       "seq": 2,
-      "prevHash": "sha256:f8a6d2ed82a990793c515e8599ad915943002a86a3684cc8ec9ce09b1a44a125",
-      "hash": "sha256:b919085ee106273a3eecd9b4a759626984476e73172c4cfdef8d4f98a31d04d7"
+      "prevHash": "sha256:7ad3110ab586f9bf840d8134f1be2fbe45595f3a3125a1ebfa9d9cd41c5beddb",
+      "hash": "sha256:05285a7c616b5b5f686039bddc025a6bf2d2f76b401b56b6730a69ea043d31e5"
     },
     "sig": {
       "alg": "ed25519",
       "kid": "noa-test-key-2026",
-      "value": "DxfU9x09ZL0LR5bPy/zztjSF0NT5Ldbf31Vt7778DHIGMT6A8ptGzSSysup6Oq4m2y7N7SVpfZPlGQetZFF7Aw=="
+      "value": "WPIOEHDERLjPDhB/DLmY1z/cqh/WjBtNDAzjKy+2mjOzPd13XMhxiohwhuMyGzRfQbvqDvjReQvdPt0mr9q7Cw=="
     }
   }
 ]

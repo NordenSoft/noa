@@ -13,6 +13,7 @@
  */
 import { buildReceipt, verifyEd25519, receiptHashInput, sha256Prefixed, sha256Digest } from "noa-receipt";
 import { randomUUID } from "node:crypto";
+import { assertOpaqueApproverBy } from "./opaque-id.mjs";
 
 /**
  * The domain-separation tag noa-receipt's own builder binds every receipt signature to (its
@@ -40,6 +41,7 @@ export const DEFAULT_APPROVAL_TICKET_TTL_MS = 15 * 60 * 1000; // 15 minutes
  * @param {{ deferredReceipt: object, by: string, ts: string, signer: { kid: string, privateKey: string }, agentId?: string, ticketTtlMs?: number }} args
  */
 export function buildApprovalReceipt({ deferredReceipt, by, ts, signer, agentId = "human-approval-cli", ticketTtlMs = DEFAULT_APPROVAL_TICKET_TTL_MS }) {
+  assertOpaqueApproverBy(by); // D8 fail-closed: refuse a raw-email `by` before it reaches signed bytes.
   const receipt = buildReceipt(
     {
       id: `${deferredReceipt.id}-approved`,
@@ -68,6 +70,7 @@ export function buildApprovalReceipt({ deferredReceipt, by, ts, signer, agentId 
  * @param {{ deferredReceipt: object, by: string, ts: string, signer: { kid: string, privateKey: string }, agentId?: string }} args
  */
 export function buildDenialReceipt({ deferredReceipt, by, ts, signer, agentId = "human-approval-cli" }) {
+  assertOpaqueApproverBy(by); // D8 fail-closed: refuse a raw-email `by` before it reaches signed bytes.
   const receipt = buildReceipt(
     {
       id: `${deferredReceipt.id}-denied`,

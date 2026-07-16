@@ -64,7 +64,7 @@
       "verdict": "EXECUTED",
       "ruleId": "human-approved",
       "approval": {
-        "by": "HUMAN:owner@store.example",
+        "by": "HUMAN:hmac-sha256:ef5b31ebb954ff5a109e51c22c06ddb662d7725ceda4eb42739dd375528519b3",
         "at": "2026-06-20T07:31:08.000Z"
       },
       "sandboxed": false
@@ -72,12 +72,12 @@
     "chain": {
       "seq": 1,
       "prevHash": "sha256:588d3e9e6bb450408323ae0648c410a0b5725294c4a4e789add87a719e3a9248",
-      "hash": "sha256:f8a6d2ed82a990793c515e8599ad915943002a86a3684cc8ec9ce09b1a44a125"
+      "hash": "sha256:7ad3110ab586f9bf840d8134f1be2fbe45595f3a3125a1ebfa9d9cd41c5beddb"
     },
     "sig": {
       "alg": "ed25519",
       "kid": "noa-test-key-2026",
-      "value": "zqYZxQm6P1SYbACwTkgTrZqR4omdKW6tY9Ih7pF945udJr0o9eRM7fxQlUlSVxDHo9Kne9mVKg7beykkjU5MAw=="
+      "value": "Hz20gANBj+fySv0Q6+UWI/rrvwZemTp1gLZwVFqEMGNtnAdKLChm//WcztcqfHITMiKF1zRaWGjJUxSfrOoSAw=="
     }
   }
 ]

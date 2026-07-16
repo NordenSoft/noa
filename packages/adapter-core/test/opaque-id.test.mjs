@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { opaqueApproverId } from "../src/opaque-id.mjs";
+import { opaqueApproverId, assertOpaqueApproverBy } from "../src/opaque-id.mjs";
 
 const HEX64 = /^hmac-sha256:[0-9a-f]{64}$/;
 
@@ -42,4 +42,27 @@ test("opaqueApproverId: rejects an empty / non-string identifier (fail-closed, n
   assert.throws(() => opaqueApproverId("", "tenant-A"), /non-empty string/);
   assert.throws(() => opaqueApproverId(null, "tenant-A"), /non-empty string/);
   assert.throws(() => opaqueApproverId(undefined, "tenant-A"), /non-empty string/);
+});
+
+test("opaqueApproverId: NORMALIZES case + surrounding whitespace (trivial variants must not defeat de-correlation)", () => {
+  const base = opaqueApproverId("jane@acme.example", "tenant-A");
+  assert.equal(opaqueApproverId("JANE@ACME.EXAMPLE", "tenant-A"), base);
+  assert.equal(opaqueApproverId("  Jane@Acme.Example  ", "tenant-A"), base);
+});
+
+test("opaqueApproverId: strips email plus-addressing (jane+tag@x == jane@x — same mailbox, one person)", () => {
+  const base = opaqueApproverId("jane@acme.example", "tenant-A");
+  assert.equal(opaqueApproverId("jane+audit@acme.example", "tenant-A"), base);
+  assert.equal(opaqueApproverId("jane+anything.else@acme.example", "tenant-A"), base);
+  // a leading '+' local part is NOT stripped to empty (degenerate) — stays distinct, never throws.
+  assert.notEqual(opaqueApproverId("+weird@acme.example", "tenant-A"), base);
+});
+
+test("assertOpaqueApproverBy: throws on a `by` carrying a raw email (a bare '@'), passes an opaque id", () => {
+  assert.throws(() => assertOpaqueApproverBy("HUMAN:jane@acme.example"), /raw email/);
+  assert.throws(() => assertOpaqueApproverBy("jane@acme.example"), /raw email/);
+  // opaque forms are accepted (no throw):
+  assert.doesNotThrow(() => assertOpaqueApproverBy("HUMAN:" + opaqueApproverId("jane@acme.example", "t")));
+  assert.doesNotThrow(() => assertOpaqueApproverBy("HUMAN:device-kid-0xabc123"));
+  assert.doesNotThrow(() => assertOpaqueApproverBy(undefined)); // non-string: nothing to leak, no throw
 });

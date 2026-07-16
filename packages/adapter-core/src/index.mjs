@@ -6,7 +6,7 @@ export { loadOrCreateKeyFile } from "./key-file.mjs";
 export { matchApprovalRule, validateApprovalRules, tryIdentifyToolCallForTicketLookup } from "./approval-rules.mjs";
 export { recordDeferred, recordApproved, recordDenied, consumeApprovalTicket, findOutstanding, loadPendingIndex, PendingStoreError } from "./pending-store.mjs";
 export { buildApprovalReceipt, buildDenialReceipt, verifyApprovalReceipt, DEFAULT_APPROVAL_TICKET_TTL_MS } from "./approval-decision.mjs";
-export { opaqueApproverId } from "./opaque-id.mjs";
+export { opaqueApproverId, assertOpaqueApproverBy } from "./opaque-id.mjs";
 
 // Re-exported so downstream packages (e.g. mcp-proxy, signer-sidecar) only ever depend on
 // noa-mcp-adapter-core — noa-receipt stays a dependency of THIS package, so a consumer

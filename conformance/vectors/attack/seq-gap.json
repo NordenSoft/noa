@@ -68,13 +68,13 @@
     },
     "chain": {
       "seq": 2,
-      "prevHash": "sha256:f8a6d2ed82a990793c515e8599ad915943002a86a3684cc8ec9ce09b1a44a125",
-      "hash": "sha256:b919085ee106273a3eecd9b4a759626984476e73172c4cfdef8d4f98a31d04d7"
+      "prevHash": "sha256:7ad3110ab586f9bf840d8134f1be2fbe45595f3a3125a1ebfa9d9cd41c5beddb",
+      "hash": "sha256:05285a7c616b5b5f686039bddc025a6bf2d2f76b401b56b6730a69ea043d31e5"
     },
     "sig": {
       "alg": "ed25519",
       "kid": "noa-test-key-2026",
-      "value": "DxfU9x09ZL0LR5bPy/zztjSF0NT5Ldbf31Vt7778DHIGMT6A8ptGzSSysup6Oq4m2y7N7SVpfZPlGQetZFF7Aw=="
+      "value": "WPIOEHDERLjPDhB/DLmY1z/cqh/WjBtNDAzjKy+2mjOzPd13XMhxiohwhuMyGzRfQbvqDvjReQvdPt0mr9q7Cw=="
     }
   }
 ]
