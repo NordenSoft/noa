@@ -34,7 +34,9 @@ export const DEFAULT_APPROVAL_TICKET_TTL_MS = 15 * 60 * 1000; // 15 minutes
 
 /**
  * Builds the ALLOWED decision receipt + mints the transition ticket. Pure (no I/O) — the caller
- * (approve-cli.mjs) is responsible for persisting into the pending-store.
+ * (approve-cli.mjs) is responsible for persisting into the pending-store. `by` is expected to already
+ * be an OPAQUE approver id (D8: the CLI pseudonymizes the raw email before calling this; see
+ * approve-cli.mjs + opaque-id.mjs) — this builder embeds it verbatim into the signed bytes.
  * @param {{ deferredReceipt: object, by: string, ts: string, signer: { kid: string, privateKey: string }, agentId?: string, ticketTtlMs?: number }} args
  */
 export function buildApprovalReceipt({ deferredReceipt, by, ts, signer, agentId = "human-approval-cli", ticketTtlMs = DEFAULT_APPROVAL_TICKET_TTL_MS }) {
@@ -56,9 +58,16 @@ export function buildApprovalReceipt({ deferredReceipt, by, ts, signer, agentId 
 /**
  * Builds the BLOCKED decision receipt for a denial. No ticket — the held call is terminally
  * refused; the session unblocks once the pending-store status becomes "denied".
- * @param {{ deferredReceipt: object, by: string, reason?: string | null, ts: string, signer: { kid: string, privateKey: string }, agentId?: string }} args
+ *
+ * D8 / GDPR-CCPA (THREAT-MODEL-ADDENDUM §5): the `ruleId` is a FIXED machine-readable code
+ * `"human-denied"` — a human's free-text denial reason is NEVER folded into it (a signed, hash-chained,
+ * structured field must not carry free text: PII-at-rest + injection risk). The reason, if the operator
+ * supplied one, is kept only in the LOCAL non-signed pending-store index (recordDenied), never in the
+ * signed bytes. `by` is expected to already be an OPAQUE approver id (the CLI pseudonymizes the raw
+ * email before calling this; see approve-cli.mjs + opaque-id.mjs) — this builder embeds it verbatim.
+ * @param {{ deferredReceipt: object, by: string, ts: string, signer: { kid: string, privateKey: string }, agentId?: string }} args
  */
-export function buildDenialReceipt({ deferredReceipt, by, reason = null, ts, signer, agentId = "human-approval-cli" }) {
+export function buildDenialReceipt({ deferredReceipt, by, ts, signer, agentId = "human-approval-cli" }) {
   const receipt = buildReceipt(
     {
       id: `${deferredReceipt.id}-denied`,
@@ -66,7 +75,7 @@ export function buildDenialReceipt({ deferredReceipt, by, reason = null, ts, sig
       scope: deferredReceipt.scope,
       agent: { id: agentId, model: null, principal: "HUMAN" },
       action: deferredReceipt.action,
-      governance: { mode: "on", verdict: "BLOCKED", ruleId: reason ? `human-denied:${reason}` : "human-denied", approval: { by, at: ts }, sandboxed: false, compliance: deferredReceipt.governance.compliance },
+      governance: { mode: "on", verdict: "BLOCKED", ruleId: "human-denied", approval: { by, at: ts }, sandboxed: false, compliance: deferredReceipt.governance.compliance },
     },
     deferredReceipt,
     signer,

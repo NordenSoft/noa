@@ -32,15 +32,19 @@ test("buildApprovalReceipt: verdict ALLOWED, governance.approval filled, chained
   assert.equal(verifyChain([deferred, allowed], { keyring }).status, "VALID");
 });
 
-test("buildDenialReceipt: verdict BLOCKED, reason folded into ruleId, approval filled, chained onto DEFERRED", () => {
+test("buildDenialReceipt: verdict BLOCKED, ruleId is the FIXED code 'human-denied' (D8: free-text reason NEVER folded into signed ruleId), approval filled, chained onto DEFERRED", () => {
   const { agentSigner, approverSigner, keyring } = makeChainAgentAndApprover("2");
   const approvalRules = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
   const { receipt: deferred } = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer: agentSigner, policy: REFUND_GUARD_POLICY, approvalRules });
 
-  const { receipt: denied } = buildDenialReceipt({ deferredReceipt: deferred, by: "HUMAN:jane@acme.example", reason: "looks-fraudulent", ts: "2026-07-11T10:05:00.000Z", signer: approverSigner });
+  // Pass a free-text reason to PROVE it is now ignored (regression guard against the old
+  // `human-denied:${reason}` PII/injection leak). `by` here is an already-opaque id (the CLI
+  // pseudonymizes the email upstream; this pure builder embeds `by` verbatim).
+  const { receipt: denied } = buildDenialReceipt({ deferredReceipt: deferred, by: "HUMAN:hmac-sha256:" + "a".repeat(64), reason: "looks-fraudulent", ts: "2026-07-11T10:05:00.000Z", signer: approverSigner });
   assert.equal(denied.governance.verdict, "BLOCKED");
-  assert.equal(denied.governance.ruleId, "human-denied:looks-fraudulent");
-  assert.deepEqual(denied.governance.approval, { by: "HUMAN:jane@acme.example", at: "2026-07-11T10:05:00.000Z" });
+  assert.equal(denied.governance.ruleId, "human-denied");
+  assert.ok(!JSON.stringify(denied).includes("looks-fraudulent"), "free-text reason must never appear in the signed denial receipt");
+  assert.deepEqual(denied.governance.approval, { by: "HUMAN:hmac-sha256:" + "a".repeat(64), at: "2026-07-11T10:05:00.000Z" });
   assert.equal(verifyChain([deferred, denied], { keyring }).status, "VALID");
 });
 

@@ -8,6 +8,10 @@
  * Signs with its OWN approver identity (never the agent's key) and records only a signed decision
  * plus a single-use ticket — it never itself re-executes the held action (that happens later, when
  * the agent retries and the proxy consumes the ticket).
+ *
+ * D8 / GDPR-CCPA: the raw `--by` email is pseudonymized to an opaque `hmac-sha256:` approver id
+ * (opaque-id.mjs) before it enters the SIGNED receipt, and the free-text `--reason` is NEVER signed
+ * (kept only in the local pending-store index). No raw PII rests in the signed, hash-chained bytes.
  * Deterministic exit codes: 0 success, 1 usage/runtime error (never a raw uncaught throw).
  */
 import { readFileSync, writeFileSync, appendFileSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants } from "node:fs";
@@ -15,6 +19,7 @@ import { randomUUID } from "node:crypto";
 import { generateKeyPair } from "noa-receipt";
 import { loadPendingIndex, recordApproved, recordDenied, PendingStoreError } from "./pending-store.mjs";
 import { buildApprovalReceipt, buildDenialReceipt, DEFAULT_APPROVAL_TICKET_TTL_MS } from "./approval-decision.mjs";
+import { opaqueApproverId } from "./opaque-id.mjs";
 
 // O_NOFOLLOW symlink-attack guard — ported verbatim from packages/mcp-proxy/src/proxy.mjs's
 // loadOrCreateSigner (CWE-367). Duplicated, not imported — this CLI keeps its signing identity
@@ -119,7 +124,12 @@ export function runApproveCli(argv) {
   }
 
   const ts = new Date().toISOString();
-  const by = `HUMAN:${opts.by}`;
+  // D8 / GDPR-CCPA (THREAT-MODEL-ADDENDUM §5): the raw `--by` email is a low-entropy PII identifier and
+  // MUST NOT enter the SIGNED receipt bytes. Pseudonymize it to a deterministic, tenant-scoped, opaque
+  // `hmac-sha256:` id (opaque-id.mjs) — the same opaque shape the mobile/HTTP path already uses (a device
+  // kid). Tenant is read off the DEFERRED hold so the id de-correlates across tenants. The raw email is
+  // retained NOWHERE (neither signed nor local) — the operator supplied it on their own command line.
+  const by = `HUMAN:${opaqueApproverId(opts.by, record.tenant)}`;
 
   try {
     if (command === "approve") {
@@ -131,7 +141,10 @@ export function runApproveCli(argv) {
       appendReceiptLog(opts.receiptLogPath, receipt);
       process.stdout.write(`APPROVED ${opts.id} -> ${receipt.id} (ticket expires ${ticketExpiresAt})\n`);
     } else {
-      const { receipt } = buildDenialReceipt({ deferredReceipt: record.deferredReceipt, by, reason: opts.reason, ts, signer });
+      // D8: the free-text `--reason` is NOT passed into the signed receipt (buildDenialReceipt fixes
+      // ruleId to "human-denied"). It is kept only in the LOCAL, non-signed pending-store index below
+      // (recordDenied), for operator audit — never in the signed, hash-chained bytes.
+      const { receipt } = buildDenialReceipt({ deferredReceipt: record.deferredReceipt, by, ts, signer });
       recordDenied(opts.pendingStorePath, { id: opts.id, by, reason: opts.reason, deniedReceipt: receipt, tenant: record.tenant, sessionId: record.sessionId, ts });
       appendReceiptLog(opts.receiptLogPath, receipt);
       process.stdout.write(`DENIED ${opts.id} -> ${receipt.id}\n`);
