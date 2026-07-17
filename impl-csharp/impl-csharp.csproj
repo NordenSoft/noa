@@ -1,0 +1,34 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    NOA Receipt — THIRD, INDEPENDENT verifier (C#/.NET, from scratch).
+
+    Peer of impl-py/noa_verify.py: its OWN JCS canonicalizer + its OWN strict Ed25519 boundary
+    checks (BouncyCastle does the core RFC 8032 group equation; every strictness rule — canonical
+    base64, S<L, non-canonical y>=q, small-order pubkey — is re-implemented here to match the spec,
+    NOT delegated to a library's runtime behavior). If this stack agrees byte-for-byte with the
+    Python + TypeScript references on every conformance vector, the canonical bytes + signing
+    preimage are unambiguous across THREE independent implementations.
+
+    CLI:  dotnet run  (see Program.cs header for exact argument grammar)
+    Exit: 0 VALID / 1 UNVERIFIED (no keyring) / 2 TAMPERED / 3 MALFORMED / 4 USAGE / 5 UNTRUSTED
+          (mirrors impl-py/noa_verify.py exactly.)
+  -->
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>noa-verify</AssemblyName>
+    <RootNamespace>NoaReceipt</RootNamespace>
+    <!-- Deterministic string ordering regardless of host locale (ordinal sorts only). -->
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- .NET BCL has NO Ed25519. Pin the crypto provider explicitly (RFC 8032 verify). -->
+    <PackageReference Include="BouncyCastle.Cryptography" Version="2.6.1" />
+  </ItemGroup>
+
+</Project>
