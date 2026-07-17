@@ -1,0 +1,24 @@
+[package]
+name = "noa-verify"
+version = "0.1.0"
+edition = "2021"
+description = "NOA Receipt — third, independent verifier (Rust). From-scratch JCS + strict parse; ed25519-dalek verify_strict. Verdict-parity with impl-py/noa_verify.py + src/verify.ts."
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "noa-verify"
+path = "src/main.rs"
+
+# Minimal, pinned deps. serde_json is used for PARSING ONLY — the RFC 8785 JCS
+# canonicalizer is implemented by hand over our own strict `Json` value (never serde's
+# serializer), so the hashed bytes are owned by this crate, not by serde_json's output.
+[dependencies]
+serde = "1.0.210"
+serde_json = "1.0.128"
+sha2 = "0.10.8"
+ed25519-dalek = "2.1.1"
+base64 = "0.22.1"
+
+[profile.release]
+opt-level = 2
