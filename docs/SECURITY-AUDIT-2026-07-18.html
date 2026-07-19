@@ -1,0 +1,190 @@
+<title>noa-receipt — Kripto Güven-Primitifi Güvenlik Denetimi</title>
+<style>
+  :root{
+    --paper:#f5f6f4; --panel:#ffffff; --panel-2:#eef1ee;
+    --ink:#15191a; --ink-soft:#333b3c; --muted:#5f6b6a; --faint:#8a9593;
+    --hair:rgba(18,26,25,.10); --hair-2:rgba(18,26,25,.17);
+    --accent:#1f6f5c; --accent-soft:#e2efe9;
+    --crit:#b23524; --high:#bd6a17; --med:#9c7d0c; --low:#4a7c8a; --safe:#1f7a55;
+    --crit-bg:#f7e7e3; --high-bg:#f8ecdd; --med-bg:#f5f0d6; --low-bg:#e2eef2; --safe-bg:#dcefe4;
+    --refuted:#7a8492; --refuted-bg:#e9ecef;
+    --shadow:0 1px 2px rgba(15,22,20,.05),0 18px 40px -28px rgba(15,22,20,.28);
+    --serif:"Iowan Old Style","Charter","Georgia",serif;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --mono:ui-monospace,"SF Mono","Menlo",monospace;
+  }
+  @media (prefers-color-scheme:dark){:root{
+    --paper:#0b0f0e; --panel:#131917; --panel-2:#1a211f; --ink:#e7ecea; --ink-soft:#c2ccc9;
+    --muted:#8a9591; --faint:#6b7673; --hair:rgba(210,225,220,.11); --hair-2:rgba(210,225,220,.19);
+    --accent:#4fb595; --accent-soft:#173029;
+    --crit:#e07059;--high:#e2984a;--med:#d3b23a;--low:#5fa8bd;--safe:#5bbf8e;
+    --crit-bg:#2a1712;--high-bg:#291d0f;--med-bg:#25200d;--low-bg:#12252b;--safe-bg:#122720;
+    --refuted:#8a94a2;--refuted-bg:#1c222b;
+    --shadow:0 1px 2px rgba(0,0,0,.5),0 24px 50px -30px rgba(0,0,0,.7);}}
+  :root[data-theme="light"]{--paper:#f5f6f4;--panel:#fff;--panel-2:#eef1ee;--ink:#15191a;--ink-soft:#333b3c;--muted:#5f6b6a;--faint:#8a9593;--hair:rgba(18,26,25,.10);--hair-2:rgba(18,26,25,.17);--accent:#1f6f5c;--accent-soft:#e2efe9;--crit:#b23524;--high:#bd6a17;--med:#9c7d0c;--low:#4a7c8a;--safe:#1f7a55;--crit-bg:#f7e7e3;--high-bg:#f8ecdd;--med-bg:#f5f0d6;--low-bg:#e2eef2;--safe-bg:#dcefe4;--refuted:#7a8492;--refuted-bg:#e9ecef;--shadow:0 1px 2px rgba(15,22,20,.05),0 18px 40px -28px rgba(15,22,20,.28);}
+  :root[data-theme="dark"]{--paper:#0b0f0e;--panel:#131917;--panel-2:#1a211f;--ink:#e7ecea;--ink-soft:#c2ccc9;--muted:#8a9591;--faint:#6b7673;--hair:rgba(210,225,220,.11);--hair-2:rgba(210,225,220,.19);--accent:#4fb595;--accent-soft:#173029;--crit:#e07059;--high:#e2984a;--med:#d3b23a;--low:#5fa8bd;--safe:#5bbf8e;--crit-bg:#2a1712;--high-bg:#291d0f;--med-bg:#25200d;--low-bg:#12252b;--safe-bg:#122720;--refuted:#8a94a2;--refuted-bg:#1c222b;--shadow:0 1px 2px rgba(0,0,0,.5),0 24px 50px -30px rgba(0,0,0,.7);}
+  *{box-sizing:border-box} html{-webkit-text-size-adjust:100%}
+  body{margin:0;background:var(--paper);color:var(--ink);font-family:var(--sans);line-height:1.6;-webkit-font-smoothing:antialiased;padding:clamp(22px,5vw,64px) clamp(15px,4vw,40px)}
+  .wrap{max-width:940px;margin:0 auto}
+  .mono{font-family:var(--mono);font-variant-numeric:tabular-nums}
+  header.top{border-bottom:2px solid var(--ink);padding-bottom:26px;margin-bottom:8px}
+  .kicker{font-family:var(--mono);font-size:11.5px;letter-spacing:.22em;text-transform:uppercase;color:var(--accent);font-weight:600;margin-bottom:14px}
+  h1{font-family:var(--serif);font-weight:600;font-size:clamp(29px,5.2vw,48px);line-height:1.05;letter-spacing:-.01em;margin:0 0 .34em;text-wrap:balance}
+  .sub{font-size:clamp(15px,2.1vw,18px);color:var(--muted);max-width:64ch;margin:0}
+  .meta{display:flex;flex-wrap:wrap;gap:6px 22px;margin-top:22px;font-family:var(--mono);font-size:12px;color:var(--faint)}
+  .meta b{color:var(--ink-soft);font-weight:600}
+  .verdict{background:var(--panel);border:1px solid var(--hair);border-left:4px solid var(--safe);border-radius:12px;box-shadow:var(--shadow);padding:clamp(20px,3.4vw,32px);margin:34px 0 14px}
+  .verdict h2{font-family:var(--serif);font-size:22px;margin:0 0 .5em;font-weight:600;letter-spacing:-.01em}
+  .verdict p{margin:.5em 0;color:var(--ink-soft);font-size:15.5px}
+  .verdict b{color:var(--ink);font-weight:600}
+  .board{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:22px 0 6px}
+  @media (max-width:620px){.board{grid-template-columns:repeat(2,1fr)}}
+  .stat{background:var(--panel);border:1px solid var(--hair);border-radius:11px;padding:16px}
+  .stat .n{font-family:var(--serif);font-size:32px;font-weight:600;line-height:1;letter-spacing:-.02em}
+  .stat .l{font-size:12px;color:var(--muted);margin-top:7px}
+  .stat.s-crit .n{color:var(--safe)} .stat.s-med .n{color:var(--med)} .stat.s-ref .n{color:var(--refuted)} .stat.s-safe .n{color:var(--safe)}
+  .sec{margin:50px 0 0}
+  .sec-h{display:flex;align-items:baseline;gap:13px;flex-wrap:wrap;border-bottom:1px solid var(--hair-2);padding-bottom:11px;margin-bottom:8px}
+  .sec-h h2{font-family:var(--serif);font-size:clamp(21px,3vw,27px);font-weight:600;margin:0;letter-spacing:-.01em}
+  .sec-h .count{font-family:var(--mono);font-size:12.5px;color:var(--faint)}
+  .sec-note{color:var(--muted);font-size:14.5px;margin:2px 0 22px;max-width:72ch}
+  .find{background:var(--panel);border:1px solid var(--hair);border-radius:12px;box-shadow:var(--shadow);margin:14px 0;overflow:hidden;border-left:5px solid var(--sev)}
+  .find.sev-med{--sev:var(--med)} .find.sev-low{--sev:var(--low)} .find.sev-ref{--sev:var(--refuted)} .find.sev-safe{--sev:var(--safe)}
+  .fhead{padding:16px clamp(16px,2.6vw,24px) 4px}
+  .chips{display:flex;flex-wrap:wrap;gap:7px;align-items:center;margin-bottom:11px}
+  .chip{font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.04em;text-transform:uppercase;padding:3px 9px;border-radius:999px;white-space:nowrap}
+  .chip.id{background:var(--panel-2);color:var(--muted)}
+  .chip.sv-med{background:var(--med-bg);color:var(--med)} .chip.sv-low{background:var(--low-bg);color:var(--low)}
+  .chip.sv-ref{background:var(--refuted-bg);color:var(--refuted)} .chip.sv-safe{background:var(--safe-bg);color:var(--safe)}
+  .chip.conf{background:transparent;border:1px solid var(--hair-2);color:var(--muted)} .chip.kind{background:transparent;border:1px solid var(--hair-2);color:var(--faint)}
+  .ftitle{font-family:var(--serif);font-size:19px;font-weight:600;line-height:1.25;margin:0 0 4px}
+  .fbody{padding:2px clamp(16px,2.6vw,24px) 20px}
+  .row{margin:13px 0 0}
+  .row .rl{font-family:var(--mono);font-size:10.5px;letter-spacing:.12em;text-transform:uppercase;color:var(--faint);font-weight:600;margin-bottom:3px}
+  .row .rv{font-size:14.5px;color:var(--ink-soft)}
+  .loc{display:inline-block;font-family:var(--mono);font-size:12.5px;color:var(--accent);background:var(--accent-soft);padding:2px 8px;border-radius:6px;margin:2px 5px 2px 0;word-break:break-all;line-height:1.5}
+  .fix .rv{color:var(--ink)} .fix .rl{color:var(--accent)}
+  .lede-list{list-style:none;padding:0;margin:0}
+  .lede-list li{padding:11px 0;border-bottom:1px solid var(--hair);display:flex;gap:12px}
+  .lede-list li:last-child{border-bottom:0}
+  .lede-list .lg{flex:0 0 auto;font-family:var(--mono);font-size:12px;font-weight:600;color:var(--safe);padding-top:2px}
+  .lede-list b{color:var(--ink);font-weight:600}
+  footer{margin-top:54px;padding-top:22px;border-top:1px solid var(--hair-2);font-size:13px;color:var(--muted)}
+  footer b{color:var(--ink-soft)} footer .mono{font-size:12px}
+  @media print{body{background:#fff}.find,.verdict,.stat{box-shadow:none}}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <div class="kicker">noa-receipt · Kripto Güven-Primitifi · 360° Denetim</div>
+    <h1>Agent Action Receipt — Doğrulayıcı Soundness Denetimi</h1>
+    <p class="sub">Codex, GLM 5.2 ve Fable 5 kütüphaneyi bağımsız denetledi; ikisi 5-dilli doğrulayıcının tamamını (TS · Python · Go · Rust · C#) <b>derleyip çalıştırarak</b> 21+ saldırı-vektörüyle differential-harness kurdu. Lider her yük-taşıyan iddiayı kaynak-kodun üstünde doğruladı. Amaç tekti: bir makbuzu sahtele, kurcala veya tekrarla — doğrulamayı geçir.</p>
+    <div class="meta">
+      <span><b>Tarih</b> 2026-07-18</span>
+      <span><b>Hedef</b> github.com/nordensoft/noa @d19b2c5 · Apache-2.0 · 0-dep</span>
+      <span><b>Yöntem</b> 3 model · 2× build+run differential (21 vektör × 5 doğrulayıcı)</span>
+      <span><b>Kapsam</b> verify · canonicalize · Ed25519/DER · COSE · HPKE · federasyon · supply-chain · lisans</span>
+    </div>
+  </header>
+
+  <section class="verdict">
+    <h2>Sade özet — bir bakışta</h2>
+    <p><b>Taç-mücevher kriptografik olarak SAĞLAM.</b> Sahtele / kurcala / tekrarla saldırılarının <b>hiçbiri</b> 5 doğrulayıcının hiçbirini geçemedi. İki bağımsız model 5 dilin tamamını derleyip 21 kötü-niyetli girdiyle besledi; <b>20'sinde beşi de tıpatıp aynı</b> karar verdi. Kod, çoğu kütüphanenin kaçırdığı ileri savunmaları (Ed25519 small-order + non-canonical-y + S&lt;L malleability, alg-pinning, TOCTOU-sertleştirme, domain-separation) titizce uyguluyor.</p>
+    <p>GLM'in öne sürdüğü <b>2 "kritik" sahte-alarm çıktı</b> ve elendi — kodu gerçekten derleyip-çalıştıran iki denetim + Ed25519 matematiği ikisini de çürüttü (aşağıda gerekçeli).</p>
+    <p>Gerçek bulgular <b>güvenlik-deliği değil</b>: <b>(1)</b> tek bir çapraz-uygulama tutarsızlığı — C# doğrulayıcısı başına gizli 3-baytlık BOM eklenmiş bir dosyayı VALID sayarken diğer 4'ü MALFORMED diyor (imza yine gerekli, sahtecilik değil; ama "5 doğrulayıcı hemfikir" iddiasının tek istisnası). <b>(2)</b> CI yalnız 2 dili (TS↔Python) mekanik gate'liyor; Go/Rust/C# hiç build/test edilmiyor — bu yüzden (1) sızabildi. + birkaç tasarım/API-sertleştirme notu.</p>
+    <p><b>Öneri:</b> bugün güvenmeye hazır. Ama "5 bağımsız doğrulayıcı hemfikir" iddiasını herkese-açık kullanmadan önce <b>F-1 (C# BOM)</b> ve <b>F-2 (5-dil CI)</b> kapatılmalı — ikisi de küçük, düşük-riskli.</p>
+  </section>
+
+  <div class="board">
+    <div class="stat s-crit"><div class="n">0</div><div class="l">Kritik/Yüksek güvenlik-açığı</div></div>
+    <div class="stat s-med"><div class="n">3</div><div class="l">Orta (konsensüs/tasarım)</div></div>
+    <div class="stat s-ref"><div class="n">3</div><div class="l">Elenen sahte-alarm</div></div>
+    <div class="stat s-safe"><div class="n">10+</div><div class="l">Doğrulanan güvenli-alan</div></div>
+  </div>
+
+  <!-- MED/LOW findings -->
+  <section class="sec">
+    <div class="sec-h"><h2>Gerçek Bulgular</h2><span class="count">güvenlik-deliği değil — tutarlılık + sertleştirme</span></div>
+    <p class="sec-note">Hiçbiri forgery/tamper/replay-bypass değil. F-1/F-2 "5-doğrulayıcı" enterprise-iddiasını sağlamlaştırır; M1/M2/L tüketici-sözleşmesi ve API-sertleştirmedir.</p>
+
+    <article class="find sev-med">
+      <div class="fhead"><div class="chips"><span class="chip id">F-1</span><span class="chip sv-med">MEDIUM</span><span class="chip conf">PoC-onaylı (build+run)</span><span class="chip kind">Çapraz-uygulama konsensüs-split</span></div>
+        <p class="ftitle">UTF-8 BOM 5-doğrulayıcı konsensüsünü kırıyor — C# kabul, diğer 4 red</p></div>
+      <div class="fbody">
+        <div class="row"><div class="rl">Kanıt</div><div class="rv"><span class="loc">impl-csharp/src/Program.cs:65</span> `StrictJson.Parse(File.ReadAllText(...))` — `File.ReadAllText` BOM-algılamalı StreamReader kullanıp baştaki BOM'u sessizce siler. Diğerleri ham-byte okuyor: <span class="loc">impl-go/main.go:117 os.ReadFile</span> · <span class="loc">impl-rust/src/main.rs:146 read_to_string</span> (TS/Python de ham) → strict-parser baştaki `U+FEFF`'i reddeder. Differential-harness (lider tarafından koşuldu): `B1_bom` → TS/PY/GO/RUST=MALFORMED, <b>C#=VALID</b>.</div></div>
+        <div class="row"><div class="rl">Ne olabilir</div><div class="rv">Farklı kabul-edenlerin farklı doğrulayıcı koştuğu bir federasyonda, üretici yalnızca C#-tabanlı kabul-edenlerin onurlandırdığı bir makbuz gönderebilir (split-view kabul). <b>Sahtecilik değil</b> — zincir yine geçerli-imza taşımalı; yalnızca leniency-tutarsızlığı. Etkisi C# CLI dosya-okuma-sınırına özel; in-process JCS/kripto-çekirdek 5 dilde özdeş.</div></div>
+        <div class="row fix"><div class="rl">Düzeltme</div><div class="rv">C#'ı ham-byte oku (`new StreamReader(path, new UTF8Encoding(false), detectEncodingFromByteOrderMarks:false)`) + baştaki BOM'u reddet (çoğunlukla-hizala). + spec'te BOM-davranışını sabitle + `bom-prefixed` conformance-vektörü ekle (mekanik-gate). RFC 8259 §8.1 BOM'u opsiyonel bırakıyor → her iki davranış tekil-yasal ama birlikte konsensüs-kırıyor.</div></div>
+      </div>
+    </article>
+
+    <article class="find sev-med">
+      <div class="fhead"><div class="chips"><span class="chip id">F-2</span><span class="chip sv-med">MEDIUM</span><span class="chip conf">onaylı (Codex+Fable)</span><span class="chip kind">Assurance-gate boşluğu</span></div>
+        <p class="ftitle">"5-dil konsensüs" CI'da yalnız 2 dil için mekanik-gate'li</p></div>
+      <div class="fbody">
+        <div class="row"><div class="rl">Kanıt</div><div class="rv"><span class="loc">.github/workflows/ci.yml</span> — `setup-go`/`setup-dotnet`/Rust adımı YOK; `go test`/`cargo test`/`dotnet test` YOK. Çapraz-conformance yalnız TS↔Python (`conformance/MATRIX.md`, 92 kontrol — bu gate gerçek ve geçiyor). Go/Rust/C# doğrulayıcıları ("5-dil bağımsız konsensüs" anlatısını tamamlayan) hiç build/unit-test/cross-check edilmiyor. F-1 tam da bunun gibi bir drift — hiçbir mevcut-gate yakalayamaz. <b>Not:</b> README dürüst — "TS↔Python cross-conformance in CI" diyor (doğru); bu literal-overclaim değil, "5 bağımsız doğrulayıcı" değer-önermesine göre gate-boşluğu.</div></div>
+        <div class="row fix"><div class="rl">Düzeltme</div><div class="rv">`ci.yml`'e setup-go + setup-dotnet + Rust ekle, üçünü de build et, `conformance-matrix.mjs`'i 5-binary'ye genişlet (5-yönlü matris, divergence'ta fail). Bu F-1'i yakalardı.</div></div>
+      </div>
+    </article>
+
+    <article class="find sev-med">
+      <div class="fhead"><div class="chips"><span class="chip id">M1</span><span class="chip sv-med">MEDIUM</span><span class="chip conf">2 model (GLM+Codex)</span><span class="chip kind">Tüketici-sözleşmesi</span></div>
+        <p class="ftitle">Kiracı-tutarlılığı varsayılan zorlanmıyor (yalnız uyarı)</p></div>
+      <div class="fbody">
+        <div class="row"><div class="rl">Kanıt + etki</div><div class="rv"><span class="loc">src/verify.ts (Step 3b, ~151-162)</span> — `scope.tenant` zincir-geneli varsayılan zorlanmıyor; A ve B kiracı makbuzları aynı `scope.chain` altında karışırsa verdict `VALID` kalır, yalnız warning basar. Tüketici (admin-konsol) `result.warnings`'i açıkça parse-etmezse çapraz-kiracı makbuzu işleyebilir. <b>Kütüphane doğru davranıyor</b> (opt-in + uyarı) ama tüketici sözleşmesi net-belgelenmeli / gelecek-major'da `requireTenantConsistency:true` varsayılan.</div></div>
+      </div>
+    </article>
+
+    <article class="find sev-low">
+      <div class="fhead"><div class="chips"><span class="chip id">M2</span><span class="chip sv-low">LOW–MED</span><span class="chip conf">GLM</span><span class="chip kind">API-misuse-direnci</span></div>
+        <p class="ftitle">Ham `verifyChain` public — güvenli `verifyChainText`'i baypas edebilir</p></div>
+      <div class="fbody">
+        <div class="row"><div class="rl">Kanıt + etki</div><div class="rv"><span class="loc">src/verify.ts / src/index.ts</span> — `verifyChainText` `safeParse` ile duplicate-key/proto-pollution reddi yapar; ama public `verifyChain`'e geliştirici `JSON.parse(text)` verirse bu strictliği kaybeder. Kütüphane kullanıcıyı `verifyChainText`'e yönlendiriyor (yorum) — daha güçlüsü: ham `verifyChain`'i public-API'den gizle veya açık `UnsafeRawObject` tip-sarmalayıcısı iste.</div></div>
+      </div>
+    </article>
+
+    <article class="find sev-low">
+      <div class="fhead"><div class="chips"><span class="chip id">L-1</span><span class="chip sv-low">LOW</span><span class="chip conf">Fable · teorik</span><span class="chip kind">HPKE (ayrı-paket)</span></div>
+        <p class="ftitle">HPKE'de açık low-order X25519 / sıfır-shared-secret guard'ı yok</p></div>
+      <div class="fbody">
+        <div class="row"><div class="rl">Kanıt + etki</div><div class="rv"><span class="loc">packages/signer-core/src/hpke.ts:100,109</span> — RFC 9180 base-mode; low-order alıcı-public-key / all-zero DH-çıktısını açıkça reddetmiyor (RFC 9180 §7.1.4 <i>önerir</i>). Bu <b>ayrı bir paket</b> (mobil-onay-gösterim kanalı, yayınlanan `noa-receipt` DEĞİL, makbuz-doğrulama-yolu DEĞİL); RFC 9180 vektörüyle byte-doğrulanmış. Etki gösterim-kanalıyla sınırlı. İsteğe-bağlı: `getSharedSecret` sonrası all-zero-secret reddet.</div></div>
+      </div>
+    </article>
+  </section>
+
+  <!-- REFUTED -->
+  <section class="sec">
+    <div class="sec-h"><h2>Elenen Sahte-Alarmlar</h2><span class="count">3 iddia · rapordan çıkarıldı</span></div>
+    <p class="sec-note">Denetimin lastik-damga olmadığının kanıtı: GLM (dosya-kör, paket'ten akıl-yürüttü) 2 "kritik" öne sürdü; kodu <b>gerçekten derleyip-çalıştıran</b> iki denetim (Codex + Fable) + Ed25519-matematiği + lider-kod-okuması üçü de çürüttü.</p>
+    <article class="find sev-ref">
+      <div class="fhead"><div class="chips"><span class="chip id">GLM-C1</span><span class="chip sv-ref">ÇÜRÜTÜLDÜ</span></div><p class="ftitle">"Ed25519 R-negation malleability (kritik forgery)"</p></div>
+      <div class="fbody"><div class="row"><div class="rv">Matematiksel-yanlış: Ed25519'da `R`, challenge-hash'ine girer (`H(R‖A‖M)`) → `-R` hash'i değiştirir → `(-R,S)` aynı-mesaj için geçerli-imza <b>değildir</b>. Bu ECDSA-malleability'si, Ed25519 değil. Ed25519'un tek malleability'si `S→S+L`, kod `S&lt;L` ile reddediyor (<span class="loc">src/keys.ts</span>). Differential-harness `T1` (S'=S+L) → beş doğrulayıcı da TAMPERED.</div></div></div>
+    </article>
+    <article class="find sev-ref">
+      <div class="fhead"><div class="chips"><span class="chip id">GLM-C2</span><span class="chip sv-ref">ÇÜRÜTÜLDÜ</span></div><p class="ftitle">"base64-whitespace çapraz-dil divergence (kritik)"</p></div>
+      <div class="fbody"><div class="row"><div class="rv">Kendi-kendini-çürüttü: `sigBytes.toString("base64") !== signatureB64` kontrolü içteki `\n`'i YAKALAR (canonical-\n'siz ≠ input-\n'li → reddet). keys.ts titiz canonical-round-trip (`canonical.equals(der)`) yapıyor. Differential-harness `T2` (non-canonical base64) → beş doğrulayıcı da TAMPERED.</div></div></div>
+    </article>
+    <article class="find sev-ref">
+      <div class="fhead"><div class="chips"><span class="chip id">GLM-H1</span><span class="chip sv-ref">ÇÜRÜTÜLDÜ (doğru-davranış)</span></div><p class="ftitle">"COSE crit forward-compat bypass"</p></div>
+      <div class="fbody"><div class="row"><div class="rv">Bilinmeyen critical-header'ı reddetmek RFC 9052 §3.1 gereği <b>doğru + güvenli</b> davranıştır (fail-closed). Codex: "unknown critical headers fail closed" — kusur değil, doğru. Yalnızca ileri-uyumluluk-notu (gelecek profil `crit`-dışı bilinmeyen-label'a izin verebilir), güvenlik-bulgusu değil.</div></div></div>
+    </article>
+  </section>
+
+  <!-- POSITIVE ASSURANCE -->
+  <section class="sec">
+    <div class="sec-h"><h2>Doğrulanan Güvenli-Alanlar</h2><span class="count">pozitif güvence · her biri build+run ile denendi</span></div>
+    <ul class="lede-list">
+      <li><span class="lg">✓ SAĞLAM</span><div><b>Forgery/tamper/replay — hiçbir bypass yok.</b> tampered-content · forged-genesis · key-swap(±resign) · unknown-kid · seq-gap · head-truncated · cross-chain-splice · dup-seq · wrong-sig · relinked → hepsi 5 doğrulayıcıda reddedildi.</div></li>
+      <li><span class="lg">✓ SAĞLAM</span><div><b>Ed25519 sertleştirmesi (5 dilde ayna):</b> canonical-base64 + tam-64-byte + Ed25519-tip-pin (Ed448/EC/RSA-confusion-red) + canonical-SPKI-round-trip (trailing-byte-red) + <b>non-canonical y≥q reddi</b> + <b>8 small-order/torsion-noktası reddi</b> + <b>S&lt;L malleability reddi</b>. Çoğu kütüphanenin kaçırdığı derinlik.</div></li>
+      <li><span class="lg">✓ SAĞLAM</span><div><b>Canonicalization (JCS):</b> duplicate-key-red · float/exp/BigInt/NaN/Inf-red · -0→0 · UTF-16-key-sort · lone-surrogate-red · NFC≠NFD (çakışma-yok) · `__proto__`/`prototype`/`constructor`-red. Şema tam-sabit-anahtar (`additionalProperties:false`) → hash-yüzeyinde saldırgan-kontrollü-anahtar yok.</div></li>
+      <li><span class="lg">✓ SAĞLAM</span><div><b>COSE_Sign1:</b> protected-alg zorunlu + Ed25519 `-19`-pin (generic-EdDSA-8/Ed448/ES256-red) · unknown-crit-fail-closed · Sig_structure doğru · CBOR trailing/non-shortest/dup-key/indefinite-red.</div></li>
+      <li><span class="lg">✓ SAĞLAM</span><div><b>Federasyon:</b> k≥2 + 1&lt;q≤k · duplicate-witness-kid/key-red · anchor'lar strict-Ed25519 ile authenticate · zincir-geçerliliği ↔ witness-tamlığı AYRI (tek-boolean'a merge yok) · snapshot-scoped-etiketli.</div></li>
+      <li><span class="lg">✓ SAĞLAM</span><div><b>TOCTOU + domain-separation:</b> `verify.ts` tek `structuredClone` snapshot (proxy/getter-saldırısı-yok), public-API'den asla throw-etmez (hostile-accessor→MALFORMED); `signing.ts` `RECEIPT_SIG_DOMAIN` ön-eki (cross-protocol-replay-red).</div></li>
+      <li><span class="lg">✓ SAĞLAM</span><div><b>Supply-chain + lisans:</b> kök `noa-receipt` <b>0-runtime-dep</b> (yalnız `node:` built-in; dist-imports relative) · `files`-allowlist test/private-key/venv-hariç · `prepublishOnly` test+conformance+publish-surface-lint+matrix-drift · npm-OIDC-trusted-publish + `--provenance` · Apache-2.0 LICENSE+NOTICE mevcut · kopyleft-kontaminasyon-yok. (Not: "0-dep" doğru olarak yalnız-kök-TS-paketi için; Rust/C# impl'leri vetted-kütüphane kullanır.)</div></li>
+    </ul>
+  </section>
+
+  <footer>
+    <p><b>Yöntem &amp; dürüstlük.</b> 3 model (Codex `gpt-5.6-sol` · GLM 5.2 · Fable 5) bağımsız R1 → lider çapraz-adjudikasyon (R2) → lider kaynak-kod-doğrulama (R3). <b>İki model (Codex+Fable) 5-dilli doğrulayıcının tamamını yerel derleyip çalıştırdı</b> (Fable 21-vektör differential-harness; Codex Rust↔Python 34/34+36/36). GLM dosya-kör (paket'ten akıl-yürüttü) → 2 "kritik"i çapraz-aile-empirik + Ed25519-matematiği çürüttü. Lider F-1-BOM kök-nedenini + GLM-C1/C2-çürütmesini kaynak-kodun üstünde teyit etti. Testler: 278/278 (bir CLI temp-dir-yazma-kısıtı hariç, 13-test reconcile). `[UNVERIFIED]`: UTF-16/32-BOM-varyantı (aynı kök-neden) + HPKE-low-order-ampirik-koşum.</p>
+    <p class="mono">noa-receipt @d19b2c5 · security-audit · 2026-07-18 · Codex + GLM-5.2 + Fable-5 · lider-doğrulamalı</p>
+  </footer>
+</div>
