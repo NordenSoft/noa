@@ -153,6 +153,18 @@ export interface KeyManifestRecord {
   version: number;
   /** The exact received, externally-signed manifest object. The relay never signs it. */
   manifest: Record<string, unknown>;
+  /**
+   * noa.key-delegation/0.1 — PUBLIC, root/tenant-authority-signed, stored opaquely alongside the
+   * manifest so `GET /v1/trust` can serve the full root→delegation→manifest chain (#64-S2). `null`
+   * when the publishing gate didn't carry one (older gates, pre-#64) — `GET /v1/trust` reports
+   * this honestly (404 NO_DELEGATION) rather than fabricating a delegation.
+   *
+   * OPTIONAL (not required-nullable) — this field was added to an already-EXPORTED type. Making it
+   * required, even as `T | null`, would break any external `Store`/record implementer at compile
+   * time; `?:` keeps the #64 addition truly additive for outside consumers of this type (R4).
+   * Every internal constructor (engine.ts `putManifest`) still always sets it explicitly.
+   */
+  delegation?: Record<string, unknown> | null;
   refHash: string;
   createdAt: number;
 }

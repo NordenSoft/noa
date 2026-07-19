@@ -133,3 +133,16 @@ test("after a full approval flow, NO private-key material is ever at rest (relay
     assert.equal(dumpStr.includes(banned), false, `forbidden key material field "${banned}" present at rest`);
   }
 });
+
+test("#64-S5: a self-revoke never touches key material — no private key at rest after revokeSelf", () => {
+  const h = makeHarness();
+  const d = makeDevice(h);
+  assert.equal(h.engine.revokeSelf(d.device).status, 204);
+
+  const dumpStr = JSON.stringify(h.store.dump());
+  assert.equal(dumpStr.includes(d.privateKey), false, "device private key leaked into relay storage after revoke");
+  assert.equal(dumpStr.includes(d.deviceSecret), false, "device secret plaintext leaked into storage after revoke");
+  for (const banned of ["privateKey", "privateSeed", "privateseed", "secretSeed", "seedHex"]) {
+    assert.equal(dumpStr.includes(banned), false, `forbidden key material field "${banned}" present at rest after revoke`);
+  }
+});

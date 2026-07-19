@@ -136,7 +136,20 @@ async function handle(
     return respond(res, engine.registerDevice(b.value));
   }
   if (method === "GET" && path === "/v1/manifest") {
-    return respond(res, engine.getManifest(url.searchParams.get("tenant") ?? "default"));
+    return respond(res, engine.getManifest(tenantParam(url)));
+  }
+  if (method === "GET" && path === "/v1/trust") {
+    return respond(res, engine.getTrust(tenantParam(url)));
+  }
+
+  // ── device self-service (auth = the device's OWN bearer; deliberately OUTSIDE the
+  //     revoked-403 guard below — D6: a device that is already revoked must still be able to
+  //     idempotently re-confirm its own revoke, not get shut out with a 403) ──
+  if (method === "POST" && path === "/v1/devices/self/revoke") {
+    if (!bearer || bearer.scheme !== "device") return sendJson(res, 401, { error: "DEVICE_AUTH_REQUIRED" });
+    const device = engine.resolveDevice(bearer.secret);
+    if (!device) return sendJson(res, 401, { error: "INVALID_DEVICE_CREDENTIAL" });
+    return respond(res, engine.revokeSelf(device));
   }
 
   // ── device-authenticated routes ──
@@ -208,6 +221,16 @@ async function handle(
   }
 
   return sendJson(res, 404, { error: "NOT_FOUND" });
+}
+
+/**
+ * R5 — an explicit `?tenant=` (empty string) is NOT `null`, so a bare `?? "default"` let `""`
+ * silently become its own distinct tenant key, separate from (and unreachable the same way as)
+ * the actual "default" tenant. Missing AND empty are treated identically here.
+ */
+function tenantParam(url: URL): string {
+  const raw = url.searchParams.get("tenant");
+  return raw && raw.length > 0 ? raw : "default";
 }
 
 function holdIdFrom(path: string): string {

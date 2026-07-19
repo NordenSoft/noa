@@ -163,6 +163,30 @@ export class RelayEngine {
     return { status: 204, body: null };
   }
 
+  /**
+   * #64-S5 / D6 — self-revoke: `server.ts` resolves the device from its OWN bearer BEFORE calling
+   * this (outside the shared revoked-403 guard, so an already-revoked device can still reach it).
+   * Idempotent — a second call on an already-revoked device is still 204, never an error, so a
+   * leaked bearer can always be shut off cleanly; un-revoke is intentionally absent (fail-safe
+   * DoS only, never a way to regain access). Every existing revoked-check (device routes' 403 at
+   * server.ts, the signer-revoke check in `decide`, the push skip in `notify`) picks this up for
+   * free — they all read the SAME `DeviceRecord.revokedAt` this sets.
+   *
+   * R3 — TRUE idempotency: reload the AUTHORITATIVE current record from the store by id rather
+   * than trusting the caller-provided `device` argument's `revokedAt`. A caller holding a stale
+   * pre-revoke snapshot (e.g. resolved once, then this called twice) must not be able to re-stamp
+   * `revokedAt` to a later time or re-fire the `device.revoked` log a second time.
+   */
+  revokeSelf(device: DeviceRecord): EngineResult {
+    const current = this.store.getDeviceById(device.id) ?? device;
+    if (current.revokedAt === null) {
+      const revoked: DeviceRecord = { ...current, revokedAt: this.now() };
+      this.store.putDevice(revoked);
+      this.log("device.revoked", { deviceId: current.id });
+    }
+    return { status: 204, body: null };
+  }
+
   // ── holds ──────────────────────────────────────────────────────────────────
   createHold(agent: AgentRecord, idempotencyKey: string | undefined, input: unknown): EngineResult {
     if (!idempotencyKey) return err(400, "MISSING_IDEMPOTENCY_KEY");
@@ -437,10 +461,59 @@ export class RelayEngine {
     if (version === undefined) return err(422, "MANIFEST_MISSING_VERSION");
     const manifestHash = safeRefHash(manifest);
     if (manifestHash === null) return err(422, "BAD_MANIFEST", { detail: "not JCS-canonicalizable" });
+
+    // #64-S2: OPTIONAL delegation the gate may carry alongside the manifest so `GET /v1/trust` can
+    // serve the chain (D5). Absent → fine (older gates); present-and-structurally-wrong → 422,
+    // fail-closed (never silently coerced into "no delegation"). Stored opaquely, like the
+    // manifest itself — the relay does not verify the delegation's signature (that is mobile's
+    // `verifyManifestChain`, S1); it only checks the minimum needed to route/serve it.
+    //
+    // R1 — cheap structural cross-tenant guard: deep chain-verification (does this delegation
+    // actually chain to a trusted root?) is out of relay scope, the mobile's job. But a delegation
+    // that itself DECLARES a tenant must not be allowed to ride along under a DIFFERENT manifest's
+    // tenant — else `GET /v1/trust?tenant=victim` could be made to serve an attacker's delegation
+    // object. Absent tenant field on the delegation ⇒ no opinion, still accepted (older delegations
+    // that don't self-describe a tenant are unaffected).
+    let delegation: Record<string, unknown> | null = null;
+    let delegationProvided = false;
+    if (input["delegation"] !== undefined) {
+      delegationProvided = true;
+      const d = input["delegation"];
+      if (!isRecord(d) || d["spec"] !== "noa.key-delegation/0.1") return err(422, "BAD_DELEGATION");
+      const delegationTenant = asString(d["tenant"]);
+      if (delegationTenant !== undefined && delegationTenant !== tenant) {
+        return err(422, "BAD_DELEGATION", {
+          detail: "delegation.tenant does not match manifest.tenant",
+        });
+      }
+      delegation = d;
+    }
+
+    // R2 — version-conflict honesty. A STALE (lower-version) publish must be an honest rejection,
+    // never a silent-ignore 200 (the old store-level `>=` guard dropped it but putManifest still
+    // reported success). An EQUAL-version re-publish (retry / idempotent re-send) must not be able
+    // to silently STRIP a previously-stored delegation just because this particular re-send omitted
+    // it — safe rule chosen: if the equal-version publish doesn't carry a delegation, the
+    // PREVIOUSLY-stored one is preserved untouched; if it does carry one, that one wins (already
+    // tenant-guarded above). A genuine higher-version rotation that omits delegation still nulls it
+    // out — that is the existing, intentionally-honest pre-#64 behavior and is unchanged here.
+    const cur = this.store.getLatestManifest(tenant);
+    if (cur && version < cur.version) {
+      return err(409, "STALE_MANIFEST_VERSION", {
+        detail: "manifest version is older than the currently-stored version",
+        currentVersion: cur.version,
+        attemptedVersion: version,
+      });
+    }
+    if (cur && version === cur.version && !delegationProvided && cur.delegation) {
+      delegation = cur.delegation;
+    }
+
     const rec: KeyManifestRecord = {
       tenant,
       version,
       manifest,
+      delegation,
       refHash: manifestHash,
       createdAt: this.now(),
     };
@@ -448,10 +521,30 @@ export class RelayEngine {
     return { status: 200, body: { tenant, version, refHash: rec.refHash } };
   }
 
+  /**
+   * STRUCTURALLY UNCHANGED (5-language verifier parity, D5) — do not change this response shape;
+   * `#64`'s `delegation` field is never exposed here (see `test/manifest-trust.test.ts`, which
+   * proves this via `assert.deepEqual` on the parsed JSON response — a structural check, not a
+   * raw-byte-identity guarantee).
+   */
   getManifest(tenant: string): EngineResult {
     const rec = this.store.getLatestManifest(tenant);
     if (!rec) return err(404, "NO_MANIFEST");
     return { status: 200, body: rec.manifest };
+  }
+
+  /**
+   * #64-S2 / D5 — serve the root→delegation→manifest trust bundle the mobile app needs to
+   * re-verify a manifest at hold time. Honest fail-closed: NEVER fabricates a delegation — a
+   * manifest published without one (older gates, pre-#64) yields a distinct 404 so the caller can
+   * tell "no manifest yet" (NO_MANIFEST) apart from "manifest exists, no delegation carried"
+   * (NO_DELEGATION). Additive new route; `getManifest` above is untouched.
+   */
+  getTrust(tenant: string): EngineResult {
+    const rec = this.store.getLatestManifest(tenant);
+    if (!rec) return err(404, "NO_MANIFEST");
+    if (!rec.delegation) return err(404, "NO_DELEGATION");
+    return { status: 200, body: { manifest: rec.manifest, delegation: rec.delegation } };
   }
 
   // ── views + waiter plumbing ────────────────────────────────────────────────
