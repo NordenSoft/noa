@@ -78,8 +78,12 @@ Constant-time hash compare; only sha256 HASHES of secrets are stored.
   native FCM-style push, not PWA WebPush. This slice **abstracts** the provider: a `PushProvider`
   interface + a no-op/log driver for localhost. Real FCM = the next slice, behind the same interface.
 - **Storage is abstracted** the same way: a `Store` interface + a hermetic `InMemoryStore` (no infra,
-  deterministic tests). A Railway Postgres driver (FAZ-APP §4.1 schema) drops in behind the same
-  interface next. No locked decision (D1–D23) constrains the storage engine.
+  deterministic tests) as the DEFAULT. `FileStore` (#63-S3 / D5) is a zero-new-dependency, fail-closed
+  persistent implementation of the SAME interface — opt-in via env (see "Deploy" below); it never
+  silently fabricates a success or a clean start out of a real error (see "Persistent storage"
+  below for exactly what is, and isn't, guaranteed).
+  A future Postgres driver could still drop in behind the same interface if/when infra needs
+  outgrow a single-process JSON file. No locked decision (D1–D23) constrains the storage engine.
 
 ## Alpha scope limitations (honest residuals — not bugs)
 
@@ -91,9 +95,55 @@ Constant-time hash compare; only sha256 HASHES of secrets are stored.
 
 ```bash
 npm install
-npm test            # tsc strict + node --test (25 tests)
-npm start           # bind 127.0.0.1:8787 (loopback)
+npm test            # tsc strict + node --test (81 tests)
+npm start           # bind 127.0.0.1:8787 (loopback), InMemoryStore by default
 ```
+
+## Persistent storage (`FileStore`, #63-S3) — opt-in, `InMemoryStore` stays the default
+
+```bash
+NOA_RELAY_STORE=file NOA_RELAY_STORE_PATH=/absolute/path/to/relay-store.json npm start
+```
+
+- Unset (or `NOA_RELAY_STORE=memory`) → today's hermetic `InMemoryStore` — no on-disk state,
+  nothing changes for existing dev/test usage.
+- `NOA_RELAY_STORE=file` requires `NOA_RELAY_STORE_PATH`; the relay refuses to start with a clear
+  error otherwise (never guesses a path). The file is a single JSON snapshot, written to a 0600
+  (owner-only) temp file, `fsync`ed, then atomically `rename`d over the real path on every mutation
+  — a crash mid-write leaves the previous good file untouched.
+- **Fail-closed, not "always degrades to clean" (#63-S3 hardening, precise guarantees):**
+  - A genuinely missing file (first run) or a genuinely EMPTY (0-byte) file starts clean — there is
+    nothing real to lose either way.
+  - An EXISTING file that is unreadable (permission denied) or corrupt (invalid JSON / wrong shape
+    / a malformed record) makes the relay **refuse to start** (throws) rather than silently
+    treating it as empty — silently starting empty would let the very next write permanently
+    overwrite the real (merely unreadable/corrupt) data with a fresh, empty-derived snapshot.
+  - A failed write (disk full, permission revoked mid-run, …) is never swallowed: the mutating API
+    call throws, and the in-memory state that call had already changed is rolled back first, so
+    memory and disk are never left inconsistent and the caller never sees a false success.
+  - `FileStore` is **single-process-only**: it takes an exclusive lock file at startup and a second
+    process pointed at the same path fails closed immediately with a clear error, instead of both
+    processes silently last-writer-wins racing each other. Multi-instance/HA needs a real database
+    behind the `Store` interface, not `FileStore`.
+- Zero new dependencies — `node:fs`/`node:path`/`node:crypto` only.
+
+### Railway deploy prep (documented, **not activated** — operator-gated, O1 in `CORE-63-architecture.md`)
+
+To run the relay on Railway with persistence, the operator needs to provide:
+
+1. **A persistent volume** mounted into the service (Railway "Volumes" — without one, the
+   container's filesystem is ephemeral and a redeploy/restart loses the file exactly like
+   `InMemoryStore` would).
+2. `NOA_RELAY_STORE=file`
+3. `NOA_RELAY_STORE_PATH=<mount-path>/relay-store.json` (a path INSIDE that volume mount).
+4. The existing D20 flags for a non-loopback bind: `--bind 0.0.0.0` (or `BIND`/`PORT` per Railway's
+   assigned port) with `--unsafe-listen --tls-terminated` (Railway terminates TLS in front, so
+   `tlsTerminated=true` is correct — `cli.ts` already supports these flags; no code change needed).
+5. A production relay URL / domain (already the plan's O1 operator input — unrelated to storage,
+   needed for the mobile client's build-time config).
+
+No production URL, volume, or domain is invented or provisioned here — this section only documents
+the inputs an operator supplies at deploy time.
 
 ## curl round trip (localhost)
 

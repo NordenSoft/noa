@@ -11,6 +11,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import * as relay from "../src/index.js";
 import { verifyReceiptSignature } from "../src/crypto.js";
+import { InMemoryStore } from "../src/store.js";
 import {
   makeHarness,
   makeAgent,
@@ -123,7 +124,7 @@ test("after a full approval flow, NO private-key material is ever at rest (relay
   // Sanity: the decision receipt we stored really verifies against the PUBLIC key.
   assert.equal(verifyReceiptSignature(receipt, d.publicKeyHex), true);
 
-  const dumpStr = JSON.stringify(h.store.dump());
+  const dumpStr = JSON.stringify((h.store as InMemoryStore).dump());
   // The signing private key must NOT appear anywhere the relay persists.
   assert.equal(dumpStr.includes(d.privateKey), false, "device private key leaked into relay storage");
   // Nor should the bearer plaintext secrets (only their sha256 hashes are stored).
@@ -139,7 +140,7 @@ test("#64-S5: a self-revoke never touches key material — no private key at res
   const d = makeDevice(h);
   assert.equal(h.engine.revokeSelf(d.device).status, 204);
 
-  const dumpStr = JSON.stringify(h.store.dump());
+  const dumpStr = JSON.stringify((h.store as InMemoryStore).dump());
   assert.equal(dumpStr.includes(d.privateKey), false, "device private key leaked into relay storage after revoke");
   assert.equal(dumpStr.includes(d.deviceSecret), false, "device secret plaintext leaked into storage after revoke");
   for (const banned of ["privateKey", "privateSeed", "privateseed", "secretSeed", "seedHex"]) {

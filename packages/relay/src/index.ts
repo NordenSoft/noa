@@ -10,6 +10,7 @@
 export { createRelay, type Relay, type CreateRelayOptions } from "./server.js";
 export { RelayEngine, type EngineResult, type RelayEngineDeps } from "./engine.js";
 export { InMemoryStore, type Store } from "./store.js";
+export { FileStore, type FileStoreOptions } from "./file-store.js";
 export {
   NoopLogPushProvider,
   type PushProvider,

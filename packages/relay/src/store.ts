@@ -51,6 +51,14 @@ export interface Store {
   // manifest (public key material only)
   putManifest(rec: KeyManifestRecord): void;
   getLatestManifest(tenant: string): KeyManifestRecord | undefined;
+
+  /**
+   * Optional cleanup hook for a `Store` holding external resources (#63-S3 / D6 — `FileStore`'s
+   * exclusive single-process lock file). Purely additive: `InMemoryStore` does not implement it,
+   * and `server.ts`'s `close()` calls it defensively via optional chaining (`store.close?.()`), so
+   * every existing `InMemoryStore`-backed caller/test is unaffected.
+   */
+  close?(): void;
 }
 
 export class InMemoryStore implements Store {

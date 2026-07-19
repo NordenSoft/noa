@@ -7,6 +7,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { resolveConfig, isLoopbackAddress, type RelayConfig } from "./config.js";
 import { InMemoryStore, type Store } from "./store.js";
+import { FileStore } from "./file-store.js";
 import { NoopLogPushProvider, type PushProvider } from "./push.js";
 import { RelayEngine, type EngineResult } from "./engine.js";
 import { parseBearer } from "./auth.js";
@@ -32,7 +33,7 @@ export interface Relay {
 
 export function createRelay(opts: CreateRelayOptions = {}): Relay {
   const config = resolveConfig(opts.config);
-  const store = opts.store ?? new InMemoryStore();
+  const store = opts.store ?? resolveStoreFromEnv(opts.log);
   const push = opts.push ?? new NoopLogPushProvider();
   const engine = new RelayEngine({ store, push, config, ...(opts.log ? { log: opts.log } : {}) });
   const limiter = new RateLimiter({
@@ -87,9 +88,52 @@ export function createRelay(opts: CreateRelayOptions = {}): Relay {
         clearInterval(sweepTimer);
         sweepTimer = null;
       }
-      return new Promise((resolve) => httpServer.close(() => resolve()));
+      return new Promise((resolve) =>
+        httpServer.close(() => {
+          // #63-S3 / D6 — release FileStore's exclusive lock on a clean shutdown (no-op for
+          // InMemoryStore / any Store that doesn't implement the optional hook).
+          store.close?.();
+          resolve();
+        }),
+      );
     },
   };
+}
+
+/**
+ * #63-S3 / D5 — store selection. `opts.store` (used by every existing test + any embedder that
+ * wants an explicit store) always wins. Otherwise: env-selectable, with `InMemoryStore` as the
+ * DEFAULT when `NOA_RELAY_STORE` is unset — so plain `npm start` / `noa-relay` CLI and every
+ * existing test keep today's hermetic, no-disk behavior unchanged. Deploy prep (Railway, O1 in
+ * CORE-63-architecture.md): setting `NOA_RELAY_STORE=file` + `NOA_RELAY_STORE_PATH=<mounted-volume-path>`
+ * switches to the persistent `FileStore` with zero code changes.
+ *
+ * HERMETICITY NOTE (#63-S3 QA-panel item (b), documented not solved here): none of
+ * `test/http-*.test.ts` / `test/manifest-trust.test.ts` / `test/server-bind.test.ts` pass an
+ * explicit `opts.store`, so they all go through THIS function and only stay hermetic (no disk
+ * writes) because `NOA_RELAY_STORE` is unset in a normal `npm test` run (verified: none of those
+ * files reference the env var or `FileStore`). If a shell already has `NOA_RELAY_STORE=file` +
+ * `NOA_RELAY_STORE_PATH` exported (e.g. left over from manually exercising the deploy config
+ * above) BEFORE running `npm test`, those HTTP-layer tests would silently switch to a real
+ * `FileStore` on that path — and, per the D6 single-process lock, multiple test files sharing that
+ * SAME path would then fail closed against each other rather than silently corrupting shared
+ * state. Full fix (making every HTTP test pass an explicit `store: new InMemoryStore()`, or having
+ * this function ignore the env when running under the test runner) is a multi-file test-only
+ * change tracked as a follow-up, not part of this additive hardening pass.
+ */
+function resolveStoreFromEnv(log?: (event: string, fields: Record<string, unknown>) => void): Store {
+  const mode = (process.env["NOA_RELAY_STORE"] ?? "memory").trim().toLowerCase();
+  if (mode === "" || mode === "memory") return new InMemoryStore();
+  if (mode === "file") {
+    const path = process.env["NOA_RELAY_STORE_PATH"];
+    if (!path) {
+      throw new Error(
+        "NOA_RELAY_STORE=file requires NOA_RELAY_STORE_PATH (path to the persistent JSON snapshot file)",
+      );
+    }
+    return new FileStore(path, log ? { log } : {});
+  }
+  throw new Error(`unknown NOA_RELAY_STORE "${mode}" (expected "memory" or "file")`);
 }
 
 // ── request handling ─────────────────────────────────────────────────────────

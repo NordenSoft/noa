@@ -11,7 +11,7 @@ import {
   bytesToHex,
   type Receipt,
 } from "noa-signer";
-import { InMemoryStore } from "../src/store.js";
+import { InMemoryStore, type Store } from "../src/store.js";
 import { NoopLogPushProvider } from "../src/push.js";
 import { resolveConfig, type RelayConfig } from "../src/config.js";
 import { RelayEngine } from "../src/engine.js";
@@ -26,15 +26,20 @@ export interface Clock {
 export interface Harness {
   clock: Clock;
   config: RelayConfig;
-  store: InMemoryStore;
+  /** Typed against the `Store` interface (not the `InMemoryStore` class) so #63-S3 store-contract
+   * tests can parametrize the SAME harness helpers (makeAgent/makeDevice/...) over any `Store`
+   * implementation (e.g. `FileStore`). Default construction still uses `InMemoryStore` (see below),
+   * so every existing test is unaffected; only `test/engine-nosign.test.ts`'s introspection-only
+   * `dump()` calls need an explicit `InMemoryStore` cast, since `dump()` is not part of `Store`. */
+  store: Store;
   push: NoopLogPushProvider;
   engine: RelayEngine;
 }
 
-export function makeHarness(overrides: Partial<RelayConfig> = {}): Harness {
+export function makeHarness(overrides: Partial<RelayConfig> = {}, storeOverride?: Store): Harness {
   const clock: Clock = { t: 1_700_000_000_000 };
   const config = resolveConfig({ now: () => clock.t, ...overrides });
-  const store = new InMemoryStore();
+  const store = storeOverride ?? new InMemoryStore();
   const push = new NoopLogPushProvider();
   const engine = new RelayEngine({ store, push, config });
   return { clock, config, store, push, engine };
