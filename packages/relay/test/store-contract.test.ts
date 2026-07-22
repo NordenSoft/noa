@@ -14,8 +14,15 @@ import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { makeHarness, makeAgent, makeDevice, signDecisionReceipt, bodyOf, PARAMS_HASH } from "./helpers.js";
-import { InMemoryStore, type Store } from "../src/store.js";
+import {
+  InMemoryStore,
+  ManifestPutConflictError,
+  type ManifestPutConflictOutcome,
+  type Store,
+} from "../src/store.js";
 import { FileStore } from "../src/file-store.js";
+import { safeRefHash } from "../src/crypto.js";
+import type { KeyManifestRecord } from "../src/types.js";
 
 const ACTION = { canonical: "infra.deploy", riskClass: "HIGH" as const, paramsHash: PARAMS_HASH };
 
@@ -28,6 +35,13 @@ function dumpOf(store: Store): unknown {
   // Both InMemoryStore and FileStore expose this test/introspection helper (not part of the
   // `Store` interface itself — see store.ts / file-store.ts doc comments on `dump()`).
   return (store as unknown as { dump(): unknown }).dump();
+}
+
+function assertManifestConflict(fn: () => void, outcome: ManifestPutConflictOutcome): void {
+  assert.throws(
+    fn,
+    (error: unknown) => error instanceof ManifestPutConflictError && error.outcome === outcome,
+  );
 }
 
 const STORE_FACTORIES: ReadonlyArray<[string, () => Store]> = [
@@ -107,6 +121,87 @@ for (const [name, makeStore] of STORE_FACTORIES) {
     const trust = h.engine.getTrust("acme");
     assert.equal(trust.status, 200);
     assert.deepEqual(bodyOf<{ delegation: unknown }>(trust).delegation, delegation);
+
+    // A real rotation still advances and may intentionally omit (therefore clear) delegation.
+    assert.equal(h.engine.putManifest({ manifest: { ...m1, version: 3 } }).status, 200);
+    assert.equal((h.engine.getManifest("acme").body as { version: number }).version, 3);
+    assert.equal(h.engine.getTrust("acme").status, 404);
+  });
+
+  test(`[${name}] Store boundary: equal-version canonical retry is idempotent; manifest/delegation equivocation never overwrites`, () => {
+    const store = makeStore();
+    try {
+      const manifest = { spec: "noa.key-manifest/0.1", tenant: "store-guard", version: 5, keys: [] };
+      const delegation = {
+        spec: "noa.key-delegation/0.1",
+        tenant: "store-guard",
+        delegatedKid: "gate-1",
+      };
+      const original: KeyManifestRecord = {
+        tenant: "store-guard",
+        version: 5,
+        manifest,
+        delegation,
+        refHash: safeRefHash(manifest)!,
+        createdAt: 1,
+      };
+      store.putManifest(original);
+
+      const canonicalManifest = { keys: [], version: 5, tenant: "store-guard", spec: "noa.key-manifest/0.1" };
+      const canonicalDelegation = {
+        delegatedKid: "gate-1",
+        tenant: "store-guard",
+        spec: "noa.key-delegation/0.1",
+      };
+      const replay: KeyManifestRecord = {
+        ...original,
+        manifest: canonicalManifest,
+        delegation: canonicalDelegation,
+        refHash: safeRefHash(canonicalManifest)!,
+        createdAt: 2,
+      };
+      assert.doesNotThrow(() => store.putManifest(replay));
+      assert.equal(
+        store.getLatestManifest("store-guard"),
+        original,
+        "idempotent retry must retain the authoritative record",
+      );
+
+      const differentManifest = { ...manifest, keys: [{ kid: "attacker-key" }] };
+      assertManifestConflict(
+        () =>
+          store.putManifest({
+            ...original,
+            manifest: differentManifest,
+            refHash: safeRefHash(differentManifest)!,
+          }),
+        "equivocation",
+      );
+
+      assertManifestConflict(
+        () =>
+          store.putManifest({
+            ...original,
+            delegation: { ...delegation, delegatedKid: "attacker-delegated-key" },
+          }),
+        "equivocation",
+      );
+
+      const staleManifest = { ...manifest, version: 4 };
+      assertManifestConflict(
+        () =>
+          store.putManifest({
+            ...original,
+            version: 4,
+            manifest: staleManifest,
+            refHash: safeRefHash(staleManifest)!,
+          }),
+        "stale",
+      );
+      assert.equal(store.getLatestManifest("store-guard"), original);
+    } finally {
+      store.close?.();
+    }
   });
 
   test(`[${name}] no private-key material is ever at rest, after a full create->decide flow`, () => {

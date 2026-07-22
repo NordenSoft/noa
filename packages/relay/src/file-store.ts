@@ -2,10 +2,10 @@
  * NOA Relay — persistent, zero-new-dependency `Store` implementation (#63-S3 / D5).
  *
  * `FileStore` implements the SAME `Store` interface (store.ts) as `InMemoryStore`, with the SAME
- * behavioral semantics (idempotent puts, equivocation handling lives in the ENGINE and is
- * unaffected by which Store backs it — this class only has to give the engine back exactly what it
- * put in). It is backed by a single JSON snapshot file, using ONLY `node:fs` / `node:path` / `node:crypto`
- * — no new npm dependency.
+ * behavioral semantics. Manifest equivocation is enforced in BOTH the engine and this Store
+ * boundary, so a direct caller or future compare/write race cannot replace an authoritative
+ * equal-version record. It is backed by a single JSON snapshot file, using ONLY `node:fs` /
+ * `node:path` / `node:crypto` — no new npm dependency.
  *
  * Durability model — HARDENED per the #63-S3 QA-panel findings (D1/D2/D3/D4/D5/D6 below; the
  * class-level doc previously overstated the guarantees here, corrected in place, not superseded
@@ -86,7 +86,7 @@ import {
 } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { Store } from "./store.js";
+import { classifyManifestPut, ManifestPutConflictError, type Store } from "./store.js";
 import type {
   AgentRecord,
   DeviceRecord,
@@ -541,7 +541,8 @@ export class FileStore implements Store {
   // ── manifest ─────────────────────────────────────────────────────────────
   putManifest(rec: KeyManifestRecord): void {
     const cur = this.manifests.get(rec.tenant);
-    if (!cur || rec.version >= cur.version) {
+    const outcome = classifyManifestPut(cur, rec);
+    if (outcome === "stored") {
       const had = this.manifests.has(rec.tenant);
       const prev = this.manifests.get(rec.tenant);
       this.manifests.set(rec.tenant, rec);
@@ -549,7 +550,10 @@ export class FileStore implements Store {
         if (had) this.manifests.set(rec.tenant, prev!);
         else this.manifests.delete(rec.tenant);
       });
+      return;
     }
+    if (outcome === "idempotent") return;
+    throw new ManifestPutConflictError(outcome, cur!);
   }
   getLatestManifest(tenant: string): KeyManifestRecord | undefined {
     return this.manifests.get(tenant);

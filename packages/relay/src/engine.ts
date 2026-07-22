@@ -20,7 +20,7 @@
 
 import { randomUUID, randomBytes } from "node:crypto";
 import type { RelayConfig } from "./config.js";
-import type { Store } from "./store.js";
+import { classifyManifestPut, ManifestPutConflictError, type Store } from "./store.js";
 import type { PushProvider, PushMessage } from "./push.js";
 import { verifyReceiptSignature, safeRefHash } from "./crypto.js";
 import { hashSecret } from "./auth.js";
@@ -490,21 +490,12 @@ export class RelayEngine {
     }
 
     // R2 — version-conflict honesty. A STALE (lower-version) publish must be an honest rejection,
-    // never a silent-ignore 200 (the old store-level `>=` guard dropped it but putManifest still
-    // reported success). An EQUAL-version re-publish (retry / idempotent re-send) must not be able
-    // to silently STRIP a previously-stored delegation just because this particular re-send omitted
-    // it — safe rule chosen: if the equal-version publish doesn't carry a delegation, the
-    // PREVIOUSLY-stored one is preserved untouched; if it does carry one, that one wins (already
-    // tenant-guarded above). A genuine higher-version rotation that omits delegation still nulls it
-    // out — that is the existing, intentionally-honest pre-#64 behavior and is unchanged here.
+    // never a silent-ignore 200. An EQUAL-version publish is an idempotent retry ONLY when its
+    // effective manifest + delegation bundle is canonically identical to the authoritative record;
+    // a different document at the same tenant version is equivocation and must never overwrite it.
+    // Omission still preserves a previously-stored delegation for a legitimate same-manifest retry.
+    // A genuine higher-version rotation that omits delegation still nulls it out (existing behavior).
     const cur = this.store.getLatestManifest(tenant);
-    if (cur && version < cur.version) {
-      return err(409, "STALE_MANIFEST_VERSION", {
-        detail: "manifest version is older than the currently-stored version",
-        currentVersion: cur.version,
-        attemptedVersion: version,
-      });
-    }
     if (cur && version === cur.version && !delegationProvided && cur.delegation) {
       delegation = cur.delegation;
     }
@@ -517,7 +508,38 @@ export class RelayEngine {
       refHash: manifestHash,
       createdAt: this.now(),
     };
-    this.store.putManifest(rec);
+    const conflictResult = (
+      outcome: "stale" | "equivocation",
+      current: KeyManifestRecord,
+    ): EngineResult => {
+      if (outcome === "stale") {
+        return err(409, "STALE_MANIFEST_VERSION", {
+          detail: "manifest version is older than the currently-stored version",
+          currentVersion: current.version,
+          attemptedVersion: version,
+        });
+      }
+      return err(409, "MANIFEST_EQUIVOCATION", {
+        detail: "manifest version already exists with different manifest or delegation content",
+        currentVersion: current.version,
+        attemptedVersion: version,
+        currentRefHash: current.refHash,
+        attemptedRefHash: rec.refHash,
+      });
+    };
+
+    const preflight = classifyManifestPut(cur, rec);
+    if (preflight === "stale" || preflight === "equivocation") {
+      return conflictResult(preflight, cur!);
+    }
+    try {
+      this.store.putManifest(rec);
+    } catch (error) {
+      if (error instanceof ManifestPutConflictError) {
+        return conflictResult(error.outcome, error.current);
+      }
+      throw error;
+    }
     return { status: 200, body: { tenant, version, refHash: rec.refHash } };
   }
 

@@ -11,6 +11,9 @@ import assert from "node:assert/strict";
 import { makeHarness, bodyOf } from "./helpers.js";
 import { createRelay } from "../src/server.js";
 import { httpJson } from "./http-client.js";
+import { InMemoryStore } from "../src/store.js";
+import { safeRefHash } from "../src/crypto.js";
+import type { KeyManifestRecord } from "../src/types.js";
 
 const MANIFEST_NO_DELEGATION = {
   spec: "noa.key-manifest/0.1",
@@ -232,6 +235,84 @@ test("engine: R2 — an EQUAL-version re-publish that OMITS delegation preserves
   assert.deepEqual(bodyOf<{ delegation: unknown }>(trust).delegation, { ...DELEGATION, tenant: "eqtenant" });
 });
 
+test("engine: equal-version canonical replay is idempotent, but changed manifest OR delegation is 409 MANIFEST_EQUIVOCATION and cannot overwrite", () => {
+  const h = makeHarness();
+  const tenant = "equivocation-tenant";
+  const manifest = { ...MANIFEST_WITH_DELEGATION, tenant, version: 7 };
+  const delegation = { ...DELEGATION, tenant };
+  assert.equal(h.engine.putManifest({ manifest, delegation }).status, 200);
+
+  // Same JSON values in a different property order are JCS-equivalent and remain a valid retry.
+  const canonicalReplay = {
+    keys: manifest.keys,
+    previousManifestHash: manifest.previousManifestHash,
+    expiresAt: manifest.expiresAt,
+    issuedAt: manifest.issuedAt,
+    version: manifest.version,
+    tenant: manifest.tenant,
+    spec: manifest.spec,
+  };
+  const delegationReplay = {
+    expiresAt: delegation.expiresAt,
+    validFrom: delegation.validFrom,
+    permissions: delegation.permissions,
+    delegatedPublicKey: delegation.delegatedPublicKey,
+    delegatedKid: delegation.delegatedKid,
+    tenant: delegation.tenant,
+    spec: delegation.spec,
+  };
+  assert.equal(h.engine.putManifest({ manifest: canonicalReplay, delegation: delegationReplay }).status, 200);
+
+  const manifestSwap = h.engine.putManifest({
+    manifest: { ...manifest, keys: [{ kid: "attacker-key" }] },
+    delegation,
+  });
+  assert.equal(manifestSwap.status, 409);
+  assert.equal(bodyOf<{ error: string }>(manifestSwap).error, "MANIFEST_EQUIVOCATION");
+
+  const delegationSwap = h.engine.putManifest({
+    manifest,
+    delegation: { ...delegation, delegatedKid: "attacker-delegated-key" },
+  });
+  assert.equal(delegationSwap.status, 409);
+  assert.equal(bodyOf<{ error: string }>(delegationSwap).error, "MANIFEST_EQUIVOCATION");
+
+  const trust = h.engine.getTrust(tenant);
+  assert.equal(trust.status, 200);
+  assert.deepEqual(bodyOf<{ manifest: unknown; delegation: unknown }>(trust), { manifest, delegation });
+});
+
+test("engine: a Store-side compare/write race is mapped to 409 and the winning equal-version record is not overwritten", () => {
+  class RacingStore extends InMemoryStore {
+    private injectedWinner = false;
+
+    override putManifest(rec: KeyManifestRecord): void {
+      if (!this.injectedWinner) {
+        this.injectedWinner = true;
+        const winningManifest = { ...rec.manifest, keys: [{ kid: "race-winner" }] };
+        super.putManifest({
+          ...rec,
+          manifest: winningManifest,
+          refHash: safeRefHash(winningManifest)!,
+          createdAt: rec.createdAt - 1,
+        });
+      }
+      super.putManifest(rec);
+    }
+  }
+
+  const store = new RacingStore();
+  const h = makeHarness({}, store);
+  const manifest = { ...MANIFEST_NO_DELEGATION, tenant: "race-tenant", version: 4 };
+  const result = h.engine.putManifest({ manifest });
+  assert.equal(result.status, 409);
+  assert.equal(bodyOf<{ error: string }>(result).error, "MANIFEST_EQUIVOCATION");
+  assert.deepEqual(
+    (h.engine.getManifest("race-tenant").body as { keys: unknown }).keys,
+    [{ kid: "race-winner" }],
+  );
+});
+
 test("engine: R2 — a HIGHER-version publish that omits delegation still nulls it out (rotation, unchanged pre-existing behavior)", () => {
   const h = makeHarness();
   assert.equal(
@@ -247,6 +328,47 @@ test("engine: R2 — a HIGHER-version publish that omits delegation still nulls 
   assert.equal(rotated.status, 200);
   assert.equal(h.engine.getTrust("rotate-tenant").status, 404);
   assert.equal(bodyOf<{ error: string }>(h.engine.getTrust("rotate-tenant")).error, "NO_DELEGATION");
+});
+
+test("http: equal-version manifest/delegation swaps return 409 MANIFEST_EQUIVOCATION and preserve the authoritative trust bundle", async () => {
+  const relay = createRelay({ config: { port: 0 } });
+  const { port } = await relay.listen();
+  try {
+    const pair = await httpJson(port, "POST", "/v1/pairings", { body: {} });
+    const token = (pair.json as { token: string }).token;
+    const paired = await httpJson(port, "POST", "/v1/pair", { body: { token, name: "gate-equivocation" } });
+    const apiKey = (paired.json as { apiKey: string }).apiKey;
+    const agentAuth = { Authorization: `Bearer ${apiKey}` };
+    const tenant = "http-equivocation";
+    const manifest = { ...MANIFEST_WITH_DELEGATION, tenant, version: 9 };
+    const delegation = { ...DELEGATION, tenant };
+
+    const initial = await httpJson(port, "POST", "/v1/manifest", {
+      headers: agentAuth,
+      body: { manifest, delegation },
+    });
+    assert.equal(initial.status, 200);
+
+    const manifestSwap = await httpJson(port, "POST", "/v1/manifest", {
+      headers: agentAuth,
+      body: { manifest: { ...manifest, keys: [{ kid: "attacker-key" }] }, delegation },
+    });
+    assert.equal(manifestSwap.status, 409);
+    assert.equal((manifestSwap.json as { error: string }).error, "MANIFEST_EQUIVOCATION");
+
+    const delegationSwap = await httpJson(port, "POST", "/v1/manifest", {
+      headers: agentAuth,
+      body: { manifest, delegation: { ...delegation, delegatedKid: "attacker-delegated-key" } },
+    });
+    assert.equal(delegationSwap.status, 409);
+    assert.equal((delegationSwap.json as { error: string }).error, "MANIFEST_EQUIVOCATION");
+
+    const trust = await httpJson(port, "GET", `/v1/trust?tenant=${tenant}`);
+    assert.equal(trust.status, 200);
+    assert.deepEqual(trust.json, { manifest, delegation });
+  } finally {
+    await relay.close();
+  }
 });
 
 // ── R5 — empty tenant param must never diverge from the missing-param default ──
