@@ -60,7 +60,7 @@
     "prepublishOnly": "npm test && npm run test:dogfood && node impl-py/conformance.mjs && npm run lint:publish-surface && npm run check:matrix"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.1.1",
     "cbor2": "^2.3.0",
     "typescript": "^5.6.0",
     "vitest": "3.2.6"
