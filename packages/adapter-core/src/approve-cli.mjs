@@ -14,45 +14,20 @@
  * (kept only in the local pending-store index). No raw PII rests in the signed, hash-chained bytes.
  * Deterministic exit codes: 0 success, 1 usage/runtime error (never a raw uncaught throw).
  */
-import { readFileSync, writeFileSync, appendFileSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants } from "node:fs";
+import { appendFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { generateKeyPair } from "noa-receipt";
 import { loadPendingIndex, recordApproved, recordDenied, PendingStoreError } from "./pending-store.mjs";
 import { buildApprovalReceipt, buildDenialReceipt, DEFAULT_APPROVAL_TICKET_TTL_MS } from "./approval-decision.mjs";
 import { opaqueApproverId } from "./opaque-id.mjs";
-
-// O_NOFOLLOW symlink-attack guard — ported verbatim from packages/mcp-proxy/src/proxy.mjs's
-// loadOrCreateSigner (CWE-367). Duplicated, not imported — this CLI keeps its signing identity
-// fully independent of the proxy's, so neither can be made to sign with the other's key.
-const READONLY_NOFOLLOW = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+import { loadOrCreateKeyFile } from "./key-file.mjs";
 
 function loadOrCreateApproverSigner(keyFile) {
-  let fd = null;
-  try {
-    fd = openSync(keyFile, READONLY_NOFOLLOW);
-  } catch (err) {
-    if (err.code === "ELOOP") throw new Error(`noa-approve: --key-file "${keyFile}" is a symlink — refusing to follow it (CWE-367 symlink-attack guard).`);
-    if (err.code !== "ENOENT") throw err;
-  }
-  if (fd !== null) {
-    try {
-      const st = fstatSync(fd);
-      if (!st.isFile()) throw new Error(`noa-approve: --key-file "${keyFile}" is not a regular file`);
-      if ((st.mode & 0o077) !== 0) throw new Error(`noa-approve: --key-file "${keyFile}" is readable/writable by group or others (mode 0${(st.mode & 0o777).toString(8)}) — chmod 600 it first.`);
-      const raw = JSON.parse(readFileSync(fd, "utf8"));
-      if (!raw || typeof raw.kid !== "string" || typeof raw.privateKey !== "string" || typeof raw.publicKey !== "string") {
-        throw new Error(`noa-approve: --key-file "${keyFile}" is malformed (expected { kid, privateKey, publicKey })`);
-      }
-      return raw;
-    } finally {
-      closeSync(fd);
-    }
-  }
-  const kp = generateKeyPair(`noa-approve:${randomUUID()}`);
-  const record = { kid: kp.kid, privateKey: kp.privateKey, publicKey: kp.publicKey };
-  writeFileSync(keyFile, JSON.stringify(record, null, 2), { mode: 0o600, flag: "wx" });
-  chmodSync(keyFile, 0o600);
-  return record;
+  return loadOrCreateKeyFile({
+    keyFile,
+    mintKeyPair: () => generateKeyPair(`noa-approve:${randomUUID()}`),
+    callerLabel: "noa-approve",
+  });
 }
 
 function parseArgs(argv) {

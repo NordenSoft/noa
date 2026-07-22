@@ -1,6 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -36,4 +38,15 @@ test("CLI exit-code contract: 0 VALID / 1 UNVERIFIED / 2 TAMPERED / 3 MALFORMED 
   assert.equal(run(["verify", join(VEC, "valid-chain.json"), "--keyring"]), 4); // trailing flag, no value
   assert.equal(run(["verify", join(VEC, "valid-chain.json"), "--checkpoint"]), 4);
   assert.equal(run(["bogus-command"]), 4);
+});
+
+test("CLI refuses a symlinked JSON input instead of following a swapped path", { skip: process.platform === "win32" }, () => {
+  const dir = mkdtempSync(join(tmpdir(), "noa-cli-nofollow-"));
+  try {
+    const link = join(dir, "receipts.json");
+    symlinkSync(join(VEC, "valid-chain.json"), link);
+    assert.equal(run(["verify", link]), 4);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

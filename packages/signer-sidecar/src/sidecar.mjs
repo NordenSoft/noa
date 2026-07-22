@@ -36,6 +36,14 @@ import { signEd25519 } from "noa-receipt";
 
 const MAX_LINE_BYTES = 65536;
 
+function oneLineError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return message
+    .replace(/[\r\n\u2028\u2029]/g, " ")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "?")
+    .slice(0, 512);
+}
+
 function parseArgs(argv) {
   const opts = { keyFile: null, socket: null };
   for (let i = 0; i < argv.length; i++) {
@@ -167,15 +175,17 @@ async function main() {
           socket.end(JSON.stringify({ error: `internal error: ${err.message}` }) + "\n");
         }
       },
-      (err) => {
-        console.error(`noa-signer-sidecar: connection error: ${err.message}`);
+      () => {
+        // A peer can influence a socket error's message. The operational event is enough here;
+        // do not put any peer-derived detail into the log record.
+        console.error("noa-signer-sidecar: connection error");
         socket.destroy();
       },
     );
   });
 
   server.on("error", (err) => {
-    console.error(`noa-signer-sidecar: fatal server error: ${err.message}`);
+    console.error(`noa-signer-sidecar: fatal server error: ${oneLineError(err)}`);
     process.exit(1);
   });
 
@@ -198,6 +208,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`noa-signer-sidecar: fatal -- ${err.stack ?? err.message}`);
+  console.error(`noa-signer-sidecar: fatal -- ${oneLineError(err)}`);
   process.exit(1);
 });
