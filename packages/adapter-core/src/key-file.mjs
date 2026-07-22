@@ -96,6 +96,10 @@ export function loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel = "loadO
     fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
   let createFd;
   try {
+    // O_EXCL makes the earlier ENOENT result non-authoritative by design: if any pathname appears
+    // before this open, creation fails. O_NOFOLLOW also refuses a symlink at the final component.
+    // All permission and write operations then use this same descriptor, never the checked path.
+    // codeql[js/file-system-race]
     createFd = openSync(keyFile, CREATE_PRIVATE_NOFOLLOW, 0o600);
     fchmodSync(createFd, 0o600);
     writeFileSync(createFd, JSON.stringify(record, null, 2), "utf8");

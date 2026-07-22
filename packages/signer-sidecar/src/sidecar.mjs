@@ -175,8 +175,10 @@ async function main() {
           socket.end(JSON.stringify({ error: `internal error: ${err.message}` }) + "\n");
         }
       },
-      (err) => {
-        console.error(`noa-signer-sidecar: connection error: ${oneLineError(err)}`);
+      () => {
+        // A peer can influence a socket error's message. The operational event is enough here;
+        // do not put any peer-derived detail into the log record.
+        console.error("noa-signer-sidecar: connection error");
         socket.destroy();
       },
     );
