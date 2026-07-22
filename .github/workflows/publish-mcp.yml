@@ -23,6 +23,10 @@ on:
       - 'mcp-v*'
   workflow_dispatch: {}   # also allow a manual run from the Actions tab
 
+concurrency:
+  group: npm-publish-mcp-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   contents: read
   id-token: write   # REQUIRED: lets the job mint the OIDC token npm exchanges for
@@ -31,10 +35,13 @@ permissions:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 20
           registry-url: 'https://registry.npmjs.org'
@@ -48,7 +55,7 @@ jobs:
       # Pin to the 11.x line: `npm@latest` is now npm@12, which requires node >= 22 (EBADENGINE on
       # this node-20 runner). npm 11.x is >= 11.5.1 (OIDC-capable) AND node-20-compatible.
       - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1; pin 11.x — npm 12 needs node 22+)
-        run: npm install -g npm@11
+        run: npm install -g npm@11.18.0
 
       - name: Gate — packages are versioned in lockstep and (on a tag run) the tag matches
         # The two packages release together under one mcp-v* tag. A mistagged push (tag says
