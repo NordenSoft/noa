@@ -2,9 +2,11 @@
 
 ## Reporting a vulnerability
 
-Email **toratoraman@gmail.com** with details and a proof-of-concept
-if you have one. Please do not open a public issue for a security report. We aim to acknowledge
-within 72 hours. This is an early-access project; coordinated disclosure is appreciated.
+Use [GitHub private vulnerability reporting](https://github.com/NordenSoft/noa/security/advisories/new)
+for encrypted, repository-scoped coordination. If GitHub reporting is unavailable, email
+**toratoraman@gmail.com** with details and a proof-of-concept if you have one. Please do not open a
+public issue for a security report. We aim to acknowledge within 72 hours. This is an early-access
+project; coordinated disclosure is appreciated.
 
 ## Design stance
 

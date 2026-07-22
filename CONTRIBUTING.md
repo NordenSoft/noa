@@ -16,6 +16,13 @@ opaque ids/handles, and hashes. Do **not** add:
 
 PRs that cross this line are declined on principle. See [THREAT-MODEL.md](./THREAT-MODEL.md).
 
+Repository placement is itself a security boundary. A package-level `"private": true` flag only
+prevents accidental publication to npm; it does **not** hide files committed to this public GitHub
+repository. Hosted-control-plane code, production tenant configuration, customer-specific policy,
+commercial risk intelligence, credentials, and operational data belong in the private product
+repositories and must never be staged here. Before every release, inspect both `git diff --cached`
+and `npm pack --dry-run --json` for boundary violations.
+
 ## Dev loop
 
 ```bash

@@ -1,0 +1,10 @@
+# Security-critical open-source trust boundary. Keep ownership explicit so that
+# GitHub can request the accountable maintainer on every change.
+* @NordenSoft
+
+# Supply-chain, disclosure, and trust-model changes deserve focused review.
+/.github/ @NordenSoft
+/SECURITY.md @NordenSoft
+/THREAT-MODEL.md @NordenSoft
+/package.json @NordenSoft
+/package-lock.json @NordenSoft
