@@ -1,5 +1,22 @@
 import { readFileSync, writeFileSync, openSync, fstatSync, fchmodSync, fsyncSync, closeSync, constants as fsConstants } from "node:fs";
 
+function createPrivateKeyFile(keyFile, record) {
+  const flags =
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
+  let fd;
+  try {
+    // O_EXCL makes any earlier observation non-authoritative by design: if a pathname appears
+    // before this open, creation fails. O_NOFOLLOW also refuses a symlink at the final component.
+    // All permission and write operations use this same descriptor, never the checked path.
+    fd = openSync(keyFile, flags, 0o600);
+    fchmodSync(fd, 0o600);
+    writeFileSync(fd, JSON.stringify(record, null, 2), "utf8");
+    fsyncSync(fd);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
+
 /**
  * loadOrCreateKeyFile — persisted-signing-identity loader shared by every caller in this repo
  * that offers a `--key-file` flag (packages/mcp-proxy's proxy.mjs, packages/signer-sidecar's
@@ -92,20 +109,6 @@ export function loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel = "loadO
   // persist it.
   const kp = mintKeyPair();
   const record = { kid: kp.kid, privateKey: kp.privateKey, publicKey: kp.publicKey };
-  const CREATE_PRIVATE_NOFOLLOW =
-    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
-  let createFd;
-  try {
-    // O_EXCL makes the earlier ENOENT result non-authoritative by design: if any pathname appears
-    // before this open, creation fails. O_NOFOLLOW also refuses a symlink at the final component.
-    // All permission and write operations then use this same descriptor, never the checked path.
-    // codeql[js/file-system-race]
-    createFd = openSync(keyFile, CREATE_PRIVATE_NOFOLLOW, 0o600);
-    fchmodSync(createFd, 0o600);
-    writeFileSync(createFd, JSON.stringify(record, null, 2), "utf8");
-    fsyncSync(createFd);
-  } finally {
-    if (createFd !== undefined) closeSync(createFd);
-  }
+  createPrivateKeyFile(keyFile, record);
   return record;
 }

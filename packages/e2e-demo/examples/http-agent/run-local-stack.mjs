@@ -112,7 +112,6 @@ async function main() {
   // The loopback relay credential is the intended demo artifact. requireRelayCredential constrains
   // it to the exact random-token format; wx prevents replacement/following an existing path and
   // mode 0600 keeps the newly-created file owner-only.
-  // codeql[js/http-to-file-access]
   writeFileSync(sessionEnvPath, `RELAY_BASE_URL=${relayBaseUrl}\nAGENT_API_KEY=${agentApiKey}\n`, {
     encoding: "utf8",
     mode: 0o600,
