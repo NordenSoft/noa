@@ -14,6 +14,55 @@ permissions:
   contents: read
 
 jobs:
+  supply-chain-audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Audit every committed npm lockfile
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r lockfile; do
+            package_dir="$(dirname "$lockfile")"
+            echo "Auditing ${package_dir}"
+            npm --prefix "$package_dir" audit --package-lock-only --omit=dev --audit-level=high
+          done < <(find . \( -name package-lock.json -o -name npm-shrinkwrap.json \) -not -path '*/node_modules/*' -print | sort)
+
+  extended-package-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Build the root package
+        run: npm ci && npm run build
+      - name: approval-artifacts tests
+        run: cd packages/approval-artifacts && npm ci && npm test
+      - name: evidence tests
+        run: cd packages/evidence && npm ci && npm test
+      - name: gate tests
+        run: cd packages/gate && npm ci && npm test
+      - name: Build signer-core for relay's local package dependency
+        run: cd packages/signer-core && npm ci && npm run build
+      - name: relay tests
+        run: cd packages/relay && npm ci && npm test
+      - name: Install adapter-core for framework-adapters' local package dependency
+        run: cd packages/adapter-core && npm ci
+      - name: framework-adapters tests
+        run: cd packages/framework-adapters && npm ci && npm test
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 30

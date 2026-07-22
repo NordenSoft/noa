@@ -9,7 +9,7 @@
  * implementation — never hand-rolled here) and (b) fronts it with the exact same
  * `createProxyServer(...)` instance the stdio CLI uses. Every tools/call over HTTP therefore flows
  * through the identical prepare→persist→commit decision-receipt path, the identical DENY-never-
- * forwards guarantee, the identical per-session chain isolation, and the identical R2 outcome-
+ * forwarding rule, the identical per-session chain isolation, and the identical R2 outcome-
  * receipt / progress / list_changed forwarding as stdio. If it holds for stdio, it holds here,
  * because it IS the same code.
  *

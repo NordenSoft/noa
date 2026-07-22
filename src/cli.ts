@@ -30,7 +30,7 @@
  * (duplicate-key reject, depth bound, prototype-pollution guard, float reject).
  */
 
-import { readFileSync, statSync } from "node:fs";
+import { readSync, openSync, fstatSync, closeSync, constants as fsConstants } from "node:fs";
 import { safeParse } from "./safe-json.js";
 import { verifyChain, type VerifyOptions, type VerifyStatus } from "./verify.js";
 import { verifyChainWitnessed, type WitnessedOptions } from "./federation/verify-witnessed.js";
@@ -58,18 +58,41 @@ function usage(msg?: string): never {
 }
 
 function readJsonFile(path: string): unknown {
-  let size: number;
+  const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+  let fd: number;
   try {
-    size = statSync(path).size;
+    fd = openSync(path, flags);
   } catch {
-    usage(`cannot stat file: ${path}`);
+    usage(`cannot open file: ${path}`);
   }
-  if (size > MAX_FILE_BYTES) usage(`file too large (>${MAX_FILE_BYTES} bytes): ${path}`);
   let text: string;
   try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    usage(`cannot read file: ${path}`);
+    let st: ReturnType<typeof fstatSync>;
+    try {
+      st = fstatSync(fd);
+    } catch {
+      usage(`cannot inspect file: ${path}`);
+    }
+    if (!st.isFile()) usage(`not a regular file: ${path}`);
+    if (st.size > MAX_FILE_BYTES) usage(`file too large (>${MAX_FILE_BYTES} bytes): ${path}`);
+    try {
+      const chunks: Buffer[] = [];
+      const chunk = Buffer.allocUnsafe(64 * 1024);
+      let total = 0;
+      for (;;) {
+        const remaining = MAX_FILE_BYTES + 1 - total;
+        const n = readSync(fd, chunk, 0, Math.min(chunk.length, remaining), null);
+        if (n === 0) break;
+        total += n;
+        if (total > MAX_FILE_BYTES) usage(`file too large (>${MAX_FILE_BYTES} bytes): ${path}`);
+        chunks.push(Buffer.from(chunk.subarray(0, n)));
+      }
+      text = Buffer.concat(chunks, total).toString("utf8");
+    } catch {
+      usage(`cannot read file: ${path}`);
+    }
+  } finally {
+    closeSync(fd);
   }
   return safeParse(text, { maxLength: MAX_FILE_BYTES });
 }
