@@ -19,6 +19,60 @@ import type {
   PairingRecord,
   PushSubscriptionRecord,
 } from "./types.js";
+import { safeRefHash } from "./crypto.js";
+
+export type ManifestPutOutcome = "stored" | "idempotent" | "stale" | "equivocation";
+
+export type ManifestPutConflictOutcome = Extract<ManifestPutOutcome, "stale" | "equivocation">;
+
+/** Typed fail-closed signal used by Store implementations when a compare/write loses a race. */
+export class ManifestPutConflictError extends Error {
+  override readonly name = "ManifestPutConflictError";
+
+  constructor(
+    readonly outcome: ManifestPutConflictOutcome,
+    /** The authoritative record that rejected the attempted write. */
+    readonly current: KeyManifestRecord,
+  ) {
+    super(`manifest write rejected: ${outcome}`);
+  }
+}
+
+function optionalCanonicalValueEqual(a: unknown, b: unknown): boolean {
+  const aAbsent = a === null || a === undefined;
+  const bAbsent = b === null || b === undefined;
+  if (aAbsent || bAbsent) return aAbsent && bAbsent;
+
+  const aHash = safeRefHash(a);
+  const bHash = safeRefHash(b);
+  return aHash !== null && bHash !== null && aHash === bHash;
+}
+
+/**
+ * Classify a manifest write without mutating state. Equal-version writes are retries only when the
+ * effective manifest + delegation bundle is JCS-equivalent to the authoritative record. Keeping
+ * this invariant in the Store contract prevents an engine-only check from being bypassed by a
+ * direct caller or invalidated by a future compare/write race in a database-backed Store.
+ */
+export function classifyManifestPut(
+  current: KeyManifestRecord | undefined,
+  next: KeyManifestRecord,
+): ManifestPutOutcome {
+  if (!current || next.version > current.version) return "stored";
+  if (next.version < current.version) return "stale";
+
+  const currentManifestHash = safeRefHash(current.manifest);
+  const nextManifestHash = safeRefHash(next.manifest);
+  const sameManifest =
+    currentManifestHash !== null &&
+    nextManifestHash !== null &&
+    current.refHash === currentManifestHash &&
+    next.refHash === nextManifestHash &&
+    currentManifestHash === nextManifestHash;
+  const sameDelegation = optionalCanonicalValueEqual(current.delegation, next.delegation);
+
+  return sameManifest && sameDelegation ? "idempotent" : "equivocation";
+}
 
 export interface Store {
   // agents
@@ -49,6 +103,11 @@ export interface Store {
   countPending(agentId: string): number;
 
   // manifest (public key material only)
+  /**
+   * Must reject stale/equivocating writes with ManifestPutConflictError. The void return preserves
+   * source compatibility with pre-existing Store implementations; the engine also preflights the
+   * write, while built-in stores enforce the invariant again at the mutation boundary.
+   */
   putManifest(rec: KeyManifestRecord): void;
   getLatestManifest(tenant: string): KeyManifestRecord | undefined;
 
@@ -147,7 +206,13 @@ export class InMemoryStore implements Store {
 
   putManifest(rec: KeyManifestRecord): void {
     const cur = this.manifests.get(rec.tenant);
-    if (!cur || rec.version >= cur.version) this.manifests.set(rec.tenant, rec);
+    const outcome = classifyManifestPut(cur, rec);
+    if (outcome === "stored") {
+      this.manifests.set(rec.tenant, rec);
+      return;
+    }
+    if (outcome === "idempotent") return;
+    throw new ManifestPutConflictError(outcome, cur!);
   }
   getLatestManifest(tenant: string): KeyManifestRecord | undefined {
     return this.manifests.get(tenant);

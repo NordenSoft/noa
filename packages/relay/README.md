@@ -69,6 +69,11 @@ GET  /v1/manifest?tenant=              current (externally-signed) Key Manifest 
 POST /v1/manifest        (agent)       store the externally-signed manifest (relay never signs it)
 ```
 
+Manifest versions are monotonic per tenant. A lower version returns `409 STALE_MANIFEST_VERSION`;
+an equal version is accepted only as a JCS-equivalent retry of the effective manifest + delegation
+bundle. Different content at an existing version returns `409 MANIFEST_EQUIVOCATION` and leaves the
+authoritative record unchanged. A higher version remains a normal rotation.
+
 Auth: agents `Authorization: Bearer noa_agent_<secret>`; devices `Bearer noa_device_<secret>`.
 Constant-time hash compare; only sha256 HASHES of secrets are stored.
 

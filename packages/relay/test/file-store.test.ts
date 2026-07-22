@@ -98,6 +98,34 @@ test("RESTART-PERSISTENCE: rich state written, then a FRESH FileStore over the S
   store2.close();
 });
 
+test("RESTART-PERSISTENCE: equal-version manifest equivocation is rejected after reload and never changes disk", () => {
+  const path = join(tmpDir(), "store.json");
+  const tenant = "restart-equivocation";
+  const manifest = { spec: "noa.key-manifest/0.1", tenant, version: 7, keys: [] };
+  const delegation = { spec: "noa.key-delegation/0.1", tenant, delegatedKid: "gate-1" };
+
+  const store1 = new FileStore(path);
+  assert.equal(makeHarness({}, store1).engine.putManifest({ manifest, delegation }).status, 200);
+  store1.close();
+  const bytesBefore = readFileSync(path, "utf8");
+
+  const store2 = new FileStore(path);
+  const swap = makeHarness({}, store2).engine.putManifest({
+    manifest: { ...manifest, keys: [{ kid: "attacker-key" }] },
+    delegation,
+  });
+  assert.equal(swap.status, 409);
+  assert.equal(bodyOf<{ error: string }>(swap).error, "MANIFEST_EQUIVOCATION");
+  assert.deepEqual(store2.getLatestManifest(tenant)?.manifest, manifest);
+  store2.close();
+  assert.equal(readFileSync(path, "utf8"), bytesBefore, "rejected equivocation must not persist a write");
+
+  const store3 = new FileStore(path);
+  assert.deepEqual(store3.getLatestManifest(tenant)?.manifest, manifest);
+  assert.deepEqual(store3.getLatestManifest(tenant)?.delegation, delegation);
+  store3.close();
+});
+
 test("EMPTY file (0 bytes) -> FileStore starts clean, does not throw (D2: nothing real to lose)", () => {
   const path = join(tmpDir(), "store.json");
   writeFileSync(path, "", "utf8");
