@@ -7,10 +7,9 @@
  * outcome, proving the human's approval actually gated the side effect.
  */
 import { guard, HttpGateClient, type GuardResult, type GateClient } from 'noa-gate';
-import { writeFile } from 'node:fs/promises';
+import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import type { Logger } from './log.js';
 
 /** The one ENFORCED command the alpha `noa.command.exec/1` adapter binds (D14). Real deploy shape. */
@@ -38,8 +37,13 @@ export function makeHarmlessExecute(log: Logger): { execute: () => Promise<{ ok:
   const spy: ExecuteSpy = { ran: false, calls: 0, outputPath: null };
   const execute = async (): Promise<{ ok: boolean; detail?: string }> => {
     spy.calls += 1;
-    const p = join(tmpdir(), `noa-demo-exec-${Date.now()}-${randomBytes(4).toString('hex')}.txt`);
-    await writeFile(p, `harmless demo side effect at ${new Date().toISOString()}\n`, 'utf8');
+    const privateDir = await mkdtemp(join(tmpdir(), 'noa-demo-exec-'));
+    const p = join(privateDir, 'result.txt');
+    await writeFile(p, `harmless demo side effect at ${new Date().toISOString()}\n`, {
+      encoding: 'utf8',
+      mode: 0o600,
+      flag: 'wx',
+    });
     spy.ran = true;
     spy.outputPath = p;
     log.event('agent.harmless_command_ran', { outputPath: p });

@@ -228,7 +228,7 @@ export async function createProxyServer({
 
   // R2 (#4) — POST-execution OUTCOME receipt. Emitted ONLY when a tool actually ran (ALLOW ->
   // forwarded), for BOTH success and error. It is a STANDALONE signed artifact (see
-  // outcome-receipt.mjs) — NOT chained into the decision hash-chain — so round-1's per-call
+  // outcome-receipt.mjs) — NOT chained into the decision hash-chain — so the existing per-call
   // receipt-count and {0..N-1} seq invariants stay byte-for-byte true. It reuses the SAME signer as
   // the decision receipt (local sync path, or the remote sidecar's async `sign`).
   //
@@ -238,7 +238,7 @@ export async function createProxyServer({
   // SECONDARY attestation into a host-visible error would invite the host to retry an already-
   // completed side-effect (a double-execute footgun strictly WORSE than a missing attestation). So a
   // build/persist failure here is logged loudly (observable, never silent), not thrown. No-op when
-  // no `onOutcome` consumer is configured, so the round-1 default does exactly zero extra work and
+  // no `onOutcome` consumer is configured, so the decision-only default does zero extra work and
   // signs nothing extra.
   async function emitOutcome(decisionReceipt, tool, outcome, error) {
     if (!onOutcome) return;
@@ -489,15 +489,16 @@ export async function createProxyServer({
     // buffer-and-drop. The SDK hands the DOWNSTREAM call its own internally-correlated token; each
     // progress it reports is re-emitted to the host under the host's ORIGINAL token so the host can
     // match it to its own request. Absent a host progressToken, the forward is byte-identical to
-    // round-1 (`downstream.callTool(request.params)`). Progress relay is best-effort — a failed
+    // the original direct call (`downstream.callTool(request.params)`). Progress relay is
+    // best-effort — a failed
     // relay is logged but never aborts the in-flight tool call.
     const hostProgressToken = request.params?._meta?.progressToken;
     // Each relayed progress notification's send-promise is collected so the handler can FLUSH them
     // before returning the tool RESULT. Without this, the result (sent synchronously once the handler
     // returns) can overtake the still-in-flight relayed notifications, and the host's SDK — which
     // tears down its per-request progress handler the instant the result lands — would drop every
-    // progress event that arrives after it. Awaiting the relays first guarantees in-order delivery
-    // (all progress, THEN the result) on the same ordered transport.
+    // progress event that arrives after it. Awaiting the relays first preserves the intended order
+    // (all settled progress sends, THEN the result) on the same ordered transport.
     const pendingProgressRelays = [];
     const forwardOptions =
       hostProgressToken !== undefined && hostProgressToken !== null
@@ -528,7 +529,7 @@ export async function createProxyServer({
       throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: downstream call failed after ALLOW (${err.message})`);
     }
     // Flush all relayed progress notifications to the host BEFORE the result is sent (see the
-    // pendingProgressRelays comment above) — guarantees the host sees every progress event.
+    // pendingProgressRelays comment above) — prevents the result from overtaking queued progress.
     if (pendingProgressRelays.length) await Promise.allSettled(pendingProgressRelays);
     // R2 (#4): the tool executed and returned — emit the SUCCESS outcome receipt (best-effort) before
     // handing the real result back to the host.
