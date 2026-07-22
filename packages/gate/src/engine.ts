@@ -304,9 +304,9 @@ export class GateEngine {
 
   /** Lazily flip an overdue PENDING hold to EXPIRED, minting the D19 timeout receipt + Hold
    *  Resolution. Backstop to the periodic sweep. */
-  private lazyExpire(hold: HoldRecord): HoldRecord {
-    if (hold.status !== "PENDING" || this.now() < hold.expiresAt) return hold;
-    const expiredAt = this.iso(this.now());
+  private lazyExpire(hold: HoldRecord, atMs = this.now()): HoldRecord {
+    if (hold.status !== "PENDING" || atMs < hold.expiresAt) return hold;
+    const expiredAt = this.iso(atMs);
     const timeoutReceipt = buildTimeoutReceipt({
       id: this.trust.newId(),
       expiredAt,
@@ -318,7 +318,7 @@ export class GateEngine {
     });
     hold.status = "EXPIRED";
     hold.reasonCode = "APPROVAL_TIMEOUT";
-    hold.decidedAt = this.now();
+    hold.decidedAt = atMs;
     hold.verdictReceipt = timeoutReceipt;
     hold.holdResolution = buildHoldResolution({
       holdId: hold.id,
@@ -340,9 +340,10 @@ export class GateEngine {
 
   sweepExpired(): number {
     let n = 0;
+    const atMs = this.now();
     for (const h of this.store.listHolds({ status: "PENDING" })) {
       const before = h.status;
-      this.lazyExpire(h);
+      this.lazyExpire(h, atMs);
       if (h.status !== before) n++;
     }
     return n;
@@ -363,12 +364,13 @@ export class GateEngine {
   cancelLocalStateLost(holdId: string): EngineResult {
     const hold = this.store.getHold(holdId);
     if (!hold) return err(404, "UNKNOWN_HOLD");
-    this.lazyExpire(hold);
+    const receivedAtMs = this.now();
+    this.lazyExpire(hold, receivedAtMs);
     if (hold.status !== "PENDING") return err(409, "HOLD_ALREADY_RESOLVED", { status: hold.status });
-    const receivedAt = this.iso(this.now());
+    const receivedAt = this.iso(receivedAtMs);
     hold.status = "CANCELLED_LOCAL_STATE_LOST";
     hold.reasonCode = "LOCAL_STATE_LOST";
-    hold.decidedAt = this.now();
+    hold.decidedAt = receivedAtMs;
     hold.holdResolution = buildHoldResolution({
       holdId: hold.id,
       holdEnvelope: hold.holdEnvelope,
@@ -394,7 +396,10 @@ export class GateEngine {
   decide(holdId: string, input: unknown): EngineResult {
     const hold = this.store.getHold(holdId);
     if (!hold) return err(404, "UNKNOWN_HOLD");
-    this.lazyExpire(hold);
+    // Capture the request's trusted arrival time once. Expiry and revocation must be evaluated
+    // against this exact snapshot; crossing the boundary during verification cannot split state.
+    const receivedAtMs = this.now();
+    this.lazyExpire(hold, receivedAtMs);
     if (hold.status !== "PENDING") {
       // D17 / Red Line 6 — late-or-duplicate decision is rejected, never silently dropped, never
       // overrides an already-resolved (incl. EXECUTED-downstream) action.
@@ -407,13 +412,17 @@ export class GateEngine {
     const decisionArtifact = isRecord(input["decisionArtifact"]) ? (input["decisionArtifact"] as Record<string, unknown>) : null;
     if (!receipt) return err(422, "BAD_OR_MISSING_RECEIPT");
     if (!decisionArtifact) return err(422, "BAD_OR_MISSING_DECISION_ARTIFACT");
+    // The same verifier-controlled arrival-time snapshot drives revocation, the Hold Resolution,
+    // and the grant timestamps. Never authorize against the phone's self-asserted decidedAt.
+    const receivedAt = this.iso(receivedAtMs);
 
     // 1. Verify the Decision Artifact: signature (approver), F15 role tier (from the held riskClass),
     //    and its binding to THIS Hold Envelope (holdEnvelopeHash), transitively enforcing tenant (F7b).
     const daCheck = verifyArtifact(decisionArtifact, {
       schemas: this.schemas,
       keyring: this.trust.keyring,
-      now: this.iso(this.now()),
+      now: receivedAt,
+      authorizationTime: receivedAt,
       riskClass: hold.action.riskClass,
       refHashChecks: [
         { path: "holdEnvelopeHash", rule: "side", artifact: hold.holdEnvelope, refEquals: [{ path: "tenant", value: hold.tenant }] },
@@ -438,6 +447,12 @@ export class GateEngine {
     if (!receiptKid || receiptKid !== approverKid) {
       return err(422, "APPROVER_KID_MISMATCH", { detail: "decision.approverKid must equal the verdict-receipt signer kid" });
     }
+    const approverEntry = this.trust.keyring[approverKid];
+    if (!approverEntry || this.trust.receiptKeyring[receiptKid] !== approverEntry.publicKey) {
+      return err(500, "TRUST_KEYRING_INCONSISTENT", {
+        detail: "artifact and receipt keyrings must resolve the approver kid to the same public key",
+      });
+    }
     const chainCheck = verifyChain([hold.deferredReceipt, receipt], {
       keyring: this.trust.receiptKeyring,
       requireTenantConsistency: true,
@@ -451,10 +466,9 @@ export class GateEngine {
       return err(422, "ACTION_BINDING_MISMATCH");
     }
 
-    const receivedAt = this.iso(this.now());
     hold.decisionReceipt = receipt;
     hold.decisionArtifact = decisionArtifact;
-    hold.decidedAt = this.now();
+    hold.decidedAt = receivedAtMs;
     hold.verdictReceipt = receipt;
 
     if (decisionVal === "APPROVE") {
@@ -482,7 +496,7 @@ export class GateEngine {
         holdEnvelope: hold.holdEnvelope,
         allowedReceipt: receipt,
         issuedAt: receivedAt,
-        expiresAt: this.iso(this.now() + this.cfg.grantTtlMs),
+        expiresAt: this.iso(receivedAtMs + this.cfg.grantTtlMs),
         nonce: this.trust.newId(),
         gate: this.trust.gate,
       });
@@ -495,7 +509,7 @@ export class GateEngine {
         unknownHintAt: null,
         consumption: null,
         uncertainty: null,
-        createdAt: this.now(),
+        createdAt: receivedAtMs,
       };
       hold.grantId = grantId;
       this.store.putGrant(grantRec);

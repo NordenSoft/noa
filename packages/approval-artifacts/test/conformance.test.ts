@@ -66,8 +66,9 @@ test("conformance corpus is non-empty and complete (every folder = 1 valid + ≥
     assert.equal(c.valid, 1, `${slug}: expected exactly 1 valid vector, got ${c.valid}`);
     assert.ok(c.reject >= 7, `${slug}: expected ≥7 rejection vectors, got ${c.reject}`);
   }
-  // Hold Envelope additionally carries the F2 recipients-swap (8th rejection).
+  // Hold and Decision each carry one additional security regression beyond the base seven.
   assert.equal(byslug.get("hold-envelope")!.reject, 8, "hold-envelope must ship 8 rejections (incl. F2 recipients-swap)");
+  assert.equal(byslug.get("decision")!.reject, 8, "decision must ship 8 rejections (incl. signer-identity split)");
 });
 
 test("every valid vector ACCEPTS and every rejection vector REJECTS", () => {
@@ -147,4 +148,41 @@ test("Decision verifier rejects the OpenSSL small-order universal forgery", () =
   });
   assert.equal(result.ok, false);
   assert.match(result.reason ?? "", /invalid signature/);
+});
+
+test("live authorization evaluates revocation at verifier time, not signer-controlled decidedAt", () => {
+  const loaded = vectors.find(({ slug, vec }) => slug === "decision" && vec.expect === "ACCEPT");
+  assert.ok(loaded, "valid Decision vector must exist");
+  const historicalKeyring = structuredClone(keyring);
+  const artifact = structuredClone(loaded.vec.artifact) as { sig: { kid: string } };
+  historicalKeyring[artifact.sig.kid]!.revokedAt = "2026-07-14T11:58:00.000Z";
+
+  const historical = verifyArtifact(artifact, {
+    ...loaded.vec.context,
+    schemas,
+    keyring: historicalKeyring,
+  });
+  assert.equal(historical.ok, true, historical.reason);
+
+  const liveAuthorization = verifyArtifact(artifact, {
+    ...loaded.vec.context,
+    schemas,
+    keyring: historicalKeyring,
+    authorizationTime: "2026-07-14T12:00:00.000Z",
+  });
+  assert.equal(liveAuthorization.ok, false);
+  assert.match(liveAuthorization.reason ?? "", /revoked/);
+});
+
+test("an invalid verifier-controlled authorization time fails closed", () => {
+  const loaded = vectors.find(({ slug, vec }) => slug === "decision" && vec.expect === "ACCEPT");
+  assert.ok(loaded, "valid Decision vector must exist");
+  const result = verifyArtifact(loaded.vec.artifact, {
+    ...loaded.vec.context,
+    schemas,
+    keyring,
+    authorizationTime: "not-a-time",
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason ?? "", /authorizationTime/);
 });

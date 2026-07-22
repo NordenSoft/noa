@@ -8,7 +8,8 @@
  *   1. STRUCTURAL   — the shipped schema/<spec>.schema.json (additionalProperties:false, enums,
  *                     patterns, discriminated pairing union). Catches `unknown-property` + shape.
  *   2. SIGNATURE    — for signed artifacts: sig.kid resolves in the keyring, the key is not revoked
- *                     as of the artifact's time, holds the F15 role, and the Ed25519 signature over
+ *                     as of the artifact's time (or the verifier-controlled `authorizationTime` at
+ *                     live authorization boundaries), holds the F15 role, and the Ed25519 signature over
  *                     `<DOMAIN>: ++ SHA256(JCS(doc without sig))` verifies. Catches `tampered-content`
  *                     + `wrong-key`.
  *   3. REFHASH      — every declared cross-artifact `*Hash` equals the F1-correct hash (rule a/b/c) of
@@ -37,6 +38,13 @@ export interface VerifyContext {
   keyring?: Record<string, KeyEntry>;
   /** verification-time "now"; enables the expiry + freshness checks. */
   now?: string;
+  /**
+   * Verifier-controlled time at which a live authorization is being accepted. When supplied,
+   * revocation is evaluated at this time instead of a signer-controlled artifact timestamp.
+   * Live gates MUST set this; offline evidence verification may omit it and separately prove a
+   * trusted historical acceptance time.
+   */
+  authorizationTime?: string;
   /** riskClass of the held action — selects the F15 approver tier for a Decision Artifact. */
   riskClass?: "LOW" | "MEDIUM" | "HIGH" | "CRITICAL" | "IRREVERSIBLE";
   equals?: Array<{ path: string; value: unknown }>;
@@ -80,6 +88,17 @@ function parseTime(v: unknown): number {
   return Date.parse(v);
 }
 
+/** Artifact fields that declare the identity of their own signer, independent of caller context. */
+function signerIdentityPath(spec: string, doc: Record<string, unknown>): string | null {
+  if (spec === "noa.hold/0.1" || spec === "noa.pairing-confirmation/0.1") return "gateKid";
+  if (spec === "noa.decision/0.1") return "approverKid";
+  if (spec === "noa.pairing/0.1") {
+    if (doc.type === "CHALLENGE") return "gateKid";
+    if (doc.type === "CONFIRMATION") return "approverKid";
+  }
+  return null;
+}
+
 /** F15 approver-tier requirement for a Decision, by the held action's riskClass. */
 function requiredApproverRole(riskClass: string | undefined): string[] {
   if (riskClass === "CRITICAL" || riskClass === "IRREVERSIBLE") return ["approve-critical"];
@@ -111,23 +130,36 @@ export function verifyArtifact(artifact: unknown, ctx: VerifyContext): VerifyOut
     if (!sig || typeof sig.kid !== "string" || typeof sig.value !== "string") {
       return { ok: false, reason: "missing sig.kid/value" };
     }
+    const identityPath = signerIdentityPath(spec, doc);
+    if (identityPath !== null && getPath(doc, identityPath) !== sig.kid) {
+      return { ok: false, reason: `signer identity mismatch: ${identityPath} must equal sig.kid` };
+    }
     const entry = ctx.keyring?.[sig.kid];
     if (!entry) return { ok: false, reason: `unknown signing key "${sig.kid}" (not in keyring)` };
 
-    // revocation, evaluated at the artifact's own time (falls back to ctx.now).
+    // Revocation normally follows the artifact's own time for historical/offline verification.
+    // A live authorization boundary must instead supply a verifier-controlled authorizationTime;
+    // otherwise a revoked signer can simply backdate its signed document past the revocation.
     const artifactTime =
-      (doc.issuedAt as string) ??
-      (doc.receivedAt as string) ??
-      (doc.decidedAt as string) ??
-      (doc.consumedAt as string) ??
-      (doc.detectedAt as string) ??
-      (doc.confirmedAt as string) ??
-      (doc.acceptedAt as string) ??
+      ctx.authorizationTime ??
+      (doc.issuedAt as string | undefined) ??
+      (doc.receivedAt as string | undefined) ??
+      (doc.decidedAt as string | undefined) ??
+      (doc.consumedAt as string | undefined) ??
+      (doc.detectedAt as string | undefined) ??
+      (doc.confirmedAt as string | undefined) ??
+      (doc.acceptedAt as string | undefined) ??
       ctx.now;
-    if (entry.revokedAt) {
+    if (ctx.authorizationTime !== undefined && Number.isNaN(parseTime(ctx.authorizationTime))) {
+      return { ok: false, reason: "invalid verifier-controlled authorizationTime" };
+    }
+    if (entry.revokedAt != null) {
       const rev = parseTime(entry.revokedAt);
       const at = parseTime(artifactTime);
-      if (!Number.isNaN(rev) && !Number.isNaN(at) && at >= rev) {
+      if (Number.isNaN(rev) || Number.isNaN(at)) {
+        return { ok: false, reason: `cannot evaluate revocation time for signing key "${sig.kid}"` };
+      }
+      if (at >= rev) {
         return { ok: false, reason: `signing key "${sig.kid}" was revoked at ${entry.revokedAt}` };
       }
     }

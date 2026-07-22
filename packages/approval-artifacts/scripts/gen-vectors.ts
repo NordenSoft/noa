@@ -3,8 +3,8 @@
  *
  * Builds ONE coherent artifact "world" (a genesis-rooted receipt chain + a root→delegated-signer key
  * hierarchy + a signed hold/decision/grant/consumption/… set) from fixed TEST-ONLY keys and fixed
- * timestamps, then derives, for every signed artifact, exactly **1 valid + 7 rejection** conformance
- * vectors (the Hold Envelope gets an 8th: the F2 recipients-swap). The two unsigned HPKE-AEAD blobs
+ * timestamps, then derives, for every signed artifact, at least **1 valid + 7 rejection** conformance
+ * vectors (Hold and Decision carry an additional security regression). The two unsigned HPKE-AEAD blobs
  * (Encrypted Display / Reason) get a valid + structural/binding rejection set instead of the
  * signature-based ones. Output is committed so anyone can re-derive and diff; re-running produces
  * byte-identical files (fixed keys + fixed clock).
@@ -300,6 +300,17 @@ function addUnknownProp(signedOrCore: J): J {
   emit("decision", "reject-wrong-nonce.json", { description: "reason encrypted to the WRONG audit key (D23: a wrong audit kid is rejected)", spec, expect: "REJECT", rejectionClass: "wrong-nonce", artifact: reSign({ ...clone(decisionCore), reasonEncryption: { ...clone(encReason), recipientKid: "attacker-audit" } }, spec, "approver-1-device-2"), context: baseCtx });
   emit("decision", "reject-expired.json", { description: "decidedAt far outside the plausible freshness window (backdate/forward-date)", spec, expect: "REJECT", rejectionClass: "expired", artifact: reSign({ ...clone(decisionCore), decidedAt: T_FUTURE }, spec, "approver-1-device-2"), context: baseCtx });
   emit("decision", "reject-wrong-key.json", { description: "F15 tier: a CRITICAL-only approver key (approve-critical) may NOT sign a HIGH decision (non-overlapping tiers)", spec, expect: "REJECT", rejectionClass: "wrong-key", artifact: reSign({ ...clone(decisionCore), approverKid: "approver-crit-5" }, spec, "approver-crit-5"), context: baseCtx });
+  emit("decision", "reject-signer-identity-split.json", {
+    description: "Decision claims approver-crit-5 while a different active HIGH approver signs it — approverKid must equal sig.kid even without caller-supplied equality checks",
+    spec,
+    expect: "REJECT",
+    rejectionClass: "wrong-key",
+    artifact: reSign({ ...clone(decisionCore), approverKid: "approver-crit-5" }, spec, "approver-1-device-2"),
+    context: {
+      ...baseCtx,
+      equals: [{ path: "reasonEncryption.recipientKid", value: "audit-1" }],
+    },
+  });
   emit("decision", "reject-unknown-property.json", { description: "smuggled extra field — additionalProperties:false", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: addUnknownProp(decision as J), context: baseCtx });
 }
 

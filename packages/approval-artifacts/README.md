@@ -32,8 +32,8 @@ So this is its own package, mirroring the monorepo convention (`packages/<name>`
   Execution Uncertainty, Hold Resolution, Pairing (CHALLENGE/CONFIRMATION/ACCEPTED, one discriminated
   union), Pairing Confirmation, and the two **unsigned** HPKE-AEAD blobs (Encrypted Display, Encrypted
   Reason).
-- `conformance/<artifact>/` — the vectors: **1 valid + 7 rejection** per signed domain (the Hold
-  Envelope gets an **8th**, the F2 recipients-swap); a valid + 7 structural/binding rejections for the
+- `conformance/<artifact>/` — the vectors: **1 valid + at least 7 rejection** per signed domain (the Hold
+  Envelope and Decision carry an additional security regression); a valid + 7 structural/binding rejections for the
   two unsigned blobs. `keyring.json` is the shared trust root; `INDEX.json` the counts.
 - `src/` — the reference verifier (`verifyArtifact`), `refHash` (F1 rule a/b/c), the signing helper
   (`signArtifact`), the domain registry, and the schema evaluator.
@@ -53,6 +53,14 @@ mismatch fails the build (§15 P1b-alpha DoD).
   (`SHA256(JCS(receipt without chain.hash and sig.value))`).
 - **Rule c / F2 (virtual):** `transcriptHash` and `displayCiphertextHash` hash the WHOLE object as-is
   (nothing stripped) — so a relay-added `recipients[]` entry breaks the parent's signed hash.
+- **Revocation time:** offline verification preserves historical semantics by evaluating a key at the
+  signed artifact's own timestamp. A service accepting a **live authorization** must pass its trusted
+  receipt time as `VerifyContext.authorizationTime`; otherwise a revoked signer could self-backdate a
+  fresh decision. Evidence verifiers may omit it only when they separately bind and enforce a trusted
+  historical acceptance timestamp (for example, the gate-signed Hold Resolution `receivedAt`).
+- **Signer identity:** self-identifying signed artifacts enforce their declared signer field
+  (`gateKid` or `approverKid`) against `sig.kid` inside `verifyArtifact`; callers cannot accidentally
+  omit this binding and authorize one principal's receipt with another principal's Decision.
 
 ## The 7 rejection classes
 
