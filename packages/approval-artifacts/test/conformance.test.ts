@@ -10,6 +10,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACTS } from "../src/domains.js";
+import { verifyEd25519 } from "../src/crypto.js";
 import { verifyArtifact, type KeyEntry, type VerifyContext } from "../src/verify.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -89,3 +90,61 @@ for (const { slug, file, vec } of vectors) {
     assert.equal(res.ok, vec.expect === "ACCEPT", res.reason);
   });
 }
+
+test("strict Ed25519 parity rejects all canonical small-order public keys", () => {
+  const spkiPrefix = Buffer.from("302a300506032b6570032100", "hex");
+  const smallOrderRaw = [
+    "0100000000000000000000000000000000000000000000000000000000000000",
+    "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    "0000000000000000000000000000000000000000000000000000000000000000",
+    "0000000000000000000000000000000000000000000000000000000000000080",
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+    "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+    "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+  ];
+  const message = Buffer.from("NOA side-artifact strict verifier parity", "utf8");
+  const signature = Buffer.alloc(64, 7).toString("base64");
+  for (const rawHex of smallOrderRaw) {
+    const publicKey = Buffer.concat([spkiPrefix, Buffer.from(rawHex, "hex")]).toString("base64");
+    assert.equal(verifyEd25519(publicKey, message, signature), false, rawHex);
+  }
+});
+
+test("strict Ed25519 parity rejects a non-canonical y coordinate", () => {
+  const spkiPrefix = Buffer.from("302a300506032b6570032100", "hex");
+  const nonCanonicalY = Buffer.from(
+    "eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+    "hex",
+  );
+  const publicKey = Buffer.concat([spkiPrefix, nonCanonicalY]).toString("base64");
+  assert.equal(
+    verifyEd25519(
+      publicKey,
+      Buffer.from("NOA side-artifact strict verifier parity", "utf8"),
+      Buffer.alloc(64, 7).toString("base64"),
+    ),
+    false,
+  );
+});
+
+test("Decision verifier rejects the OpenSSL small-order universal forgery", () => {
+  const loaded = vectors.find(({ slug, vec }) => slug === "decision" && vec.expect === "ACCEPT");
+  assert.ok(loaded, "valid Decision vector must exist");
+
+  const artifact = structuredClone(loaded.vec.artifact) as {
+    sig: { kid: string; value: string };
+  };
+  const forgedKeyring = structuredClone(keyring);
+  artifact.sig.value = "AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==";
+  forgedKeyring[artifact.sig.kid]!.publicKey =
+    "MCowBQYDK2VwAyEAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+
+  const result = verifyArtifact(artifact, {
+    ...loaded.vec.context,
+    schemas,
+    keyring: forgedKeyring,
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.reason ?? "", /invalid signature/);
+});

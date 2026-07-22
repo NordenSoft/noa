@@ -55,6 +55,23 @@ export interface KeyPair {
   privateKey: string;
 }
 
+/**
+ * Canonical encodings of the eight points in Ed25519's small-order torsion subgroup.
+ * OpenSSL's cofactored verifier accepts some of these keys, while the protocol's strict
+ * reference verifier rejects them. Keep this list in parity with `src/keys.ts` so a side
+ * artifact cannot be accepted under a key that the receipt verifier rejects.
+ */
+const SMALL_ORDER_PUBKEYS: ReadonlySet<string> = new Set([
+  "0100000000000000000000000000000000000000000000000000000000000000",
+  "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f",
+  "0000000000000000000000000000000000000000000000000000000000000000",
+  "0000000000000000000000000000000000000000000000000000000000000080",
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc05",
+  "26e8958fc2b227b045c3f489f2ef98f0d5dfac05d3c63339b13802886d53fc85",
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a",
+  "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa",
+]);
+
 /** Generate an Ed25519 keypair in the ecosystem's base64(DER) shape. */
 export function generateKeyPair(kid: string): KeyPair {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -85,6 +102,20 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     if (key.asymmetricKeyType !== "ed25519") return false; // pin curve (CWE-347)
     const canonical = key.export({ type: "spki", format: "der" }) as Buffer;
     if (!canonical.equals(der)) return false; // reject non-canonical SPKI (trailing garbage)
+
+    // Strict RFC 8032 public-key decoding, matching `noa-receipt/src/keys.ts`:
+    // the encoded y coordinate must be canonical and the key must not be a
+    // point in the order-dividing-8 torsion subgroup.
+    const raw = canonical.subarray(12);
+    if (raw.length !== 32) return false;
+    const yBytes = Buffer.from(raw);
+    yBytes[31] = yBytes[31]! & 0x7f;
+    const Q = (1n << 255n) - 19n;
+    let y = 0n;
+    for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(yBytes[i]!);
+    if (y >= Q) return false;
+    if (SMALL_ORDER_PUBKEYS.has(raw.toString("hex"))) return false;
+
     const sigBytes = Buffer.from(signatureB64, "base64");
     if (sigBytes.length !== 64 || sigBytes.toString("base64") !== signatureB64) return false; // canonical b64 sig
     // Explicit S < L (RFC 8032 §5.1.7) — reject signature malleability independent of OpenSSL runtime.
