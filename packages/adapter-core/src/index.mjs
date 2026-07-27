@@ -40,3 +40,17 @@ export { describeThrown, describeThrownDetailed, isErrorLike, thrownName, thrown
 // can be in that state (framework-adapters, gate, mcp-proxy). Built ON the boundary above: its
 // anti-retry discriminator is exactly what an exotic thrown `cause` used to destroy.
 export { ToolOutcomeNotRecorded } from "./tool-outcome-not-recorded.mjs";
+
+// DESIGN 3 — the executable side-effect state machine. `SIDE_EFFECT_UNCONFIRMED` is a state, not a
+// guess: dispatch happened, the outcome is unknown, and it resolves ONLY through reconciliation
+// against the remote system of record. Specification + plan: docs/side-effect-unconfirmed.md.
+export {
+  SIDE_EFFECT_STATES,
+  SIDE_EFFECT_EVENTS,
+  EVIDENCE_OUTCOME_FOR,
+  IllegalSideEffectTransition,
+  next as nextSideEffectState,
+  replay as replaySideEffectEvents,
+  isSafeToRetry,
+  isTerminal as isTerminalSideEffectState,
+} from "./side-effect-state.mjs";

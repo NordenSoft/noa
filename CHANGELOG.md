@@ -97,6 +97,34 @@ fails closed when a future site does not route through it.
   nothing is known about it" for a throw whose value was known exactly. Success outcomes still
   record `null`.
 
+### Added — DESIGN 3: `SIDE_EFFECT_UNCONFIRMED` as an executable state machine (2026-07-27)
+
+- **The state between "dispatched" and "durably recorded" now has a name and a machine.** What
+  happened to a side effect in that window is genuinely unknown; rounding it to `EXECUTED` produces a
+  signed attestation that something ran which may never have run, and rounding it to `FAILED` makes a
+  caller retry a payment that may already have been made. Both are the same defect: an indeterminate
+  state reported as determinate.
+- `packages/adapter-core/src/side-effect-state.mjs` — six states, ten observable events, a pure
+  reducer, and a transition table in which `SIDE_EFFECT_UNCONFIRMED` is terminal, NOT safe to retry,
+  and exits ONLY through `RECONCILED_COMPLETED` / `RECONCILED_NOT_PERFORMED`. An unmodelled
+  `(state, event)` pair raises `IllegalSideEffectTransition` rather than inventing a state.
+- `packages/adapter-core/test/side-effect-state.test.mjs` — ten adversarial scenarios (crash
+  mid-flight, crash between return and record, throw after dispatch, record failure, both
+  reconciliation outcomes) plus two properties that hold over the WHOLE table: nothing but
+  reconciliation resolves `UNCONFIRMED`, and after `DISPATCH_STARTED` no event reaches a retry-safe
+  state except a PROOF (the tool stating it did nothing, or reconciliation stating it).
+- The §13 outcome union is **not widened**: it already carries `UNKNOWN_AFTER_DISPATCH` for this
+  condition at the gate layer, five verifiers agree on it, and widening it is a spec change rather
+  than a bug fix. `EVIDENCE_OUTCOME_FOR` is the adapter→evidence mapping, asserted by test.
+- **NOT IMPLEMENTED, deliberately:** the durable commit protocol (idempotency keys, operation
+  references, crash recovery, reconciliation) needs a key the remote honours end to end, an operation
+  reference the tool echoes, a durable in-flight store, and a reconciliation channel — none of which
+  can be made safe on this branch without changing a published package's tool-facing contract.
+  Shipping half of it produces a system that BELIEVES it is exactly-once, which is worse than one
+  that knows it is not. `docs/side-effect-unconfirmed.md` carries the five-phase implementation plan
+  with a per-phase "done when", and an explicit list of the claims this design does NOT make
+  (not exactly-once, not physical completion, not durability of the window itself).
+
 ### Added — DESIGN 2: the delegation validity window, and two verdict dimensions (2026-07-27)
 
 - **`verifyEvidence` gains `purpose: "audit" | "authorize"` (default `"audit"`, the legacy
