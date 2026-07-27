@@ -17,7 +17,8 @@
     "types": ["node"],
     "baseUrl": ".",
     "paths": {
-      "noa-signer": ["../signer-core/dist/src/index"]
+      "noa-signer": ["../signer-core/dist/src/index"],
+      "noa-mobile/*": ["../../../noa-mobile/src/*", "../../noa-mobile/src/*"]
     }
   },
   "include": ["src/**/*.ts", "test/**/*.ts"]

@@ -75,6 +75,62 @@ jobs:
       - name: framework-adapters tests
         run: cd packages/framework-adapters && npm ci && npm test
 
+  e2e-demo-golden-path:
+    # THE GOLDEN END-TO-END PATH, GATED — as far as a public runner can gate it.
+    #
+    # `packages/e2e-demo` is the Instant-Tether demo: agent -> gate -> relay -> a REAL phone core ->
+    # grant -> exact execution -> an offline-verifiable Approval Evidence Bundle. It was in NONE of
+    # the jobs above, and its nine phone-core imports were deep relative specifiers that resolve only
+    # from the maintainer's directory layout. So the end-to-end path could be broken indefinitely
+    # while every check here stayed green: an unrun check and a passing check are the same value in a
+    # report and opposite facts in reality.
+    #
+    # The phone core is a PRIVATE sibling product (NordenSoft/noa-mobile) consumed as TypeScript
+    # source, and this repository is public, so a runner cannot fetch it without a credential. This
+    # job therefore has two honest states and no third:
+    #   • the CONTRACT check runs ALWAYS (one declared location, one import surface, no deep relative
+    #     specifiers) — those are defects in THIS repo and are gated unconditionally;
+    #   • the SUITE runs whenever the phone core is reachable — with the NOA_MOBILE_TOKEN secret
+    #     configured, or on any runner that already has it — and a failure is a hard failure.
+    # When it is not reachable the preflight prints one unmissable NOT EXECUTED line. It never
+    # reports a pass for something it did not run.
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check out the private phone core (only when a credential is configured)
+        id: phone-core
+        if: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
+        continue-on-error: true
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NordenSoft/noa-mobile
+          path: noa-mobile
+          token: ${{ secrets.NOA_MOBILE_TOKEN }}
+          persist-credentials: false
+      - name: Dependency contract (ALWAYS gated) + honest presence report
+        id: preflight
+        run: |
+          set -euo pipefail
+          node scripts/e2e-demo-preflight.mjs | tee preflight.out
+          if grep -q "^phone-core: PRESENT" preflight.out; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
+          { echo "### e2e-demo golden path"; sed -n '1,20p' preflight.out; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Build the in-repo dependencies
+        if: steps.preflight.outputs.present == 'true'
+        run: cd packages/e2e-demo && npm ci && npm run build:deps
+      - name: Typecheck the golden path
+        if: steps.preflight.outputs.present == 'true'
+        run: cd packages/e2e-demo && npm run typecheck
+      - name: Run the 6 golden-path scenarios
+        if: steps.preflight.outputs.present == 'true'
+        run: cd packages/e2e-demo && npm test
+
   five-verifier-conformance:
     # THE FIVE-LANGUAGE INTEROP BAR, GATED. The `test` job below runs the TS<->Python conformance
     # only; Go, Rust and C# were verified on developer machines and by nothing else. That is exactly

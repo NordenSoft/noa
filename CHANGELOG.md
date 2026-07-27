@@ -97,6 +97,30 @@ fails closed when a future site does not route through it.
   nothing is known about it" for a throw whose value was known exactly. Success outcomes still
   record `null`.
 
+### Fixed — the golden end-to-end path was uncheckable, and unchecked (2026-07-27)
+
+- **`packages/e2e-demo` was in none of the CI jobs, and its phone-core imports resolved from exactly
+  one directory layout.** The nine specifiers were deep relative paths
+  (`../../../../noa-mobile/src/...`); from any checkout depth other than the maintainer's laptop they
+  point at a directory that does not exist and the suite fails to compile with `TS2307`. Because no
+  job ran it, that failure was invisible — the Instant-Tether golden path (agent → gate → relay →
+  real phone core → grant → exact execution → verifiable evidence bundle) could be broken
+  indefinitely while every check stayed green.
+
+  The location is now declared ONCE, as the `noa-mobile/*` tsconfig path alias (honoured by both
+  `tsc` and `tsx`), with a candidate for the in-workspace CI checkout as well as the sibling-checkout
+  developer default. `scripts/e2e-demo-preflight.mjs` holds the package to the contract on every CI
+  run — one declared location, one import surface (`src/mobile.ts`), no deep relative specifiers —
+  and those are gated unconditionally, because they are defects in THIS repository.
+
+  *Honest residual:* the phone core is a PRIVATE sibling product (`NordenSoft/noa-mobile`) consumed
+  as TypeScript source, and this repository is public, so a runner cannot fetch it without a
+  credential. The new `e2e-demo-golden-path` job runs the full suite whenever the source is
+  reachable (it checks the sibling out when a `NOA_MOBILE_TOKEN` secret is configured) and otherwise
+  prints one unmissable `phone-core: ABSENT — … NOT EXECUTED` line into the job summary. It is
+  deliberately not a pass: the whole point of this section is that an unrun check must not look like
+  a passing one.
+
 ### Security (cross-family review, 2026-07-27)
 
 Five findings an independent review reproduced against this branch. Each was re-reproduced here
