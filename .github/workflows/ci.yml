@@ -96,6 +96,10 @@ jobs:
     # reports a pass for something it did not run.
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      # The `secrets` context is NOT available in a step-level `if:`; a job-level `env` is where it
+      # can be read, so the presence of the credential becomes an ordinary string to branch on.
+      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -106,7 +110,7 @@ jobs:
           cache: npm
       - name: Check out the private phone core (only when a credential is configured)
         id: phone-core
-        if: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
+        if: env.HAS_PHONE_CORE_TOKEN == 'true'
         continue-on-error: true
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
