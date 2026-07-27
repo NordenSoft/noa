@@ -3,11 +3,12 @@
  *
  * TWO THINGS THIS PINS:
  *
- *   1. `execute()` may throw ANYTHING. The wrapper must still reach `report(...)` and record a
- *      consumption artifact for the attempt: the grant is already RESERVED at that point, and an
- *      exception escaping the dispatch handler leaves the reservation dangling with no record that
- *      an attempt ever happened. `ok` is set outside the try and never inferred from the thrown
- *      value's truthiness, so `throw null` cannot masquerade as success.
+ *   1. `execute()` may throw ANYTHING. The wrapper must still reach `report(...)` so the attempt is
+ *      not left dangling — but WHAT it reports is decided by the DESIGN 3 state machine, not guessed.
+ *      An UNMARKED throw after dispatch is SIDE_EFFECT_UNCONFIRMED → reported UNKNOWN (never a
+ *      determinate FAILED_BEFORE_DISPATCH, which would be a signed "it did not run" for a tool that
+ *      may have run). A throw the tool MARKED as pre-side-effect is FAILED_BEFORE_DISPATCH. `throw
+ *      null` cannot masquerade as success: only `{ ok: true }` is a dispatch.
  *
  *   2. `report(...)` may throw. It was awaited OUTSIDE any try, so a transport failure there
  *      propagated raw AND TOOK `ran: true` WITH IT — the caller saw an ordinary failure for a
@@ -24,6 +25,7 @@ import assert from "node:assert/strict";
 import { guard, type GateClient } from "../src/wrapper.js";
 import type { EngineResult } from "../src/engine.js";
 import { ToolOutcomeNotRecorded } from "noa-mcp-adapter-core/tool-outcome-not-recorded";
+import { markThrewBeforeSideEffect } from "noa-mcp-adapter-core/side-effect-state";
 
 interface CorpusEntry {
   name: string;
@@ -74,19 +76,25 @@ function guardWith(overrides: { execute: () => Promise<{ ok: boolean; detail?: s
 }
 
 for (const entry of THROWN_CORPUS) {
-  test(`execute() throwing it still reports FAILED_BEFORE_DISPATCH: ${entry.name}`, async () => {
+  test(`execute() throwing an UNMARKED value reports UNKNOWN, never a determinate FAILED_BEFORE_DISPATCH: ${entry.name}`, async () => {
+    // C4: an UNMARKED throw after dispatch proves NOTHING about whether the side effect occurred. The
+    // gate must NOT sign FAILED_BEFORE_DISPATCH ("it did not run") — a tool that incremented a
+    // side-effect counter then threw would be signed as a clean failure, and the correct handling of a
+    // clean failure is to retry it. The honest report is UNKNOWN → the gate's Execution Uncertainty
+    // path. This test used to codify the unsafe FAILED_BEFORE_DISPATCH result; it now pins the fix.
     const thrown = entry.make();
     let reportedBody: unknown;
     const result = await guardWith({
       execute: async () => { throw thrown; },
       report: async (...args: unknown[]) => {
         reportedBody = (args as [string, unknown])[1];
-        return { status: 200, body: { consumption: {}, attemptReceipt: {} } } as EngineResult;
+        // The real engine answers an UNKNOWN report with 202 (a hint; it signs nothing synchronously).
+        return { status: 202, body: { status: "UNCERTAINTY_PENDING_GATE_CORROBORATION" } } as EngineResult;
       },
     });
-    assert.equal(result.outcome, "EXECUTION_FAILED", `got ${result.outcome}: ${result.detail ?? ""}`);
-    assert.equal(result.ran, false, "a falsy thrown value must not read as a successful dispatch");
-    assert.deepEqual(reportedBody, { result: "FAILED_BEFORE_DISPATCH" }, "the attempt must still be reported");
+    assert.equal(result.outcome, "UNKNOWN_AFTER_DISPATCH", `got ${result.outcome}: ${result.detail ?? ""}`);
+    assert.deepEqual(reportedBody, { result: "UNKNOWN" }, "a bare throw must be reported as UNKNOWN, never FAILED_BEFORE_DISPATCH");
+    assert.equal(result.ran, true, "UNKNOWN_AFTER_DISPATCH is conservatively ran:true — a side effect MAY have occurred; do not retry");
     assert.equal(typeof result.detail, "string");
   });
 
@@ -136,4 +144,56 @@ test("a benign dispatch still succeeds end to end (no over-correction)", async (
   });
   assert.equal(result.outcome, "EXECUTED");
   assert.equal(result.ran, true);
+});
+
+test("C4 reproduction: a tool that causes a side effect and THEN throws is UNKNOWN, never a signed FAILED_BEFORE_DISPATCH", async () => {
+  // The review's exact repro: execute() increments a side-effect counter (the remote committed) then
+  // throws as if its response was lost. Pre-fix the gate signed FAILED_BEFORE_DISPATCH — a determinate
+  // "it did not run" for a side effect that HAD happened. The gate cannot know, so it reports UNKNOWN.
+  let sideEffects = 0;
+  let reportedBody: unknown;
+  const result = await guardWith({
+    execute: async () => {
+      sideEffects++; // the remote committed
+      throw new Error("response lost after the remote committed");
+    },
+    report: async (...args: unknown[]) => {
+      reportedBody = (args as [string, unknown])[1];
+      return { status: 202, body: { status: "UNCERTAINTY_PENDING_GATE_CORROBORATION" } } as EngineResult;
+    },
+  });
+  assert.equal(sideEffects, 1, "the side effect really happened — that is what makes the old signed FAILED a lie");
+  assert.equal(result.outcome, "UNKNOWN_AFTER_DISPATCH");
+  assert.deepEqual(reportedBody, { result: "UNKNOWN" }, "the gate must NOT sign FAILED_BEFORE_DISPATCH for a side effect that may have happened");
+});
+
+test("a throw MARKED as pre-side-effect IS a determinate failure — FAILED_BEFORE_DISPATCH (positive evidence)", async () => {
+  // The only way back to a retryable determinate failure after a THROW: the tool proves the throw
+  // preceded any side effect (a pre-dispatch refusal it explicitly marked). Then, and only then, the
+  // gate may sign FAILED_BEFORE_DISPATCH.
+  let reportedBody: unknown;
+  const result = await guardWith({
+    execute: async () => { throw markThrewBeforeSideEffect(new Error("connection refused before request was sent")); },
+    report: async (...args: unknown[]) => {
+      reportedBody = (args as [string, unknown])[1];
+      return { status: 200, body: { consumption: {}, attemptReceipt: {} } } as EngineResult;
+    },
+  });
+  assert.equal(result.outcome, "EXECUTION_FAILED");
+  assert.equal(result.ran, false, "a proven pre-side-effect throw did not run");
+  assert.deepEqual(reportedBody, { result: "FAILED_BEFORE_DISPATCH" });
+});
+
+test("a clean { ok: false } return is FAILED_BEFORE_DISPATCH — the tool ran and asserts no dispatch", async () => {
+  let reportedBody: unknown;
+  const result = await guardWith({
+    execute: async () => ({ ok: false, detail: "exit 1" }),
+    report: async (...args: unknown[]) => {
+      reportedBody = (args as [string, unknown])[1];
+      return { status: 200, body: { consumption: {}, attemptReceipt: {} } } as EngineResult;
+    },
+  });
+  assert.equal(result.outcome, "EXECUTION_FAILED");
+  assert.equal(result.ran, false);
+  assert.deepEqual(reportedBody, { result: "FAILED_BEFORE_DISPATCH" });
 });

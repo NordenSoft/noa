@@ -32,6 +32,10 @@
     "./tool-outcome-not-recorded": {
       "types": "./src/tool-outcome-not-recorded.d.ts",
       "import": "./src/tool-outcome-not-recorded.mjs"
+    },
+    "./side-effect-state": {
+      "types": "./src/side-effect-state.d.ts",
+      "import": "./src/side-effect-state.mjs"
     }
   },
   "engines": {

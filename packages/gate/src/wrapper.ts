@@ -18,6 +18,9 @@ import { canonicalize, sha256Prefixed } from "noa-approval-artifacts";
 // boundary's docstring describes).
 import { describeThrown } from "noa-mcp-adapter-core/safe-throw";
 import { ToolOutcomeNotRecorded } from "noa-mcp-adapter-core/tool-outcome-not-recorded";
+// DESIGN 3 — the executable side-effect state machine. Wiring it here is what makes the gate honest
+// about a throw AFTER dispatch: it cannot claim it knows the dispatch did not happen.
+import { next as nextSideEffectState, threwBeforeSideEffect } from "noa-mcp-adapter-core/side-effect-state";
 import { getProjection } from "./projections.js";
 import type { EngineResult, GateEngine } from "./engine.js";
 import type { AgentRecord } from "./types.js";
@@ -82,6 +85,7 @@ export class InProcessGateClient implements GateClient {
 export type GuardOutcome =
   | "EXECUTED"
   | "EXECUTION_FAILED"
+  | "UNKNOWN_AFTER_DISPATCH"
   | "DENIED"
   | "EXPIRED"
   | "CANCELLED_LOCAL_STATE_LOST"
@@ -194,34 +198,57 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
     return { outcome: "REFUSED_GRANT_RACE", ran: false, holdId, grantId, detail: `reserve ${reserved.status}: ${JSON.stringify(reserved.body)}` };
   }
 
-  // Dispatch the verified snapshot.
-  let ok = false;
+  // ── DISPATCH, DRIVEN BY THE SIDE-EFFECT STATE MACHINE (DESIGN 3) ──────────────────────────────
+  // The grant is RESERVED and we are about to invoke the tool: dispatch has STARTED. What the gate may
+  // sign next is decided by the machine, not by guessing. The fifth review's C4: a tool that
+  // incremented a side-effect counter and then threw got a signed `FAILED_BEFORE_DISPATCH` — a
+  // determinate "it did not run" for an operation that had. A bare throw after dispatch proves NOTHING
+  // about whether the side effect occurred, so it is SIDE_EFFECT_UNCONFIRMED and the gate reports the
+  // honest UNKNOWN (which the engine turns into an Execution Uncertainty on its OWN corroboration,
+  // never a determinate consumption). Only a throw the tool has MARKED as pre-side-effect, or a clean
+  // `{ ok: false }` return, is FAILED_BEFORE_DISPATCH — both are positive evidence of no side effect.
+  let state = nextSideEffectState("NOT_DISPATCHED", "DISPATCH_STARTED"); // → DISPATCHED
+  let reportResult: "DISPATCHED" | "FAILED_BEFORE_DISPATCH" | "UNKNOWN";
+  let sideEffectMayHaveHappened: boolean;
   let execDetail: string | undefined;
   try {
     const r = await input.execute();
-    ok = r.ok;
+    if (r.ok) {
+      state = nextSideEffectState(state, "TOOL_RETURNED"); // → SETTLED_UNRECORDED (a side effect happened)
+      reportResult = "DISPATCHED";
+      sideEffectMayHaveHappened = true;
+    } else {
+      // The tool RAN to completion and reports it did NOT dispatch — positive evidence of no side effect.
+      state = nextSideEffectState(state, "TOOL_THREW_BEFORE_SIDE_EFFECT"); // → FAILED_NO_SIDE_EFFECT
+      reportResult = "FAILED_BEFORE_DISPATCH";
+      sideEffectMayHaveHappened = false;
+    }
     execDetail = r.detail;
   } catch (e) {
-    // `ok` stays false on ANY throw, including a falsy one — the flag is set outside the try and
-    // only ever cleared by a successful `execute()` returning `{ ok: true }`, never inferred from
-    // the thrown value's truthiness (see describeThrown for why reading `.message` was unsafe here).
-    ok = false;
+    if (threwBeforeSideEffect(e)) {
+      // The tool PROVED (by marking the value it threw) that its throw preceded any side effect.
+      state = nextSideEffectState(state, "TOOL_THREW_BEFORE_SIDE_EFFECT"); // → FAILED_NO_SIDE_EFFECT
+      reportResult = "FAILED_BEFORE_DISPATCH";
+      sideEffectMayHaveHappened = false;
+    } else {
+      // An UNMARKED throw after dispatch: genuinely unknown, never a determinate failure.
+      state = nextSideEffectState(state, "TOOL_THREW_AFTER_DISPATCH"); // → SIDE_EFFECT_UNCONFIRMED
+      reportResult = "UNKNOWN";
+      sideEffectMayHaveHappened = true;
+    }
     execDetail = describeThrown(e);
   }
 
-  // ── THE DISPATCH HAS HAPPENED (or definitively has not) ──────────────────────────────────────
-  // `report(...)` writes the consumption artifact — the durable record of an attempt that already
-  // occurred. It was awaited OUTSIDE any try, so a transport throw here (a dead socket, a gate
-  // restart) propagated raw and took `ran: true` with it: the caller saw an ordinary failure for an
-  // operation that HAD ALREADY RUN, and the correct handling of an ordinary failure is to retry it.
-  // A non-200 `report` already returns `{ outcome: "ERROR", ran: ok }` and keeps the discriminator;
-  // a THROWN report did not, which is the same hole in a different shape.
+  // ── THE DISPATCH HAS HAPPENED (or provably has not, or is UNCONFIRMED) ─────────────────────────
+  // `report(...)` writes the durable record. It is awaited OUTSIDE any try, so a THROWN report used to
+  // propagate raw and take `ran: true` with it. Now: if a side effect MAY have occurred, raise
+  // ToolOutcomeNotRecorded so a caller does not mistake this for an ordinary failure and retry a
+  // command that ran; otherwise it is an ordinary reporting error.
   let reported: EngineResult;
   try {
-    reported = await input.client.report(grantId, { result: ok ? "DISPATCHED" : "FAILED_BEFORE_DISPATCH" });
+    reported = await input.client.report(grantId, { result: reportResult });
   } catch (e) {
-    if (ok) {
-      // It ran. Raise the one type that says so, so a caller cannot mistake this for a failure.
+    if (sideEffectMayHaveHappened) {
       throw new ToolOutcomeNotRecorded(input.action.canonical, {
         outcome: "EXECUTED",
         receipt: null,
@@ -229,17 +256,28 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
         component: "noa-gate",
       });
     }
-    // Nothing ran: this is an ordinary reporting failure, and the reservation is the gate's to
-    // expire. Reported as an ERROR with `ran: false`, exactly as a non-200 would be.
+    // Nothing ran (a clean/marked pre-dispatch failure): an ordinary reporting failure, ran:false.
     return { outcome: "ERROR", ran: false, holdId, grantId, detail: `report threw: ${describeThrown(e)}` };
   }
+
+  if (reportResult === "UNKNOWN") {
+    // The gate ACKNOWLEDGES the uncertainty (202: a hint — it signs an Execution Uncertainty only on
+    // its own corroboration, never a determinate consumption for an indeterminate dispatch). `ran` is
+    // reported TRUE — conservatively "may have run, do NOT retry"; `outcome` is the authoritative
+    // discriminator. A status the engine does not use for this path surfaces as an ERROR.
+    if (reported.status !== 202 && reported.status !== 200) {
+      return { outcome: "ERROR", ran: true, holdId, grantId, detail: `report(UNKNOWN) ${reported.status}: ${JSON.stringify(reported.body)}` };
+    }
+    return { outcome: "UNKNOWN_AFTER_DISPATCH", ran: true, holdId, grantId, ...(execDetail ? { detail: execDetail } : {}) };
+  }
+
   if (reported.status !== 200) {
-    return { outcome: "ERROR", ran: ok, holdId, grantId, detail: `report ${reported.status}: ${JSON.stringify(reported.body)}` };
+    return { outcome: "ERROR", ran: sideEffectMayHaveHappened, holdId, grantId, detail: `report ${reported.status}: ${JSON.stringify(reported.body)}` };
   }
   const rb = body(reported);
   return {
-    outcome: ok ? "EXECUTED" : "EXECUTION_FAILED",
-    ran: ok,
+    outcome: reportResult === "DISPATCHED" ? "EXECUTED" : "EXECUTION_FAILED",
+    ran: sideEffectMayHaveHappened,
     holdId,
     grantId,
     consumption: rb["consumption"],

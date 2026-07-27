@@ -41,10 +41,23 @@
  */
 
 /**
+ * Recursively freeze a spec table so NEITHER our code nor an attacker with a reference can rewrite it
+ * at runtime. The bare `Object.freeze` these tables used to carry froze only the TOP level — the inner
+ * rows and per-state metadata stayed mutable, so the fifth review's
+ * `SIDE_EFFECT_UNCONFIRMED.safeToRetry = true` (and per-transition rewrites) still landed. This module
+ * owns only plain objects, so a deep freeze makes the whole spec immutable.
+ */
+function deepFreeze(o) {
+  if (o === null || typeof o !== "object") return o;
+  for (const k of Object.keys(o)) deepFreeze(o[k]);
+  return Object.freeze(o);
+}
+
+/**
  * The states. `terminal` marks states an adapter may report to a caller; `safeToRetry` marks the
  * ONLY states in which no side effect can have occurred.
  */
-export const SIDE_EFFECT_STATES = Object.freeze({
+export const SIDE_EFFECT_STATES = deepFreeze({
   /** Nothing has been dispatched. The gate may still deny; no side effect is possible. */
   NOT_DISPATCHED: { terminal: false, safeToRetry: true },
   /** The grant is reserved and the call is in flight. A side effect MAY already have happened. */
@@ -88,7 +101,7 @@ export const SIDE_EFFECT_EVENTS = Object.freeze([
  * the model does not describe, and silently guessing is how an indeterminate outcome became a
  * determinate lie in the first place.
  */
-const TRANSITIONS = Object.freeze({
+const TRANSITIONS = deepFreeze({
   NOT_DISPATCHED: {
     GATE_DENIED: "FAILED_NO_SIDE_EFFECT",
     DISPATCH_STARTED: "DISPATCHED",
@@ -121,7 +134,7 @@ const TRANSITIONS = Object.freeze({
 });
 
 /** Adapter state → the §13 evidence outcome that describes it. Stated once, mechanically. */
-export const EVIDENCE_OUTCOME_FOR = Object.freeze({
+export const EVIDENCE_OUTCOME_FOR = deepFreeze({
   NOT_DISPATCHED: "APPROVED_NO_EXECUTION_EVIDENCE",
   DISPATCHED: "UNKNOWN_AFTER_DISPATCH",
   SETTLED_UNRECORDED: "UNKNOWN_AFTER_DISPATCH",
@@ -143,13 +156,18 @@ export class IllegalSideEffectTransition extends Error {
   }
 }
 
-/** The reducer. Pure, total over legal pairs, and loud on everything else. */
+/** The reducer. Pure, total over legal pairs, and loud on everything else.
+ *
+ *  Every lookup is guarded by `Object.hasOwn`, not by truthiness of `TRANSITIONS[state]`. The fifth
+ *  review's `next("NOT_DISPATCHED", "__proto__") === Object.prototype` used the inherited `__proto__`
+ *  accessor to turn an ILLEGAL transition into a truthy result the machine treated as a real next
+ *  state. `Object.hasOwn` only ever answers for the OWN keys the table actually declares, so a
+ *  prototype-chain key (`__proto__`, `constructor`, `toString`, …) is an illegal transition, loud. */
 export function next(state, event) {
+  if (typeof state !== "string" || !Object.hasOwn(TRANSITIONS, state)) throw new IllegalSideEffectTransition(state, event);
   const row = TRANSITIONS[state];
-  if (!row) throw new IllegalSideEffectTransition(state, event);
-  const to = row[event];
-  if (!to) throw new IllegalSideEffectTransition(state, event);
-  return to;
+  if (typeof event !== "string" || !Object.hasOwn(row, event)) throw new IllegalSideEffectTransition(state, event);
+  return row[event];
 }
 
 /** Replay a whole event sequence from `NOT_DISPATCHED` (or an explicit start). */
@@ -166,14 +184,46 @@ export function replay(events, start = "NOT_DISPATCHED") {
  * assert it on the remote's behalf.
  */
 export function isSafeToRetry(state) {
-  const meta = SIDE_EFFECT_STATES[state];
-  if (!meta) throw new IllegalSideEffectTransition(state, "(isSafeToRetry)");
-  return meta.safeToRetry === true;
+  if (typeof state !== "string" || !Object.hasOwn(SIDE_EFFECT_STATES, state)) throw new IllegalSideEffectTransition(state, "(isSafeToRetry)");
+  return SIDE_EFFECT_STATES[state].safeToRetry === true;
 }
 
 /** Is this a state an adapter may report to its caller? */
 export function isTerminal(state) {
-  const meta = SIDE_EFFECT_STATES[state];
-  if (!meta) throw new IllegalSideEffectTransition(state, "(isTerminal)");
-  return meta.terminal === true;
+  if (typeof state !== "string" || !Object.hasOwn(SIDE_EFFECT_STATES, state)) throw new IllegalSideEffectTransition(state, "(isTerminal)");
+  return SIDE_EFFECT_STATES[state].terminal === true;
+}
+
+// ── DESIGN 3 wiring: classifying a THROW at the dispatch boundary ─────────────────────────────────
+/**
+ * A thrown value may be MARKED, by a tool that KNOWS its throw preceded any side effect (a pre-dispatch
+ * refusal — a connection refused before the request was sent, a client-side validation error), so a
+ * dispatcher can classify it as `TOOL_THREW_BEFORE_SIDE_EFFECT` → FAILED_NO_SIDE_EFFECT (retryable).
+ * EVERYTHING UNMARKED is `TOOL_THREW_AFTER_DISPATCH` → SIDE_EFFECT_UNCONFIRMED (NOT retryable): a bare
+ * throw proves nothing about whether the side effect happened, and guessing "it failed" is exactly the
+ * signed lie DESIGN 3 exists to prevent. `Symbol.for` is realm/copy-independent (matches
+ * ToolOutcomeNotRecorded's brand discipline).
+ */
+const THREW_BEFORE_SIDE_EFFECT = Symbol.for("noa.threw-before-side-effect/1");
+
+/** Attach the "no side effect had occurred when I threw" proof to a value the tool is about to throw. */
+export function markThrewBeforeSideEffect(err) {
+  try {
+    if (err !== null && (typeof err === "object" || typeof err === "function")) {
+      Object.defineProperty(err, THREW_BEFORE_SIDE_EFFECT, { value: true, enumerable: false, configurable: false });
+    }
+  } catch {
+    // a frozen/sealed/hostile value cannot carry the mark — it is then (correctly) treated as UNCONFIRMED.
+  }
+  return err;
+}
+
+/** Does this thrown value carry the pre-side-effect proof? Cannot throw for ANY input (a revoked proxy
+ *  reading the brand answers false), mirroring ToolOutcomeNotRecorded.is. */
+export function threwBeforeSideEffect(value) {
+  try {
+    return (typeof value === "object" || typeof value === "function") && value !== null && value[THREW_BEFORE_SIDE_EFFECT] === true;
+  } catch {
+    return false;
+  }
 }
