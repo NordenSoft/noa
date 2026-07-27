@@ -26,6 +26,7 @@ export type {
 
 export { canonicalize, JcsError } from "./jcs.js";
 export { safeParse, SafeJsonError } from "./safe-json.js";
+export { snapshotImmutable, deepFreeze, IngestError, MAX_INGEST_DEPTH } from "./ingest.js";
 export { isNFC, nonNfcPaths } from "./nfc.js";
 export { sha256Hex, sha256Prefixed, sha256Digest } from "./hash.js";
 export { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
