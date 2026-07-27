@@ -36,12 +36,17 @@
     "provenance": true
   },
   "scripts": {
-    "test": "node test/smoke.mjs",
+    "test": "node test/dependency-reachability.mjs && node test/smoke.mjs",
+    "test:reachability": "node test/dependency-reachability.mjs",
     "prepublishOnly": "npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "noa-mcp-adapter-core": "file:../adapter-core"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.5",
+    "fast-uri": "^3.1.4"
   },
   "optionalDependencies": {
     "noa-signer-sidecar": "file:../signer-sidecar"
