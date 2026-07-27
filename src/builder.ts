@@ -5,7 +5,7 @@ import { sha256Hex } from "./hash.js";
 import { signEd25519 } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
 import { validateReceiptShape } from "./schema.js";
-import { nonNfcPaths } from "./nfc.js";
+import { nonNfcPaths, isNFC } from "./nfc.js";
 
 export interface Signer {
   kid: string;
@@ -93,7 +93,13 @@ function buildDraft(input: BuildInput, prev: Receipt | null, kid: string): { dra
   // deliberately does not reject by default (already-issued receipts must keep verifying); it
   // reports the same condition in `warnings`, and `requireNFC: true` makes it fatal for operators
   // who want the strict rule today. See src/nfc.ts for why the asymmetry is the right shape.
-  const nonNfc = nonNfcPaths(cloned);
+  // THE SIGNER KID IS SCANNED TOO. This scan reads the CLONE, and the clone is the caller-supplied
+  // payload — `sig.kid` is inserted afterwards, so the one string the SIGNER contributes was the
+  // only string in the receipt nothing checked. A kid is a producer-chosen identifier that relying
+  // parties match, index and alert on, so it carries exactly the hazard this rule exists for: two
+  // kids that render identically, differ in bytes, and both verify. (`sig.value` and the `chain`
+  // hashes are excluded by construction — base64/hex are ASCII and never a normalization question.)
+  const nonNfc = [...nonNfcPaths(cloned), ...(isNFC(kid) ? [] : ["sig.kid"])];
   if (nonNfc.length > 0) {
     throw new BuilderError(
       `buildReceipt: refusing to sign a payload with non-NFC strings (the profile requires producers to emit Unicode NFC): ${nonNfc.join(", ")}`,

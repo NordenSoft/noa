@@ -111,6 +111,49 @@ test("VERIFY: requireNFC:true is a no-op on a conforming chain (no false positiv
   assert.equal(res.warnings.some((w) => w.startsWith("non-nfc:")), false);
 });
 
+// ── THE SIGNER KID (cross-family review round 3) ─────────────────────────────────────────────────
+// Every test above scans the PAYLOAD, and so did both builders and the verifier: the scan ran on the
+// caller-supplied clone, and `sig.kid` is inserted afterwards. So the one string the SIGNER
+// contributes was the only string in the receipt that nothing checked — in either producer or in
+// verification. A kid is exactly what relying parties match, index and alert on, which makes "two
+// kids that render identically, differ in bytes, and both verify" the hazard this rule exists for.
+
+test("PRODUCE: the builder refuses a non-NFC signer KID, and names sig.kid", () => {
+  assert.throws(
+    () => buildReceipt(mkInput(), null, { kid: NFD, privateKey: kp.privateKey }),
+    (e: unknown) => {
+      assert.ok(e instanceof BuilderError, "must be a typed BuilderError, never a bare throw");
+      assert.match(e.message, /non-NFC/);
+      assert.deepEqual(e.errors, ["sig.kid"], "the error must identify the KID, not a payload field");
+      return true;
+    },
+  );
+});
+
+test("PRODUCE: an NFC kid signs normally (the check constrains spelling, not the identifier)", () => {
+  const nfcKp = generateKeyPair(NFC);
+  const r = buildReceipt(mkInput(), null, { kid: NFC, privateKey: nfcKp.privateKey });
+  assert.equal(r.sig.kid, NFC);
+  assert.equal(verifyChain([r], { keyring: { [NFC]: nfcKp.publicKey } }).status, "VALID");
+});
+
+test("VERIFY: an already-issued receipt with a non-NFC KID verifies by default and is REPORTED", () => {
+  const { receipt, kr } = mintNonNfcKidReceipt();
+  const res = verifyChain([receipt], { keyring: kr });
+  assert.equal(res.status, "VALID", "receipts already in the wild must not stop verifying");
+  const flagged = res.warnings.filter((w) => w.startsWith("non-nfc:"));
+  assert.equal(flagged.length, 1, `expected exactly one non-nfc warning, got ${JSON.stringify(res.warnings)}`);
+  assert.match(flagged[0]!, /sig\.kid/);
+});
+
+test("VERIFY: requireNFC:true rejects a non-NFC KID as MALFORMED, naming sig.kid", () => {
+  const { receipt, kr } = mintNonNfcKidReceipt();
+  const res = verifyChain([receipt], { keyring: kr, requireNFC: true });
+  assert.equal(res.status, "MALFORMED");
+  assert.match(res.reason ?? "", /non-NFC/);
+  assert.match(res.reason ?? "", /sig\.kid/);
+});
+
 test("nonNfcPaths reports member NAMES as well as values, and caps its output", () => {
   assert.deepEqual(nonNfcPaths({ [NFD]: "ok" }), [`${NFD} (member name)`]);
   assert.deepEqual(nonNfcPaths({ a: { b: [NFD] } }), ["a.b[0]"]);
@@ -124,6 +167,24 @@ test("nonNfcPaths reports member NAMES as well as values, and caps its output", 
  * like. Built by hand from the same primitives the builder uses, so the signature and chain hash
  * are genuine and the only non-conformance is the spelling.
  */
+/**
+ * The same trick for the KID: a genuine, correctly-signed receipt whose `sig.kid` is non-NFC — what
+ * a receipt signed before the producer check existed (or by a third-party signer) looks like. The
+ * kid is inside the hash pre-image (key-swap protection), so it must be rewritten BEFORE hashing.
+ */
+function mintNonNfcKidReceipt(): { receipt: Receipt; kr: Keyring } {
+  const nfdKp = generateKeyPair(NFD);
+  const conforming = buildReceipt(mkInput(), null, { kid: kp.kid, privateKey: kp.privateKey });
+  const draft = structuredClone(conforming) as Receipt;
+  draft.sig.kid = NFD;
+  draft.chain.hash = "";
+  draft.sig.value = "";
+  const hashInput = receiptHashInput(draft);
+  draft.chain.hash = "sha256:" + sha256Hex(hashInput);
+  draft.sig.value = signEd25519(nfdKp.privateKey, signingMessage(RECEIPT_SIG_DOMAIN, hashInput));
+  return { receipt: draft, kr: { [NFD]: nfdKp.publicKey } };
+}
+
 function mintNonNfcLegacyReceipt(): Receipt {
   const conforming = buildReceipt(mkInput({ agent: { id: NFC, model: null, principal: "SERVICE" } }), null, { kid: kp.kid, privateKey: kp.privateKey });
   const draft = structuredClone(conforming) as Receipt;

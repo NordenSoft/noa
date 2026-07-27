@@ -51,3 +51,22 @@ test("the equivalent NFC payload signs normally", () => {
   assert.equal(r.agent.id, NFC);
   assert.equal(r.sig.kid, kp.kid);
 });
+
+// The KID was the gap this file missed (cross-family review round 3): the test above covers a
+// non-NFC `agent.id`, i.e. the PAYLOAD — and the payload is exactly what the scan already read.
+// `sig.kid` is inserted after the clone, so the signer's own string went unchecked in BOTH
+// producers. Same rule, same failure mode, both producers — including the field the signer owns.
+test("signer-core refuses a non-NFC signer KID (the field the payload scan could never see)", () => {
+  const nfdKp = generateKeyPair(NFD);
+  assert.throws(
+    () => buildReceipt(input(NFC), null, { kid: NFD, privateKey: nfdKp.privateKey }),
+    /non-NFC.*sig\.kid/s,
+    "a non-NFC kid must be refused and NAMED, exactly like a non-NFC payload field",
+  );
+});
+
+test("an NFC kid signs normally (the check constrains spelling, not the identifier)", () => {
+  const nfcKp = generateKeyPair(NFC);
+  const r = buildReceipt(input(NFC), null, { kid: NFC, privateKey: nfcKp.privateKey });
+  assert.equal(r.sig.kid, NFC);
+});
