@@ -119,6 +119,29 @@ export class GateEngine {
     return this.store.findAgentByApiKeyHash(hashSecret(secret));
   }
 
+  /**
+   * AUTHORIZATION (F29-authz). Authenticating the caller is not authorizing it. Every hold and every
+   * grant is OWNED by the agent that created the hold (`HoldRecord.agentId`, set at freeze); a
+   * different agent — legitimately registered, correctly authenticated — has no business acting on
+   * it. Before this existed, server.ts resolved an AgentRecord and then dispatched every route
+   * except createHold on a bare path segment, so any valid key could reserve, report on, cancel or
+   * read any other agent's object given its id. The reachable end of that was a foreign agent
+   * driving `/report{DISPATCHED}` and making the GATE sign an EXECUTED attempt receipt plus an
+   * Execution Consumption on the victim's chain for an action the victim never dispatched.
+   *
+   * NO EXISTENCE ORACLE: a foreign object is reported as `404 UNKNOWN_HOLD` / `UNKNOWN_GRANT` —
+   * byte-identical to a genuinely absent one — so an unauthorized caller cannot use the gate to
+   * confirm that an id exists. Ids are unguessable, and this keeps them the only thing an attacker
+   * would have to guess. The denial IS logged server-side, so an operator debugging a
+   * misconfiguration can still see it; only the wire response is indistinguishable.
+   */
+  private ownsHold(hold: HoldRecord | undefined, agent: AgentRecord, route: string): hold is HoldRecord {
+    if (!hold) return false;
+    if (hold.agentId === agent.id) return true;
+    this.log("authz.denied", { route, holdId: hold.id, owner: hold.agentId, caller: agent.id });
+    return false;
+  }
+
   private actionInput(hold: HoldRecord): ReceiptActionInput {
     return {
       id: hold.actionId,
@@ -349,9 +372,9 @@ export class GateEngine {
     return n;
   }
 
-  getHold(id: string): EngineResult {
+  getHold(id: string, agent: AgentRecord): EngineResult {
     const hold = this.store.getHold(id);
-    if (!hold) return err(404, "UNKNOWN_HOLD");
+    if (!this.ownsHold(hold, agent, "getHold")) return err(404, "UNKNOWN_HOLD");
     this.lazyExpire(hold);
     return { status: 200, body: this.holdView(hold) };
   }
@@ -361,9 +384,9 @@ export class GateEngine {
    * param snapshot is lost, so even a later-arriving approval must NOT execute). Attested by a
    * gate-signed Hold Resolution (status CANCELLED, reasonCode LOCAL_STATE_LOST).
    */
-  cancelLocalStateLost(holdId: string): EngineResult {
+  cancelLocalStateLost(holdId: string, agent: AgentRecord): EngineResult {
     const hold = this.store.getHold(holdId);
-    if (!hold) return err(404, "UNKNOWN_HOLD");
+    if (!this.ownsHold(hold, agent, "cancel")) return err(404, "UNKNOWN_HOLD");
     const receivedAtMs = this.now();
     this.lazyExpire(hold, receivedAtMs);
     if (hold.status !== "PENDING") return err(409, "HOLD_ALREADY_RESOLVED", { status: hold.status });
@@ -536,9 +559,11 @@ export class GateEngine {
   }
 
   /** Long-poll: on a terminal state, return the full resolution view (incl. grant + verdict). */
-  wait(id: string, timeoutMs: number): Promise<EngineResult> {
+  wait(id: string, timeoutMs: number, agent: AgentRecord): Promise<EngineResult> {
     const hold = this.store.getHold(id);
-    if (!hold) return Promise.resolve(err(404, "UNKNOWN_HOLD"));
+    // F29-authz — this route hands back the Execution Grant on APPROVED; it must be owner-only, or
+    // a foreign agent could simply long-poll the victim's grant out of the gate.
+    if (!this.ownsHold(hold, agent, "wait")) return Promise.resolve(err(404, "UNKNOWN_HOLD"));
     this.lazyExpire(hold);
     if (hold.status !== "PENDING") return Promise.resolve({ status: 200, body: this.holdView(hold) });
     return new Promise<EngineResult>((resolve) => {
@@ -555,11 +580,13 @@ export class GateEngine {
   }
 
   // ── grants (the atomic single-use record — F8) ─────────────────────────────
-  reserve(grantId: string): EngineResult {
+  reserve(grantId: string, agent: AgentRecord): EngineResult {
     const rec = this.store.getGrant(grantId);
     if (!rec) return err(404, "UNKNOWN_GRANT");
     // G13 — never act on a grant whose hold was already resolved elsewhere (e.g. CANCELLED).
     const hold = this.store.getHold(rec.holdId);
+    // F29-authz — ownership BEFORE the CAS, so a foreign call can never burn the single use.
+    if (!this.ownsHold(hold, agent, "reserve")) return err(404, "UNKNOWN_GRANT");
     if (hold && hold.status !== "APPROVED") return err(409, "HOLD_NOT_APPROVED", { status: hold.status });
     if (this.now() >= Date.parse(rec.grant.expiresAt)) return err(410, "GRANT_EXPIRED");
     // F8a — ATOMIC CAS UNUSED→RESERVED (single-process => the map write IS the atomic step). The
@@ -572,9 +599,12 @@ export class GateEngine {
     return { status: 200, body: { grant: rec.grant, status: "RESERVED" } };
   }
 
-  report(grantId: string, input: unknown): EngineResult {
+  report(grantId: string, input: unknown, agent: AgentRecord): EngineResult {
     const rec = this.store.getGrant(grantId);
     if (!rec) return err(404, "UNKNOWN_GRANT");
+    // F29-authz — ownership BEFORE any state transition or signature. This is the route whose abuse
+    // produced a gate-signed EXECUTED receipt on a foreign chain; the check belongs first.
+    if (!this.ownsHold(this.store.getHold(rec.holdId), agent, "report")) return err(404, "UNKNOWN_GRANT");
     if (!isRecord(input)) return err(400, "BAD_REQUEST");
     const result = input["result"];
     if (result !== "DISPATCHED" && result !== "FAILED_BEFORE_DISPATCH" && result !== "UNKNOWN") {

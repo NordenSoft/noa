@@ -62,13 +62,13 @@ export class InProcessGateClient implements GateClient {
     return Promise.resolve(this.engine.createHold(this.agent, idempotencyKey, body));
   }
   wait(holdId: string, timeoutMs: number): Promise<EngineResult> {
-    return this.engine.wait(holdId, timeoutMs);
+    return this.engine.wait(holdId, timeoutMs, this.agent);
   }
   reserve(grantId: string): Promise<EngineResult> {
-    return Promise.resolve(this.engine.reserve(grantId));
+    return Promise.resolve(this.engine.reserve(grantId, this.agent));
   }
   report(grantId: string, body: unknown): Promise<EngineResult> {
-    return Promise.resolve(this.engine.report(grantId, body));
+    return Promise.resolve(this.engine.report(grantId, body, this.agent));
   }
 }
 

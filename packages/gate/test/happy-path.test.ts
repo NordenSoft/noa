@@ -47,11 +47,11 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
   assert.ok(grant, "the GATE issued the Execution Grant (D13/D18), not the phone");
 
   // 3. Reserve (atomic, pre-dispatch) → execute → report DISPATCHED → gate signs the Consumption.
-  const reserved = engine.reserve(grantId);
+  const reserved = engine.reserve(grantId, fx.agent);
   assert.equal(reserved.status, 200);
   assert.equal((reserved.body as { status: string }).status, "RESERVED");
 
-  const reported = engine.report(grantId, { result: "DISPATCHED" });
+  const reported = engine.report(grantId, { result: "DISPATCHED" }, fx.agent);
   assert.equal(reported.status, 200, JSON.stringify(reported.body));
   const rb = reported.body as { consumption: Record<string, unknown>; attemptReceipt: Record<string, unknown> };
   const consumption = rb.consumption;

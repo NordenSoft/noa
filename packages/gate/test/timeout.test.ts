@@ -29,7 +29,7 @@ test("expired hold → BLOCKED timeout receipt (POLICY signer, ruleId approval-t
   const holdId = freeze(fx, "chain-to");
 
   fx.clock.advance(60_001); // past TTL
-  const view = fx.engine.getHold(holdId);
+  const view = fx.engine.getHold(holdId, fx.agent);
   assert.equal(view.status, 200);
   const body = view.body as { status: string; verdictReceipt: Record<string, unknown>; holdResolution: Record<string, unknown> };
   assert.equal(body.status, "EXPIRED");
@@ -67,7 +67,7 @@ test("a decision arriving AFTER expiry is rejected fail-closed (409), never over
   const hold = fx.store.getHold(holdId)!;
 
   fx.clock.advance(60_001);
-  fx.engine.getHold(holdId); // trip lazyExpire
+  fx.engine.getHold(holdId, fx.agent); // trip lazyExpire
 
   const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "APPROVE" });
   const late = fx.engine.decide(holdId, { receipt, decisionArtifact });

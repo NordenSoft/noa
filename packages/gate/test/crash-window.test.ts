@@ -24,7 +24,7 @@ function reservedGrant(fx: ReturnType<typeof setupGate>, chain: string): string 
   const hold = fx.store.getHold(holdId)!;
   const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "APPROVE" });
   const grantId = (fx.engine.decide(holdId, { receipt, decisionArtifact }).body as { grantId: string }).grantId;
-  assert.equal(fx.engine.reserve(grantId).status, 200);
+  assert.equal(fx.engine.reserve(grantId, fx.agent).status, 200);
   return grantId;
 }
 
@@ -32,13 +32,13 @@ test("UNKNOWN hint returns 202 and signs NOTHING synchronously (before the sweep
   const fx = setupGate({ approverRole: "approve-high", config: { uncertaintySweepWindowMs: 5 * 60_000 } });
   const grantId = reservedGrant(fx, "chain-unknown");
 
-  const hint = fx.engine.report(grantId, { result: "UNKNOWN" });
+  const hint = fx.engine.report(grantId, { result: "UNKNOWN" }, fx.agent);
   assert.equal(hint.status, 202);
   assert.equal((hint.body as { status: string }).status, "UNCERTAINTY_PENDING_GATE_CORROBORATION");
   // No signature yet — the window has not elapsed.
   assert.equal(fx.engine.getGrant(grantId)!.uncertainty, null);
   // The UNKNOWN hint is NOT terminal: a genuine later DISPATCHED still lands before the window.
-  const dispatched = fx.engine.report(grantId, { result: "DISPATCHED" });
+  const dispatched = fx.engine.report(grantId, { result: "DISPATCHED" }, fx.agent);
   assert.equal(dispatched.status, 200);
 });
 
@@ -74,7 +74,7 @@ test("stuck-RESERVED grant past the sweep window → gate-signed Uncertainty wit
 test("a genuine DISPATCHED before the window is NEVER displaced into an uncertainty", () => {
   const fx = setupGate({ approverRole: "approve-high", config: { uncertaintySweepWindowMs: 5 * 60_000 } });
   const grantId = reservedGrant(fx, "chain-genuine");
-  assert.equal(fx.engine.report(grantId, { result: "DISPATCHED" }).status, 200);
+  assert.equal(fx.engine.report(grantId, { result: "DISPATCHED" }, fx.agent).status, 200);
   fx.clock.advance(5 * 60_000 + 1);
   assert.equal(fx.engine.sweepUncertainty(), 0);
   assert.equal(fx.engine.getGrant(grantId)!.uncertainty, null);
@@ -91,7 +91,7 @@ test("F9: a wrapper crash mid-hold → CANCELLED_LOCAL_STATE_LOST + Hold Resolut
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
 
-  const cancelled = fx.engine.cancelLocalStateLost(holdId);
+  const cancelled = fx.engine.cancelLocalStateLost(holdId, fx.agent);
   assert.equal(cancelled.status, 200);
   assert.equal((cancelled.body as { status: string }).status, "CANCELLED_LOCAL_STATE_LOST");
   const res = fx.store.getHold(holdId)!.holdResolution!;

@@ -130,28 +130,38 @@ async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEng
     if (!b.ok) return;
     return respond(res, engine.createHold(agent, idem, b.value));
   }
+  // F29-authz: every route below acts on an object OWNED by an agent, so the authenticated
+  // `agent` is passed through and the engine enforces ownership. Authentication alone used to be
+  // the whole check here, which let any valid key act on any agent's hold or grant.
   if (method === "GET" && /^\/v1\/holds\/[^/]+\/wait$/.test(path)) {
     const timeoutSec = clampInt(url.searchParams.get("timeout"), 25, 0, 25);
-    return respond(res, await engine.wait(seg(path, 3), timeoutSec * 1000));
+    return respond(res, await engine.wait(seg(path, 3), timeoutSec * 1000, agent));
   }
+  // EXCEPTION — /decision is NOT owner-scoped, deliberately. It carries the APPROVER's signed
+  // Decision Artifact + verdict receipt, and the gate re-verifies both against the approver trust
+  // root (D18: signature, F15 role tier, exact-action binding, APPROVE↔ALLOWED). Authorization here
+  // is cryptographic, not by API key: a foreign agent cannot forge a decision without the approver
+  // key, and the approver device legitimately reaches the gate over a different credential than the
+  // requesting agent's. Scoping this to the hold owner would break real approvals while adding no
+  // security the signature check does not already provide.
   if (method === "POST" && /^\/v1\/holds\/[^/]+\/decision$/.test(path)) {
     const b = await readBody(req, res, config);
     if (!b.ok) return;
     return respond(res, engine.decide(seg(path, 3), b.value));
   }
   if (method === "POST" && /^\/v1\/holds\/[^/]+\/cancel$/.test(path)) {
-    return respond(res, engine.cancelLocalStateLost(seg(path, 3)));
+    return respond(res, engine.cancelLocalStateLost(seg(path, 3), agent));
   }
   if (method === "GET" && /^\/v1\/holds\/[^/]+$/.test(path)) {
-    return respond(res, engine.getHold(seg(path, 3)));
+    return respond(res, engine.getHold(seg(path, 3), agent));
   }
   if (method === "POST" && /^\/v1\/grants\/[^/]+\/reserve$/.test(path)) {
-    return respond(res, engine.reserve(seg(path, 3)));
+    return respond(res, engine.reserve(seg(path, 3), agent));
   }
   if (method === "POST" && /^\/v1\/grants\/[^/]+\/report$/.test(path)) {
     const b = await readBody(req, res, config);
     if (!b.ok) return;
-    return respond(res, engine.report(seg(path, 3), b.value));
+    return respond(res, engine.report(seg(path, 3), b.value, agent));
   }
 
   return sendJson(res, 404, { error: "NOT_FOUND" });
