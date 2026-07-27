@@ -15,10 +15,10 @@
 | `dup-key` | not asserted here† | PASS (1) |
 | `malleability` | PASS (11) | PASS (11) |
 | `unicode` | PASS (9) | PASS (9) |
-| `tenant` | PASS (1) | PASS (1) |
+| `tenant` | PASS (2) | PASS (3) |
 
 † "not asserted here" means `impl-py/conformance.mjs` does not run an explicitly-tagged check for that implementation in that class (usually because the vector predates the `[TS ...]`/`[PY verifier]` tagging convention and only exercises the Python CLI directly). It does NOT mean untested: TS's own behavior for that vector class is unit-tested elsewhere (`test/verify.test.ts`, `test/safe-json.test.ts`, `test/identity-binding.test.ts`) and gated by `npm test`. Only `hash` and `dup-key` currently carry this caveat for the TS column.
 
-Total checks in this run: **92**. Underlying `node impl-py/conformance.mjs` exit code: **0** (0 = every check agreed).
+Total checks in this run: **95**. Underlying `node impl-py/conformance.mjs` exit code: **0** (0 = every check agreed).
 
 See also [`conformance/golden/`](golden/) for the SEPARATE cross-*version* backcompat guarantee (does a real past release's own signed output still verify today) — this matrix is cross-*implementation* only (does an independent verifier agree with the TS reference on the SAME, freshly-built bytes).

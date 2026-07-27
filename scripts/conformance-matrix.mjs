@@ -50,7 +50,7 @@ const VECTOR_CLASSES = [
 // blind spot this matrix exists to prevent. See conformance/MATRIX.md for the per-class rationale
 // (e.g. why `sig.alg="rsa"` is "structural" but "sig fails under wrong pubkey" is "sig").
 const CLASS_RULES = [
-  [/scope\.tenant/i, "tenant"],
+  [/scope\.tenant|requireTenantConsistency/i, "tenant"],
   [/key swap/i, "key-swap"],
   [/impersonation/i, "impersonation"],
   [/truncation|legit opener checkpoint/i, "truncation"],

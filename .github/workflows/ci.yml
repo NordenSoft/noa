@@ -105,6 +105,11 @@ jobs:
         run: npm test
       - name: Go verifier == Python reference
         run: bash impl-go/conformance_test.sh
+      - name: Build the Rust verifier
+        # impl-rust/conformance.sh deliberately requires a pre-built binary and FATALs without one
+        # (impl-go's script builds its own). A developer machine always has it from a previous run —
+        # which is precisely why this only ever failed in CI.
+        run: cd impl-rust && cargo build --release
       - name: Rust verifier == Python reference
         run: bash impl-rust/conformance.sh
       - name: C# verifier == Python reference
