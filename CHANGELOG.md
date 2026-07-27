@@ -97,6 +97,38 @@ fails closed when a future site does not route through it.
   nothing is known about it" for a throw whose value was known exactly. Success outcomes still
   record `null`.
 
+### Added — DESIGN 2: the delegation validity window, and two verdict dimensions (2026-07-27)
+
+- **`verifyEvidence` gains `purpose: "audit" | "authorize"` (default `"audit"`, the legacy
+  behaviour).** One word used to answer two questions that can legitimately disagree: "are these
+  bytes intact" is a permanent fact, "is this authority valid" is a policy window that closes.
+  Collapsed, an auditor reading a five-year-old bundle either gets INVALID for cryptographically
+  perfect evidence — and learns to ignore the verdict — or gets VALID for a trust chain that expired
+  years ago, and cannot tell whether acting on it is safe.
+  - `"audit"` evaluates authority at `holdResolution.receivedAt`, exactly as before: a lapsed
+    delegation does NOT retroactively un-approve what a valid delegation approved, so every
+    already-issued bundle keeps verifying forever. This default is documented as temporary: it exists
+    so callers migrate deliberately instead of discovering the change through a rejection.
+  - `"authorize"` additionally requires the delegation AND manifest windows to contain the verifier's
+    `now`, FAIL-CLOSED, at `STEP_1_HOLD_ENVELOPE` with the new code `E_AUTHORIZATION_WINDOW`, naming
+    both bounds. A caller acting on the result must pass this.
+- **`VerifyEvidenceResult.dimensions`** — `integrity: INTACT | BROKEN` (bytes: signatures, hashes,
+  chain, checkpoint — permanent) and `authorization: VALID_AT_DECISION_TIME | VALID_NOW |
+  EXPIRED_NOW | NOT_YET_VALID_NOW | UNCHECKED` (authority, as a window). "The evidence is intact and
+  its authority lapsed" is now expressible, because it is the truth and the two readers need
+  different halves of it. `integrity` reports what was PROVEN, never what merely was not disproven.
+- **`VerifyEvidenceResult.policy`** — `verifierVersion` (`noa.verify-evidence/2026-07-27`) + the
+  purpose, so a verdict says which rule-set produced it. "VALID" from two builds is not one claim.
+- **Migration scanner** — `npm run scan:authorization-window` (packages/evidence) runs the entire
+  shipped corpus under both purposes and prints exactly which bundles change verdict. Current
+  result: **0 of 60 change under their own declared `now`** (no retroactive rejection is introduced);
+  **16 of 60 are refused under `"authorize"` at wall-clock time**, all at
+  `STEP_1_HOLD_ENVELOPE / E_AUTHORIZATION_WINDOW / EXPIRED_NOW`, which is the designed behaviour —
+  they are fixed-clock test bundles whose delegation window closed, and refusing to authorize NOW
+  against an expired authority is the point. **17 of 60** are `INTACT` evidence with `EXPIRED_NOW`
+  authority: the state a single-word verdict cannot express. Historical evidence is never silently
+  rewritten.
+
 ### Fixed — the golden end-to-end path was uncheckable, and unchecked (2026-07-27)
 
 - **`packages/e2e-demo` was in none of the CI jobs, and its phone-core imports resolved from exactly

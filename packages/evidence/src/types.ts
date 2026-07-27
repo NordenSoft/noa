@@ -140,6 +140,7 @@ export type StepCode =
   | "E_BUNDLE_SHAPE"
   | "E_OUTCOME_ARTIFACT_SET"
   | "E_RECEIPT_ROLE"
+  | "E_AUTHORIZATION_WINDOW"
   | "E_NO_TRUST_ROOT";
 
 /**
@@ -216,6 +217,67 @@ export interface StepResult {
   reason?: string;
 }
 
+/**
+ * DESIGN 2 — the two INDEPENDENT dimensions of a verdict.
+ *
+ * `verdict` used to answer two different questions with one word, and the answers can legitimately
+ * disagree. "Every signature and hash in this bundle is intact" is a permanent fact about bytes: it
+ * was true yesterday and will be true in ten years. "The authority that signed it is valid" is a
+ * statement about a POLICY WINDOW and is true only until the delegation lapses. Collapsing them
+ * means an auditor reading a five-year-old bundle either gets INVALID for evidence that is
+ * cryptographically perfect (and learns to ignore the verdict), or gets VALID for a trust chain that
+ * expired years ago (and cannot tell whether it may act on it).
+ *
+ * They are now reported separately, so "the evidence is intact AND its authority lapsed in 2027" is
+ * expressible — because it is the truth, and because acting on it and auditing it are different
+ * decisions with different correct answers.
+ */
+export interface VerdictDimensions {
+  /** Bytes: signatures, hashes, chain contiguity, checkpoint reconciliation. Permanent. */
+  integrity: "INTACT" | "BROKEN";
+  /**
+   * Authority, as a policy window:
+   *   VALID_AT_DECISION_TIME — the delegation/manifest were valid at `holdResolution.receivedAt`
+   *                            (the gate-attested instant the decision was made). Always required.
+   *   VALID_NOW              — additionally valid at the verifier's `now` (checked only under the
+   *                            `authorize` purpose, where a CURRENT decision is being made).
+   *   EXPIRED_NOW            — was valid at decision time; the window has since closed.
+   *   NOT_YET_VALID_NOW      — the window opens in the future relative to `now`.
+   *   UNCHECKED              — the pipeline failed before authorization could be evaluated.
+   */
+  authorization: "VALID_AT_DECISION_TIME" | "VALID_NOW" | "EXPIRED_NOW" | "NOT_YET_VALID_NOW" | "UNCHECKED";
+}
+
+/**
+ * What the caller is asking the verifier FOR. The two purposes need different answers from the same
+ * bytes, and conflating them is how an expired authority silently keeps authorizing.
+ *
+ *   "audit"     — DEFAULT, and the legacy behaviour: is this HISTORICAL evidence sound? Authority is
+ *                 evaluated at `holdResolution.receivedAt`. A lapsed delegation does not retroactively
+ *                 un-approve what a valid delegation approved, so this must keep verifying forever.
+ *   "authorize" — is this trust chain fit to authorize something NOW? Adds a FAIL-CLOSED check of the
+ *                 delegation and manifest windows at `now`. An expired delegation is a hard rejection.
+ *
+ * `audit` is documented as the temporary legacy default: it exists so every already-issued bundle
+ * keeps verifying while callers migrate. A caller making a live decision must pass `authorize`.
+ */
+export type VerificationPurpose = "audit" | "authorize";
+
+/**
+ * The policy identity a verdict is bound to. A verdict that does not say WHICH rules produced it
+ * cannot be compared across versions — and this branch changes rules, so "VALID" from two different
+ * builds is not the same claim.
+ */
+export interface VerdictPolicy {
+  /** The verifier's own rule-set version (bumped when a rule changes what a bundle verifies to). */
+  verifierVersion: string;
+  /** Which purpose produced this verdict. */
+  purpose: VerificationPurpose;
+}
+
+/** The rule-set version of this verifier. BUMP when a change can flip a bundle's verdict. */
+export const VERIFIER_POLICY_VERSION = "noa.verify-evidence/2026-07-27" as const;
+
 /** The full `verify-evidence` result. */
 export interface VerifyEvidenceResult {
   verdict: EvidenceVerdict;
@@ -233,6 +295,10 @@ export interface VerifyEvidenceResult {
    * the verifier never asserted is a receipt whose meaning nothing checked.
    */
   rolesAsserted: string[];
+  /** DESIGN 2: integrity and authorization, reported separately (they can legitimately disagree). */
+  dimensions: VerdictDimensions;
+  /** DESIGN 2: the rule-set + purpose this verdict was produced under. */
+  policy: VerdictPolicy;
   /** Non-fatal, honest caveats (e.g. F6 opener-scoped residual, tail-truncation caveat). */
   warnings: string[];
 }

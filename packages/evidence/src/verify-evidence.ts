@@ -16,6 +16,9 @@ import type { Keyring } from "noa-receipt";
 import {
   EVIDENCE_SPEC,
   POSITIVE_OUTCOMES,
+  VERIFIER_POLICY_VERSION,
+  type VerdictDimensions,
+  type VerificationPurpose,
   type EvidenceBundle,
   type EvidenceOutcome,
   type EvidenceVerdict,
@@ -120,6 +123,19 @@ export interface VerifyEvidenceOptions {
   maxAgeMs?: number;
   /** injectable schemas (tests); default loads the shipped schemas from disk. */
   schemas?: LoadedSchemas;
+  /**
+   * DESIGN 2 — what this verification is FOR. Default `"audit"`: historical evidence, authority
+   * evaluated at `holdResolution.receivedAt`, which is the legacy behaviour and keeps every
+   * already-issued bundle verifying. Pass `"authorize"` when the answer will be used to make a
+   * CURRENT decision: the delegation and manifest windows are then ALSO checked against `now`, fail
+   * closed, at `STEP_1_HOLD_ENVELOPE` with code `E_AUTHORIZATION_WINDOW`.
+   *
+   * The `"audit"` default is deliberately temporary. It exists so callers migrate deliberately
+   * rather than discovering the change through a rejection; a caller acting on the result must pass
+   * `"authorize"`. `packages/evidence/scripts/authorization-window-scan.mjs` reports exactly which
+   * bundles change verdict between the two.
+   */
+  purpose?: VerificationPurpose;
 }
 
 function result(
@@ -129,8 +145,18 @@ function result(
   warnings: string[],
   failing?: StepResult,
   rolesAsserted: ReceiptRole[] = [],
+  dimensions: VerdictDimensions = { integrity: "BROKEN", authorization: "UNCHECKED" },
+  purpose: VerificationPurpose = "audit",
 ): VerifyEvidenceResult {
-  const r: VerifyEvidenceResult = { verdict, outcome, steps, warnings, rolesAsserted };
+  const r: VerifyEvidenceResult = {
+    verdict,
+    outcome,
+    steps,
+    warnings,
+    rolesAsserted,
+    dimensions,
+    policy: { verifierVersion: VERIFIER_POLICY_VERSION, purpose },
+  };
   if (failing) {
     r.failedStep = failing.step;
     if (failing.code) r.code = failing.code;
@@ -146,6 +172,7 @@ function result(
 export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions): VerifyEvidenceResult {
   const warnings: string[] = [];
   const schemas = opts.schemas ?? loadSchemas();
+  const purpose: VerificationPurpose = opts.purpose ?? "audit";
   const rootKeyring = asRootKeyEntryMap(opts.tenantRoot);
   const checkpointKeyring = asStringKeyring(opts.checkpointKeyring);
 
@@ -198,6 +225,8 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
     checkpointKeyring,
     warnings,
     rolesAsserted: new Set<ReceiptRole>(),
+    purpose,
+    authorization: "UNCHECKED",
     ...(receivedAtRaw !== undefined ? { receivedAt: receivedAtRaw } : {}),
     ...(riskClassRaw !== undefined ? { riskClass: riskClassRaw } : {}),
     orderedChain,
@@ -212,7 +241,11 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
     if (!r.ok) {
       const verdict: EvidenceVerdict =
         r.code === "E_INCONCLUSIVE_NO_CHECKPOINT" || r.code === "E_STALE_CHECKPOINT" ? "INCONCLUSIVE" : "INVALID";
-      return result(verdict, bundle.outcome, steps, ctx.warnings, r, [...ctx.rolesAsserted]);
+      // A failure BEFORE the chain/checkpoint step leaves integrity genuinely unproven, and a
+      // failure at step 17 means it is broken. Neither is reported as INTACT: this dimension states
+      // what was PROVEN, never what was merely not disproven.
+      const integrity: VerdictDimensions["integrity"] = ctx.checkpointReconciled === true && r.step !== "STEP_17_CHECKPOINT_RECONCILE" ? "INTACT" : "BROKEN";
+      return result(verdict, bundle.outcome, steps, ctx.warnings, r, [...ctx.rolesAsserted], { integrity, authorization: ctx.authorization }, purpose);
     }
   }
 
@@ -227,5 +260,14 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
     // a non-executed outcome that survived step 15 necessarily has a fresh, reconciled checkpoint.
     verdict = "VALID_FULL_CHAIN";
   }
-  return result(verdict, bundle.outcome, steps, ctx.warnings, undefined, [...ctx.rolesAsserted]);
+  return result(
+    verdict,
+    bundle.outcome,
+    steps,
+    ctx.warnings,
+    undefined,
+    [...ctx.rolesAsserted],
+    { integrity: "INTACT", authorization: ctx.authorization },
+    purpose,
+  );
 }

@@ -20,6 +20,8 @@ import {
   type StepName,
   type StepResult,
   NEGATIVE_OUTCOMES,
+  type VerdictDimensions,
+  type VerificationPurpose,
   OUTCOME_ARTIFACT_UNION,
   OPTIONAL_ARTIFACT_FIELDS,
   STEP_OWNED_ABSENCE,
@@ -60,6 +62,10 @@ export interface Ctx {
   chainResult?: VerifyResult;
   checkpointReconciled?: boolean;
   checkpointFresh?: boolean;
+  /** DESIGN 2: what the caller is asking for — "audit" (historical, default) or "authorize" (now). */
+  purpose: VerificationPurpose;
+  /** DESIGN 2: the authorization dimension, computed in step 1 and reported alongside the verdict. */
+  authorization: VerdictDimensions["authorization"];
 }
 
 // ─── tiny structural getters (no schema logic — that is verifyArtifact's job) ─────────────────────
@@ -241,6 +247,33 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   if (Number.isNaN(rAt) || Number.isNaN(dFrom) || Number.isNaN(dExp) || rAt < dFrom || rAt > dExp) {
     return fail(S, "E_DELEGATION_CHAIN", `keyDelegation not valid at holdResolution.receivedAt (${receivedAt})`);
   }
+  // ── DESIGN 2: AUTHORIZATION-POLICY VALIDITY, AS A SEPARATE DIMENSION ─────────────────────────
+  // The check above answers "was this authority valid when the decision was made" — the right
+  // question for an AUDIT, and the reason a lapsed delegation must never retroactively un-approve
+  // what a valid one approved. It is the WRONG question for a caller about to act: a delegation
+  // that expired last month still passes it, forever.
+  //
+  // The window is therefore ALSO evaluated at `now`, and reported as its own dimension. Under
+  // `purpose: "authorize"` — a CURRENT authorization decision — a closed window is a FAIL-CLOSED
+  // rejection here. Under the default `purpose: "audit"` it is recorded, never fatal, so every
+  // already-issued bundle keeps verifying exactly as before.
+  const nowMs = parseTime(ctx.now);
+  if (!Number.isNaN(nowMs) && !Number.isNaN(dFrom) && !Number.isNaN(dExp)) {
+    if (nowMs < dFrom) ctx.authorization = "NOT_YET_VALID_NOW";
+    else if (nowMs > dExp) ctx.authorization = "EXPIRED_NOW";
+    else ctx.authorization = ctx.purpose === "authorize" ? "VALID_NOW" : "VALID_AT_DECISION_TIME";
+  } else {
+    ctx.authorization = "VALID_AT_DECISION_TIME";
+  }
+  if (ctx.purpose === "authorize" && (ctx.authorization === "EXPIRED_NOW" || ctx.authorization === "NOT_YET_VALID_NOW")) {
+    return fail(
+      S,
+      "E_AUTHORIZATION_WINDOW",
+      `keyDelegation window [${String(del.validFrom)} … ${String(del.expiresAt)}] does not contain the verifier's now (${ctx.now}) — ` +
+        `this bundle's authority was valid when the decision was made (audit purpose still verifies it) but is ${ctx.authorization === "EXPIRED_NOW" ? "EXPIRED" : "NOT YET VALID"} for a CURRENT authorization decision`,
+    );
+  }
+
   const delegation: DelegationDoc = {
     spec: String(del.spec), tenant: String(del.tenant), delegatedKid: String(del.delegatedKid),
     delegatedPublicKey: String(del.delegatedPublicKey), permissions: permissions as string[],
@@ -300,6 +333,16 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   const mExp = parseTime(manifest.expiresAt);
   if (Number.isNaN(mExp) || rAt > mExp || (!Number.isNaN(mIssued) && rAt < mIssued)) {
     return fail(S, "E_HOLD_ENVELOPE", `keyManifest not current at receivedAt (${receivedAt})`);
+  }
+  // DESIGN 2: the manifest's own window, at `now`, for a CURRENT authorization decision. A manifest
+  // that expired after the decision is fine to audit and unfit to authorize.
+  if (ctx.purpose === "authorize" && !Number.isNaN(nowMs) && (nowMs > mExp || (!Number.isNaN(mIssued) && nowMs < mIssued))) {
+    ctx.authorization = nowMs > mExp ? "EXPIRED_NOW" : "NOT_YET_VALID_NOW";
+    return fail(
+      S,
+      "E_AUTHORIZATION_WINDOW",
+      `keyManifest window [${manifest.issuedAt} … ${manifest.expiresAt}] does not contain the verifier's now (${ctx.now}) — valid at the decision instant, unfit to authorize NOW`,
+    );
   }
 
   // Hold Envelope: GATE + hold-signer (F15), gateKid == sig.kid, bound to THIS manifest
