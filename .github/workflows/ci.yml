@@ -2,7 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # main plus the long-lived hardening branches, so a branch under independent review is gated by
+    # the SAME matrix as main rather than by a laptop. Feature branches are not merged to get CI.
+    branches: [main, 'arp-interop-response-*']
   pull_request:
     branches: [main]
 
@@ -58,10 +60,55 @@ jobs:
         run: cd packages/signer-core && npm ci && npm run build
       - name: relay tests
         run: cd packages/relay && npm ci && npm test
+      - name: signer-core tests
+        # Built above for relay; its OWN suite was never run here. It is an INDEPENDENT signing
+        # implementation (its own JCS + builder), so a producer-side invariant that holds only in
+        # noa-receipt's builder is not an invariant — that gap is now covered by its nfc-universal
+        # test and must be gated.
+        run: cd packages/signer-core && npm test
+      - name: tsa-anchor tests
+        run: cd packages/tsa-anchor && npm ci && npm test
       - name: Install adapter-core for framework-adapters' local package dependency
         run: cd packages/adapter-core && npm ci
       - name: framework-adapters tests
         run: cd packages/framework-adapters && npm ci && npm test
+
+  five-verifier-conformance:
+    # THE FIVE-LANGUAGE INTEROP BAR, GATED. The `test` job below runs the TS<->Python conformance
+    # only; Go, Rust and C# were verified on developer machines and by nothing else. That is exactly
+    # the shape of gap this repository keeps finding: a rule enforced in some implementations is not
+    # an invariant. Every verifier that claims conformance is now checked on every push.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.23"
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "10.0.x"
+      - run: npm ci
+      - name: Build + generate vectors (the corpus every verifier is held to)
+        run: npm test
+      - name: Go verifier == Python reference
+        run: bash impl-go/conformance_test.sh
+      - name: Rust verifier == Python reference
+        run: bash impl-rust/conformance.sh
+      - name: C# verifier == Python reference
+        run: bash impl-csharp/conformance.sh
 
   test:
     runs-on: ubuntu-latest

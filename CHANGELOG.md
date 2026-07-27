@@ -9,11 +9,69 @@ All notable changes to `noa-receipt` are documented here. The format follows
 > **NOT RELEASED, NOT PUBLISHED, NO VERSION BUMP.** These land on a feature branch. The two
 > BREAKING items below require a MAJOR release; that decision and its timing are the maintainer's.
 
+### Security (cross-family review, 2026-07-27)
+
+Five findings an independent review reproduced against this branch. Each was re-reproduced here
+before being fixed, and each fix carries a regression fixture proven red when only its own guard
+predicate is neutered.
+
+- **CRITICAL — the evidence verifier accepted gate self-approval as `VALID_FULL_CHAIN`.** An
+  `EXECUTED` bundle with NO Decision Artifact skipped the decision signature, the approver identity
+  and the whole F15 tier check (steps 4 and 5 both return early when it is absent), and the grant's
+  `approvalReceiptHash` was never compared to anything. A compromised gate could sign the ALLOWED
+  receipt itself and manufacture complete evidence with no human anywhere in it. Step 3 now REQUIRES
+  a Decision Artifact for any outcome resolving to APPROVED/DENIED, and rejects a
+  `decisionArtifactHash` that claims a decision the bundle does not carry; step 10 now binds the
+  grant's `approvalReceiptHash`, `paramsHash` and `holdId` to the approval in evidence.
+
+- **CRITICAL — framework adapters attested `EXECUTED` before execution.** `preCheck` mapped policy
+  `ALLOW` straight to `governance.verdict = "EXECUTED"` and `guardCall` recorded that receipt before
+  invoking the tool, so an operation that threw before any side effect still produced a signed,
+  chain-valid receipt asserting it had run. A pre-execution decision now records `ALLOWED`, and the
+  terminal `EXECUTED`/`FAILED` receipt is a second artifact written after the call settles.
+
+- **HIGH — signatures made before key activation were accepted.** Manifest entries always carried
+  `validFrom`, but `KeyEntry` had no such field so every keyring resolver dropped it and the
+  authorization window was only ever closed at the revocation end. `validFrom` now survives keyring
+  resolution and is evaluated at the artifact's own time, exactly as `revokedAt` is.
+
+- **HIGH — a revoked checkpoint signer stayed temporally authorized**, because step 18 judged every
+  key at `holdResolution.receivedAt` while a checkpoint is produced later. Checkpoint authorization
+  is now evaluated at `checkpoint.ts`. Related: freshness treated ANY future timestamp as not-stale,
+  so a checkpoint dated 2099 verified as fresh; forward-dating beyond a 5-minute clock-skew
+  tolerance is now refused for every outcome.
+
+- **MEDIUM — three components implemented three different F15 approver lattices.** The tiers are
+  ORDERED: `approve-critical` dominates `approve-high`. `approval-artifacts` required exactly
+  `approve-high` for HIGH and so rejected the gate's own shipped default with a 422. One lattice
+  now, with a cross-package test.
+
+- **MEDIUM — `noa-signer` (packages/signer-core) bypassed the producer-side NFC hard-fail.** It is
+  an independent signing implementation; the rule now holds in both producers.
+
+- **MEDIUM — a fresh relay tenant could be opened at version 999**, and a tenant already carrying a
+  pre-bound extreme version was permanently unable to rotate. First publishes are now genesis-scale,
+  and a stored version no conforming publish could have produced is recoverable by re-genesis.
+
+- **LOW — the dependency reachability guard reported PASS when `node_modules` was absent**, i.e. it
+  announced the tree was safe having inspected nothing. It now fails closed.
+
+- **LOW — `/decision`'s exception comment justified itself with a false claim** about approver
+  credential topology (the gate has only one principal type). Corrected, with the residual
+  existence-oracle stated rather than papered over.
+
 ### BREAKING
 
 - **`verifyChain`: `requireTenantConsistency` now defaults to `true`.** A chain whose
-  `scope.tenant` drifts — or carries the field on some receipts and not others — is now
-  `TAMPERED` at the first drift instead of `VALID` with a warning.
+  `scope.tenant` changes from one PRESENT value to a DIFFERENT present value — a cross-tenant
+  splice — is now `TAMPERED` at the first drift instead of `VALID` with a warning.
+
+  *Refined after review:* an `absent <-> present` transition is NOT tampering. `scope.tenant` is
+  optional in the schema and this profile never declared it immutable, so a deployment that starts
+  or stops emitting the field mid-chain is a producer-version change. It is reported in `warnings`
+  and the verdict is unaffected — labelling it `TAMPERED` would send an operator hunting a forgery
+  that does not exist, and would collapse two failures with different responses onto one verdict,
+  which is exactly what this profile's own chain-level-axis rule forbids.
 
   *Why:* tenant isolation is a security boundary, and the previous default was permissive on it.
   Opt-in was a genuine defence, but defaults are what actually ship, and the operator who most
