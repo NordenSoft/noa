@@ -418,10 +418,12 @@ func verifyChain(receipts, keyring, identity, checkpoint *Value) string {
 		if !okCur || !okPrev {
 			break // a gap is reported by the seq-walk below; don't pre-empt it
 		}
+		// Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present is a
+		// producer-version change on an OPTIONAL field and is not tampering (see src/verify.ts).
 		curHas := cur.get("scope").has("tenant")
 		prvHas := prv.get("scope").has("tenant")
-		if curHas != prvHas || cur.get("scope").get("tenant").Str != prv.get("scope").get("tenant").Str {
-			return statusTampered // tenant drift
+		if curHas && prvHas && cur.get("scope").get("tenant").Str != prv.get("scope").get("tenant").Str {
+			return statusTampered // cross-tenant splice
 		}
 	}
 

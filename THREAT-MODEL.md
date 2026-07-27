@@ -108,16 +108,25 @@ truth or safety.
   "this graph belongs to *your* deployment/customer/task" unless the caller checks `scope.chain`
   (and any agreed `tenant`/subject) against what it expected. `scope.chain` IS in the signed body
   (cross-chain splice is rejected), but matching it to *your* context is policy you must apply.
-  *Mitigation (A1 hardening, v0.3, additive):* unlike `scope.chain`, `scope.tenant` was previously
-  **not** checked for consistency across one chain at all — a caller relying on "one chain = one
-  tenant" got a silent `VALID` over a mixed-tenant chain. `verifyChain` now scans `scope.tenant`
-  across the whole (seq-ordered) chain and reports every drift (including a tenant appearing on
-  some receipts and not others) as a machine-readable `warnings` entry
-  (`tenant-drift: seq A "x" -> seq B "y"`) — by default the verdict is unaffected (backward
-  compatible). Pass `requireTenantConsistency: true` to instead reject the first drift as
-  `TAMPERED` (the same verdict class as a `scope.chain` partition split, since it is the identical
-  class of problem for the sibling scope field). This closes the "silent" half of the gap; matching
-  the (now-enforced-consistent) tenant value to *your* expected tenant remains the caller's job.
+  *Mitigation (fail-closed by DEFAULT since the tenant-consistency change; the earlier A1 revision
+  of this paragraph said the default verdict was unaffected — that is no longer true):*
+  `scope.tenant` was once not checked for consistency across a chain at all, so a caller relying on
+  "one chain = one tenant" got a silent `VALID` over a mixed-tenant chain. `verifyChain` now scans
+  `scope.tenant` across the whole (seq-ordered) chain and distinguishes TWO kinds of drift:
+
+  - **present → a DIFFERENT present value** (`acme` → `globex`) is a **cross-tenant splice**: every
+    receipt is individually intact and correctly signed, and the forgery is a property of the SET.
+    This is `TAMPERED` **by default** — the same verdict class as a `scope.chain` partition split,
+    since it is the identical class of problem for the sibling scope field. Pass
+    `requireTenantConsistency: false` for the previous warn-only behaviour.
+  - **absent ↔ present** (a deployment starting or stopping emission of an OPTIONAL field) is a
+    producer-version change, not a splice. `scope.tenant` is optional in the schema and this
+    profile has never declared it immutable, so this is **reported, never rejected** — labelling it
+    `TAMPERED` would send an operator hunting a forgery that does not exist.
+
+  Both kinds are recorded as machine-readable `warnings` entries
+  (`tenant-drift: seq A "x" -> seq B "y"`). All five verifiers implement the identical rule.
+  Matching the tenant value to *your* expected tenant remains the caller's job.
 - **Omission ≠ tampering:** this proves the integrity of the receipts that EXIST. An agent that
   simply never emits a receipt for a bad action leaves no trace to detect. It is log-integrity,
   not a guarantee of behavioral honesty.

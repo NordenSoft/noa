@@ -556,7 +556,11 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
         if s not in by_seq or (s - 1) not in by_seq:
             break  # a gap is reported by the walk below; do not pre-empt its message
         cur_r, prev_r = by_seq[s], by_seq[s - 1]
-        if cur_r.get("scope", {}).get("tenant") != prev_r.get("scope", {}).get("tenant"):
+        cur_t = cur_r.get("scope", {}).get("tenant")
+        prev_t = prev_r.get("scope", {}).get("tenant")
+        # Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present is a
+        # producer-version change on an OPTIONAL field and is not tampering (see src/verify.ts).
+        if cur_t != prev_t and isinstance(cur_t, str) and isinstance(prev_t, str):
             return "TAMPERED", (
                 f'tenant-drift: seq {prev_r["chain"].get("seq")} {_tenant_label(prev_r)}'
                 f' -> seq {cur_r["chain"].get("seq")} {_tenant_label(cur_r)}'

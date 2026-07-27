@@ -167,8 +167,11 @@ public static class Verifier
         {
             if (!bySeq.TryGetValue(s, out JObj? curT) || !bySeq.TryGetValue(s - 1, out JObj? prevT))
                 break; // a gap is reported by the seq-walk below; do not pre-empt it
-            if (!string.Equals(TenantKeyOf(curT), TenantKeyOf(prevT), StringComparison.Ordinal))
-                return new VerifyResult(VerifyStatus.Tampered, "tenant drift");
+            // Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present is
+            // a producer-version change on an OPTIONAL field, not tampering (see src/verify.ts).
+            string? a = TenantOf(curT), bb = TenantOf(prevT);
+            if (a is not null && bb is not null && !string.Equals(a, bb, StringComparison.Ordinal))
+                return new VerifyResult(VerifyStatus.Tampered, "cross-tenant splice");
         }
 
         var pinned = new Dictionary<string, string>(StringComparer.Ordinal);
@@ -290,10 +293,9 @@ public static class Verifier
     private static string? ChainOf(JObj r) =>
         r.Get("scope") is JObj sc && sc.Get("chain") is JStr c ? c.Value : null;
 
-    /// Stable comparison key for scope.tenant that distinguishes ABSENT from any present value
-    /// (a missing field and the literal string "(none)" must not compare equal).
-    private static string TenantKeyOf(JObj r) =>
-        r.Get("scope") is JObj sc && sc.Get("tenant") is JStr t ? "s:" + t.Value : "\u0000absent";
+    /// scope.tenant when present as a string, else null (ABSENT is distinct from any present value).
+    private static string? TenantOf(JObj r) =>
+        r.Get("scope") is JObj sc && sc.Get("tenant") is JStr t ? t.Value : null;
 
     private static long SeqOf(JObj r) =>
         r.Get("chain") is JObj ch && ch.Get("seq") is JInt s ? s.Value : -1;

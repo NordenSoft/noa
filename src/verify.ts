@@ -265,7 +265,22 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       if (curR.scope.tenant !== prevR.scope.tenant) {
         const msg = `tenant-drift: seq ${prevR.chain.seq} ${describeTenant(prevR.scope.tenant)} -> seq ${curR.chain.seq} ${describeTenant(curR.scope.tenant)}`;
         tenantDriftMessages.push(msg);
-        if (o.requireTenantConsistency ?? true) {
+        // WHICH DRIFTS ARE FATAL. `scope.tenant` is OPTIONAL in the schema and the frozen spec never
+        // declared it immutable, so the two kinds of drift are not the same event:
+        //
+        //   present -> DIFFERENT present   (acme -> globex)  two distinct tenants spliced into one
+        //     chain. Every receipt is individually intact and correctly signed; the forgery is a
+        //     property of the SET — the identical class as the `scope.chain` partition split above,
+        //     which is already TAMPERED. Fail closed.
+        //
+        //   absent <-> present             (enrichment/omission)  a deployment that began emitting
+        //     (or stopped emitting) an optional field mid-chain. That is a producer-version change,
+        //     NOT a cross-tenant splice, and nothing in the frozen spec forbids it. Calling it
+        //     TAMPERED would label a legitimate transition as cryptographic tampering, tell the
+        //     operator to hunt a forgery that does not exist, and contradict this profile's own
+        //     rule that distinct failures must not collapse onto one verdict. Report it instead.
+        const bothPresent = prevR.scope.tenant !== undefined && curR.scope.tenant !== undefined;
+        if (bothPresent && (o.requireTenantConsistency ?? true)) {
           return fail("TAMPERED", msg, chainId, list.length, curR.chain.seq);
         }
       }

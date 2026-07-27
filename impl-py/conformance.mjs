@@ -583,7 +583,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   }, prev, { kid: kp.kid, privateKey: kp.privateKey });
 
   const t0 = mkT(0, "acme", null);
-  const t1 = mkT(1, "globex", t0);
+  const t1 = mkT(1, "globex", t0); // present -> DIFFERENT present: a cross-tenant splice
   const driftPath = join(dir, "tenant-drift.json");
   writeFileSync(driftPath, JSON.stringify([t0, t1]));
 

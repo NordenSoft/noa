@@ -536,16 +536,28 @@ test("A1: scope.tenant absent on every receipt -> NO tenant-drift warning (absen
   assert.ok(!r.warnings.some((w) => /tenant-drift/.test(w)), `unexpected tenant-drift warning: ${JSON.stringify(r.warnings)}`);
 });
 
-test("A1: scope.tenant present on some receipts and absent on others -> also drift, also TAMPERED by default", () => {
+test("A1: absent<->present tenant is REPORTED but not TAMPERED (an optional field appearing is not a splice)", () => {
+  // scope.tenant is OPTIONAL in the schema and the frozen spec never declared it immutable, so a
+  // deployment that starts (or stops) emitting it mid-chain is a producer-version change, not a
+  // cross-tenant splice. Calling that tampering would tell an operator to hunt a forgery that does
+  // not exist — and would collapse two failures with different responses onto one verdict, which is
+  // exactly what this profile's chain-level-axis rule forbids.
   const r0 = mkTenantReceipt("r0", "acme", null);
   const r1 = mkTenantReceipt("r1", undefined, r0);
   const r = verifyChain([r0, r1], { keyring: tenantKeyring });
+  assert.equal(r.status, "VALID", r.reason);
+  assert.ok(
+    r.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 (none)'),
+    `the transition must still be REPORTED, got: ${JSON.stringify(r.warnings)}`,
+  );
+});
+
+test("A1: present -> DIFFERENT present IS a cross-tenant splice -> TAMPERED by default", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", "globex", r0);
+  const r = verifyChain([r0, r1], { keyring: tenantKeyring });
   assert.equal(r.status, "TAMPERED", r.reason);
-  assert.match(r.reason ?? "", /tenant-drift: seq 0 "acme" -> seq 1 \(none\)/);
-  // ...and the opt-out still reports it as a warning instead, unchanged.
-  const optOut = verifyChain([r0, r1], { keyring: tenantKeyring, requireTenantConsistency: false });
-  assert.equal(optOut.status, "VALID", optOut.reason);
-  assert.ok(optOut.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 (none)'));
+  assert.match(r.reason ?? "", /tenant-drift: seq 0 "acme" -> seq 1 "globex"/);
 });
 
 test("A1: requireTenantConsistency:true + drift -> fail-closed TAMPERED (same verdict class as the scope.chain partition-split check), badSeq points at the first drifting receipt", () => {

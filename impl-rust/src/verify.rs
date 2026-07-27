@@ -265,8 +265,13 @@ pub fn verify_chain(
                 (Some(c), Some(p)) => (*c, *p),
                 _ => break, // a gap is reported by the seq-walk below; do not pre-empt it
             };
-            if tenant_of(cur) != tenant_of(prev) {
-                return (Status::Tampered, "tenant drift".into());
+            // Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present
+            // is a producer-version change on an OPTIONAL field, not tampering (see src/verify.ts).
+            match (tenant_of(cur), tenant_of(prev)) {
+                (Some(a), Some(b)) if a != b => {
+                    return (Status::Tampered, "cross-tenant splice".into());
+                }
+                _ => {}
             }
         }
     }
