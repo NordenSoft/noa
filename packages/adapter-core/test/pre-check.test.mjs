@@ -18,7 +18,9 @@ test("preCheck: small refund → ALLOW, chain verifies", () => {
     { signer, policy: REFUND_GUARD_POLICY, prev: null, seq: 0 },
   );
   assert.equal(r.decision, "ALLOW");
-  assert.equal(r.receipt.governance.verdict, "EXECUTED");
+  // A pre-execution decision receipt records ALLOWED, not EXECUTED: preCheck decides, it does
+  // not observe. The terminal EXECUTED/FAILED receipt is a separate post-attempt artifact.
+  assert.equal(r.receipt.governance.verdict, "ALLOWED");
   const v = verifyChain([r.receipt], { keyring });
   assert.equal(v.status, "VALID");
 });
@@ -816,7 +818,7 @@ test("preCheck: approvalRules omitted -> behavior byte-identical to before (back
   const { signer, keyring } = signerAndKeyring("test-key-r4-noop");
   const withoutOpt = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer, policy: REFUND_GUARD_POLICY });
   assert.equal(withoutOpt.decision, "ALLOW");
-  assert.equal(withoutOpt.receipt.governance.verdict, "EXECUTED");
+  assert.equal(withoutOpt.receipt.governance.verdict, "ALLOWED");
   const withEmptyArray = preCheck(
     { name: "payment.refund", args: { amountMinor: 4200 } },
     { signer, policy: REFUND_GUARD_POLICY, approvalRules: [] },
@@ -864,7 +866,7 @@ test("preCheck: a DENY is untouched by approvalRules (nothing to hold — alread
   assert.equal(allTinyRefundsHeld.decision, "DEFERRED");
 });
 
-test("preCheck: suppressApprovalHold skips the approval gate for ONE consumed-ticket retry — without it the same rule re-matches and the retry re-DEFERs forever, so EXECUTED is unreachable", () => {
+test("preCheck: suppressApprovalHold skips the approval gate for ONE consumed-ticket retry — without it the same rule re-matches and the retry re-DEFERs forever, so ALLOWED is unreachable", () => {
   const { signer, keyring } = signerAndKeyring("test-key-r4-suppress");
   const approvalRules = [
     { id: "big-refund-needs-human", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } },
@@ -880,7 +882,7 @@ test("preCheck: suppressApprovalHold skips the approval gate for ONE consumed-ti
     { signer, policy: REFUND_GUARD_POLICY, approvalRules, suppressApprovalHold: true },
   );
   assert.equal(retried.decision, "ALLOW");
-  assert.equal(retried.receipt.governance.verdict, "EXECUTED");
+  assert.equal(retried.receipt.governance.verdict, "ALLOWED");
   assert.equal(retried.evidence.approvalRuleFired, null, "no approval rule fires on a suppressed call");
   // Suppression must NOT bypass the policy: a call the L2 policy itself DENIES stays DENIED.
   const stillDenied = preCheck(

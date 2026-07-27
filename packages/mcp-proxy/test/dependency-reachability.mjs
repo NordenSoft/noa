@@ -92,13 +92,22 @@ const importers = files.filter((f) => {
   try { return readFileSync(f, 'utf8').includes(SUBPATH); } catch { return false; }
 });
 
+// RESOLUTION IS MANDATORY, NOT BEST-EFFORT. This previously swallowed a missing package and
+// reported PASS — so on a machine (or a CI job) where dependencies were never installed, the guard
+// announced the tree was safe having inspected nothing. Absence of evidence reported as evidence of
+// absence is the exact failure mode this file exists to prevent, and a publishing/CI gate must fail
+// closed on it. If the dependency genuinely disappears from the graph, that is a change worth
+// failing on until someone confirms it and deletes this guard deliberately.
 let resolvedVersion = null;
+let resolutionError = null;
 try {
   resolvedVersion = JSON.parse(
     readFileSync(join(PKG_ROOT, 'node_modules', '@hono', 'node-server', 'package.json'), 'utf8'),
   ).version;
-} catch {
-  // Not installed under this package — nothing resolved, nothing to assert about the version.
+} catch (e) {
+  resolutionError = e.code === 'ENOENT'
+    ? 'not installed (run `npm install` in packages/mcp-proxy — a guard that cannot inspect the tree must not report PASS)'
+    : `unreadable: ${e.message}`;
 }
 
 const failures = [];
@@ -110,6 +119,14 @@ if (importers.length > 0) {
       `\n    This proxy serves no static files. If that changed deliberately, the fix is NOT to\n` +
       `    delete this check — it is to confirm the resolved @hono/node-server is >= ${VULNERABLE_BELOW}\n` +
       `    on every platform this ships to, and to re-scope this assertion accordingly.`,
+  );
+}
+
+if (resolutionError !== null) {
+  failures.push(
+    `@hono/node-server could not be resolved under packages/mcp-proxy: ${resolutionError}.\n` +
+      `    This guard asserts a property of the INSTALLED tree; with nothing installed it has\n` +
+      `    verified nothing, and reporting PASS would be a false assurance.`,
   );
 }
 
@@ -125,7 +142,7 @@ if (resolvedVersion !== null && lt(resolvedVersion, VULNERABLE_BELOW)) {
 console.log('DEPENDENCY REACHABILITY GUARD — @hono/node-server/serve-static (GHSA-frvp-7c67-39w9)');
 console.log(`  source files scanned                : ${files.length}`);
 console.log(`  files importing ${SUBPATH} : ${importers.length}`);
-console.log(`  resolved @hono/node-server          : ${resolvedVersion ?? '(not installed here)'}`);
+console.log(`  resolved @hono/node-server          : ${resolvedVersion ?? `UNRESOLVED (${resolutionError})`}`);
 console.log(`  vulnerable range                    : < ${VULNERABLE_BELOW}`);
 
 if (failures.length > 0) {

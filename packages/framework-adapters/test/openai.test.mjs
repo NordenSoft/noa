@@ -38,8 +38,10 @@ test("wrapOpenAITool: ALLOW calls execute and returns its result unchanged, rece
 
   assert.deepEqual(result, { refunded: 4200 });
   assert.equal(calls, 1, "execute must be called exactly once on ALLOW");
-  assert.equal(guard.receipts.length, 1);
-  assert.equal(guard.receipts[0].governance.verdict, "EXECUTED");
+  // TWO-RECEIPT LIFECYCLE: pre-execution decision (ALLOWED) + post-attempt terminal verdict.
+  assert.equal(guard.receipts.length, 2);
+  assert.equal(guard.receipts[0].governance.verdict, "ALLOWED");
+  assert.equal(guard.receipts[1].governance.verdict, "EXECUTED");
   const v = verifyChain(guard.receipts, { keyring });
   assert.equal(v.status, "VALID");
 });
@@ -76,10 +78,14 @@ test("wrapOpenAITool: N calls -> N receipts, offline-verifiable", async () => {
     }
   }
 
-  assert.equal(guard.receipts.length, amounts.length);
+  // ALLOW -> 2 receipts (decision + outcome); DENY -> 1 (nothing ran, nothing to attest).
+  const allows = guard.receipts.filter((r) => r.governance.verdict === "ALLOWED").length;
+  const denies = guard.receipts.filter((r) => r.governance.verdict === "BLOCKED").length;
+  assert.equal(allows + denies, amounts.length, "exactly one DECISION receipt per call");
+  assert.equal(guard.receipts.length, allows * 2 + denies);
   const v = verifyChain(guard.receipts, { keyring });
   assert.equal(v.status, "VALID");
-  assert.equal(v.count, amounts.length);
+  assert.equal(v.count, guard.receipts.length);
 });
 
 test("wrapOpenAITool: also supports the flat local-runtime shape (tool.name, no tool.function)", async () => {

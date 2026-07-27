@@ -19,7 +19,44 @@
  * credentials/write authority live, or an agent framework could bypass it by calling the
  * underlying API directly instead of through the guarded tool object these adapters return.
  */
-import { preCheck, preCheckAsync } from "noa-mcp-adapter-core";
+import { preCheck, preCheckAsync, buildReceipt, buildReceiptAsync } from "noa-mcp-adapter-core";
+
+/**
+ * Build the POST-attempt terminal receipt, chained onto the decision receipt.
+ *
+ * It reuses the decision receipt's own action fields verbatim (id / canonical / paramsHash), so the
+ * outcome is unambiguously about the SAME call — a different paramsHash here would be an outcome
+ * for an action nobody approved. `riskClass` follows the decision receipt so the pair reads
+ * consistently. Signed by the SAME signer, appended to the SAME chain, so `verifyChain` covers the
+ * decision and its outcome as one continuous, offline-verifiable history.
+ *
+ * Returns a Promise so the sync and remote-signer paths are one code path for the caller.
+ */
+function buildOutcomeReceipt({ decisionReceipt, prev, seq, failed, signer, tenant, chain, useAsyncSigner }) {
+  const input = {
+    id: `rcpt_${seq}`,
+    ts: new Date().toISOString(),
+    scope: { tenant, chain: chain ?? `${tenant}:mcp` },
+    agent: { id: decisionReceipt.agent.id, model: null, principal: "POLICY" },
+    action: {
+      id: decisionReceipt.action.id,
+      canonical: decisionReceipt.action.canonical,
+      riskClass: decisionReceipt.action.riskClass,
+      paramsHash: decisionReceipt.action.paramsHash,
+      reversible: false,
+      rollbackRef: null,
+    },
+    governance: {
+      mode: "on",
+      // The terminal verdict, recorded only after the call actually settled.
+      verdict: failed ? "FAILED" : "EXECUTED",
+      ruleId: failed ? "tool-call-failed" : "tool-call-dispatched",
+      approval: null,
+      sandboxed: false,
+    },
+  };
+  return useAsyncSigner ? buildReceiptAsync(input, prev, signer) : Promise.resolve(buildReceipt(input, prev, signer));
+}
 
 /** Thrown by a guarded tool call when the gate decision is not ALLOW. Carries the signed receipt
  *  (already appended to the guard's chain) so a caller can inspect exactly why the call was
@@ -107,7 +144,46 @@ export function createToolGuard({ signer, policy, tenant = "default-tenant", cha
       });
       if (onReceipt) await onReceipt(receipt, decision);
       if (decision !== "ALLOW") throw new GuardedToolDenied(name, decision, receipt);
-      return fn(args);
+
+      // ── EXECUTE, THEN ATTEST (the two-receipt lifecycle) ────────────────────────────────────
+      // The receipt above is the PRE-execution decision (ALLOWED): policy permitted the call and
+      // nothing has run. Previously that was the ONLY receipt and it carried verdict EXECUTED, so
+      // a tool that threw before any side effect still left a signed, chain-valid attestation that
+      // the action executed. The signer must never attest an outcome it has not observed, so the
+      // terminal verdict is a SECOND receipt written after the call settles — EXECUTED on success,
+      // FAILED on throw. This is the same discipline the gate wrapper enforces (reserve → execute →
+      // durable EXECUTED/FAILED receipt) and that mcp-proxy's outcome receipt gives the MCP path.
+      //
+      // The original error is always re-thrown UNCHANGED after the FAILED receipt is committed, so
+      // the wrapped tool stays a structural drop-in and a caller's error handling is untouched.
+      let result;
+      let failure = null;
+      try {
+        result = await fn(args);
+      } catch (e) {
+        failure = e;
+      }
+
+      const outcomeReceipt = await runExclusive(async () => {
+        const prev = log.at(-1) ?? null;
+        const r = buildOutcomeReceipt({
+          decisionReceipt: receipt,
+          prev,
+          seq: log.length,
+          failed: failure !== null,
+          signer,
+          tenant,
+          chain,
+          useAsyncSigner,
+        });
+        const settled = await r;
+        log.push(settled);
+        return settled;
+      });
+      if (onReceipt) await onReceipt(outcomeReceipt, failure ? "FAILED" : "EXECUTED");
+
+      if (failure) throw failure;
+      return result;
     };
   }
 

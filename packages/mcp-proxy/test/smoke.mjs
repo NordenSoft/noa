@@ -259,7 +259,9 @@ async function main() {
   ok(
     "(a) decisions in order [ALLOW,ALLOW,ALLOW,DENY,DENY]",
     JSON.stringify(sessA.receipts.map((r) => r.governance.verdict)) ===
-      JSON.stringify(["EXECUTED", "EXECUTED", "EXECUTED", "BLOCKED", "BLOCKED"]),
+      // A DECISION receipt records what policy decided, not what happened: ALLOW -> ALLOWED. The
+      // post-execution fact lives in the separate R2 OUTCOME receipt (scenario U below).
+      JSON.stringify(["ALLOWED", "ALLOWED", "ALLOWED", "BLOCKED", "BLOCKED"]),
   );
   const vA = verifyChain(sessA.receipts, { keyring: sessA.keyring });
   ok(`(a) verifyChain(5 receipts) → VALID, offline, count=${vA.count}`, vA.status === "VALID" && vA.count === 5);
@@ -718,10 +720,10 @@ async function main() {
   const rExecuted = await sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } });
   ok("(r) call 3: the EXACT same retried call is now forwarded and succeeds", /transferred 5000/.test(rExecuted.content?.[0]?.text ?? ""));
   ok("(r) call 3: downstream handler invoked EXACTLY once (the retry, not the held attempt)", readCounts(countsR).transfer_funds === 1);
-  ok("(r) exactly 3 receipts total: DEFERRED, ALLOWED (adopted), EXECUTED", sessR.receipts.length === 3);
+  ok("(r) exactly 3 receipts total: DEFERRED, ALLOWED (adopted), ALLOWED (retry decision)", sessR.receipts.length === 3);
   ok(
-    "(r) verdict sequence is [DEFERRED, ALLOWED, EXECUTED]",
-    JSON.stringify(sessR.receipts.map((r) => r.governance.verdict)) === JSON.stringify(["DEFERRED", "ALLOWED", "EXECUTED"]),
+    "(r) verdict sequence is [DEFERRED, ALLOWED, ALLOWED]",
+    JSON.stringify(sessR.receipts.map((r) => r.governance.verdict)) === JSON.stringify(["DEFERRED", "ALLOWED", "ALLOWED"]),
   );
   // AGENT-LEVEL IDENTITY BINDING: with only { keyring }, attribution is kid-level — any trusted
   // key may claim any agent.id. The identityManifest pins the proxy agent's kid to "session-R"
@@ -1111,10 +1113,10 @@ async function main() {
   await sessU.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 300, to: "account-42" } });
   await expectDeny(sessU.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 999_999_999, to: "attacker" } }));
   ok("(u) 3 decision receipts recorded (2 ALLOW + 1 DENY) — unchanged from round-1", sessU.receipts.length === 3);
-  ok("(u) exactly 2 OUTCOME receipts — one per EXECUTED tool, NONE for the DENY (it never ran)", sessU.outcomes.length === 2);
+  ok("(u) exactly 2 OUTCOME receipts — one per DISPATCHED tool, NONE for the DENY (it never ran)", sessU.outcomes.length === 2);
   ok("(u) outcome receipts carry the distinct R2 spec, not the decision spec", sessU.outcomes.every((o) => o.spec === OUTCOME_RECEIPT_SPEC && o.spec !== sessU.receipts[0].spec));
   ok("(u) each outcome status is success", sessU.outcomes.every((o) => o.outcome.status === "success"));
-  const decU = sessU.receipts.filter((r) => r.governance.verdict === "EXECUTED");
+  const decU = sessU.receipts.filter((r) => r.governance.verdict === "ALLOWED");
   ok("(u) outcome[0] verifies offline + is bound to the echo decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[0], { keyring: sessU.keyring, expectedDecisionReceipt: decU[0] }).ok === true);
   ok("(u) outcome[1] verifies offline + is bound to the transfer decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[1], { keyring: sessU.keyring, expectedDecisionReceipt: decU[1] }).ok === true);
   const vU = verifyChain(sessU.receipts, { keyring: sessU.keyring });
@@ -1222,7 +1224,7 @@ async function main() {
   ok("(w) transfer_funds (huge) over HTTP → DENY, MCP error surfaced (fail-closed, identical to stdio)", denyW.denied && denyW.code === -32600);
   ok("(w) the HTTP DENY never reached the downstream handler (transfer count 0)", readCounts(countsW).transfer_funds === 0);
   ok("(w) 2 decision receipts over HTTP (echo ALLOW + transfer DENY)", receiptsW.length === 2);
-  ok("(w) HTTP decision verdicts [EXECUTED, BLOCKED]", JSON.stringify(receiptsW.map((r) => r.governance.verdict)) === JSON.stringify(["EXECUTED", "BLOCKED"]));
+  ok("(w) HTTP decision verdicts [ALLOWED, BLOCKED]", JSON.stringify(receiptsW.map((r) => r.governance.verdict)) === JSON.stringify(["ALLOWED", "BLOCKED"]));
   const vW = verifyChain(receiptsW, { keyring: keyringW });
   ok(`(w) the HTTP session's decision chain verifies VALID offline — count=${vW.count}`, vW.status === "VALID" && vW.count === 2);
   ok(

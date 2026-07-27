@@ -401,7 +401,15 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
     },
     governance: {
       mode: "on",
-      verdict: finalDecision === "ALLOW" ? "EXECUTED" : finalDecision === "DEFERRED" ? "DEFERRED" : "BLOCKED",
+      // PRE-EXECUTION DECISION RECEIPT. `preCheck` runs BEFORE the tool is invoked — it decides,
+      // it does not observe. An ALLOW therefore records ALLOWED ("policy permitted this call"),
+      // never EXECUTED ("this call ran"). It previously recorded EXECUTED, which made every
+      // consumer of this function attest an execution that had not happened yet and, when the call
+      // subsequently failed, had not happened at all: a signed, chain-valid receipt asserting
+      // EXECUTED for an operation that threw before any side effect. The post-attempt
+      // EXECUTED/FAILED receipt is a SEPARATE artifact emitted after the call settles (see
+      // framework-adapters' wrap-tool.mjs, and mcp-proxy's outcome-receipt.mjs for the MCP path).
+      verdict: finalDecision === "ALLOW" ? "ALLOWED" : finalDecision === "DEFERRED" ? "DEFERRED" : "BLOCKED",
       ruleId: heldRule ? `approval:${heldRule.id}` : (ev.ruleFired ?? "default-deny"),
       approval: null,
       sandboxed: false,
