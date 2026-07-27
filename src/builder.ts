@@ -5,6 +5,7 @@ import { sha256Hex } from "./hash.js";
 import { signEd25519 } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
 import { validateReceiptShape } from "./schema.js";
+import { nonNfcPaths } from "./nfc.js";
 
 export interface Signer {
   kid: string;
@@ -83,6 +84,21 @@ function buildDraft(input: BuildInput, prev: Receipt | null, kid: string): { dra
     });
   } catch (e) {
     throw new BuilderError(`buildReceipt: input is not structured-cloneable (${(e as Error).message})`, []);
+  }
+
+  // NFC ENFORCEMENT AT THE PRODUCER (spec: "producers MUST emit NFC"). Checked on the CLONE,
+  // BEFORE anything is hashed or signed, so a non-conforming payload never reaches the signing key
+  // — mirroring the fail-closed discipline the rest of this builder already applies. This costs no
+  // compatibility: a producer emitting non-NFC was already violating the profile. The VERIFIER
+  // deliberately does not reject by default (already-issued receipts must keep verifying); it
+  // reports the same condition in `warnings`, and `requireNFC: true` makes it fatal for operators
+  // who want the strict rule today. See src/nfc.ts for why the asymmetry is the right shape.
+  const nonNfc = nonNfcPaths(cloned);
+  if (nonNfc.length > 0) {
+    throw new BuilderError(
+      `buildReceipt: refusing to sign a payload with non-NFC strings (the profile requires producers to emit Unicode NFC): ${nonNfc.join(", ")}`,
+      nonNfc,
+    );
   }
 
   const seq = prev ? prev.chain.seq + 1 : 0;

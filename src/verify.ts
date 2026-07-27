@@ -5,6 +5,7 @@ import { sha256Hex } from "./hash.js";
 import { verifyEd25519, type Keyring, type IdentityManifest } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
 import { safeParse } from "./safe-json.js";
+import { nonNfcPaths } from "./nfc.js";
 
 export type VerifyStatus =
   | "VALID" // structure + hash-chain + signatures all verified against the supplied keyring
@@ -28,16 +29,42 @@ export interface VerifyOptions {
    */
   identityManifest?: IdentityManifest;
   /**
-   * Opt-in fail-closed enforcement of chain-wide `scope.tenant` consistency (A1 hardening; additive,
-   * default false — existing callers see no verdict change). By DEFAULT, a `scope.tenant` that drifts
-   * (or appears on some receipts and not others) across one `scope.chain` is only reported in
-   * `warnings` and the verdict is unaffected (VALID stays VALID) — this is the pre-existing,
-   * THREAT-MODEL-documented "namespace binding is the caller's responsibility" posture. Set this to
-   * `true` to instead reject the FIRST drift as `TAMPERED` (the same verdict class already used for a
-   * `scope.chain` partition split — see the chain-partition check above — since a drifting `tenant` is
-   * the identical class of problem: a scope field the caller assumed was chain-wide-constant, isn't).
+   * Chain-wide `scope.tenant` consistency. **DEFAULT: `true` (fail-closed).**
+   *
+   * A `scope.tenant` that drifts across one `scope.chain` — or appears on some receipts and not
+   * others — is rejected as `TAMPERED` at the FIRST drift, the same verdict class as a `scope.chain`
+   * partition split, because it is the identical class of problem: a scope field the caller assumed
+   * was chain-wide-constant, isn't.
+   *
+   * **BREAKING CHANGE (was `false`).** This default previously let a mixed-tenant chain return VALID
+   * with only a warning. That was documented and opt-in, which is a real defence — but defaults are
+   * what actually ship, and the operator most in need of the check is the least likely to know the
+   * flag exists. Tenant isolation is a security boundary, and default-permissive on a security
+   * boundary is the wrong posture for a product deployed multi-tenant.
+   *
+   * The change is LOUD, never silent: an affected caller gets a `TAMPERED` verdict with a
+   * machine-readable `tenant-drift: seq A "x" -> seq B "y"` reason, not a quietly different answer.
+   * A caller that genuinely intends to verify a mixed-tenant chain sets `requireTenantConsistency:
+   * false` and gets the exact previous behaviour, warning included. See CHANGELOG.md for the
+   * migration note.
    */
   requireTenantConsistency?: boolean;
+  /**
+   * Opt-in enforcement of the profile's "all strings MUST be Unicode NFC" rule (default false —
+   * existing callers see no verdict change). The profile places the NFC obligation on PRODUCERS,
+   * and this package's builder now refuses to sign a non-NFC payload, so nothing NOA emits can
+   * violate it. Verification is deliberately asymmetric: rejecting by default would break receipts
+   * that were already issued and signed, which is a worse failure than the one it prevents. By
+   * default a non-NFC string is reported in `warnings` (machine-readable `non-nfc: <path>` entries)
+   * and the verdict is unaffected. Set this to `true` to reject the first non-NFC receipt as
+   * MALFORMED — the same class already used for "receipt contains non-canonicalizable content",
+   * since this is a payload-conformance failure and not evidence of tampering.
+   *
+   * Relying parties that match, index, or alert on receipt fields should either enable this or
+   * compare those fields as BYTES: two receipts can render identically and differ in bytes, and
+   * both verify.
+   */
+  requireNFC?: boolean;
 }
 
 export interface VerifyResult {
@@ -86,11 +113,11 @@ function describeTenant(t: string | undefined): string {
  *  - FORK / EQUIVOCATION: an offline verifier only sees the branch it is given; it cannot know
  *    the signer also signed a different history at the same seq. Detecting that needs an
  *    external witness / transparency log (v1.0). Reported in warnings.
- *  - TENANT CONSISTENCY (A1 hardening): `scope.tenant` is NOT enforced chain-wide the way
- *    `scope.chain` is — a caller mixing receipts from different tenants under one chain still
- *    gets VALID by default; the drift is reported in `warnings` (machine-readable
- *    `tenant-drift: seq A "x" -> seq B "y"` entries). Set `requireTenantConsistency: true` to
- *    reject the first drift as TAMPERED instead.
+ *  - TENANT CONSISTENCY: `scope.tenant` IS enforced chain-wide by default (BREAKING change from
+ *    earlier releases, which only warned). A chain mixing tenants — or carrying the field on some
+ *    receipts and not others — is TAMPERED at the first drift, with a machine-readable
+ *    `tenant-drift: seq A "x" -> seq B "y"` reason. Pass `requireTenantConsistency: false` for the
+ *    previous warn-only behaviour.
  */
 export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): VerifyResult {
   // SNAPSHOT THE ENTIRE opts ONCE (hostile-accessor class-killer). Every opts.* field (maxReceipts, keyring,
@@ -229,7 +256,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     // assumes tenant isolation follows chain isolation would get a silent VALID over a mixed-tenant
     // chain. This walks `ordered` (seq-order, already validated/contiguous) once and records every
     // seq-to-seq drift as a machine-readable message; by default these ONLY land in `warnings` below
-    // (additive, verdict unaffected). `requireTenantConsistency: true` escalates the FIRST drift to
+    // `requireTenantConsistency` DEFAULTS TO TRUE: the FIRST drift is escalated to
     // TAMPERED — the same verdict class as the `scope.chain` partition-split check in step 2, since
     // this is the identical class of problem for the sibling scope field.
     for (let i = 1; i < ordered.length; i++) {
@@ -238,7 +265,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       if (curR.scope.tenant !== prevR.scope.tenant) {
         const msg = `tenant-drift: seq ${prevR.chain.seq} ${describeTenant(prevR.scope.tenant)} -> seq ${curR.chain.seq} ${describeTenant(curR.scope.tenant)}`;
         tenantDriftMessages.push(msg);
-        if (o.requireTenantConsistency) {
+        if (o.requireTenantConsistency ?? true) {
           return fail("TAMPERED", msg, chainId, list.length, curR.chain.seq);
         }
       }
@@ -293,6 +320,22 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     const recomputed = "sha256:" + sha256Hex(hashInput);
     if (recomputed !== r.chain.hash) {
       return fail("TAMPERED", "hash mismatch (content altered)", chainId, list.length, seq);
+    }
+
+    // 4a-bis. NFC conformance of the payload strings. The profile requires PRODUCERS to emit NFC;
+    // this package's builder now enforces that before signing. Here the finding is REPORTED, not
+    // rejected, unless the caller opted in: already-issued receipts must keep verifying, and a
+    // non-NFC string is a conformance defect in the producer, not evidence of tampering. Runs after
+    // the hash check so a receipt that fails integrity is reported as TAMPERED (the more serious
+    // verdict) rather than as a conformance nit.
+    const nonNfc = nonNfcPaths({
+      id: r.id, ts: r.ts, scope: r.scope, agent: r.agent, action: r.action, governance: r.governance,
+    });
+    if (nonNfc.length > 0) {
+      if (o.requireNFC) {
+        return fail("MALFORMED", `non-NFC string(s) at seq ${seq}: ${nonNfc.join(", ")}`, chainId, list.length, seq);
+      }
+      for (const p of nonNfc) warnings.push(`non-nfc: seq ${seq} field ${p}`);
     }
 
     // 4b. Key continuity per agent.id (rejects mid-chain key swap).
