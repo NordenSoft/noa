@@ -101,11 +101,20 @@ export function buildResolvedKeyring(
     publicKey: delegation.delegatedPublicKey,
     type: "DELEGATED",
     roles: Array.isArray(delegation.permissions) ? [...delegation.permissions] : [],
+    // NOTE: delegation.validFrom is deliberately NOT applied as this key's activation time. The
+    // delegation's own validity window is enforced separately in step 1 (unexpired at receivedAt),
+    // and the two are different questions. Applying it here would also make the shipped fixtures
+    // inconsistent — the manifest's issuedAt (09:30) precedes the delegation's validFrom (10:00) —
+    // and whether THAT is a fixture defect or a legitimate reading of "the delegation covers the
+    // manifest's use, not its issuance stamp" is a spec question, not one to settle inside a
+    // keyring resolver. Recorded rather than silently decided.
   };
   // the gate/approver/audit keys the manifest lists.
   for (const k of manifest.keys) {
     if (typeof k.publicKey === "string") {
-      out[k.kid] = { publicKey: k.publicKey, type: k.type, roles: Array.isArray(k.roles) ? [...k.roles] : [], revokedAt: k.revokedAt ?? null };
+      // validFrom is carried through (it was previously DROPPED here, so a manifest key's activation
+      // time never reached verifyArtifact and pre-activation signatures verified clean).
+      out[k.kid] = { publicKey: k.publicKey, type: k.type, roles: Array.isArray(k.roles) ? [...k.roles] : [], validFrom: k.validFrom ?? null, revokedAt: k.revokedAt ?? null };
     }
     // AUDIT keys have no ed25519 publicKey (hpke-only, never a signer) — omitted from the signer keyring.
   }

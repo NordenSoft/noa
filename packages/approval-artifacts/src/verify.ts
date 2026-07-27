@@ -29,6 +29,14 @@ export interface KeyEntry {
   publicKey: string; // base64(DER SPKI) Ed25519
   type: "GATE" | "APPROVER" | "AUDIT" | "ROOT" | "DELEGATED";
   roles: string[];
+  /**
+   * Activation time (Key Manifest `validFrom`). A signature made BEFORE its key was activated is
+   * not authorized — the mirror image of `revokedAt`, and evaluated against the same artifact time.
+   * Manifests already carried this field; `KeyEntry` did not, so every keyring resolver silently
+   * dropped it and pre-activation signatures verified clean. OPTIONAL: an entry without it (a root
+   * key, a test fixture) is treated as always-active, so this is additive for existing callers.
+   */
+  validFrom?: string | null;
   revokedAt?: string | null;
 }
 
@@ -100,9 +108,22 @@ function signerIdentityPath(spec: string, doc: Record<string, unknown>): string 
 }
 
 /** F15 approver-tier requirement for a Decision, by the held action's riskClass. */
+/**
+ * THE F15 APPROVER LATTICE — one authoritative definition (see docs/F15-APPROVER-LATTICE.md).
+ *
+ * The tiers are ORDERED, not disjoint: `approve-critical` strictly dominates `approve-high`. An
+ * approver trusted with CRITICAL/IRREVERSIBLE actions is necessarily trusted with HIGH ones.
+ *
+ * This function previously returned `["approve-high"]` alone for HIGH, making the tiers
+ * non-overlapping — so an `approve-critical` device was REJECTED (422) for an ordinary HIGH
+ * approval, while the evidence verifier accepted exactly that bundle and the gate's own
+ * `createAlphaTrust()` defaulted to `approve-critical` and documented it as covering all tiers.
+ * Three components implemented three different lattices; this is the one they now share, because
+ * it is the only one that is operationally coherent.
+ */
 function requiredApproverRole(riskClass: string | undefined): string[] {
   if (riskClass === "CRITICAL" || riskClass === "IRREVERSIBLE") return ["approve-critical"];
-  if (riskClass === "HIGH") return ["approve-high"];
+  if (riskClass === "HIGH") return ["approve-high", "approve-critical"];
   // LOW/MEDIUM are not in the F15 matrix; accept any approver tier (documented).
   return ["approve-high", "approve-critical"];
 }
@@ -152,6 +173,20 @@ export function verifyArtifact(artifact: unknown, ctx: VerifyContext): VerifyOut
       ctx.now;
     if (ctx.authorizationTime !== undefined && Number.isNaN(parseTime(ctx.authorizationTime))) {
       return { ok: false, reason: "invalid verifier-controlled authorizationTime" };
+    }
+    // ACTIVATION (validFrom) — the mirror of revocation, evaluated at the SAME artifact time. A key
+    // that was not yet active cannot have validly signed: without this a compromised or
+    // not-yet-issued device key could sign documents dated before its own activation and every
+    // check downstream would pass, because the window was only ever closed at one end.
+    if (entry.validFrom != null) {
+      const from = parseTime(entry.validFrom);
+      const at = parseTime(artifactTime);
+      if (Number.isNaN(from) || Number.isNaN(at)) {
+        return { ok: false, reason: `cannot evaluate activation time for signing key "${sig.kid}"` };
+      }
+      if (at < from) {
+        return { ok: false, reason: `signing key "${sig.kid}" signed at ${artifactTime}, before its validFrom ${entry.validFrom}` };
+      }
     }
     if (entry.revokedAt != null) {
       const rev = parseTime(entry.revokedAt);

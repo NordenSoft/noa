@@ -78,11 +78,11 @@ const CHECKPOINT_KEYRING: J = { "gate-prod-1": KEYS["gate-prod-1"]!.publicKey };
 const CHECKPOINT_KEYRING_WRONG: J = { "some-other-witness": KEYS["approver-crit-5"]!.publicKey };
 
 // ─── manifest keys (constant) + delegation + manifest ────────────────────────────────────────────
-function manifestKeys(approverRevokedAt: string | null = null): J[] {
+function manifestKeys(approverRevokedAt: string | null = null, approverValidFrom: string = DELEG_FROM, critRevokedAt: string | null = null): J[] {
   return [
     { kid: "gate-prod-1", type: "GATE", roles: ["hold-signer", "execution-signer"], publicKey: KEYS["gate-prod-1"]!.publicKey, validFrom: DELEG_FROM, revokedAt: null },
-    { kid: "approver-1-device-2", type: "APPROVER", roles: ["approve-high"], publicKey: KEYS["approver-1-device-2"]!.publicKey, hpkePublicKey: HPKE["approver-1-device-2"], validFrom: DELEG_FROM, revokedAt: approverRevokedAt },
-    { kid: "approver-crit-5", type: "APPROVER", roles: ["approve-critical"], publicKey: KEYS["approver-crit-5"]!.publicKey, hpkePublicKey: HPKE["approver-crit-5"], validFrom: DELEG_FROM, revokedAt: null },
+    { kid: "approver-1-device-2", type: "APPROVER", roles: ["approve-high"], publicKey: KEYS["approver-1-device-2"]!.publicKey, hpkePublicKey: HPKE["approver-1-device-2"], validFrom: approverValidFrom, revokedAt: approverRevokedAt },
+    { kid: "approver-crit-5", type: "APPROVER", roles: ["approve-critical"], publicKey: KEYS["approver-crit-5"]!.publicKey, hpkePublicKey: HPKE["approver-crit-5"], validFrom: DELEG_FROM, revokedAt: critRevokedAt },
     { kid: "audit-1", type: "AUDIT", roles: ["audit-decrypt"], hpkePublicKey: HPKE["audit-1"], validFrom: DELEG_FROM, revokedAt: null },
   ];
 }
@@ -121,6 +121,11 @@ interface BuildOpts {
   riskClass?: "HIGH" | "CRITICAL";
   approverKid?: string; // signs the ALLOWED/BLOCKED receipt + decision
   approverRevokedAt?: string | null; // manifest revocation for the approver key
+  approverValidFrom?: string; // manifest ACTIVATION for the approver key (pre-activation signing)
+  critRevokedAt?: string | null; // manifest revocation for approver-crit-5 (used as a checkpoint signer)
+  checkpointKid?: string; // who signs the checkpoint (default gate-prod-1)
+  omitDecision?: boolean; // drop the Decision Artifact entirely (gate self-approval)
+  grantApprovalReceiptHash?: string; // override the grant's binding to the approval
   checkpointTs?: string;
   checkpointKeyring?: J;
   tenantRoot?: J;
@@ -135,7 +140,7 @@ interface BuildOpts {
 function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
   const riskClass = opts.riskClass ?? "HIGH";
   const approverKid = opts.approverKid ?? "approver-1-device-2";
-  const manifest = makeManifest(manifestKeys(opts.approverRevokedAt ?? null));
+  const manifest = makeManifest(manifestKeys(opts.approverRevokedAt ?? null, opts.approverValidFrom ?? DELEG_FROM, opts.critRevokedAt ?? null));
   const MAN_HASH = refHash(manifest);
 
   const deferred = buildReceipt(deferredInput(riskClass), null, rSign("gate-prod-1"));
@@ -196,7 +201,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     spec: "noa.approval-evidence/0.1", outcome, holdEnvelope: envelope, deferredReceipt: deferred,
     keyManifest: manifest, keyDelegation: DELEGATION,
   };
-  const cpKid = "gate-prod-1";
+  const cpKid = opts.checkpointKid ?? "gate-prod-1";
   const cpTs = opts.checkpointTs ?? T_CHECKPOINT;
   function checkpointOver(head: Receipt): Checkpoint {
     return buildCheckpoint(head, cpTs, rSign(cpKid));
@@ -211,12 +216,13 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
       { id: isFail ? "rcpt_failed" : "rcpt_exec", ts: T_EXECUTED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: action(riskClass), governance: { mode: "on", verdict: isFail ? "FAILED" : "EXECUTED", sandboxed: false } },
       allowed, rSign("gate-prod-1"),
     );
-    const decision = makeDecision("APPROVE", approverKid);
-    const g = grant(opts.grantExpiresAt ?? T_GRANT_EXP, allowed.chain.hash);
+    const decision = opts.omitDecision ? null : makeDecision("APPROVE", approverKid);
+    const g = grant(opts.grantExpiresAt ?? T_GRANT_EXP, opts.grantApprovalReceiptHash ?? allowed.chain.hash);
     const cons = consumption(g, terminal.chain.hash, "DISPATCHED");
-    const hr = holdResolution("APPROVED", { decisionHash: refHash(decision), verdictHash: allowed.chain.hash });
+    const hr = holdResolution("APPROVED", { decisionHash: decision ? refHash(decision) : null, verdictHash: allowed.chain.hash });
     bundle = {
-      ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed, decisionArtifact: decision,
+      ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed,
+      ...(decision ? { decisionArtifact: decision } : {}),
       executionGrant: g, executionConsumption: cons, checkpoint: checkpointOver(terminal),
       ...(isFail ? { failedReceipt: terminal } : { executedReceipt: terminal }),
     };
@@ -262,7 +268,8 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     bundle = { ...(base as EvidenceBundle), holdResolution: hr, checkpoint: checkpointOver(deferred) };
   }
 
-  return { bundle, tenantRoot: opts.tenantRoot ?? TENANT_ROOT, checkpointKeyring: opts.checkpointKeyring ?? CHECKPOINT_KEYRING };
+  const defaultCpKeyring: J = { [cpKid]: KEYS[cpKid]!.publicKey };
+  return { bundle, tenantRoot: opts.tenantRoot ?? TENANT_ROOT, checkpointKeyring: opts.checkpointKeyring ?? defaultCpKeyring };
 }
 
 // ─── fixture emit ────────────────────────────────────────────────────────────────────────────────
@@ -522,6 +529,52 @@ for (const oc of OUTCOMES) {
 {
   const w = buildWorld("EXECUTED", { approverRevokedAt: "2026-07-14T11:56:15.000Z" }); // after decidedAt 11:56:00, before receivedAt 11:56:30
   emit("reject", "step18-revoked-at-received", fixtureFrom(w, { description: "STEP_18/F10: the approver key was revoked at 11:56:15 — after the phone-written decidedAt (11:56:00) but BEFORE the gate's trusted receivedAt (11:56:30); the authorization-time check uses receivedAt → rejected", expectVerdict: "INVALID", expectStep: "STEP_18_TEMPORAL_AUTHORIZATION", expectCode: "E_TEMPORAL_AUTH", bundle: w.bundle }));
+}
+
+// ═══ 3b. CROSS-FAMILY REVIEW REGRESSIONS (2026-07-27) ═════════════════════════════════════════════
+// Five attacks an independent review reproduced against the pre-fix verifier, each of which reached
+// VALID_FULL_CHAIN. They are permanent fixtures so the holes cannot silently reopen.
+
+// STEP 3 — GATE SELF-APPROVAL (CRITICAL). No Decision Artifact at all; the GATE key signs the ALLOWED
+// receipt. Steps 4 and 5 both return ok() early when the decision is absent, so the decision
+// signature, the approver identity and the whole F15 tier check were SKIPPED rather than failed — a
+// compromised gate could manufacture a complete EXECUTED bundle with no human anywhere in it.
+{
+  const w = buildWorld("EXECUTED", { omitDecision: true, approverKid: "gate-prod-1" });
+  emit("reject", "step03-gate-self-approval-no-decision", fixtureFrom(w, { description: "STEP_3/F19: an APPROVED outcome with NO Decision Artifact and the GATE key signing the ALLOWED receipt — a human-decided outcome cannot be proven without the human's signed decision (gate self-approval)", expectVerdict: "INVALID", expectStep: "STEP_3_HOLD_RESOLUTION", expectCode: "E_HOLD_RESOLUTION", bundle: w.bundle }));
+}
+
+// STEP 10 — GRANT NOT BOUND TO THE APPROVAL (CRITICAL, same family). The grant's signature proves the
+// gate issued it; it does NOT prove the gate issued it FOR THIS approval. With a real decision
+// present (so step 3 passes) the grant's approvalReceiptHash was never compared to anything.
+{
+  const w = buildWorld("EXECUTED", { grantApprovalReceiptHash: "sha256:" + "f".repeat(64) });
+  emit("reject", "step10-grant-approval-hash-unbound", fixtureFrom(w, { description: "STEP_10/G12: executionGrant.approvalReceiptHash does not match the ALLOWED receipt in the bundle — a validly-signed grant bound to no approval in evidence", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_EXECUTED", bundle: w.bundle }));
+}
+
+// STEP 4 — SIGNED BEFORE KEY ACTIVATION (HIGH). Manifest entries always carried `validFrom`, but
+// KeyEntry had no such field and every keyring resolver dropped it, so the authorization window was
+// only ever closed at the revocation end. Here the approver's activation is moved AFTER it signs.
+{
+  const w = buildWorld("EXECUTED", { approverValidFrom: "2026-07-14T11:57:00.000Z" }); // after decidedAt 11:56:00 and the ALLOWED receipt 11:56:30
+  emit("reject", "step04-signed-before-validfrom", fixtureFrom(w, { description: "STEP_4/F10: the approver signs at 11:56 but its manifest validFrom is 11:57 — a signature made before the key was activated is not authorized (the mirror of revocation)", expectVerdict: "INVALID", expectStep: "STEP_4_DECISION_ARTIFACT", expectCode: "E_DECISION", bundle: w.bundle }));
+}
+
+// STEP 18 — CHECKPOINT SIGNER REVOKED AT THE CHECKPOINT'S OWN TIME (HIGH). Step 18 evaluated EVERY
+// key at holdResolution.receivedAt. A checkpoint is produced LATER than the approval, so a key valid
+// at receivedAt but revoked before the checkpoint was signed passed cleanly. approver-crit-5 signs
+// the checkpoint here so the gate key stays valid and steps 1-17 are unaffected.
+{
+  const w = buildWorld("EXECUTED", { checkpointKid: "approver-crit-5", critRevokedAt: "2026-07-14T11:58:30.000Z", checkpointTs: "2026-07-14T11:59:00.000Z" });
+  emit("reject", "step18-checkpoint-signer-revoked-at-cp-ts", fixtureFrom(w, { description: "STEP_18/F10: the checkpoint signer was revoked at 11:58:30 and the checkpoint is stamped 11:59:00 — checkpoint authorization must be evaluated at the checkpoint's OWN ts, not at holdResolution.receivedAt (11:56:30, before the revocation)", expectVerdict: "INVALID", expectStep: "STEP_18_TEMPORAL_AUTHORIZATION", expectCode: "E_TEMPORAL_AUTH", bundle: w.bundle }));
+}
+
+// STEP 16 — FORWARD-DATED CHECKPOINT (HIGH, same family). Freshness treated ANY future timestamp as
+// not-stale, so a checkpoint stamped 2099 verified as fresh in 2026 and would stay "fresh" for
+// seventy years — replayable against the negative-outcome gate indefinitely.
+{
+  const w = buildWorld("EXECUTED", { checkpointTs: "2099-01-01T00:00:00.000Z" });
+  emit("reject", "step16-checkpoint-future-dated", fixtureFrom(w, { description: "STEP_16/F5: the checkpoint is dated 2099 — beyond any credible clock skew. A forward-dated anchor is not 'fresh', and unlike staleness that judgement does not depend on the outcome", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_16_CHECKPOINT_FRESHNESS", expectCode: "E_STALE_CHECKPOINT", bundle: w.bundle }));
 }
 
 // ═══ 4. envelope-expiry FRESHNESS: late-audit of terminal-negative outcomes (EXPIRED/DENIED) ═══════

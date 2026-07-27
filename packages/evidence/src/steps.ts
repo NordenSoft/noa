@@ -92,6 +92,13 @@ function verdictReceiptFor(bundle: EvidenceBundle): unknown {
   }
 }
 
+/**
+ * Tolerance for a checkpoint timestamp ahead of the verifier's clock (F5). Legitimate gate/verifier
+ * clock drift is seconds; five minutes is generous. Anything further ahead is not drift, and a
+ * far-future checkpoint would otherwise remain "fresh" indefinitely and defeat the staleness rule.
+ */
+const MAX_FUTURE_SKEW_MS = 5 * 60 * 1000;
+
 /** The terminal hold-status the outcome maps to (§13 step 3: status is 1:1 with the hold's terminal state). */
 function expectedHoldStatus(outcome: EvidenceOutcome): "APPROVED" | "DENIED" | "EXPIRED" | "CANCELLED" {
   if (outcome === "DENIED") return "DENIED";
@@ -290,11 +297,32 @@ export function step3_holdResolution(ctx: Ctx): StepResult {
     return fail(S, "E_HOLD_RESOLUTION", `holdResolution.status ${JSON.stringify(hr.status)} != ${wantStatus} for outcome ${b.outcome}`);
   }
   // decisionArtifactHash: bind where a Decision exists, else must be null.
+  //
+  // F19-HUMAN — a HUMAN-DECIDED outcome REQUIRES a Decision Artifact. Previously the binding was
+  // only checked when a decision happened to be present, and steps 4/5 both return ok() early when
+  // it is absent — so a bundle that simply OMITTED the decision skipped the decision signature, the
+  // approver identity, and the entire F15 tier check. Combined with the GATE key signing the ALLOWED
+  // receipt, a compromised gate could manufacture a complete, self-consistent EXECUTED bundle with
+  // no human anywhere in it and obtain VALID_FULL_CHAIN. The human-approval boundary is the single
+  // thing this evidence format exists to prove, so its absence must be fatal, not skippable.
+  //
+  // APPROVED/DENIED are the human-decided terminal states. EXPIRED (policy timeout) and CANCELLED
+  // (crash before approval) legitimately have no decision and are excluded — the mapping is taken
+  // from expectedHoldStatus so it cannot drift from the status check above.
   const decision = b.decisionArtifact;
-  if (decision !== undefined && asObj(decision)) {
+  const decisionPresent = decision !== undefined && asObj(decision) !== null;
+  const humanDecided = wantStatus === "APPROVED" || wantStatus === "DENIED";
+  if (humanDecided && !decisionPresent) {
+    return fail(S, "E_HOLD_RESOLUTION", `outcome ${b.outcome} resolves to holdResolution.status ${wantStatus}, which REQUIRES a Decision Artifact; none is present (a human-decided outcome cannot be proven without the human's signed decision)`);
+  }
+  if (decisionPresent) {
     if (asStr(hr.decisionArtifactHash) !== refHash(decision)) {
       return fail(S, "E_HOLD_RESOLUTION", "holdResolution.decisionArtifactHash != refHash(decisionArtifact)");
     }
+  } else if (hr.decisionArtifactHash !== null) {
+    // No decision in the bundle, but the resolution claims one existed: the bundle is incomplete or
+    // the hash is fabricated. Either way it must not verify (this branch did not exist before).
+    return fail(S, "E_HOLD_RESOLUTION", `holdResolution.decisionArtifactHash is ${JSON.stringify(hr.decisionArtifactHash)} but no decisionArtifact is present in the bundle`);
   }
   // verdictReceiptHash (G4): binds to the terminal verdict receipt for the outcome, or null when
   // (CANCELLED) no pre-crash verdict receipt exists.
@@ -498,6 +526,27 @@ export function step10_executed(ctx: Ctx): StepResult {
   if (Number.isNaN(gExp) || Number.isNaN(consumedAt) || consumedAt > gExp) {
     return fail(S, "E_EXECUTED", "grant expired before consumedAt");
   }
+  // G12 — the GRANT must be bound to the approval it claims to derive from. The grant's signature
+  // was verified above, which proves the gate issued it; it does NOT prove the gate issued it FOR
+  // THIS approval. Without these three checks a gate could sign a grant referencing any approval
+  // (or none), and the reviewer's self-approval bundle carried a grant whose approvalReceiptHash
+  // was pure filler and still reached VALID_FULL_CHAIN. Bind all three fields the grant carries:
+  //   approvalReceiptHash -> the ALLOWED receipt actually in this bundle
+  //   paramsHash          -> the action that was approved (approve A / execute B defence, D14)
+  //   holdId              -> the hold envelope this evidence is about
+  const allowedHash = asStr(getPath(allowed, "chain.hash"));
+  if (asStr(grant.approvalReceiptHash) !== allowedHash) {
+    return fail(S, "E_EXECUTED", `executionGrant.approvalReceiptHash ${JSON.stringify(grant.approvalReceiptHash)} != allowedReceipt.chain.hash ${JSON.stringify(allowedHash)} — the grant is not bound to this approval`);
+  }
+  const approvedParamsHash = asStr(getPath(allowed, "action.paramsHash"));
+  if (asStr(grant.paramsHash) !== approvedParamsHash) {
+    return fail(S, "E_EXECUTED", `executionGrant.paramsHash ${JSON.stringify(grant.paramsHash)} != approved action paramsHash ${JSON.stringify(approvedParamsHash)} — the grant authorizes a different action than the one approved`);
+  }
+  const envHoldId = asStr(getPath(b.holdEnvelope, "holdId"));
+  if (envHoldId !== null && asStr(grant.holdId) !== envHoldId) {
+    return fail(S, "E_EXECUTED", `executionGrant.holdId ${JSON.stringify(grant.holdId)} != holdEnvelope.holdId ${JSON.stringify(envHoldId)}`);
+  }
+
   if (asStr(consumption.grantHash) !== refHash(b.executionGrant)) return fail(S, "E_EXECUTED", "consumption.grantHash != refHash(grant) (F1)");
   if (asStr(consumption.result) !== "DISPATCHED") return fail(S, "E_EXECUTED", `consumption.result != DISPATCHED (${String(consumption.result)})`);
   if (asStr(consumption.attemptReceiptHash) !== receiptRefHash(executed)) return fail(S, "E_EXECUTED", "consumption.attemptReceiptHash != executedReceipt.chain.hash (G4)");
@@ -687,8 +736,25 @@ export function step16_checkpointFreshness(ctx: Ctx): StepResult {
   if (Number.isNaN(cpTs) || Number.isNaN(now)) {
     ctx.checkpointFresh = false;
   } else {
-    // fresh = not older than max-age. (A future-dated checkpoint is not "stale"; backdating is the attack.)
-    ctx.checkpointFresh = now - cpTs <= ctx.maxAgeMs;
+    // fresh = not older than max-age AND not implausibly far in the future.
+    //
+    // The previous rule treated ANY future timestamp as fresh, on the reasoning that backdating is
+    // the attack. That is half right: a FORWARD-dated checkpoint is also an attack, and a cheaper
+    // one — a checkpoint stamped 2099 stayed "fresh" forever, so a single anchor could be replayed
+    // to satisfy the negative-outcome gate indefinitely, which is exactly the staleness rule this
+    // step exists to enforce. Small forward skew is legitimate (clock drift between the gate and
+    // the verifier), so the bound is a tolerance, not equality.
+    const ageMs = now - cpTs;
+    // A checkpoint dated implausibly far in the FUTURE is not "stale" — it is not a credible
+    // artifact at all, and unlike staleness that judgement does not depend on the outcome. Fail it
+    // here for EVERY outcome, before the outcome-conditional staleness rule below: otherwise a
+    // positive outcome (where freshness is merely recorded) accepted a checkpoint stamped 2099,
+    // and that same anchor would stay "fresh" for the next seventy years.
+    if (ageMs < -MAX_FUTURE_SKEW_MS) {
+      ctx.checkpointFresh = false;
+      return fail(S, "E_STALE_CHECKPOINT", `checkpoint.ts is ${Math.round(-ageMs / 1000)}s in the future (verifier now=${ctx.now}), beyond the ${MAX_FUTURE_SKEW_MS / 1000}s clock-skew tolerance — a forward-dated checkpoint is not a credible anchor`);
+    }
+    ctx.checkpointFresh = ageMs <= ctx.maxAgeMs;
   }
   // For a NEGATIVE outcome, a checkpoint that reconciles (step 15 passed) but is STALE cannot prove
   // non-execution — INCONCLUSIVE (E_STALE_CHECKPOINT). For POSITIVE outcomes freshness is irrelevant
@@ -738,16 +804,59 @@ export function step18_temporalAuthorization(ctx: Ctx): StepResult {
     const rk = asStr(getPath(r, "sig.kid"));
     if (rk) usedKids.add(rk);
   }
+  // The CHECKPOINT is deliberately NOT folded into the receivedAt cohort below. Every other artifact
+  // here was produced during the approval, so `holdResolution.receivedAt` is the right trusted
+  // instant to judge them at. A checkpoint is produced LATER — it anchors the chain head after
+  // execution — so judging it at receivedAt asks the wrong question and answers it favourably: a key
+  // valid at receivedAt but revoked before the checkpoint was signed passed cleanly, which let a
+  // revoked signer still anchor the tail. A checkpoint is authorized at ITS OWN timestamp.
   const cpKid = asStr(getPath(b.checkpoint, "sig.kid"));
-  if (cpKid) usedKids.add(cpKid);
 
   for (const kid of usedKids) {
     const entry = ctx.resolvedKeyring?.[kid];
-    if (!entry || !entry.revokedAt) continue;
-    const rev = parseTime(entry.revokedAt);
-    if (!Number.isNaN(rev) && rAt >= rev) {
-      return fail(S, "E_TEMPORAL_AUTH", `signing key "${kid}" was revoked at ${entry.revokedAt}, before the trusted receivedAt (${ctx.receivedAt}) — authorization-time check (F10) fails`);
+    if (!entry) continue;
+    const err = keyAuthorizedAt(kid, entry, rAt, ctx.receivedAt ?? "(unset)");
+    if (err) return fail(S, "E_TEMPORAL_AUTH", err);
+  }
+
+  if (cpKid) {
+    const entry = ctx.resolvedKeyring?.[cpKid];
+    // A checkpoint signer outside the manifest is authenticated separately against the external
+    // checkpoint keyring (step 17) — an independent trust root by design (F7), so there is no
+    // manifest entry to evaluate and nothing to check here.
+    if (entry) {
+      const cpTsRaw = asStr(getPath(b.checkpoint, "ts"));
+      const cpAt = parseTime(cpTsRaw);
+      if (Number.isNaN(cpAt)) {
+        return fail(S, "E_TEMPORAL_AUTH", "checkpoint.ts is unparseable — the checkpoint signer's authorization cannot be evaluated");
+      }
+      const err = keyAuthorizedAt(cpKid, entry, cpAt, cpTsRaw ?? "(unset)");
+      if (err) return fail(S, "E_TEMPORAL_AUTH", `${err} (evaluated at the checkpoint's own ts, not holdResolution.receivedAt)`);
     }
   }
   return ok(S);
+}
+
+/**
+ * Shared activation/revocation window check for one key at one instant. Returns an error string, or
+ * null when the key was authorized at `atMs`. Both ends of the window are closed: `validFrom` was
+ * previously unenforced everywhere (see approval-artifacts KeyEntry).
+ */
+function keyAuthorizedAt(
+  kid: string,
+  entry: { validFrom?: string | null; revokedAt?: string | null },
+  atMs: number,
+  atLabel: string,
+): string | null {
+  if (entry.validFrom != null) {
+    const from = parseTime(entry.validFrom);
+    if (Number.isNaN(from)) return `signing key "${kid}" has an unparseable validFrom (${entry.validFrom})`;
+    if (atMs < from) return `signing key "${kid}" signed at ${atLabel}, before its validFrom (${entry.validFrom}) — authorization-time check (F10) fails`;
+  }
+  if (entry.revokedAt != null) {
+    const rev = parseTime(entry.revokedAt);
+    if (Number.isNaN(rev)) return `signing key "${kid}" has an unparseable revokedAt (${entry.revokedAt})`;
+    if (atMs >= rev) return `signing key "${kid}" was revoked at ${entry.revokedAt}, at or before ${atLabel} — authorization-time check (F10) fails`;
+  }
+  return null;
 }
