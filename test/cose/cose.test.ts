@@ -334,12 +334,19 @@ test("FWD-COMPAT (c'): an extra UNKNOWN non-critical protected label is IGNORED,
   assert.equal(r.kid, "k-extra");
 });
 
-test("FWD-COMPAT (d): the legacy kid-in-UNPROTECTED envelope NOA itself emits STILL verifies (no regression)", () => {
+test("FWD-COMPAT (d): a legacy kid-in-UNPROTECTED envelope STILL verifies, but its kid is NOT authenticated", () => {
+  // NOA's own producer now emits the kid in the PROTECTED header (H4), so this envelope is hand-built
+  // to preserve the interop guarantee: an external/legacy peer that puts kid in the UNPROTECTED header
+  // still verifies. Its `kid` resolves and the signature checks — but kidAuthenticated is FALSE, since
+  // the unprotected header is not covered by the signature.
   const kp = generateKeyPair("k-legacy");
-  const cose = coseSign1(Buffer.from("legacy", "utf8"), { kid: "k-legacy", privateKey: kp.privateKey });
+  const payload = Buffer.from("legacy", "utf8");
+  const prot = encMap([[encInt(1), encInt(-19)]]); // {1:-19} — alg only, NO kid in the signed header
+  const cose = buildCose(prot, encMap([[encInt(4), encBstr(Buffer.from("k-legacy", "utf8"))]]), payload, kp.privateKey);
   const r = coseSign1Verify(cose, { "k-legacy": kp.publicKey });
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.kid, "k-legacy");
+  assert.equal(r.kidAuthenticated, false, "an unprotected-header kid is not covered by the signature — not authenticated");
 });
 
 test("receiptFromCose with a throwing-accessor identityManifest → clean ok:false, never throws", () => {
@@ -366,4 +373,87 @@ test("receiptFromCose with a throwing-accessor identityManifest → clean ok:fal
 
   // sanity: a genuine manifest still binds (no regression) — a1 authorized for k.
   assert.equal(receiptFromCose(wrapped, keyring, { a1: ["k"] }).ok, true);
+});
+
+// ── H4 — the kid used for attribution MUST be signed (protected header) ────────────────────────────
+test("H4: NOA's producer now puts the kid in the PROTECTED (signed) header — attribution is authenticated", () => {
+  const kp = generateKeyPair("prod-kid");
+  const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
+  const cose = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
+  const r = coseSign1Verify(cose, { [kp.kid]: kp.publicKey });
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.kid, kp.kid);
+  assert.equal(r.kidAuthenticated, true, "the producer's kid is in the signed header");
+});
+
+test("H4: an UNPROTECTED-only kid cannot bind an agent (manifest mode) — but still verifies unbound", () => {
+  const kp = generateKeyPair("unsigned-kid");
+  const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey }); // agent.id = "a1"
+  const payload = Buffer.from(canonicalize(receipt), "utf8");
+  // hand-build an envelope with kid ONLY in the unprotected header (a legacy/external peer).
+  const protNoKid = encMap([[encInt(1), encInt(-19)]]);
+  const unprotKid = encMap([[encInt(4), encBstr(Buffer.from(kp.kid, "utf8"))]]);
+  const cose = buildCose(protNoKid, unprotKid, payload, kp.privateKey);
+  const keyring = { [kp.kid]: kp.publicKey };
+
+  // no manifest → ok:true (a keyring-trusted key signed) + the existing kid-level-attribution warning.
+  const weak = receiptFromCose(cose, keyring);
+  assert.equal(weak.ok, true, weak.reason);
+  assert.ok(weak.warnings.some((w) => /attribution is kid-level/.test(w)));
+
+  // with a manifest → REJECTED: the kid is not signed, so it is swappable and cannot bind an agent.
+  const strong = receiptFromCose(cose, keyring, { a1: [kp.kid] });
+  assert.equal(strong.ok, false, "an unauthenticated (unprotected) kid must not bind an agent");
+  assert.match(strong.reason ?? "", /protected|authenticated/i);
+
+  // contrast: the SAME receipt produced with a protected kid DOES bind (no over-correction).
+  const good = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
+  assert.equal(receiptFromCose(good, keyring, { a1: [kp.kid] }).ok, true);
+});
+
+test("H4: swapping the unprotected kid on a protected-kid envelope does NOT change attribution", () => {
+  const signer = generateKeyPair("real-signer");
+  const victim = generateKeyPair("victim");
+  const receipt = mkReceipt({ kid: signer.kid, privateKey: signer.privateKey });
+  const payload = Buffer.from(canonicalize(receipt), "utf8");
+  // protected {1:-19, 4:real-signer} (signed), unprotected {4:victim} (a swapped decoy).
+  const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encBstr(Buffer.from(signer.kid, "utf8"))]]);
+  const unprot = encMap([[encInt(4), encBstr(Buffer.from(victim.kid, "utf8"))]]);
+  const cose = buildCose(prot, unprot, payload, signer.privateKey);
+  const r = coseSign1Verify(cose, { [signer.kid]: signer.publicKey, [victim.kid]: victim.publicKey });
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.kid, signer.kid, "the SIGNED protected kid wins — the unprotected decoy is ignored");
+  assert.equal(r.kidAuthenticated, true);
+});
+
+// ── H5 — the returned receipt must re-canonicalize to the SIGNED bytes ─────────────────────────────
+test("H5: an invalid-UTF-8 / non-canonical payload with a VALID outer signature is rejected", () => {
+  const kp = generateKeyPair("h5-kid");
+  const input: BuildInput = {
+    id: "rcpt_h5", ts: "2026-06-21T10:00:00.000Z", scope: { tenant: "t", chain: "c1" },
+    agent: { id: "Zaphod", model: null, principal: "SERVICE" },
+    action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: sha256Prefixed("x"), reversible: false, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "r", approval: null, sandboxed: false },
+  };
+  const receipt = buildReceipt(input, null, { kid: kp.kid, privateKey: kp.privateKey });
+  const payload = Buffer.from(canonicalize(receipt), "utf8");
+  const idx = payload.indexOf(Buffer.from("Zaphod"));
+  assert.ok(idx > 0, "the unique agent id must appear as a string value in the canonical payload");
+  const corrupted = Buffer.from(payload);
+  corrupted[idx] = 0x80; // replace 'Z' with a lone continuation byte → invalid UTF-8 → U+FFFD on decode
+  // Sign over the CORRUPTED bytes, so the OUTER signature is valid over the non-canonical payload.
+  const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encBstr(Buffer.from(kp.kid, "utf8"))]]);
+  const cose = buildCose(prot, encMap([]), corrupted, kp.privateKey);
+  const r = receiptFromCose(cose, { [kp.kid]: kp.publicKey });
+  assert.equal(r.ok, false, "a receipt that does not re-canonicalize to the signed bytes must be rejected");
+  assert.match(r.reason ?? "", /canonical|re-canonicalize/i);
+});
+
+test("H5: a genuine receipt round-trips (the canonical check does not over-reject)", () => {
+  const kp = generateKeyPair("h5-ok");
+  const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
+  const cose = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
+  const r = receiptFromCose(cose, { [kp.kid]: kp.publicKey });
+  assert.equal(r.ok, true, r.reason);
+  assert.equal(canonicalize(r.receipt), canonicalize(receipt));
 });

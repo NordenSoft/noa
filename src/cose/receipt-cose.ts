@@ -87,12 +87,36 @@ export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityMan
   } catch (e) {
     return { ok: false, kid: r.kid, receipt: null, reason: `payload parse: ${(e as Error).message}`, warnings: [] };
   }
+  // H5 — the receipt returned MUST re-canonicalize to EXACTLY the signed payload bytes. safeParse
+  // rejects duplicate/prototype keys and unpaired surrogates, but a signed payload can still be
+  // NON-CANONICAL JCS, or carry INVALID UTF-8 that `toString("utf8")` silently repaired to U+FFFD
+  // (e.g. a raw 0x80 byte -> "�"). Returning `parsed` then hands the caller a receipt whose fields
+  // (agentId, ...) are NOT the bytes the signature covers — the verifier would be inventing semantics
+  // the signer never attested. Re-canonicalize and require byte-equality with the signed payload; a
+  // payload that does not re-canonicalize to itself is rejected (fail-closed).
+  let recanon: Buffer;
+  try {
+    recanon = Buffer.from(canonicalize(parsed), "utf8");
+  } catch (e) {
+    return { ok: false, kid: r.kid, receipt: null, reason: `payload is not canonicalizable: ${(e as Error).message}`, warnings: [] };
+  }
+  if (!recanon.equals(r.payload)) {
+    return { ok: false, kid: r.kid, receipt: null, reason: "COSE payload is not canonical JCS: it does not re-canonicalize to the signed bytes (non-canonical encoding, or invalid/lossy UTF-8) — the returned receipt would not match the bytes the signature covers", warnings: [] };
+  }
   const v = validateReceiptShape(parsed);
   if (!v.ok) return { ok: false, kid: r.kid, receipt: null, reason: `payload is not a NOA receipt: ${v.errors[0]}`, warnings: [] };
   const receipt = parsed as Receipt;
   // Identity binding (mirrors verifyChain 4c-bis). The COSE signature is authenticated (r.ok), so an
   // unauthorized (agent.id, kid) pairing is cross-agent impersonation → reject.
   if (haveManifest) {
+    // H4 — the identity manifest binds an agent to the SIGNER kid, so the kid MUST be authenticated:
+    // covered by the signature (from the PROTECTED header). A kid present only in the UNPROTECTED header
+    // verifies the signature but is SWAPPABLE to a victim kid with the signature still valid — binding
+    // an agent to it is exactly the impersonation this manifest check exists to stop. Refuse to bind an
+    // unauthenticated kid rather than attributing the receipt to whatever kid the unsigned bytes claim.
+    if (!r.kidAuthenticated) {
+      return { ok: false, kid: r.kid, receipt: null, reason: `the COSE kid is not in the signed (protected) header — attribution cannot be bound to an agent from an unauthenticated, swappable kid (H4)`, warnings: [] };
+    }
     const allowed = manifest.get(receipt.agent.id); // snapshot read — immune to live-object TOCTOU
     if (allowed === undefined || r.kid === null || !allowed.includes(r.kid)) {
       return { ok: false, kid: r.kid, receipt: null, reason: `agent "${receipt.agent.id}" is not authorized for signing key "${r.kid}" (identity manifest)`, warnings: [] };

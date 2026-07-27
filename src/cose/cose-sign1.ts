@@ -20,9 +20,23 @@ const HDR_KID = 4;
 // (draft-noa-scitt-ai-agent-receipt), which already uses -19.
 const ALG_ED25519 = -19;
 
-/** protected header = canonical CBOR map { 1: -19 } (alg = Ed25519), serialized (wrapped as bstr by caller). */
-function protectedHeaderBytes(): Buffer {
-  return encMap([[encInt(HDR_ALG), encInt(ALG_ED25519)]]);
+/**
+ * protected header = canonical CBOR map { 1: -19, 4: kid } (alg = Ed25519 AND the signer kid),
+ * serialized (wrapped as bstr by caller).
+ *
+ * The kid is placed in the PROTECTED (SIGNED) header, not the unprotected one. The COSE_Sign1
+ * signature covers `protected || external_aad || payload` (the Sig_structure) — NOT the unprotected
+ * header. The fifth review's H4: with the kid in the UNPROTECTED bucket, an attacker can replace it
+ * with a same-length victim kid, leaving the signature valid while changing the (agent, key)
+ * attribution the verifier and the identity manifest bind. A kid in the protected header is covered by
+ * the signature, so swapping it changes the signed bytes and the signature fails: attribution can no
+ * longer be forged. `encMap` emits deterministic (sorted-key) CBOR, so { 1, 4 } is canonical.
+ */
+function protectedHeaderBytes(kid: string): Buffer {
+  return encMap([
+    [encInt(HDR_ALG), encInt(ALG_ED25519)],
+    [encInt(HDR_KID), encBstr(Buffer.from(kid, "utf8"))],
+  ]);
 }
 
 /** RFC 9052 Sig_structure for COSE_Sign1: [ "Signature1", protected:bstr, external_aad:bstr(empty), payload:bstr ]. */
@@ -36,12 +50,13 @@ export interface CoseSigner {
   privateKey: string;
 }
 
-/** Produce a COSE_Sign1 (CBOR tag 18) over `payload`. kid goes in the unprotected header. */
+/** Produce a COSE_Sign1 (CBOR tag 18) over `payload`. kid goes in the PROTECTED (signed) header (H4);
+ *  the unprotected header is empty, so the kid attribution cannot be swapped without breaking the sig. */
 export function coseSign1(payload: Buffer, signer: CoseSigner): Buffer {
-  const prot = protectedHeaderBytes();
+  const prot = protectedHeaderBytes(signer.kid);
   const sigB64 = signEd25519(signer.privateKey, sigStructure(prot, payload));
   const sig = Buffer.from(sigB64, "base64");
-  const unprotected = encMap([[encInt(HDR_KID), encBstr(Buffer.from(signer.kid, "utf8"))]]);
+  const unprotected = encMap([]); // kid is now SIGNED, in the protected header
   const body = encArray([encBstr(prot), unprotected, encBstr(payload), encBstr(sig)]);
   return encTag(COSE_SIGN1_TAG, body);
 }
@@ -51,6 +66,14 @@ export interface CoseVerifyResult {
   kid: string | null;
   payload: Buffer | null;
   reason?: string;
+  /**
+   * True iff the `kid` used for key resolution came from the PROTECTED (signed) header — i.e. it is
+   * covered by the signature and cannot be swapped without breaking it. When a kid is present only in
+   * the UNPROTECTED header (a legacy / external peer), it verifies the signature but its attribution is
+   * NOT authenticated: an identity-binding consumer must refuse to bind an agent to an unauthenticated
+   * kid (see receiptFromCose). False on any failure.
+   */
+  kidAuthenticated: boolean;
 }
 
 interface ProtectedCheck {
@@ -139,23 +162,23 @@ export function coseSign1Verify(coseBytes: Buffer, keyring: Keyring): CoseVerify
   // `keyring[kid]` below (violating "never throws"); an array / non-object is an operator error, not an empty
   // trust root. Reject cleanly as ok:false with the same "keyring must be an object" reason as verify.ts.
   if (keyring === null || typeof keyring !== "object" || Array.isArray(keyring)) {
-    return { ok: false, kid: null, payload: null, reason: "keyring must be an object (kid -> base64 SPKI)" };
+    return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
   }
   let v: CborValue;
   try {
     v = decode(coseBytes);
   } catch (e) {
-    return { ok: false, kid: null, payload: null, reason: `cbor: ${(e as Error).message}` };
+    return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: `cbor: ${(e as Error).message}` };
   }
-  if (v.t !== "tag" || v.tag !== COSE_SIGN1_TAG) return { ok: false, kid: null, payload: null, reason: "not a COSE_Sign1 (tag 18)" };
+  if (v.t !== "tag" || v.tag !== COSE_SIGN1_TAG) return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: "not a COSE_Sign1 (tag 18)" };
   const arr = v.v;
-  if (arr.t !== "array" || arr.v.length !== 4) return { ok: false, kid: null, payload: null, reason: "COSE_Sign1 must be a 4-element array" };
+  if (arr.t !== "array" || arr.v.length !== 4) return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: "COSE_Sign1 must be a 4-element array" };
   const p = arr.v[0]!, u = arr.v[1]!, pl = arr.v[2]!, s = arr.v[3]!;
   if (p.t !== "bstr" || u.t !== "map" || pl.t !== "bstr" || s.t !== "bstr") {
-    return { ok: false, kid: null, payload: null, reason: "COSE_Sign1 element types invalid" };
+    return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: "COSE_Sign1 element types invalid" };
   }
   const prot = validateProtectedAlg(p.v);
-  if (!prot.ok) return { ok: false, kid: null, payload: null, reason: prot.reason ?? "protected header is not {alg: Ed25519}" };
+  if (!prot.ok) return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: prot.reason ?? "protected header is not {alg: Ed25519}" };
   // kid (RFC 9052) may live in EITHER header. Prefer the protected (signed) copy when present — it is
   // covered by the signature and cannot be stripped/swapped — falling back to the unprotected one. This
   // makes us accept a draft-conformant peer that puts kid (label 4) in the protected header.
@@ -165,9 +188,15 @@ export function coseSign1Verify(coseBytes: Buffer, keyring: Keyring): CoseVerify
       if (k.t === "int" && k.v === HDR_KID && val.t === "bstr") kid = val.v.toString("utf8");
     }
   }
-  if (!kid) return { ok: false, kid: null, payload: null, reason: "no kid (header label 4, protected or unprotected)" };
+  if (!kid) return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: "no kid (header label 4, protected or unprotected)" };
   const pub = keyring[kid];
-  if (!pub) return { ok: false, kid, payload: null, reason: `unknown kid "${kid}" not in keyring` };
+  if (!pub) return { ok: false, kid, payload: null, kidAuthenticated: false, reason: `unknown kid "${kid}" not in keyring` };
   const ok = verifyEd25519(pub, sigStructure(p.v, pl.v), s.v.toString("base64"));
-  return ok ? { ok: true, kid, payload: pl.v } : { ok: false, kid, payload: null, reason: "bad signature" };
+  // kidAuthenticated iff the kid came from the PROTECTED (signed) header (H4): a kid present only in
+  // the unprotected header verifies the signature but is not covered by it, so its attribution is not
+  // authenticated and an identity-binding consumer must refuse to bind an agent to it.
+  const kidAuthenticated = prot.protectedKid !== null && kid === prot.protectedKid;
+  return ok
+    ? { ok: true, kid, payload: pl.v, kidAuthenticated }
+    : { ok: false, kid, payload: null, kidAuthenticated: false, reason: "bad signature" };
 }

@@ -50,8 +50,14 @@ test("an INDEPENDENT impl (cbor2 + node:crypto) verifies NOA's COSE_Sign1 — un
   const ok = crypto.verify(null, sigStructure, pub, Buffer.from(sig!));
   assert.equal(ok, true, "an off-the-shelf COSE verification path must accept NOA's COSE_Sign1");
 
-  // 4. The protected header is exactly {1: -19} (alg Ed25519, RFC 9864) per the COSE registry
-  assert.equal(Buffer.from(prot!).toString("hex"), "a10132");
+  // 4. The protected header decodes — in the INDEPENDENT CBOR lib — to {1: -19, 4: kid}: alg Ed25519
+  //    (RFC 9864) AND the SIGNED kid (H4). The kid now lives in the PROTECTED (signed) header so its
+  //    attribution is covered by the signature and cannot be swapped; an off-the-shelf verifier reads
+  //    both from a canonical map. (Was {1:-19} only, with kid in the unprotected header.)
+  const protDecoded = cbor2Decode(new Uint8Array(prot!));
+  const protGet = (k: number): unknown => (protDecoded instanceof Map ? protDecoded.get(k) : (protDecoded as Record<number, unknown>)[k]);
+  assert.equal(protGet(1), -19, "protected alg must be Ed25519 (-19)");
+  assert.equal(Buffer.from(protGet(4) as Uint8Array).toString("utf8"), kp.kid, "the kid must be in the SIGNED protected header (H4)");
 });
 
 test("cross-impl: a tampered NOA COSE_Sign1 is rejected by the independent verifier too", () => {
