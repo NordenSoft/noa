@@ -543,6 +543,25 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
         seq = r["chain"].get("seq")
         if seq in by_seq: return "TAMPERED", f"duplicate seq {seq}"
         by_seq[seq] = r
+    # 3b. Chain-wide scope.tenant consistency (fail-closed, matching the TS reference's DEFAULT).
+    # scope.tenant is a sibling of scope.chain but, unlike scope.chain, was enforced nowhere: a chain
+    # mixing tenants -- or carrying the field on some receipts and not others -- verified clean, so a
+    # caller who assumed tenant isolation follows chain isolation got a silent pass. Tenant isolation
+    # is a security boundary; the same verdict class as the partition split above is correct.
+    # Walks in SEQ order (not input order) so the reported drift is chain order, matching TS.
+    def _tenant_label(rr):
+        t = rr.get("scope", {}).get("tenant")
+        return json.dumps(t) if isinstance(t, str) else "(none)"
+    for s in range(1, len(receipts)):
+        if s not in by_seq or (s - 1) not in by_seq:
+            break  # a gap is reported by the walk below; do not pre-empt its message
+        cur_r, prev_r = by_seq[s], by_seq[s - 1]
+        if cur_r.get("scope", {}).get("tenant") != prev_r.get("scope", {}).get("tenant"):
+            return "TAMPERED", (
+                f'tenant-drift: seq {prev_r["chain"].get("seq")} {_tenant_label(prev_r)}'
+                f' -> seq {cur_r["chain"].get("seq")} {_tenant_label(cur_r)}'
+            )
+
     pinned = {}
     prev = None
     for s in range(len(receipts)):

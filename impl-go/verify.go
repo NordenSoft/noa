@@ -407,6 +407,24 @@ func verifyChain(receipts, keyring, identity, checkpoint *Value) string {
 		bySeq[seq] = r
 	}
 
+	// Chain-wide scope.tenant consistency (fail-closed; matches the TS reference DEFAULT and
+	// impl-py). scope.tenant sits beside scope.chain but was enforced nowhere, so a chain mixing
+	// tenants verified clean in every implementation. Tenant isolation is a security boundary; the
+	// same verdict class as the partition split above is the right one. Walked in SEQ order.
+	nTenant := int64(len(receipts.Arr))
+	for s := int64(1); s < nTenant; s++ {
+		cur, okCur := bySeq[s]
+		prv, okPrev := bySeq[s-1]
+		if !okCur || !okPrev {
+			break // a gap is reported by the seq-walk below; don't pre-empt it
+		}
+		curHas := cur.get("scope").has("tenant")
+		prvHas := prv.get("scope").has("tenant")
+		if curHas != prvHas || cur.get("scope").get("tenant").Str != prv.get("scope").get("tenant").Str {
+			return statusTampered // tenant drift
+		}
+	}
+
 	pinned := make(map[string]string)
 	var prev *Value
 	n := int64(len(receipts.Arr))

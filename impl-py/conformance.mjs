@@ -565,6 +565,42 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   expect("TAMPERED (key swap mid-chain, resigned, same agent.id) [PY verifier]", pyVerify([swapPath, swapKrPath]).code, 2);
 }
 
+// 13b. TENANT DRIFT — a chain whose scope.tenant CHANGES mid-chain. Both receipts are individually
+// well-formed, correctly hashed and correctly signed; the defect is a property of the SET. This is
+// the vector that pins the fail-closed tenant default across implementations: TS enforces it by
+// DEFAULT (requireTenantConsistency, flipped from opt-in), and impl-py enforces the same rule, so a
+// mixed-tenant chain must be TAMPERED in BOTH. Without this vector the TS default flip would have
+// been a silent one-implementation divergence — every shipped vector is single-tenant, so nothing
+// would have caught it until someone wrote a mixed-tenant chain in production.
+{
+  const mkT = (seq, tenant, prev) => buildReceipt({
+    id: `rcpt_t${seq}`,
+    ts: `2026-06-21T11:0${seq}:00.000Z`,
+    scope: { tenant, chain: "chain-drift" },
+    agent: { id: "agent-7", model: null, principal: "SERVICE" },
+    action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: sha256Prefixed(`t${seq}`), reversible: false, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "r1", approval: null, sandboxed: false },
+  }, prev, { kid: kp.kid, privateKey: kp.privateKey });
+
+  const t0 = mkT(0, "acme", null);
+  const t1 = mkT(1, "globex", t0);
+  const driftPath = join(dir, "tenant-drift.json");
+  writeFileSync(driftPath, JSON.stringify([t0, t1]));
+
+  const tsDrift = verifyChain([t0, t1], { keyring }).status;
+  const tsDriftOk = tsDrift === "TAMPERED";
+  console.log(`${tsDriftOk ? "✓" : "✗"} TAMPERED (scope.tenant drifts mid-chain — fail-closed DEFAULT) [TS verifyChain]: ${tsDrift} (want TAMPERED)`);
+  if (!tsDriftOk) failures++;
+  expect("TAMPERED (scope.tenant drifts mid-chain — fail-closed DEFAULT) [PY verifier]", pyVerify([driftPath, keyringPath]).code, 2);
+
+  // ...and the documented opt-out must restore the previous verdict on the SAME bytes, so the
+  // migration path is a tested claim rather than a promise in a changelog.
+  const tsOptOut = verifyChain([t0, t1], { keyring, requireTenantConsistency: false }).status;
+  const tsOptOutOk = tsOptOut === "VALID";
+  console.log(`${tsOptOutOk ? "✓" : "✗"} VALID (same bytes, requireTenantConsistency:false — the migration path) [TS verifyChain]: ${tsOptOut} (want VALID)`);
+  if (!tsOptOutOk) failures++;
+}
+
 // 14. TENANT — scope.tenant is present but the WRONG TYPE (a number, not a string). Content is
 // re-sealed so hash+sig stay internally valid → this is a pure STRUCTURAL/shape rejection, not a
 // crypto-integrity one (MALFORMED, not TAMPERED), in both impls.

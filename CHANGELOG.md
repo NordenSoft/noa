@@ -4,6 +4,62 @@ All notable changes to `noa-receipt` are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project follows
 [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+> **NOT RELEASED, NOT PUBLISHED, NO VERSION BUMP.** These land on a feature branch. The two
+> BREAKING items below require a MAJOR release; that decision and its timing are the maintainer's.
+
+### BREAKING
+
+- **`verifyChain`: `requireTenantConsistency` now defaults to `true`.** A chain whose
+  `scope.tenant` drifts — or carries the field on some receipts and not others — is now
+  `TAMPERED` at the first drift instead of `VALID` with a warning.
+
+  *Why:* tenant isolation is a security boundary, and the previous default was permissive on it.
+  Opt-in was a genuine defence, but defaults are what actually ship, and the operator who most
+  needs the check is the least likely to know the flag exists.
+
+  *Migration:* pass `requireTenantConsistency: false` to restore the exact previous behaviour,
+  warning included. The change is loud, never silent — affected callers get a `TAMPERED` verdict
+  with a machine-readable `tenant-drift: seq A "x" -> seq B "y"` reason, not a quietly different
+  answer. A conformance vector (`impl-py/conformance.mjs`, "tenant drifts mid-chain") pins both
+  the new default AND that the opt-out still works, on the same bytes.
+
+  *Cross-implementation:* the rule was implemented in ALL FIVE verifiers in the same change
+  (TypeScript, Python, Go, Rust, C#), because a security default only one implementation honours
+  is not a default — it is a divergence. Every shipped vector was single-tenant, so flipping
+  TypeScript alone would have been invisible to every existing runner while silently breaking the
+  five-language agreement guarantee. Verified: all five return the identical verdict on
+  consistent-tenant, drifting-tenant, and tenant-appears-midway chains.
+
+- **`buildReceipt` / `buildReceiptAsync` reject non-NFC payloads.** The profile requires producers
+  to emit Unicode NFC; nothing enforced it, and a receipt with an NFD `agent.id` verified `VALID`
+  in all four independent verifiers. The builder now throws `BuilderError` naming the offending
+  field path, before anything is hashed or signed.
+
+  *Migration:* normalize with `String.prototype.normalize("NFC")` at the producer. A caller that
+  was emitting non-NFC was already violating the profile, so no conforming producer is affected.
+
+### Added
+
+- **`verifyChain` option `requireNFC`** (default `false`). Verification is deliberately
+  asymmetric to the builder: already-issued receipts must keep verifying, so a non-NFC string is
+  reported in `warnings` (`non-nfc: seq N field <path>`) and the verdict is unaffected. Set
+  `requireNFC: true` to reject as `MALFORMED`. A future wire version may make this mandatory for
+  verifiers; that is a version boundary, not a patch.
+- **`isNFC` / `nonNfcPaths`** exported from the package root, so a producer can check a payload
+  before building and a relying party can audit one it received.
+
+### Fixed
+
+- **`verifyChain` no longer over-claims `tailChecked`.** When a checkpoint authenticated but no
+  `identityManifest` was supplied, the result was `{ status: "VALID", tailChecked: true }` with no
+  indication that the tail check is kid-level in that configuration — any keyring-trusted key can
+  mint a checkpoint over any head, so a co-trusted key holder could truncate the tail and still
+  produce an affirmative tail check. `THREAT-MODEL.md` documented the residual (T-tail-reheading);
+  the runtime signal did not. Additive: a warning now names the consequence. No verdict, no
+  `tailChecked` value, and no existing warning changed.
+
 ## [0.5.0] - 2026-07-11
 
 ### Added

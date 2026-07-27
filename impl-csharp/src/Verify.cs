@@ -158,6 +158,19 @@ public static class Verifier
             bySeq[seq] = r;
         }
 
+        // Chain-wide scope.tenant consistency (fail-closed; matches the TS reference DEFAULT,
+        // impl-py, impl-go and impl-rust). scope.tenant sits beside scope.chain but was enforced
+        // nowhere, so a chain mixing tenants verified clean in every implementation. Tenant
+        // isolation is a security boundary; the partition split's verdict class is the right one.
+        // Walked in SEQ order; a MISSING tenant is distinct from a present one.
+        for (int s = 1; s < receipts.Count; s++)
+        {
+            if (!bySeq.TryGetValue(s, out JObj? curT) || !bySeq.TryGetValue(s - 1, out JObj? prevT))
+                break; // a gap is reported by the seq-walk below; do not pre-empt it
+            if (!string.Equals(TenantKeyOf(curT), TenantKeyOf(prevT), StringComparison.Ordinal))
+                return new VerifyResult(VerifyStatus.Tampered, "tenant drift");
+        }
+
         var pinned = new Dictionary<string, string>(StringComparer.Ordinal);
         JObj? prev = null;
         for (int s = 0; s < receipts.Count; s++)
@@ -276,6 +289,11 @@ public static class Verifier
     // ── field accessors (structural validation already guarantees presence/shape) ──
     private static string? ChainOf(JObj r) =>
         r.Get("scope") is JObj sc && sc.Get("chain") is JStr c ? c.Value : null;
+
+    /// Stable comparison key for scope.tenant that distinguishes ABSENT from any present value
+    /// (a missing field and the literal string "(none)" must not compare equal).
+    private static string TenantKeyOf(JObj r) =>
+        r.Get("scope") is JObj sc && sc.Get("tenant") is JStr t ? "s:" + t.Value : "\u0000absent";
 
     private static long SeqOf(JObj r) =>
         r.Get("chain") is JObj ch && ch.Get("seq") is JInt s ? s.Value : -1;

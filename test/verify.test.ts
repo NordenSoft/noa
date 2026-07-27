@@ -507,16 +507,16 @@ function mkTenantReceipt(id: string, tenant: string | undefined, prev: ReturnTyp
   return buildReceipt(input, prev, tenantSignerRef);
 }
 
-test("A1: mixed scope.tenant across one chain -> VALID by default, WITH a machine-readable tenant-drift warning", () => {
+test("A1: mixed scope.tenant across one chain -> TAMPERED BY DEFAULT (fail-closed; was VALID+warning before the default flipped)", () => {
   const r0 = mkTenantReceipt("r0", "acme", null);
   const r1 = mkTenantReceipt("r1", "acme", r0);
   const r2 = mkTenantReceipt("r2", "globex", r1);
   const r = verifyChain([r0, r1, r2], { keyring: tenantKeyring });
-  assert.equal(r.status, "VALID", r.reason);
-  assert.ok(
-    r.warnings.includes('tenant-drift: seq 1 "acme" -> seq 2 "globex"'),
-    `expected a tenant-drift warning, got: ${JSON.stringify(r.warnings)}`,
-  );
+  // Tenant isolation is a security boundary; the DEFAULT now enforces it. The failure is loud and
+  // machine-readable, never a quietly different answer.
+  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.match(r.reason ?? "", /tenant-drift: seq 1 "acme" -> seq 2 "globex"/);
+  assert.equal(r.badSeq, 2, "badSeq must point at the FIRST drifting receipt");
 });
 
 test("A1: consistent scope.tenant across one chain -> NO tenant-drift warning", () => {
@@ -536,15 +536,16 @@ test("A1: scope.tenant absent on every receipt -> NO tenant-drift warning (absen
   assert.ok(!r.warnings.some((w) => /tenant-drift/.test(w)), `unexpected tenant-drift warning: ${JSON.stringify(r.warnings)}`);
 });
 
-test("A1: scope.tenant present on some receipts and absent on others (within one chain) -> reported as drift too", () => {
+test("A1: scope.tenant present on some receipts and absent on others -> also drift, also TAMPERED by default", () => {
   const r0 = mkTenantReceipt("r0", "acme", null);
   const r1 = mkTenantReceipt("r1", undefined, r0);
   const r = verifyChain([r0, r1], { keyring: tenantKeyring });
-  assert.equal(r.status, "VALID", r.reason);
-  assert.ok(
-    r.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 (none)'),
-    `expected a tenant-drift warning for present->absent, got: ${JSON.stringify(r.warnings)}`,
-  );
+  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.match(r.reason ?? "", /tenant-drift: seq 0 "acme" -> seq 1 \(none\)/);
+  // ...and the opt-out still reports it as a warning instead, unchanged.
+  const optOut = verifyChain([r0, r1], { keyring: tenantKeyring, requireTenantConsistency: false });
+  assert.equal(optOut.status, "VALID", optOut.reason);
+  assert.ok(optOut.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 (none)'));
 });
 
 test("A1: requireTenantConsistency:true + drift -> fail-closed TAMPERED (same verdict class as the scope.chain partition-split check), badSeq points at the first drifting receipt", () => {
@@ -565,11 +566,20 @@ test("A1: requireTenantConsistency:true + NO drift -> VALID (opt-in enforcement 
   assert.deepEqual(r.warnings.filter((w) => /tenant-drift/.test(w)), []);
 });
 
-test("A1: requireTenantConsistency defaults to false — an existing caller with a mixed-tenant chain keeps its EXACT pre-A1 verdict (backward compatible)", () => {
+test("A1: requireTenantConsistency:false restores the EXACT previous behaviour (the documented migration path)", () => {
+  // The default flipped to fail-closed. A caller that genuinely verifies mixed-tenant chains has one
+  // documented escape hatch, and it must reproduce the old result byte for byte — verdict AND the
+  // machine-readable warning — or the migration note in CHANGELOG.md would be a lie.
   const r0 = mkTenantReceipt("r0", "acme", null);
   const r1 = mkTenantReceipt("r1", "globex", r0);
-  const withoutFlag = verifyChain([r0, r1], { keyring: tenantKeyring });
-  const explicitFalse = verifyChain([r0, r1], { keyring: tenantKeyring, requireTenantConsistency: false });
-  assert.equal(withoutFlag.status, "VALID");
-  assert.equal(explicitFalse.status, "VALID");
+
+  const enforced = verifyChain([r0, r1], { keyring: tenantKeyring });
+  assert.equal(enforced.status, "TAMPERED", "the new default is fail-closed");
+
+  const optOut = verifyChain([r0, r1], { keyring: tenantKeyring, requireTenantConsistency: false });
+  assert.equal(optOut.status, "VALID", optOut.reason);
+  assert.ok(
+    optOut.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 "globex"'),
+    `the opt-out must still REPORT the drift, got: ${JSON.stringify(optOut.warnings)}`,
+  );
 });

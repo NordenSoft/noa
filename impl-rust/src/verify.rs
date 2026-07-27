@@ -250,6 +250,27 @@ pub fn verify_chain(
         by_seq.insert(seq, idx);
     }
 
+    // Chain-wide scope.tenant consistency (fail-closed; matches the TS reference DEFAULT, impl-py
+    // and impl-go). scope.tenant sits beside scope.chain but was enforced nowhere, so a chain mixing
+    // tenants verified clean everywhere. Tenant isolation is a security boundary; the partition
+    // split's verdict class is the right one. Walked in SEQ order, and a missing field is distinct
+    // from a present one (absence is consistency only if it is consistent).
+    {
+        let tenant_of = |idx: usize| -> Option<&str> {
+            arr[idx].get("scope").and_then(|s| s.get("tenant")).and_then(|t| t.as_str())
+        };
+        let total = arr.len() as i64;
+        for s in 1..total {
+            let (cur, prev) = match (by_seq.get(&s), by_seq.get(&(s - 1))) {
+                (Some(c), Some(p)) => (*c, *p),
+                _ => break, // a gap is reported by the seq-walk below; do not pre-empt it
+            };
+            if tenant_of(cur) != tenant_of(prev) {
+                return (Status::Tampered, "tenant drift".into());
+            }
+        }
+    }
+
     // Step 4: seq-walk.
     let n = arr.len();
     let mut pinned: HashMap<String, String> = HashMap::new();
