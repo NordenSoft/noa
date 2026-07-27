@@ -50,6 +50,8 @@ jobs:
           cache: npm
       - name: Build the root package
         run: npm ci && npm run build
+      - name: BOUNDARY 2 — thrown-value handling gate (no caught value read outside the boundary)
+        run: npm run lint:thrown
       - name: approval-artifacts tests
         run: cd packages/approval-artifacts && npm ci && npm test
       - name: evidence tests

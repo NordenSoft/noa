@@ -36,7 +36,7 @@
     "provenance": true
   },
   "scripts": {
-    "test": "node test/dependency-reachability.mjs && node test/smoke.mjs",
+    "test": "node test/dependency-reachability.mjs && node --test test/*.test.mjs && node test/smoke.mjs",
     "test:reachability": "node test/dependency-reachability.mjs",
     "prepublishOnly": "npm test"
   },

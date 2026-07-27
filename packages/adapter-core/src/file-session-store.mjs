@@ -152,6 +152,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, openSync, writeSync, fsyncSync, closeSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { createChainSessionStore, DEFAULT_TENANT } from "./session-store.mjs";
+import { describeThrown, thrownCode } from "./safe-throw.mjs";
 
 const LOCK_FILENAME = ".lock";
 const INSTANCE_FILENAME = ".instance.json";
@@ -162,7 +163,7 @@ function isPidAlive(pid) {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return err.code !== "ESRCH";
+    return thrownCode(err) !== "ESRCH";
   }
 }
 
@@ -180,7 +181,7 @@ function acquireLock(dir) {
       writeFileSync(lockPath, JSON.stringify({ pid: process.pid, nonce, startedAt: new Date().toISOString() }), { flag: "wx" });
       return nonce;
     } catch (err) {
-      if (err.code !== "EEXIST") throw err;
+      if (thrownCode(err) !== "EEXIST") throw err;
       let holder;
       try {
         holder = JSON.parse(readFileSync(lockPath, "utf8"));
@@ -193,7 +194,7 @@ function acquireLock(dir) {
       try {
         unlinkSync(lockPath);
       } catch (unlinkErr) {
-        if (unlinkErr.code !== "ENOENT") throw unlinkErr;
+        if (thrownCode(unlinkErr) !== "ENOENT") throw unlinkErr;
       }
       // loop retries the "wx" create now that the stale lock is gone
     }
@@ -217,14 +218,14 @@ function releaseLock(dir, nonce) {
   try {
     holder = JSON.parse(readFileSync(lockPath, "utf8"));
   } catch (err) {
-    if (err.code === "ENOENT") return; // already gone
+    if (thrownCode(err) === "ENOENT") return; // already gone
     return; // unreadable/corrupt — nothing safe to verify ownership against
   }
   if (holder.nonce !== nonce) return; // someone else's lock now — not ours to delete
   try {
     unlinkSync(lockPath);
   } catch (err) {
-    if (err.code !== "ENOENT") throw err;
+    if (thrownCode(err) !== "ENOENT") throw err;
   }
 }
 
@@ -237,13 +238,13 @@ function loadOrCreateInstanceToken(dir) {
     }
     return raw.instanceToken;
   } catch (err) {
-    if (err.code !== "ENOENT") throw err;
+    if (thrownCode(err) !== "ENOENT") throw err;
   }
   const token = randomUUID();
   try {
     writeFileSync(p, JSON.stringify({ instanceToken: token }), { flag: "wx" });
   } catch (err) {
-    if (err.code === "EEXIST") return JSON.parse(readFileSync(p, "utf8")).instanceToken;
+    if (thrownCode(err) === "EEXIST") return JSON.parse(readFileSync(p, "utf8")).instanceToken;
     throw err;
   }
   return token;
@@ -293,7 +294,7 @@ function reloadAll(dir) {
         parsed = JSON.parse(line);
       } catch (err) {
         throw new Error(
-          `createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} is not valid JSON (${err.message}); this looks like a torn write from a process killed mid-append. Restore from backup or remove the corrupt trailing line by hand before restarting.`,
+          `createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} is not valid JSON (${describeThrown(err)}); this looks like a torn write from a process killed mid-append. Restore from backup or remove the corrupt trailing line by hand before restarting.`,
         );
       }
       if (!parsed || typeof parsed !== "object") {
@@ -394,7 +395,7 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
           poisoned = err;
           console.error(
             `noa-mcp-adapter-core(file-session-store): eviction tombstone FAILED to persist to disk ` +
-              `for session "${sessionId}" (tenant "${tenant}"): ${err.message} -- this store instance ` +
+              `for session "${sessionId}" (tenant "${tenant}"): ${describeThrown(err)} -- this store instance ` +
               `is now POISONED and will refuse all further calls.`,
           );
         }
@@ -451,7 +452,7 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
         poisoned = err;
         throw new Error(
           `createFileSessionStore: receipt was accepted into the live in-memory chain but FAILED ` +
-            `to persist to disk (${err.message}) — this store instance is now POISONED and refuses ` +
+            `to persist to disk (${describeThrown(err)}) — this store instance is now POISONED and refuses ` +
             `all further calls. Restart the process against "${dir}".`,
         );
       }
@@ -474,7 +475,7 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
         poisoned = err;
         throw new Error(
           `createFileSessionStore: session "${sessionId}" (tenant "${tenant}") was ended in memory ` +
-            `but its end-tombstone FAILED to persist to disk (${err.message}) — this store instance ` +
+            `but its end-tombstone FAILED to persist to disk (${describeThrown(err)}) — this store instance ` +
             `is now POISONED and refuses all further calls. Restart the process against "${dir}".`,
         );
       }

@@ -21,6 +21,7 @@
  * store must halt, never guess.
  */
 import { appendFileSync, readFileSync, existsSync } from "node:fs";
+import { describeThrown } from "./safe-throw.mjs";
 
 export class PendingStoreError extends Error {
   constructor(message) {
@@ -59,7 +60,7 @@ function appendEvent(path, event) {
   } catch (err) {
     // FAIL-CLOSED (R4 rule): never let a write failure escape as a raw fs error — always a typed,
     // greppable PendingStoreError the caller can catch and turn into a DENY.
-    throw new PendingStoreError(`pending-store: could not append to "${path}" (${err.message})`);
+    throw new PendingStoreError(`pending-store: could not append to "${path}" (${describeThrown(err)})`);
   }
 }
 

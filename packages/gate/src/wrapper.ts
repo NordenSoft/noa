@@ -11,6 +11,13 @@
  */
 
 import { canonicalize, sha256Prefixed } from "noa-approval-artifacts";
+// BOUNDARY 2 — the ONE conversion from an arbitrary thrown value to a safe descriptor, and the ONE
+// type meaning "it already ran and the record could not be written". Both live in
+// noa-mcp-adapter-core so gate, mcp-proxy and framework-adapters share them instead of each
+// growing its own near-copy (this file had one, and it was defective in both of the ways the
+// boundary's docstring describes).
+import { describeThrown } from "noa-mcp-adapter-core/safe-throw";
+import { ToolOutcomeNotRecorded } from "noa-mcp-adapter-core/tool-outcome-not-recorded";
 import { getProjection } from "./projections.js";
 import type { EngineResult, GateEngine } from "./engine.js";
 import type { AgentRecord } from "./types.js";
@@ -117,27 +124,6 @@ function body(r: EngineResult): Record<string, unknown> {
 
 /** Compute the exact paramsHash the gate binds — via the SAME pinned projection (ENFORCED) or the
  *  caller-supplied hash (RAW). Deterministic + side-effect-free. */
-/**
- * Describe a THROWN value without assuming it is an `Error`.
- *
- * JavaScript permits throwing anything, and `(e as Error).message` on `throw null` raises a
- * TypeError from inside the very catch block whose job is to record the failure. On the dispatch
- * path below that is not cosmetic: the grant has already been RESERVED, so an exception escaping
- * there skips `report(...)`, leaves the reservation dangling, and produces no consumption artifact
- * for an attempt that really happened. Reading the message defensively keeps the failure on the
- * failure path, where it can be reported as `FAILED_BEFORE_DISPATCH`.
- */
-function describeThrown(e: unknown): string {
-  if (e instanceof Error && typeof e.message === "string") return e.message;
-  if (typeof e === "string") return e;
-  try {
-    return `non-Error thrown: ${String(e)}`;
-  } catch {
-    // a thrown object whose own toString/Symbol.toPrimitive throws
-    return "non-Error thrown: <unstringifiable>";
-  }
-}
-
 function deriveParamsHash(input: GuardInput, snapshot: unknown): { ok: true; hash: string } | { ok: false; error: string } {
   const mode = input.mode ?? "ENFORCED";
   if (mode === "RAW") {
@@ -223,7 +209,30 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
     execDetail = describeThrown(e);
   }
 
-  const reported = await input.client.report(grantId, { result: ok ? "DISPATCHED" : "FAILED_BEFORE_DISPATCH" });
+  // ── THE DISPATCH HAS HAPPENED (or definitively has not) ──────────────────────────────────────
+  // `report(...)` writes the consumption artifact — the durable record of an attempt that already
+  // occurred. It was awaited OUTSIDE any try, so a transport throw here (a dead socket, a gate
+  // restart) propagated raw and took `ran: true` with it: the caller saw an ordinary failure for an
+  // operation that HAD ALREADY RUN, and the correct handling of an ordinary failure is to retry it.
+  // A non-200 `report` already returns `{ outcome: "ERROR", ran: ok }` and keeps the discriminator;
+  // a THROWN report did not, which is the same hole in a different shape.
+  let reported: EngineResult;
+  try {
+    reported = await input.client.report(grantId, { result: ok ? "DISPATCHED" : "FAILED_BEFORE_DISPATCH" });
+  } catch (e) {
+    if (ok) {
+      // It ran. Raise the one type that says so, so a caller cannot mistake this for a failure.
+      throw new ToolOutcomeNotRecorded(input.action.canonical, {
+        outcome: "EXECUTED",
+        receipt: null,
+        cause: e,
+        component: "noa-gate",
+      });
+    }
+    // Nothing ran: this is an ordinary reporting failure, and the reservation is the gate's to
+    // expire. Reported as an ERROR with `ran: false`, exactly as a non-200 would be.
+    return { outcome: "ERROR", ran: false, holdId, grantId, detail: `report threw: ${describeThrown(e)}` };
+  }
   if (reported.status !== 200) {
     return { outcome: "ERROR", ran: ok, holdId, grantId, detail: `report ${reported.status}: ${JSON.stringify(reported.body)}` };
   }

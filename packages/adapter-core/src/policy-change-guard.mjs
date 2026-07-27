@@ -27,6 +27,7 @@
 import { canonicalParamsHash } from "./pre-check.mjs";
 import { verifyApprovalReceipt } from "./approval-decision.mjs";
 import { validateApprovalRules } from "./approval-rules.mjs";
+import { describeThrown } from "./safe-throw.mjs";
 
 /** The FIXED action id every policy-change hold + approval + receipt is minted under (spec §19.3). */
 export const POLICY_UPDATE_ACTION_ID = "noa.policy.update";
@@ -259,6 +260,6 @@ export function applyPolicyChange({ currentRules, proposedRules, approval = null
     return { ok: true, changed: true, weakens: request.weakens, activeRules: proposedRules, request, approvalReceiptId: approval && typeof approval === "object" ? approval.id ?? null : null };
   } catch (err) {
     // The applicator must be fail-closed even on an unexpected internal throw — never apply on error.
-    return { ok: false, code: "guard-threw", changed: false, reason: `policy-change guard failed closed (${err && err.message ? err.message : "unknown error"})` };
+    return { ok: false, code: "guard-threw", changed: false, reason: `policy-change guard failed closed (${describeThrown(err)})` };
   }
 }

@@ -43,6 +43,60 @@ fails closed when a future site does not route through it.
   of the class. `VerifyEvidenceResult` gains `rolesAsserted` so the enumeration test can assert, per
   outcome, that the roles the bundle carries and the roles the verifier asserted are the same set.
 
+- **HIGH → BOUNDARY 2 (untrusted thrown values).** Round 3 hardened thirteen thrown-value sites;
+  round 4 found four more in the same shape. `ToolOutcomeNotRecorded`'s own constructor did
+  `cause instanceof Error ? cause.message : String(cause)` — a revoked proxy makes `instanceof`
+  itself throw `TypeError`, a hostile `Symbol.toPrimitive`/`toString` makes `String()` throw, and
+  either one made `new ToolOutcomeNotRecorded(…)` raise a plain `TypeError` instead. The caller then
+  lost `executionHappened === true`, the ONE signal distinguishing "the call failed, retry it" from
+  "the call SUCCEEDED and could not be recorded, do NOT retry" — so a hostile thrown value turns an
+  already-executed payment into what looks like an ordinary failure. Same class in mcp-proxy
+  (`truncateError` throwing meant the ERROR outcome receipt for a tool that HAD RUN was never built;
+  `verifyOutcomeReceipt` broke its documented never-throws contract by reading `err.message` in its
+  own catch) and, found while enumerating the class, in the gate (`report(...)` was awaited outside
+  any try, so a transport throw propagated raw and took `ran: true` with it) and in `gate/cli.ts`
+  (`(e as Error).message` in the process's last act before exit).
+
+  `packages/adapter-core/src/safe-throw.mjs` is now the ONE conversion — `describeThrown`,
+  `describeThrownDetailed`, `isErrorLike`, `thrownName`, `thrownCode`, `truncateThrown`. It reads
+  nothing outside a `try`, uses no bare `instanceof` and no bare `String()`, is total (every input
+  yields a value), and cannot throw. `describeThrownDetailed().raw` is non-enumerable so a logger
+  cannot walk into the untrusted value. **Thirty-two handler sites across adapter-core,
+  framework-adapters, mcp-proxy and gate now route through it**, including the ones that BRANCH on
+  `err.code` (ENOENT/EEXIST/ELOOP/ESRCH/ERR_MODULE_NOT_FOUND), where a throwing getter did not
+  garble a log line — it skipped the recovery path.
+
+  Two mechanical gates keep the class closed rather than remembered:
+  `scripts/lint-thrown-value-handling.mjs` (wired into CI as `npm run lint:thrown`) fails the build
+  when any catch binding in the governed packages is read, when a bare `instanceof Error` appears
+  outside the boundary, or when a package grows its own copy of the conversion; and
+  `scripts/thrown-value-corpus.mjs` is ONE shared adversarial corpus — the eight Node-reachable
+  falsy values, revoked proxies, throwing `get`/`getPrototypeOf` traps, hostile
+  `toString`/`Symbol.toPrimitive`/`Symbol.toStringTag`/`message`/`name`/`code`, throw-in-catch
+  (including a `toString` that throws a revoked proxy), null-prototype objects, a cross-realm Error,
+  a 2 MiB message — run against every governed site in all four packages, synchronously AND as async
+  rejections.
+
+- **BREAKING (pre-1.0) — `ToolOutcomeNotRecorded` moved to `noa-mcp-adapter-core`.** The identical
+  state exists in three packages (framework-adapters: the outcome receipt cannot be signed or
+  persisted; gate: the consumption report throws after a dispatch; mcp-proxy: the outcome receipt
+  cannot be built after a forward), and three copies of an anti-retry discriminator is three ways to
+  get it wrong. *Migration:* `import { ToolOutcomeNotRecorded } from "noa-framework-adapters"` still
+  works and is the SAME class — no action required for existing callers. Prefer
+  `ToolOutcomeNotRecorded.is(e)` over `e instanceof ToolOutcomeNotRecorded`: `instanceof` silently
+  answers `false` across realms and across duplicate installs of the package, and a discriminator
+  that "usually" identifies "do not retry" is not one. New field `causeDescription` (a safe string);
+  read it instead of `cause.message`. `cause`, `result` and `toolFailure` are still carried by
+  identity. The gate now raises this type when `report(...)` throws after a successful dispatch — a
+  caller that previously saw a raw transport error there now sees the honest one. Targets the next
+  `noa-mcp-adapter-core` / `noa-framework-adapters` release (0.2.0 / 0.2.0); nothing is published
+  from this branch and no version field was bumped.
+
+- **Behaviour change — `outcome.error` is now always a string on an mcp-proxy ERROR outcome
+  receipt.** `throw null` / `throw undefined` previously recorded `null`, i.e. "an error occurred and
+  nothing is known about it" for a throw whose value was known exactly. Success outcomes still
+  record `null`.
+
 ### Security (cross-family review, 2026-07-27)
 
 Five findings an independent review reproduced against this branch. Each was re-reproduced here

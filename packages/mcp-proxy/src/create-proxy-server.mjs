@@ -70,28 +70,10 @@ import {
   findOutstanding,
   consumeApprovalTicket,
   verifyApprovalReceipt,
+  // BOUNDARY 2 — the ONE conversion from an arbitrary thrown value to a safe descriptor.
+  describeThrown,
 } from "noa-mcp-adapter-core";
 import { buildOutcomeReceipt, buildOutcomeReceiptAsync } from "./outcome-receipt.mjs";
-
-/**
- * Describe a THROWN value without assuming it is an `Error`.
- *
- * A downstream tool may throw anything — `throw null` is legal JavaScript — and reading `.message`
- * off it raises a TypeError from inside the catch block that is supposed to be REPORTING the
- * failure. On the post-ALLOW path that matters: the tool has already run, and an exception escaping
- * there replaces the honest "downstream call failed after ALLOW" MCP error with an unrelated
- * internal TypeError. (`outcome-receipt.mjs`'s own `truncateError` was already null-safe, so the
- * ERROR outcome receipt itself was never at risk — this keeps the message the host sees honest too.)
- */
-function describeThrown(err) {
-  if (err instanceof Error && typeof err.message === "string") return err.message;
-  if (typeof err === "string") return err;
-  try {
-    return `non-Error thrown: ${String(err)}`;
-  } catch {
-    return "non-Error thrown: <unstringifiable>";
-  }
-}
 
 /**
  * @param {{

@@ -21,6 +21,7 @@ import { loadPendingIndex, recordApproved, recordDenied, PendingStoreError } fro
 import { buildApprovalReceipt, buildDenialReceipt, DEFAULT_APPROVAL_TICKET_TTL_MS } from "./approval-decision.mjs";
 import { opaqueApproverId } from "./opaque-id.mjs";
 import { loadOrCreateKeyFile } from "./key-file.mjs";
+import { describeThrown } from "./safe-throw.mjs";
 
 function loadOrCreateApproverSigner(keyFile) {
   return loadOrCreateKeyFile({
@@ -68,7 +69,7 @@ export function runApproveCli(argv) {
   try {
     ({ command, opts } = parseArgs(argv));
   } catch (err) {
-    process.stderr.write(`${err.message}\n`);
+    process.stderr.write(`${describeThrown(err)}\n`);
     return 1;
   }
 
@@ -85,7 +86,7 @@ export function runApproveCli(argv) {
     record = matches[0];
     if (record.status !== "pending") throw new PendingStoreError(`id "${opts.id}" is not awaiting a decision (status "${record.status}")`);
   } catch (err) {
-    process.stderr.write(`noa-approve: ${err.message}\n`);
+    process.stderr.write(`noa-approve: ${describeThrown(err)}\n`);
     return 1;
   }
 
@@ -94,7 +95,7 @@ export function runApproveCli(argv) {
     const kp = loadOrCreateApproverSigner(opts.keyFile);
     signer = { kid: kp.kid, privateKey: kp.privateKey };
   } catch (err) {
-    process.stderr.write(`noa-approve: ${err.message}\n`);
+    process.stderr.write(`noa-approve: ${describeThrown(err)}\n`);
     return 1;
   }
 
@@ -126,7 +127,7 @@ export function runApproveCli(argv) {
     }
     return 0;
   } catch (err) {
-    process.stderr.write(`noa-approve: ${err.message}\n`);
+    process.stderr.write(`noa-approve: ${describeThrown(err)}\n`);
     return 1;
   }
 }

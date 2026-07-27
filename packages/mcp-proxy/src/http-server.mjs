@@ -29,6 +29,7 @@ import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createProxyServer } from "./create-proxy-server.mjs";
+import { describeThrown } from "noa-mcp-adapter-core";
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — fail closed on anything larger, never buffer unbounded
 
@@ -54,7 +55,7 @@ function readJsonBody(req) {
       try {
         resolve(JSON.parse(raw));
       } catch (err) {
-        reject(new Error(`invalid JSON body: ${err.message}`));
+        reject(new Error(`invalid JSON body: ${describeThrown(err)}`));
       }
     });
     req.on("error", reject);
@@ -119,7 +120,7 @@ export async function startHttpProxy(config) {
     } catch (err) {
       // FAIL-CLOSED: downstream unreachable at session start — never register, never serve.
       await transport.close().catch(() => {});
-      writeJsonError(res, 502, `noa-mcp-proxy: downstream MCP connection failed at session start (${err.message})`);
+      writeJsonError(res, 502, `noa-mcp-proxy: downstream MCP connection failed at session start (${describeThrown(err)})`);
       return null;
     }
     const entry = { transport, proxy };
@@ -148,7 +149,7 @@ export async function startHttpProxy(config) {
         try {
           body = await readJsonBody(req);
         } catch (err) {
-          writeJsonError(res, 400, `noa-mcp-proxy: ${err.message}`);
+          writeJsonError(res, 400, `noa-mcp-proxy: ${describeThrown(err)}`);
           return;
         }
         let entry = mcpSessionId ? sessions.get(mcpSessionId) : undefined;
@@ -183,7 +184,10 @@ export async function startHttpProxy(config) {
 
       writeJsonError(res, 405, `noa-mcp-proxy: method ${req.method} not allowed`);
     } catch (err) {
-      writeJsonError(res, 500, `noa-mcp-proxy: ${err?.message ?? "internal error"}`);
+      // BOUNDARY 2: this is the LAST handler in the request path. `err?.message` here could throw a
+      // second time — out of the handler that exists to turn any failure into a 500 — leaving the
+      // HTTP request with no response at all until the socket timed out.
+      writeJsonError(res, 500, `noa-mcp-proxy: ${describeThrown(err)}`);
     }
   });
 

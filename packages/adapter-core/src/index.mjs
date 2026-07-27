@@ -29,3 +29,14 @@ export {
 // having to add a direct `noa-receipt` dependency it otherwise never carries. Purely additive —
 // no existing export changes.
 export { generateKeyPair, verifyChain, signEd25519, verifyEd25519, canonicalize, buildReceipt, buildReceiptAsync } from "noa-receipt";
+
+// BOUNDARY 2 — the ONE conversion from an arbitrary thrown value to a safe descriptor. Re-exported
+// from the package root as well as the `./safe-throw` subpath so no consumer has a reason to write
+// its own `e instanceof Error ? e.message : String(e)` ever again (see safe-throw.mjs, and
+// scripts/lint-thrown-value-handling.mjs, which fails the build when one does).
+export { describeThrown, describeThrownDetailed, isErrorLike, thrownName, thrownCode, truncateThrown, MAX_DESCRIPTION_LEN } from "./safe-throw.mjs";
+
+// The ONE "it already ran and the record could not be written" type, shared by every package that
+// can be in that state (framework-adapters, gate, mcp-proxy). Built ON the boundary above: its
+// anti-retry discriminator is exactly what an exotic thrown `cause` used to destroy.
+export { ToolOutcomeNotRecorded } from "./tool-outcome-not-recorded.mjs";

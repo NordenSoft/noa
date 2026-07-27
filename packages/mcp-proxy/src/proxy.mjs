@@ -98,7 +98,7 @@ import { randomUUID } from "node:crypto";
 import { writeFileSync, readFileSync, promises as fsp } from "node:fs";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile } from "noa-mcp-adapter-core";
+import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile, describeThrown, describeThrownDetailed } from "noa-mcp-adapter-core";
 import { createProxyServer } from "./create-proxy-server.mjs";
 import { TRANSFER_GUARD_POLICY } from "./policy.mjs";
 
@@ -226,7 +226,11 @@ async function main() {
     try {
       ({ createRemoteSigner } = await import("noa-signer-sidecar/client.mjs"));
     } catch (err) {
-      if (err?.code === "ERR_MODULE_NOT_FOUND" && String(err?.message).includes("noa-signer-sidecar")) {
+      // BOUNDARY 2: this branch DECIDES control flow from the thrown value's own fields. A throwing
+      // `code`/`message` getter here did not garble a message — it escaped the handler and skipped
+      // the "the sidecar package is not installed" guidance entirely.
+      const d = describeThrownDetailed(err);
+      if (d.code === "ERR_MODULE_NOT_FOUND" && d.message.includes("noa-signer-sidecar")) {
         throw new Error(
           "proxy.mjs: --signer-socket requires the optional 'noa-signer-sidecar' package, which is not installed — " +
             "install it with: npm install noa-signer-sidecar",
@@ -332,7 +336,7 @@ async function main() {
     });
   } catch (err) {
     // Fail-closed at startup: never expose a half-connected proxy to the host.
-    console.error(`noa-mcp-proxy: fatal — could not establish the downstream MCP connection: ${err.message}`);
+    console.error(`noa-mcp-proxy: fatal — could not establish the downstream MCP connection: ${describeThrown(err)}`);
     process.exit(1);
     return;
   }
@@ -342,6 +346,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`noa-mcp-proxy: fatal — ${err.stack ?? err.message}`);
+  console.error(`noa-mcp-proxy: fatal — ${describeThrown(err)}`);
   process.exit(1);
 });

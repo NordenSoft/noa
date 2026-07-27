@@ -46,7 +46,8 @@
   },
   "dependencies": {
     "noa-approval-artifacts": "file:../approval-artifacts",
-    "noa-receipt": "file:../.."
+    "noa-receipt": "file:../..",
+    "noa-mcp-adapter-core": "file:../adapter-core"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

@@ -13,6 +13,7 @@
  */
 
 import { randomBytes } from "node:crypto";
+import { describeThrown } from "noa-mcp-adapter-core/safe-throw";
 import { spawnSync } from "node:child_process";
 import { createGate } from "./server.js";
 import { createAlphaTrust } from "./trust.js";
@@ -103,6 +104,9 @@ async function main(): Promise<void> {
 }
 
 main().catch((e) => {
-  process.stderr.write(`noa-gate: ${(e as Error).message}\n`);
+  // BOUNDARY 2: `(e as Error).message` is a cast, not a check — the value decides what happens next,
+  // and here "next" is the process's last act before exit(1). A throwing getter turned a clean
+  // fail-closed exit into an unhandled rejection with a different exit code.
+  process.stderr.write(`noa-gate: ${describeThrown(e)}\n`);
   process.exit(1);
 });

@@ -31,7 +31,7 @@
  * `unsigned` is the receipt with its `sig` field removed. `verifyOutcomeReceipt` recomputes exactly
  * those bytes — fully offline, a pure function of (receipt, keyring).
  */
-import { canonicalize, signEd25519, verifyEd25519 } from "noa-mcp-adapter-core";
+import { canonicalize, signEd25519, verifyEd25519, describeThrown, truncateThrown } from "noa-mcp-adapter-core";
 
 /** Distinct signing domain — MUST NOT collide with noa-receipt's RECEIPT_SIG_DOMAIN / ANCHOR_SIG_DOMAIN. */
 export const OUTCOME_SIG_DOMAIN = "NOA-MCP-Outcome-Receipt-v1-sig";
@@ -40,10 +40,25 @@ export const OUTCOME_RECEIPT_SPEC = "noa.mcp.outcome/0.1";
 
 const MAX_ERROR_LEN = 512;
 
+/**
+ * The recorded `outcome.error` string, via BOUNDARY 2.
+ *
+ * It used to read `error?.message ?? String(error)`. Both halves run code the THROWER controls: a
+ * `message` getter that throws, or a `Symbol.toPrimitive`/`toString` that throws, made this function
+ * throw — from inside the path that builds the ERROR outcome receipt for a tool that HAD ALREADY
+ * RUN. The receipt was then never built, so the one durable record that the execution happened at
+ * all was lost to a value the downstream tool chose. `describeThrown` cannot throw for any input.
+ *
+ * `null` in stays `null` out (the success path passes no error); every other value gets a truthful,
+ * bounded description.
+ */
 function truncateError(error) {
-  if (error == null) return null;
-  const msg = typeof error === "string" ? error : (error?.message ?? String(error));
-  return msg.length > MAX_ERROR_LEN ? msg.slice(0, MAX_ERROR_LEN) + "…[truncated]" : msg;
+  // NOTE the absence of a null-check. `throw null` and `throw undefined` are legal, and this
+  // function is only ever called on the ERROR path, so returning `null` there recorded "an error
+  // occurred, and nothing is known about it" for a throw whose value we know exactly. A falsy
+  // thrown value is still a throw; it is described like any other. The SUCCESS path never reaches
+  // here (see assembleUnsigned), so `outcome.error` is still null for every success.
+  return truncateThrown(describeThrown(error), MAX_ERROR_LEN);
 }
 
 /**
@@ -149,6 +164,11 @@ export function verifyOutcomeReceipt(outcomeReceipt, { keyring, expectedDecision
     }
     return { ok: true, decisionId: unsigned.decision.id, status: unsigned.outcome.status };
   } catch (err) {
-    return { ok: false, reason: `verify threw: ${err.message}` };
+    // This function's documented contract is "never throws" — and it broke that contract exactly
+    // here: `err.message` on a thrown `null`/`undefined` (or a hostile getter) raised from inside
+    // the catch block whose job is to convert a failure into `{ ok: false }`. A caller told
+    // "verifyOutcomeReceipt never throws" had no handler, so an unverifiable receipt became an
+    // unhandled rejection instead of a NEGATIVE VERIFICATION RESULT.
+    return { ok: false, reason: `verify threw: ${describeThrown(err)}` };
   }
 }

@@ -19,7 +19,7 @@
  * credentials/write authority live, or an agent framework could bypass it by calling the
  * underlying API directly instead of through the guarded tool object these adapters return.
  */
-import { preCheck, preCheckAsync, buildReceipt, buildReceiptAsync } from "noa-mcp-adapter-core";
+import { preCheck, preCheckAsync, buildReceipt, buildReceiptAsync, ToolOutcomeNotRecorded } from "noa-mcp-adapter-core";
 
 /**
  * Build the POST-attempt terminal receipt, chained onto the decision receipt.
@@ -73,44 +73,39 @@ function buildOutcomeReceipt({ decisionReceipt, prev, seq, failed, signer, tenan
 }
 
 /**
- * Thrown when the wrapped tool ALREADY RAN and the terminal receipt could not be produced or
- * recorded — the outcome signer rejected/was unreachable, or `onReceipt` threw (a receipt-log
- * append hitting ENOSPC, a durable store refusing the write).
+ * `ToolOutcomeNotRecorded` — "the wrapped tool ALREADY RAN and the terminal receipt could not be
+ * produced or recorded" (the outcome signer rejected or was unreachable, or `onReceipt` threw: a
+ * receipt-log append hitting ENOSPC, a durable store refusing the write).
  *
  * WHY THIS TYPE EXISTS. Both of those used to propagate raw, so a call that SUCCEEDED and merely
- * failed to be written down reached the caller as an indistinguishable bare failure. That is the
- * one error shape a caller must not confuse: retrying "the call failed" is correct, and retrying
- * "the call succeeded but was not recorded" duplicates the side effect — for a payment tool, twice.
- * The pre-execution path is deliberately NOT wrapped: a decision-receipt persist failure means
- * nothing ran, and rejecting closed there is the correct fail-closed behaviour, unchanged.
+ * failed to be written down reached the caller as an indistinguishable bare failure. That is the one
+ * error shape a caller must not confuse: retrying "the call failed" is correct, and retrying "the
+ * call succeeded but was not recorded" duplicates the side effect — for a payment tool, twice. The
+ * pre-execution path is deliberately NOT wrapped: a decision-receipt persist failure means nothing
+ * ran, and rejecting closed there is the correct fail-closed behaviour, unchanged.
  *
- *   `executionHappened` — always `true`. The discriminator: the tool was invoked and settled.
- *   `outcome`           — `"EXECUTED"` or `"FAILED"`: what the terminal receipt WOULD have said.
- *   `result`            — the wrapped tool's return value when it succeeded (else `undefined`), so
- *                         a caller can still complete the operation it already paid for.
- *   `toolFailure`       — the value the tool threw when `outcome` is `"FAILED"`.
- *   `receipt`           — the terminal receipt if it was built but not recorded (else `null`).
- *   `cause`             — the original signing/persistence error, unchanged.
+ * MOVED (2026-07-27, breaking pre-1.0 — see CHANGELOG "BOUNDARY 2"): the class now lives in
+ * `noa-mcp-adapter-core` because the identical state exists in `packages/gate` and
+ * `packages/mcp-proxy`, and three copies of an anti-retry discriminator is three ways to get it
+ * wrong. This re-export keeps `import { ToolOutcomeNotRecorded } from "noa-framework-adapters"`
+ * working unchanged; the class is the SAME class, and its message is now built through the
+ * thrown-value boundary so a hostile `cause` can no longer make the constructor itself throw and
+ * take `executionHappened === true` down with it. Prefer `ToolOutcomeNotRecorded.is(e)` over
+ * `e instanceof ToolOutcomeNotRecorded`: the brand survives duplicate package copies and realms.
+ *
+ *   `executionHappened`  — always `true`. The discriminator: the tool was invoked and settled.
+ *   `outcome`            — `"EXECUTED"` or `"FAILED"`: what the terminal receipt WOULD have said.
+ *   `result`             — the wrapped tool's return value when it succeeded (else `undefined`).
+ *   `toolFailure`        — the value the tool threw when `outcome` is `"FAILED"` (by identity).
+ *   `receipt`            — the terminal receipt if it was built but not recorded (else `null`).
+ *   `cause`              — the original signing/persistence error, unchanged, by identity.
+ *   `causeDescription`   — a SAFE string describing `cause`; read this, never `cause.message`.
  *
  * This does NOT make the outcome durable — that needs a commit protocol the wrapper does not own
- * (see THREAT-MODEL.md). It makes the ambiguity VISIBLE instead of silent, which is the part that
- * can be fixed here.
+ * (see THREAT-MODEL.md and docs/side-effect-unconfirmed.md). It makes the ambiguity VISIBLE instead
+ * of silent, which is the part that can be fixed here.
  */
-export class ToolOutcomeNotRecorded extends Error {
-  constructor(toolName, { outcome, result, toolFailure, receipt, cause }) {
-    super(
-      `noa-framework-adapters: "${toolName}" ALREADY RAN (outcome ${outcome}) but its terminal receipt could not be recorded — ` +
-      `do NOT blindly retry: the side effect has already happened. Cause: ${cause instanceof Error ? cause.message : String(cause)}`,
-      { cause },
-    );
-    this.name = "ToolOutcomeNotRecorded";
-    this.executionHappened = true;
-    this.outcome = outcome;
-    this.result = result;
-    this.toolFailure = toolFailure;
-    this.receipt = receipt ?? null;
-  }
-}
+export { ToolOutcomeNotRecorded } from "noa-mcp-adapter-core";
 
 /** Thrown by a guarded tool call when the gate decision is not ALLOW. Carries the signed receipt
  *  (already appended to the guard's chain) so a caller can inspect exactly why the call was
@@ -266,6 +261,7 @@ export function createToolGuard({ signer, policy, tenant = "default-tenant", cha
           toolFailure: threw ? failure : undefined,
           receipt: null,
           cause: e,
+          component: "noa-framework-adapters",
         });
       }
       if (onReceipt) {
@@ -278,6 +274,7 @@ export function createToolGuard({ signer, policy, tenant = "default-tenant", cha
             toolFailure: threw ? failure : undefined,
             receipt: outcomeReceipt,
             cause: e,
+            component: "noa-framework-adapters",
           });
         }
       }

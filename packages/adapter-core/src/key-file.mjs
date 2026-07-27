@@ -1,4 +1,5 @@
 import { readFileSync, writeFileSync, openSync, fstatSync, fchmodSync, fsyncSync, closeSync, constants as fsConstants } from "node:fs";
+import { describeThrown, thrownCode } from "./safe-throw.mjs";
 
 function createPrivateKeyFile(keyFile, record) {
   const flags =
@@ -69,12 +70,12 @@ export function loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel = "loadO
     // codeql[js/insecure-temporary-file]
     fd = openSync(keyFile, READONLY_NOFOLLOW);
   } catch (err) {
-    if (err.code === "ELOOP") {
+    if (thrownCode(err) === "ELOOP") {
       throw new Error(
         `${callerLabel}: --key-file "${keyFile}" is a symlink -- refusing to follow it (CWE-367 symlink-attack guard). Point --key-file directly at the intended regular file.`,
       );
     }
-    if (err.code !== "ENOENT") throw err;
+    if (thrownCode(err) !== "ENOENT") throw err;
     // fall through: genuinely nothing at this path yet -- the create branch below runs.
   }
 
@@ -93,7 +94,7 @@ export function loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel = "loadO
       try {
         raw = JSON.parse(readFileSync(fd, "utf8"));
       } catch (err) {
-        throw new Error(`${callerLabel}: --key-file "${keyFile}" is not valid JSON (${err.message})`);
+        throw new Error(`${callerLabel}: --key-file "${keyFile}" is not valid JSON (${describeThrown(err)})`);
       }
       if (!raw || typeof raw.kid !== "string" || typeof raw.privateKey !== "string" || typeof raw.publicKey !== "string") {
         throw new Error(`${callerLabel}: --key-file "${keyFile}" is malformed (expected { kid, privateKey, publicKey })`);

@@ -14,6 +14,7 @@
 import { buildReceipt, verifyEd25519, receiptHashInput, sha256Prefixed, sha256Digest } from "noa-receipt";
 import { randomUUID } from "node:crypto";
 import { assertOpaqueApproverBy } from "./opaque-id.mjs";
+import { describeThrown } from "./safe-throw.mjs";
 
 /**
  * The domain-separation tag noa-receipt's own builder binds every receipt signature to (its
@@ -201,6 +202,6 @@ export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identit
 
     return { ok: true };
   } catch (err) {
-    return { ok: false, reason: `approval-receipt verification failed closed (${err?.message ?? "unknown error"})` };
+    return { ok: false, reason: `approval-receipt verification failed closed (${describeThrown(err)})` };
   }
 }
