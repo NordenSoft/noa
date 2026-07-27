@@ -12,10 +12,16 @@ may want to reverse:
    explicitly asking for argument. If you would rather stay lighter-touch on someone else's
    draft, cut sections 1–3 to their first sentences; the vector contribution in section 4 is the
    part that carries weight regardless.
-2. I did **not** raise F1 (the construction-id contradiction) in this reply. It is a defect in
-   Hillier's unsent artifacts, and the memo goes to him privately. Putting it on the thread would
-   embarrass him for an error he has not yet made publicly. **If he sends before reading the memo,
-   this reply needs a rewrite** — see the note at the end.
+2. **DECIDED: this reply does not raise F1** (the construction-id contradiction), and that is not a
+   provisional call. F1 is a defect in artifacts Hillier has not yet sent. Raising it on the thread
+   would expose an error he has not publicly made, in front of the four people he is trying to
+   persuade — punishing him for the one thing he did right, which was to circulate the artifacts
+   before filing. The memo is the correct channel and is written so he can verify every claim
+   himself and fix it silently. The cost of this choice is that if the thread later discusses F1,
+   our reply will read as though we missed it; that is a price worth paying and the memo timestamps
+   prove otherwise.
+   **This makes SEQUENCING a precondition, not a preference:** the memo goes to Hillier first, and
+   this reply is sent only after he has had it. See the standing instruction at the end.
 3. The "15th" — I could not find any referent. It appears in his e-mail addressed to you and
    nowhere else in the artifact set, the filed -01, or the corpora. I have written it as a
    question rather than assuming a deadline we have not agreed to.
@@ -179,8 +185,11 @@ NordenSoft / NOA
   assertable.
 - **Do not attach or quote the findings memo.** That is a private note to Hillier about artifacts
   he has not sent.
-- **If Hillier has already sent the run with the contradictory `arp_run.json`**, do not send this
-  as written. The thread will be discussing F1 within the day, and a reply that talks past it
-  reads as either inattentive or complicit. Add a short, non-punitive paragraph noting the
-  discrepancy and that a corrected artifact set is coming — his to announce, ours to have noticed
-  quietly first.
+- **ORDERING IS A PRECONDITION.** The memo reaches Hillier first; this reply goes out only after.
+  The reply is written on the assumption that F1 is his to disclose or quietly fix, and that
+  assumption only holds if he has been told. Sending this first would leave us publicly agreeing
+  with an artifact set we already know contradicts itself.
+- **If that ordering is broken** — if the run ships before the memo lands — this draft is void
+  rather than patchable: a reply that engages with §1–§5 while the thread is discussing a
+  self-contradiction in the attachments reads as inattentive at best. Re-draft from the memo's F1
+  entry, non-punitively, rather than bolting a paragraph onto this.
