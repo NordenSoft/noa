@@ -146,6 +146,11 @@ function unsafeReads(body, name) {
     // does, and the cast is a claim about the value that the value itself gets to violate.
     [new RegExp(`\\(\\s*${n}\\s+as\\b`, "g"), "cast of a thrown value (`as` asserts what the thrower controls)"],
     [new RegExp(`\\(\\s*${n}\\s*\\)\\s*\\.`, "g"), "parenthesised property read"],
+    // Destructuring is a property read with different syntax, and it runs the same getters.
+    [new RegExp(`\\{[^}\\n]*\\}\\s*=\\s*${n}\\b`, "g"), "destructuring a thrown value (runs its getters)"],
+    // Serializing walks EVERY enumerable property of the value, i.e. every getter it defines.
+    [new RegExp(`JSON\\.stringify\\s*\\(\\s*${n}\\b`, "g"), "JSON.stringify of a thrown value (walks every getter)"],
+    [new RegExp(`Object\\.(keys|values|entries|assign)\\s*\\(\\s*${n}\\b`, "g"), "enumerating a thrown value's properties"],
   ];
   const hits = [];
   for (const [re, why] of patterns) {

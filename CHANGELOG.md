@@ -66,7 +66,12 @@ fails closed when a future site does not route through it.
   `err.code` (ENOENT/EEXIST/ELOOP/ESRCH/ERR_MODULE_NOT_FOUND), where a throwing getter did not
   garble a log line — it skipped the recovery path.
 
-  Two mechanical gates keep the class closed rather than remembered:
+  Two mechanical gates keep the class closed rather than remembered — and the gate itself is proven
+  load-bearing by `scripts/lint-thrown-value-handling.selftest.mjs`, which writes each pattern the
+  lint claims to catch into a real file in a governed package and requires the lint to name it (a
+  gate reporting CLEAN is otherwise indistinguishable from a gate inspecting nothing — the same
+  failure this branch is about, applied to the gate). 11/11 patterns fire, including destructuring,
+  `JSON.stringify`, property enumeration, TypeScript casts and rejection handlers.
   `scripts/lint-thrown-value-handling.mjs` (wired into CI as `npm run lint:thrown`) fails the build
   when any catch binding in the governed packages is read, when a bare `instanceof Error` appears
   outside the boundary, or when a package grows its own copy of the conversion; and
