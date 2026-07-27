@@ -1,13 +1,13 @@
 {
-  "description": "container shape: the mandatory checkpoint field is absent → E_BUNDLE_SHAPE (a bundle without its tail anchor is not well-formed)",
+  "description": "STEP_12: UNKNOWN_AFTER_DISPATCH whose executionGrant.holdEnvelopeHash resolves to no envelope in this bundle — step 12 previously never ran verifyArtifact on the grant, so its schema/signature/F15 role/revocation/envelope-binding were all unchecked",
   "expectVerdict": "INVALID",
-  "expectStep": "STEP_0_TENANT_EQUALITY",
-  "expectCode": "E_BUNDLE_SHAPE",
+  "expectStep": "STEP_12_UNKNOWN_AFTER_DISPATCH",
+  "expectCode": "E_UNKNOWN",
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {
     "spec": "noa.approval-evidence/0.1",
-    "outcome": "EXECUTED",
+    "outcome": "UNKNOWN_AFTER_DISPATCH",
     "holdEnvelope": {
       "spec": "noa.hold/0.1",
       "holdId": "hold-001",
@@ -238,7 +238,7 @@
       "grantId": "grant-001",
       "holdId": "hold-001",
       "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
+      "holdEnvelopeHash": "sha256:7777777777777777777777777777777777777777777777777777777777777777",
       "approvalReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T12:30:00.000Z",
@@ -247,56 +247,33 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "w5e7Iq3d9GIPN/xW9bGba45UmNB+k7VEW5ytrvahHNsXihUypNQ52tKQ2Jn0+3fPnLB61yf3Y1rmL7y9aIaQCw=="
+        "value": "X5HySuZeDLajXQ/Qno6fW25Mkp2zpeua2LNz8H+bh0xlkvl52TL1h3Ogm45bx+NTlcpUyaW0s9QpAHzyz973CA=="
       }
     },
-    "executionConsumption": {
-      "spec": "noa.execution-consumption/0.1",
-      "grantHash": "sha256:2e47b7e519e50e81f322575b26a1e27c37d11677fe7f4ce6fcbb19da3729c146",
-      "consumedAt": "2026-07-14T11:58:00.000Z",
-      "attemptReceiptHash": "sha256:c1eedfbe6e5526e3925ba1195d6d63a44e7cb9bbde66cb400fc1fe33c8d217ba",
-      "result": "DISPATCHED",
+    "executionUncertainty": {
+      "spec": "noa.execution-uncertainty/0.1",
+      "grantHash": "sha256:c7c775237adbec5c447ac28c45c7ecb3431048dd0006620919a6e47a8d0262ca",
+      "lastKnownState": "DISPATCH_STARTED",
+      "detectedAt": "2026-07-14T11:58:30.000Z",
+      "reason": "PROCESS_CRASH_BEFORE_RECEIPT_COMMIT",
+      "bootId": "boot-7f3a9c",
+      "uptimeResetAt": "2026-07-14T11:57:30.000Z",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "/+yF5lkJmPlAR+HbofkSkAPX690QFjeCxnWx6670thttq9LlfrjvIEcUpvNCC1fKOElGGHQLc5UsKFKpr7QXBQ=="
+        "value": "t7sqZ0p532bRxTHwUqYiA3PwsxDaLr3Jj+nExEhPzH1pVWniMFX/15YqsEfBOfM0uN52mM5cs/ci4zUP7qJ6Bw=="
       }
     },
-    "executedReceipt": {
-      "spec": "noa.receipt/0.1",
-      "id": "rcpt_exec",
-      "ts": "2026-07-14T11:58:00.000Z",
-      "scope": {
-        "tenant": "tenant-acme",
-        "chain": "chain-acme-1"
-      },
-      "agent": {
-        "id": "agent-a",
-        "model": null,
-        "principal": "SERVICE"
-      },
-      "action": {
-        "id": "deploy.apply",
-        "canonical": "deploy.apply",
-        "riskClass": "HIGH",
-        "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "reversible": false,
-        "rollbackRef": null
-      },
-      "governance": {
-        "mode": "on",
-        "verdict": "EXECUTED",
-        "sandboxed": false
-      },
-      "chain": {
-        "seq": 2,
-        "prevHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
-        "hash": "sha256:c1eedfbe6e5526e3925ba1195d6d63a44e7cb9bbde66cb400fc1fe33c8d217ba"
-      },
+    "checkpoint": {
+      "spec": "noa.checkpoint/0.1",
+      "chain": "chain-acme-1",
+      "highestSeq": 1,
+      "headHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
+      "ts": "2026-07-14T11:59:00.000Z",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "IOrK+ukhPi/E+jbtzhH8r+A9DbDEnoLliQzYipAzmuMMmISOuUKNA+HgQa+I/ypKbgfcPiceMh1y1ilsmdkHAg=="
+        "value": "7COiGxG6ZL2MMFvw8XP6HGS2CLbX1ddnLjxxbEXuI5f2aq9E7QYMZfyZDZuceFmPEdSZRsHOZP6EaRuEZXNhBg=="
       }
     }
   },

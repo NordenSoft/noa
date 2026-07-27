@@ -1,13 +1,13 @@
 {
-  "description": "container shape: the mandatory checkpoint field is absent → E_BUNDLE_SHAPE (a bundle without its tail anchor is not well-formed)",
+  "description": "STEP_11/G12: EXECUTION_FAILED whose executionGrant.approvalReceiptHash matches no approval in the bundle — the same unbound-grant defect step 10 already rejected, on the sibling outcome that carries the same artifact",
   "expectVerdict": "INVALID",
-  "expectStep": "STEP_0_TENANT_EQUALITY",
-  "expectCode": "E_BUNDLE_SHAPE",
+  "expectStep": "STEP_11_EXECUTION_FAILED",
+  "expectCode": "E_EXECUTION_FAILED",
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {
     "spec": "noa.approval-evidence/0.1",
-    "outcome": "EXECUTED",
+    "outcome": "EXECUTION_FAILED",
     "holdEnvelope": {
       "spec": "noa.hold/0.1",
       "holdId": "hold-001",
@@ -239,7 +239,7 @@
       "holdId": "hold-001",
       "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
-      "approvalReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
+      "approvalReceiptHash": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "maxUses": 1,
@@ -247,24 +247,36 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "w5e7Iq3d9GIPN/xW9bGba45UmNB+k7VEW5ytrvahHNsXihUypNQ52tKQ2Jn0+3fPnLB61yf3Y1rmL7y9aIaQCw=="
+        "value": "fYjxOjhpOFvWjZpIBne4h+6Yx8GtNlwI9H2b7IyUtG3/2RCmf8E9ZX1od0ETX3m9+doe98i9NiK8MxoOlTFrBQ=="
       }
     },
     "executionConsumption": {
       "spec": "noa.execution-consumption/0.1",
-      "grantHash": "sha256:2e47b7e519e50e81f322575b26a1e27c37d11677fe7f4ce6fcbb19da3729c146",
+      "grantHash": "sha256:3727d2b38ac36204e075fb062c11035421d1d884c17836d07a94508c1709d8cb",
       "consumedAt": "2026-07-14T11:58:00.000Z",
-      "attemptReceiptHash": "sha256:c1eedfbe6e5526e3925ba1195d6d63a44e7cb9bbde66cb400fc1fe33c8d217ba",
+      "attemptReceiptHash": "sha256:9a1b0905ad93d6b3a22aa2b297d4e8fbe2d3f0549534839a44c0ea3efcc5cfdc",
       "result": "DISPATCHED",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "/+yF5lkJmPlAR+HbofkSkAPX690QFjeCxnWx6670thttq9LlfrjvIEcUpvNCC1fKOElGGHQLc5UsKFKpr7QXBQ=="
+        "value": "Ii+2Y6k7ZJyMetoA2Hzo5+7MvyqTK/0m1SF2AfMKWHfbzShQfyTOdM+Peda+UUnuHffabjS14cGAVvTpZhDJBw=="
       }
     },
-    "executedReceipt": {
+    "checkpoint": {
+      "spec": "noa.checkpoint/0.1",
+      "chain": "chain-acme-1",
+      "highestSeq": 2,
+      "headHash": "sha256:9a1b0905ad93d6b3a22aa2b297d4e8fbe2d3f0549534839a44c0ea3efcc5cfdc",
+      "ts": "2026-07-14T11:59:00.000Z",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "MH9cEiQMWv0KjmjMWAcLVzc6Nvo59TRp/ddxia+wXJfxvsENBTwd25IaDpGOynL3pkkx6x6lUZyhnDxZZjQhDA=="
+      }
+    },
+    "failedReceipt": {
       "spec": "noa.receipt/0.1",
-      "id": "rcpt_exec",
+      "id": "rcpt_failed",
       "ts": "2026-07-14T11:58:00.000Z",
       "scope": {
         "tenant": "tenant-acme",
@@ -285,18 +297,18 @@
       },
       "governance": {
         "mode": "on",
-        "verdict": "EXECUTED",
+        "verdict": "FAILED",
         "sandboxed": false
       },
       "chain": {
         "seq": 2,
         "prevHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
-        "hash": "sha256:c1eedfbe6e5526e3925ba1195d6d63a44e7cb9bbde66cb400fc1fe33c8d217ba"
+        "hash": "sha256:9a1b0905ad93d6b3a22aa2b297d4e8fbe2d3f0549534839a44c0ea3efcc5cfdc"
       },
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "IOrK+ukhPi/E+jbtzhH8r+A9DbDEnoLliQzYipAzmuMMmISOuUKNA+HgQa+I/ypKbgfcPiceMh1y1ilsmdkHAg=="
+        "value": "N90pcvWz1ceDFGoa4in7/Q/jcNw2qhi6IyAng1FPbhcZNTu9vT3DDhzCg4WZ5q2rs4bfKkYFtfxtpDhjE9J5Dw=="
       }
     }
   },

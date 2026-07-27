@@ -67,7 +67,14 @@ const T_CHECKPOINT = "2026-07-14T11:59:00.000Z"; // fresh (within 24h of NOW)
 const T_CHECKPOINT_STALE = "2026-07-08T12:00:00.000Z"; // > 24h before NOW
 const DELEG_FROM = "2026-07-14T10:00:00.000Z";
 const DELEG_EXP = "2026-07-20T10:00:00.000Z";
-const MAN_ISSUED = "2026-07-14T09:30:00.000Z";
+// FIXTURE DEFECT, CORRECTED: this was 09:30 — THIRTY MINUTES BEFORE the delegation that authorizes
+// the manifest signer opens (DELEG_FROM 10:00). A manifest cannot be issued before the delegation
+// permitting its signer exists; `verifyArtifact` resolves a manifest's artifact time from
+// `issuedAt`, so `issuedAt` is the issuance/signing instant by this codebase's own convention. The
+// inconsistency was previously used as the reason NOT to apply `delegation.validFrom` to the
+// delegated key — the fixture was wrong, not the rule. Delegation opens 10:00, manifest is stamped
+// 10:30, and both precede every receipt/decision/resolution time below.
+const MAN_ISSUED = "2026-07-14T10:30:00.000Z";
 const MAN_EXP = "2026-07-15T09:30:00.000Z";
 const PARAMS_HASH = "sha256:" + "a".repeat(64);
 
@@ -78,9 +85,9 @@ const CHECKPOINT_KEYRING: J = { "gate-prod-1": KEYS["gate-prod-1"]!.publicKey };
 const CHECKPOINT_KEYRING_WRONG: J = { "some-other-witness": KEYS["approver-crit-5"]!.publicKey };
 
 // ─── manifest keys (constant) + delegation + manifest ────────────────────────────────────────────
-function manifestKeys(approverRevokedAt: string | null = null, approverValidFrom: string = DELEG_FROM, critRevokedAt: string | null = null): J[] {
+function manifestKeys(approverRevokedAt: string | null = null, approverValidFrom: string = DELEG_FROM, critRevokedAt: string | null = null, gateValidFrom: string = DELEG_FROM): J[] {
   return [
-    { kid: "gate-prod-1", type: "GATE", roles: ["hold-signer", "execution-signer"], publicKey: KEYS["gate-prod-1"]!.publicKey, validFrom: DELEG_FROM, revokedAt: null },
+    { kid: "gate-prod-1", type: "GATE", roles: ["hold-signer", "execution-signer"], publicKey: KEYS["gate-prod-1"]!.publicKey, validFrom: gateValidFrom, revokedAt: null },
     { kid: "approver-1-device-2", type: "APPROVER", roles: ["approve-high"], publicKey: KEYS["approver-1-device-2"]!.publicKey, hpkePublicKey: HPKE["approver-1-device-2"], validFrom: approverValidFrom, revokedAt: approverRevokedAt },
     { kid: "approver-crit-5", type: "APPROVER", roles: ["approve-critical"], publicKey: KEYS["approver-crit-5"]!.publicKey, hpkePublicKey: HPKE["approver-crit-5"], validFrom: DELEG_FROM, revokedAt: critRevokedAt },
     { kid: "audit-1", type: "AUDIT", roles: ["audit-decrypt"], hpkePublicKey: HPKE["audit-1"], validFrom: DELEG_FROM, revokedAt: null },
@@ -91,9 +98,9 @@ const DELEGATION = sign(
   "noa.key-delegation/0.1", "tenant-authority-1",
 );
 
-function makeManifest(keys: J[]): J {
+function makeManifest(keys: J[], issuedAt: string = MAN_ISSUED): J {
   return sign(
-    { spec: "noa.key-manifest/0.1", tenant: TENANT, version: 2, issuedAt: MAN_ISSUED, expiresAt: MAN_EXP, previousManifestHash: null, keys },
+    { spec: "noa.key-manifest/0.1", tenant: TENANT, version: 2, issuedAt, expiresAt: MAN_EXP, previousManifestHash: null, keys },
     "noa.key-manifest/0.1", "manifest-signer-3",
   );
 }
@@ -131,6 +138,13 @@ interface BuildOpts {
   tenantRoot?: J;
   allowedParamsHash?: string; // to break step-6 action binding (approve a different action)
   grantExpiresAt?: string;
+  // ── 2026-07-27 cross-family review round 3 ────────────────────────────────────────────────────
+  grantParamsHash?: string; // grant authorizes a DIFFERENT action than the one approved (G12)
+  grantHoldId?: string; // grant names a DIFFERENT hold than the envelope (G12)
+  grantHoldEnvelopeHash?: string; // grant points at an envelope that is not in this bundle
+  gateValidFrom?: string; // manifest ACTIVATION for the gate key (pre-activation receipt signing)
+  manifestIssuedAt?: string; // manifest issuance stamp (delegation-window chronology)
+  cancelledWithGateAllowed?: boolean; // CANCELLED + a GATE-signed ALLOWED receipt and NO decision
 }
 
 /**
@@ -140,7 +154,10 @@ interface BuildOpts {
 function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
   const riskClass = opts.riskClass ?? "HIGH";
   const approverKid = opts.approverKid ?? "approver-1-device-2";
-  const manifest = makeManifest(manifestKeys(opts.approverRevokedAt ?? null, opts.approverValidFrom ?? DELEG_FROM, opts.critRevokedAt ?? null));
+  const manifest = makeManifest(
+    manifestKeys(opts.approverRevokedAt ?? null, opts.approverValidFrom ?? DELEG_FROM, opts.critRevokedAt ?? null, opts.gateValidFrom ?? DELEG_FROM),
+    opts.manifestIssuedAt ?? MAN_ISSUED,
+  );
   const MAN_HASH = refHash(manifest);
 
   const deferred = buildReceipt(deferredInput(riskClass), null, rSign("gate-prod-1"));
@@ -180,7 +197,13 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
 
   function grant(expiresAt: string, approvalHash: string): J {
     return sign(
-      { spec: "noa.execution-grant/0.1", grantId: "grant-001", holdId: "hold-001", paramsHash: PARAMS_HASH, holdEnvelopeHash: ENV_HASH, approvalReceiptHash: approvalHash, issuedAt: T_GRANT_ISSUE, expiresAt, maxUses: 1, nonce: "grant-nonce-01" },
+      {
+        spec: "noa.execution-grant/0.1", grantId: "grant-001",
+        holdId: opts.grantHoldId ?? "hold-001",
+        paramsHash: opts.grantParamsHash ?? PARAMS_HASH,
+        holdEnvelopeHash: opts.grantHoldEnvelopeHash ?? ENV_HASH,
+        approvalReceiptHash: approvalHash, issuedAt: T_GRANT_ISSUE, expiresAt, maxUses: 1, nonce: "grant-nonce-01",
+      },
       "noa.execution-grant/0.1", "gate-prod-1",
     );
   }
@@ -262,6 +285,16 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     );
     const hr = holdResolution("APPROVED", { decisionHash: refHash(decision), verdictHash: allowed.chain.hash });
     bundle = { ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed, decisionArtifact: decision, executionGrant: g, executionUncertainty: uncertainty, checkpoint: checkpointOver(allowed) };
+  } else if (outcome === "CANCELLED_LOCAL_STATE_LOST" && opts.cancelledWithGateAllowed) {
+    // CANCELLED carrying a pre-crash ALLOWED receipt that the GATE minted with its OWN key, and NO
+    // Decision Artifact — the F19-HUMAN rule used to key on holdResolution.status, which excludes
+    // CANCELLED, so this reached VALID_FULL_CHAIN with no human anywhere in the bundle.
+    const gateAllowed = buildReceipt(
+      { id: "rcpt_allowed", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: verdictAction, governance: { mode: "on", verdict: "ALLOWED", ruleId: "human-approved", approval: null, sandboxed: false } },
+      deferred, rSign("gate-prod-1"),
+    );
+    const hr = holdResolution("CANCELLED", { decisionHash: null, verdictHash: gateAllowed.chain.hash, reasonCode: "LOCAL_STATE_LOST" });
+    bundle = { ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: gateAllowed, checkpoint: checkpointOver(gateAllowed) };
   } else {
     // CANCELLED_LOCAL_STATE_LOST — crash before approval; head is the DEFERRED receipt (seq 0).
     const hr = holdResolution("CANCELLED", { decisionHash: null, verdictHash: null, reasonCode: "LOCAL_STATE_LOST" });
@@ -575,6 +608,80 @@ for (const oc of OUTCOMES) {
 {
   const w = buildWorld("EXECUTED", { checkpointTs: "2099-01-01T00:00:00.000Z" });
   emit("reject", "step16-checkpoint-future-dated", fixtureFrom(w, { description: "STEP_16/F5: the checkpoint is dated 2099 — beyond any credible clock skew. A forward-dated anchor is not 'fresh', and unlike staleness that judgement does not depend on the outcome", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_16_CHECKPOINT_FRESHNESS", expectCode: "E_STALE_CHECKPOINT", bundle: w.bundle }));
+}
+
+// ═══ 3c. CROSS-FAMILY REVIEW ROUND 3 REGRESSIONS (2026-07-27) ═════════════════════════════════════
+// The previous round fixed the exact path each proof-of-concept exercised, not the CLASS it belonged
+// to. These fixtures pin the class: the same rule, on every sibling that carries the same artifact.
+
+// STEP 11/12/13 — G12 GRANT BINDING ON THE THREE NON-EXECUTED GRANT-BEARING OUTCOMES (CRITICAL).
+// `approvalReceiptHash`, `paramsHash` and `holdId` were bound in step 10 ONLY. Mutating one field
+// and re-signing the grant with the gate key returned VALID_FULL_CHAIN on all three siblings, so
+// evidence could claim a failure, a dispatch uncertainty, or an expired grant derived from an
+// approval, an action or a hold that never authorized it. One fixture per (outcome × field-class).
+{
+  const w = buildWorld("EXECUTION_FAILED", { grantApprovalReceiptHash: "sha256:" + "f".repeat(64) });
+  emit("reject", "step11-grant-approval-hash-unbound", fixtureFrom(w, { description: "STEP_11/G12: EXECUTION_FAILED whose executionGrant.approvalReceiptHash matches no approval in the bundle — the same unbound-grant defect step 10 already rejected, on the sibling outcome that carries the same artifact", expectVerdict: "INVALID", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_EXECUTION_FAILED", bundle: w.bundle }));
+}
+{
+  const w = buildWorld("UNKNOWN_AFTER_DISPATCH", { grantParamsHash: "sha256:" + "e".repeat(64) });
+  emit("reject", "step12-grant-params-unbound", fixtureFrom(w, { description: "STEP_12/G12/D14: UNKNOWN_AFTER_DISPATCH whose executionGrant.paramsHash authorizes a DIFFERENT action than the one approved (approve-A/execute-B), on a path that previously ran no grant check at all", expectVerdict: "INVALID", expectStep: "STEP_12_UNKNOWN_AFTER_DISPATCH", expectCode: "E_UNKNOWN", bundle: w.bundle }));
+}
+{
+  const w = buildWorld("GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE", { grantHoldId: "hold-ATTACKER" });
+  emit("reject", "step13-grant-holdid-unbound", fixtureFrom(w, { description: "STEP_13/G12: GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE whose executionGrant.holdId names a different hold than the Hold Envelope this evidence is about", expectVerdict: "INVALID", expectStep: "STEP_13_GRANT_EXPIRED", expectCode: "E_GRANT_EXPIRED", bundle: w.bundle }));
+}
+// STEP 12 — the grant was never verified as an ARTIFACT on this path (no schema, no signature, no
+// F15 signer type/role, no revocation, no envelope binding): only `uncertainty.grantHash` covered it.
+{
+  const w = buildWorld("UNKNOWN_AFTER_DISPATCH", { grantHoldEnvelopeHash: "sha256:" + "7".repeat(64) });
+  emit("reject", "step12-grant-foreign-envelope", fixtureFrom(w, { description: "STEP_12: UNKNOWN_AFTER_DISPATCH whose executionGrant.holdEnvelopeHash resolves to no envelope in this bundle — step 12 previously never ran verifyArtifact on the grant, so its schema/signature/F15 role/revocation/envelope-binding were all unchecked", expectVerdict: "INVALID", expectStep: "STEP_12_UNKNOWN_AFTER_DISPATCH", expectCode: "E_UNKNOWN", bundle: w.bundle }));
+}
+// STEP 11 — G5 (grant unexpired at consumedAt) was likewise step-10-only, although EXECUTION_FAILED
+// carries the identical grant+consumption pair. Grant expires 11:57:30, consumption is 11:58:00.
+{
+  const w = buildWorld("EXECUTION_FAILED", { grantExpiresAt: "2026-07-14T11:57:30.000Z" });
+  emit("reject", "step11-grant-expired-before-consumption", fixtureFrom(w, { description: "STEP_11/G5: EXECUTION_FAILED consuming a grant that had already expired (grant.expiresAt 11:57:30 < consumption.consumedAt 11:58:00) — step 10 rejected this; its sibling did not", expectVerdict: "INVALID", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_EXECUTION_FAILED", bundle: w.bundle }));
+}
+
+// STEP 0 — THE §13 OUTCOME UNION IS EXHAUSTIVE. An artifact outside an outcome's union was never
+// examined by any step, and the bundle still verified VALID_FULL_CHAIN — a positive verdict covering
+// bytes nothing looked at. A DENIED bundle carrying a gate-signed execution grant is the sharpest
+// case: either the gate issued a grant against a denial, or the bundle is a splice.
+{
+  const w = buildWorld("DENIED");
+  const wExec = buildWorld("EXECUTED");
+  const bundle = clone(w.bundle);
+  bundle.executionGrant = clone(wExec.bundle.executionGrant);
+  emit("reject", "step00-stray-grant-on-denied", fixtureFrom(w, { description: "STEP_0/§13: a DENIED bundle carrying an executionGrant, which the DENIED union does not define. The artifact is fully signed and completely unverified — no step reads it — yet the bundle verified VALID_FULL_CHAIN before this rule", expectVerdict: "INVALID", expectStep: "STEP_0_TENANT_EQUALITY", expectCode: "E_OUTCOME_ARTIFACT_SET", bundle }));
+}
+
+// STEP 3 — F19-HUMAN KEYED ON THE ARTIFACT, NOT THE STATUS (CRITICAL). §13 lets CANCELLED carry a
+// pre-crash ALLOWED receipt, and the decision requirement keyed on holdResolution.status — which
+// excludes CANCELLED. So the gate minted CANCELLED + an ALLOWED receipt signed with its OWN key + a
+// checkpoint over it, with no Decision Artifact anywhere, and got VALID_FULL_CHAIN: the exact
+// gate-self-approval the previous round closed for APPROVED, reached through the sibling outcome.
+{
+  const w = buildWorld("CANCELLED_LOCAL_STATE_LOST", { cancelledWithGateAllowed: true });
+  emit("reject", "step03-cancelled-gate-allowed-no-decision", fixtureFrom(w, { description: "STEP_3/F19: CANCELLED_LOCAL_STATE_LOST carrying a GATE-signed ALLOWED receipt and NO Decision Artifact. An ALLOWED/BLOCKED receipt IS a human verdict (§8), so the decision requirement keys on the ARTIFACT, not on the outcome label — otherwise gate self-approval simply relabels itself CANCELLED", expectVerdict: "INVALID", expectStep: "STEP_3_HOLD_RESOLUTION", expectCode: "E_HOLD_RESOLUTION", bundle: w.bundle }));
+}
+
+// STEP 18 — RECEIPTS ARE JUDGED AT THEIR OWN ts (HIGH). Every receipt kid was evaluated as one cohort
+// at holdResolution.receivedAt, an instant that belongs to none of them. The gate key activates at
+// 11:55; the genesis DEFERRED receipt it signed is stamped 11:50 — five minutes before the key
+// existed — and receivedAt (11:56:30) is inside the window, so the chain verified clean.
+{
+  const w = buildWorld("EXPIRED", { gateValidFrom: "2026-07-14T11:55:00.000Z" });
+  emit("reject", "step18-receipt-signed-before-key-activation", fixtureFrom(w, { description: "STEP_18/F10: the gate key's manifest validFrom is 11:55 but the DEFERRED receipt it signed is stamped 11:50. Receipt signers must be authorized at each receipt's OWN ts, not only at holdResolution.receivedAt (11:56:30, comfortably inside the window)", expectVerdict: "INVALID", expectStep: "STEP_18_TEMPORAL_AUTHORIZATION", expectCode: "E_TEMPORAL_AUTH", bundle: w.bundle }));
+}
+
+// STEP 1 — MANIFEST ISSUED OUTSIDE ITS DELEGATION'S WINDOW (the delegation.validFrom decision).
+// `delegation.validFrom` is now the delegated signer's activation time, and the manifest's issuedAt
+// must fall inside the delegation window. MIGRATION: this is the one change on this branch that can
+// turn a previously-VALID bundle INVALID — loudly, at a named step, with both timestamps quoted.
+{
+  const w = buildWorld("EXECUTED", { manifestIssuedAt: "2026-07-14T09:30:00.000Z" }); // before DELEG_FROM 10:00
+  emit("reject", "step01-manifest-issued-before-delegation", fixtureFrom(w, { description: "STEP_1: keyManifest.issuedAt (09:30) precedes keyDelegation.validFrom (10:00) — the manifest was stamped before the delegation authorizing its signer existed. This is exactly the inconsistency the shipped fixtures used to carry; the fixture was the defect, and this pins the corrected rule", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_DELEGATION_CHAIN", bundle: w.bundle }));
 }
 
 // ═══ 4. envelope-expiry FRESHNESS: late-audit of terminal-negative outcomes (EXPIRED/DENIED) ═══════

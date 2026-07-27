@@ -101,13 +101,19 @@ export function buildResolvedKeyring(
     publicKey: delegation.delegatedPublicKey,
     type: "DELEGATED",
     roles: Array.isArray(delegation.permissions) ? [...delegation.permissions] : [],
-    // NOTE: delegation.validFrom is deliberately NOT applied as this key's activation time. The
-    // delegation's own validity window is enforced separately in step 1 (unexpired at receivedAt),
-    // and the two are different questions. Applying it here would also make the shipped fixtures
-    // inconsistent — the manifest's issuedAt (09:30) precedes the delegation's validFrom (10:00) —
-    // and whether THAT is a fixture defect or a legitimate reading of "the delegation covers the
-    // manifest's use, not its issuance stamp" is a spec question, not one to settle inside a
-    // keyring resolver. Recorded rather than silently decided.
+    // `delegation.validFrom` IS this key's activation time — the same rule every manifest key below
+    // already follows, and the same rule `verifyArtifact` applies to every other signer: a key is
+    // authorized from its activation instant, evaluated at the ARTIFACT's own time.
+    //
+    // This was previously left unapplied, with the shipped fixtures cited as the reason to defer the
+    // question (their manifest `issuedAt` 09:30 precedes this delegation's `validFrom` 10:00). That
+    // reasoning had it backwards: `verifyArtifact` already resolves a Key Manifest's artifact time
+    // from `doc.issuedAt`, so the codebase's own convention is that `issuedAt` IS the issuance/
+    // signing instant — which makes the fixture a defect, not a rival reading, and the fixture has
+    // been corrected (delegation opens 10:00, manifest issued 10:30). Leaving the field unapplied
+    // meant a delegated signer could stamp a manifest with any date before its own delegation and
+    // every downstream check still passed, because the window was open at neither end here.
+    validFrom: delegation.validFrom ?? null,
   };
   // the gate/approver/audit keys the manifest lists.
   for (const k of manifest.keys) {

@@ -109,7 +109,13 @@ function signerIdentityPath(spec: string, doc: Record<string, unknown>): string 
 
 /** F15 approver-tier requirement for a Decision, by the held action's riskClass. */
 /**
- * THE F15 APPROVER LATTICE — one authoritative definition (see docs/F15-APPROVER-LATTICE.md).
+ * THE F15 APPROVER LATTICE — one authoritative definition: THIS FUNCTION.
+ *
+ * (An earlier revision of this comment pointed at `docs/F15-APPROVER-LATTICE.md`, which does not
+ * exist and never did. Since the entire point of this block is that there is exactly ONE definition
+ * of the lattice, a dangling pointer to a second one is the specific error it was written to
+ * prevent. The consumers — the gate's approval routes and `noa-approval-evidence` step 5 — call
+ * into this rule rather than restating it; `THREAT-MODEL.md` describes it in prose.)
  *
  * The tiers are ORDERED, not disjoint: `approve-critical` strictly dominates `approve-high`. An
  * approver trusted with CRITICAL/IRREVERSIBLE actions is necessarily trusted with HIGH ones.

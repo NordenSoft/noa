@@ -27,7 +27,7 @@
       },
       "canonicalization": "JCS-RFC8785",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:f0d96146653426b378236120d9f8c4a4077eed35b00ffd94083d12733f367a35",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "tenant": "tenant-acme",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "nonce": "envelope-nonce-01",
@@ -35,7 +35,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "u+WZ3RdXph0K2ZjTWpdVPFoWD7oUlgKUccclg6A97ykhqu/J5NZJX7jsLFlZaJOA9IHodedXVSnBTEqDiY2eBg=="
+        "value": "0sSXFUpEMfgAK9Jacoa9TYWGnLmU27qlEMeI08wupPGn8n3uJ48hd6lFnNSQw8JkM18Ot6FldNxeO60i6fRVCg=="
       }
     },
     "deferredReceipt": {
@@ -79,7 +79,7 @@
       "spec": "noa.key-manifest/0.1",
       "tenant": "tenant-acme",
       "version": 2,
-      "issuedAt": "2026-07-14T09:30:00.000Z",
+      "issuedAt": "2026-07-14T10:30:00.000Z",
       "expiresAt": "2026-07-15T09:30:00.000Z",
       "previousManifestHash": null,
       "keys": [
@@ -130,7 +130,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "manifest-signer-3",
-        "value": "qbcPdgnriRZEgkdS2vAYYX/RWJqIfzp0lYgj1z6niqLMpL2iZP3q872iKRb4jRjV89SXjVKQSy3PeYHvby9DBQ=="
+        "value": "49QimrPznzz9h17Bm4lyMyH9sprj+p1+7Ywt4I0OQhiwASoOrtRRL9TCziSlX+Ae8WUvoU/az1N9na+QXvRXAg=="
       }
     },
     "keyDelegation": {
@@ -152,18 +152,18 @@
     "holdResolution": {
       "spec": "noa.hold-resolution/0.1",
       "holdId": "hold-001",
-      "holdEnvelopeHash": "sha256:4e27da8c80bd06dcf3b2ead2ee0e35315c57c1ba9d2e1aab41bcdbb8ae2bf8f6",
+      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
       "decisionArtifactHash": null,
       "verdictReceiptHash": "sha256:7c2b8ff09d4b658cf0e5c4e7497bdf5b8f49eeef81191d3a91dfbc36f952a7a8",
       "status": "EXPIRED",
       "reasonCode": null,
       "receivedAt": "2026-07-14T11:56:30.000Z",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:f0d96146653426b378236120d9f8c4a4077eed35b00ffd94083d12733f367a35",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "gdn4qsgRpnxVREtYrIKNQCGclsNtUfH9cQZ4xFFXvMMMMkgA7F7RsTBwUixYDCtScUwnggrOd0GntEdAUIW9BA=="
+        "value": "SPGz/IpBTbeV9/Uh3yD2q4apZP24F6jTrBlUxVdusceV1D3oPIk2d09kDMvJ270crhzmW1Yzy1SawzOmMQU2Bw=="
       }
     },
     "timeoutReceipt": {

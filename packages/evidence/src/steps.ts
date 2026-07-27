@@ -19,6 +19,9 @@ import {
   type StepName,
   type StepResult,
   NEGATIVE_OUTCOMES,
+  OUTCOME_ARTIFACT_UNION,
+  OPTIONAL_ARTIFACT_FIELDS,
+  STEP_OWNED_ABSENCE,
 } from "./types.js";
 import {
   buildResolvedKeyring,
@@ -113,6 +116,28 @@ function expectedHoldStatus(outcome: EvidenceOutcome): "APPROVED" | "DENIED" | "
 export function step0_tenantEquality(ctx: Ctx): StepResult {
   const S: StepName = "STEP_0_TENANT_EQUALITY";
   const b = ctx.bundle;
+
+  // (§13 outcome-keyed union) — an artifact that is NOT part of this outcome's union must not be
+  // present. The union was documentation only: the container schema allows every optional artifact
+  // for every outcome, and each step reads only the artifacts IT expects, so anything else rode
+  // along entirely unverified while the bundle still returned VALID_FULL_CHAIN. A positive verdict
+  // must never cover bytes no step examined — a DENIED bundle carrying a gate-signed execution
+  // grant is either evidence of a grant issued against a denial, or a splice; both are rejections,
+  // and neither is "valid". Enforced here (the container/shape pre-rule) with its OWN code so the
+  // attribution is honest; required-artifact absence stays with the step that owns the artifact.
+  const union = OUTCOME_ARTIFACT_UNION[b.outcome as EvidenceOutcome] ?? new Set<string>();
+  const ownedElsewhere = STEP_OWNED_ABSENCE[b.outcome as EvidenceOutcome] ?? new Set<string>();
+  for (const field of OPTIONAL_ARTIFACT_FIELDS) {
+    if (ownedElsewhere.has(field)) continue; // the outcome's own step asserts this absence (attribution stays there)
+    if ((b as unknown as Record<string, unknown>)[field] !== undefined && !union.has(field)) {
+      return fail(
+        S,
+        "E_OUTCOME_ARTIFACT_SET",
+        `outcome ${b.outcome} does not define "${field}", but the bundle carries it — the §13 union is exhaustive, and an artifact outside it is never verified by any step (permitted here: ${[...union].sort().join(", ") || "none"})`,
+      );
+    }
+  }
+
   const env = asObj(b.holdEnvelope);
   const man = asObj(b.keyManifest);
   const del = asObj(b.keyDelegation);
@@ -200,6 +225,32 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   ctx.manifest = manifest;
   ctx.resolvedKeyring = buildResolvedKeyring(ctx.rootKeyring, delegation, manifest);
   ctx.receiptKeyring = buildReceiptKeyring(manifest);
+
+  // THE MANIFEST WAS ISSUED INSIDE THE DELEGATION'S OWN WINDOW.
+  //
+  // `buildResolvedKeyring` now gives the delegated signer `validFrom = delegation.validFrom`, so the
+  // generic activation check inside verifyArtifact below would also refuse a manifest issued before
+  // the delegation opened. This states the rule FIRST, at both ends, for two reasons that backstop
+  // cannot serve: the upper bound (`expiresAt`) has no representation in a KeyEntry at all, and a
+  // bundle rejected by the generic activation message would not tell an operator WHICH window it
+  // violated.
+  //
+  // MIGRATION — this is the one change on this branch that can turn a previously-VALID bundle
+  // INVALID. A bundle whose manifest is stamped before its delegation's `validFrom` (or after its
+  // `expiresAt`) now fails HERE, hard, naming both timestamps. That is deliberate: such a manifest
+  // was signed outside the authority that authorized the signer, and the alternative — accepting it
+  // quietly — is how a backdated manifest becomes "the trusted key list". A loud, named,
+  // single-step rejection is re-issuable (the tenant root re-signs the delegation, or the signer
+  // re-stamps the manifest); a silent acceptance is not detectable at all.
+  const mIssuedMs = parseTime(manifest.issuedAt);
+  const dFromMs = parseTime(delegation.validFrom);
+  const dExpMs = parseTime(delegation.expiresAt);
+  if (!Number.isNaN(mIssuedMs) && !Number.isNaN(dFromMs) && mIssuedMs < dFromMs) {
+    return fail(S, "E_DELEGATION_CHAIN", `keyManifest.issuedAt (${manifest.issuedAt}) is BEFORE keyDelegation.validFrom (${delegation.validFrom}) — the manifest was stamped before the delegation that authorizes its signer existed`);
+  }
+  if (!Number.isNaN(mIssuedMs) && !Number.isNaN(dExpMs) && mIssuedMs > dExpMs) {
+    return fail(S, "E_DELEGATION_CHAIN", `keyManifest.issuedAt (${manifest.issuedAt}) is AFTER keyDelegation.expiresAt (${delegation.expiresAt}) — the delegation had lapsed when the manifest was signed`);
+  }
 
   // (G6) manifest: signed by the DELEGATED signer (role key-manifest-sign, F15), sig.kid ==
   // delegation.delegatedKid, tenant-matched, unexpired at receivedAt.
@@ -309,11 +360,27 @@ export function step3_holdResolution(ctx: Ctx): StepResult {
   // APPROVED/DENIED are the human-decided terminal states. EXPIRED (policy timeout) and CANCELLED
   // (crash before approval) legitimately have no decision and are excluded — the mapping is taken
   // from expectedHoldStatus so it cannot drift from the status check above.
+  // ...BUT KEYING THIS ON STATUS ALONE LEFT THE HOLE OPEN ONE OUTCOME OVER. `CANCELLED` is excluded
+  // here, and yet §13 lets a CANCELLED bundle carry a PRE-CRASH ALLOWED receipt (see
+  // verdictReceiptFor). So a compromised gate minted `CANCELLED` + an ALLOWED receipt signed with
+  // its OWN key + a checkpoint over it, with no Decision Artifact anywhere, and got
+  // VALID_FULL_CHAIN — the exact gate-self-approval this check exists to stop, reached through the
+  // sibling outcome instead of through the status.
+  //
+  // The requirement therefore keys on the ARTIFACT, not on the label: an ALLOWED or BLOCKED receipt
+  // IS a human verdict (§8: the approver's device signs it). If one is in the bundle, the human's
+  // signed decision must be too — whatever the gate chose to call the outcome. Step 5 then binds
+  // that decision's approverKid to the verdict receipt's signer, so the human is not merely present
+  // but is the same human.
   const decision = b.decisionArtifact;
   const decisionPresent = decision !== undefined && asObj(decision) !== null;
-  const humanDecided = wantStatus === "APPROVED" || wantStatus === "DENIED";
+  const humanVerdictReceipt = asObj(b.allowedReceipt) !== null || asObj(b.blockedReceipt) !== null;
+  const humanDecided = wantStatus === "APPROVED" || wantStatus === "DENIED" || humanVerdictReceipt;
   if (humanDecided && !decisionPresent) {
-    return fail(S, "E_HOLD_RESOLUTION", `outcome ${b.outcome} resolves to holdResolution.status ${wantStatus}, which REQUIRES a Decision Artifact; none is present (a human-decided outcome cannot be proven without the human's signed decision)`);
+    const why = wantStatus === "APPROVED" || wantStatus === "DENIED"
+      ? `resolves to holdResolution.status ${wantStatus}`
+      : `carries a human verdict receipt (${asObj(b.allowedReceipt) ? "allowedReceipt" : "blockedReceipt"}) despite status ${wantStatus}`;
+    return fail(S, "E_HOLD_RESOLUTION", `outcome ${b.outcome} ${why}, which REQUIRES a Decision Artifact; none is present (a human-decided outcome cannot be proven without the human's signed decision)`);
   }
   if (decisionPresent) {
     if (asStr(hr.decisionArtifactHash) !== refHash(decision)) {
@@ -498,6 +565,78 @@ export function step9_cancelled(ctx: Ctx): StepResult {
   return ok(S);
 }
 
+/**
+ * (G12) THE GRANT IS AUTHORIZED BY THIS APPROVAL — one rule, every outcome that carries a grant.
+ *
+ * This was previously written out INSIDE step 10 only, so `EXECUTED` was bound while
+ * `EXECUTION_FAILED`, `UNKNOWN_AFTER_DISPATCH` and `GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE` — the
+ * three sibling outcomes that carry the SAME artifact — bound nothing. Mutating one grant field and
+ * re-signing with the gate key returned `VALID_FULL_CHAIN` on all three: evidence could claim a
+ * failure, a dispatch uncertainty, or an expired grant derived from an approval, an action, or a
+ * hold that never authorized it. Step 12 was worse still: it never ran `verifyArtifact` on the grant
+ * at all, so the grant's schema, its signature, its F15 signer type/role, its revocation state and
+ * its binding to THIS hold envelope were all unchecked on that path.
+ *
+ * The checks, in the order a reader should think about them:
+ *   1. the grant is a VALID ARTIFACT  — schema + Ed25519 + F15 GATE/execution-signer + revocation,
+ *      and its `holdEnvelopeHash` resolves to the envelope in THIS bundle (side-artifact rule).
+ *   2. `approvalReceiptHash` → the ALLOWED receipt actually in this bundle (not filler, not another
+ *      approval).
+ *   3. `paramsHash`          → the action that was approved (approve-A/execute-B defence, D14).
+ *   4. `holdId`              → the hold envelope this evidence is about.
+ *
+ * Returns a StepResult on failure (attributed to the CALLING step, with that step's own code) or
+ * null when the grant is bound. The grant and the ALLOWED receipt are required by every caller.
+ */
+function checkGrantBinding(ctx: Ctx, S: StepName, code: StepResult["code"]): StepResult | null {
+  const b = ctx.bundle;
+  const grant = asObj(b.executionGrant);
+  const allowed = asObj(b.allowedReceipt);
+  if (!grant) return fail(S, code, "outcome carries no executionGrant to bind");
+  if (!allowed) {
+    return fail(S, code, `outcome ${b.outcome} carries an executionGrant but no allowedReceipt — a grant that cannot be traced to the approval it derives from is unbound by construction`);
+  }
+
+  const gv = verifyArtifact(b.executionGrant, {
+    schemas: ctx.schemas,
+    keyring: ctx.resolvedKeyring!,
+    now: ctx.now,
+    refHashChecks: [{ path: "holdEnvelopeHash", rule: "side", artifact: b.holdEnvelope, refEquals: [{ path: "tenant", value: ctx.tenant }] }],
+  });
+  if (!gv.ok) return fail(S, code, `executionGrant invalid: ${gv.reason}`);
+
+  const allowedHash = asStr(getPath(allowed, "chain.hash"));
+  if (asStr(grant.approvalReceiptHash) !== allowedHash) {
+    return fail(S, code, `executionGrant.approvalReceiptHash ${JSON.stringify(grant.approvalReceiptHash)} != allowedReceipt.chain.hash ${JSON.stringify(allowedHash)} — the grant is not bound to this approval`);
+  }
+  const approvedParamsHash = asStr(getPath(allowed, "action.paramsHash"));
+  if (asStr(grant.paramsHash) !== approvedParamsHash) {
+    return fail(S, code, `executionGrant.paramsHash ${JSON.stringify(grant.paramsHash)} != approved action paramsHash ${JSON.stringify(approvedParamsHash)} — the grant authorizes a different action than the one approved`);
+  }
+  const envHoldId = asStr(getPath(b.holdEnvelope, "holdId"));
+  if (envHoldId !== null && asStr(grant.holdId) !== envHoldId) {
+    return fail(S, code, `executionGrant.holdId ${JSON.stringify(grant.holdId)} != holdEnvelope.holdId ${JSON.stringify(envHoldId)}`);
+  }
+  return null;
+}
+
+/**
+ * (G5) The grant had not expired when it was consumed. Also step-10-only previously, although
+ * `EXECUTION_FAILED` carries the identical grant+consumption pair: an expired grant could be
+ * consumed on the failure path and the bundle still verified. Same rule, both paths.
+ */
+function checkGrantUnexpiredAtConsumption(ctx: Ctx, S: StepName, code: StepResult["code"]): StepResult | null {
+  const grant = asObj(ctx.bundle.executionGrant);
+  const consumption = asObj(ctx.bundle.executionConsumption);
+  if (!grant || !consumption) return fail(S, code, "grant/consumption missing for the G5 expiry check");
+  const gExp = parseTime(grant.expiresAt);
+  const consumedAt = parseTime(consumption.consumedAt);
+  if (Number.isNaN(gExp) || Number.isNaN(consumedAt) || consumedAt > gExp) {
+    return fail(S, code, "grant expired before consumedAt");
+  }
+  return null;
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // STEP 10 — EXECUTED: grant unexpired-at-consumedAt, consumption bound (grantHash/result/attempt),
 // EXECUTED receipt chains onto ALLOWED (prevHash linkage; full chain verified at step 17).
@@ -512,40 +651,16 @@ export function step10_executed(ctx: Ctx): StepResult {
   const allowed = asObj(b.allowedReceipt);
   if (!grant || !consumption || !executed || !allowed) return fail(S, "E_EXECUTED", "EXECUTED requires grant+consumption+executedReceipt+allowedReceipt");
 
-  const gv = verifyArtifact(b.executionGrant, {
-    schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now,
-    refHashChecks: [{ path: "holdEnvelopeHash", rule: "side", artifact: b.holdEnvelope, refEquals: [{ path: "tenant", value: ctx.tenant }] }],
-  });
-  if (!gv.ok) return fail(S, "E_EXECUTED", `executionGrant invalid: ${gv.reason}`);
+  // (G12) the grant is a valid artifact AND is bound to THIS approval/action/hold — one shared rule
+  // for every grant-bearing outcome (see checkGrantBinding).
+  const bindErr = checkGrantBinding(ctx, S, "E_EXECUTED");
+  if (bindErr) return bindErr;
   const cv = verifyArtifact(b.executionConsumption, { schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now });
   if (!cv.ok) return fail(S, "E_EXECUTED", `executionConsumption invalid: ${cv.reason}`);
 
   // grant unexpired at consumedAt (G5).
-  const gExp = parseTime(grant.expiresAt);
-  const consumedAt = parseTime(consumption.consumedAt);
-  if (Number.isNaN(gExp) || Number.isNaN(consumedAt) || consumedAt > gExp) {
-    return fail(S, "E_EXECUTED", "grant expired before consumedAt");
-  }
-  // G12 — the GRANT must be bound to the approval it claims to derive from. The grant's signature
-  // was verified above, which proves the gate issued it; it does NOT prove the gate issued it FOR
-  // THIS approval. Without these three checks a gate could sign a grant referencing any approval
-  // (or none), and the reviewer's self-approval bundle carried a grant whose approvalReceiptHash
-  // was pure filler and still reached VALID_FULL_CHAIN. Bind all three fields the grant carries:
-  //   approvalReceiptHash -> the ALLOWED receipt actually in this bundle
-  //   paramsHash          -> the action that was approved (approve A / execute B defence, D14)
-  //   holdId              -> the hold envelope this evidence is about
-  const allowedHash = asStr(getPath(allowed, "chain.hash"));
-  if (asStr(grant.approvalReceiptHash) !== allowedHash) {
-    return fail(S, "E_EXECUTED", `executionGrant.approvalReceiptHash ${JSON.stringify(grant.approvalReceiptHash)} != allowedReceipt.chain.hash ${JSON.stringify(allowedHash)} — the grant is not bound to this approval`);
-  }
-  const approvedParamsHash = asStr(getPath(allowed, "action.paramsHash"));
-  if (asStr(grant.paramsHash) !== approvedParamsHash) {
-    return fail(S, "E_EXECUTED", `executionGrant.paramsHash ${JSON.stringify(grant.paramsHash)} != approved action paramsHash ${JSON.stringify(approvedParamsHash)} — the grant authorizes a different action than the one approved`);
-  }
-  const envHoldId = asStr(getPath(b.holdEnvelope, "holdId"));
-  if (envHoldId !== null && asStr(grant.holdId) !== envHoldId) {
-    return fail(S, "E_EXECUTED", `executionGrant.holdId ${JSON.stringify(grant.holdId)} != holdEnvelope.holdId ${JSON.stringify(envHoldId)}`);
-  }
+  const expErr = checkGrantUnexpiredAtConsumption(ctx, S, "E_EXECUTED");
+  if (expErr) return expErr;
 
   if (asStr(consumption.grantHash) !== refHash(b.executionGrant)) return fail(S, "E_EXECUTED", "consumption.grantHash != refHash(grant) (F1)");
   if (asStr(consumption.result) !== "DISPATCHED") return fail(S, "E_EXECUTED", `consumption.result != DISPATCHED (${String(consumption.result)})`);
@@ -572,13 +687,15 @@ export function step11_executionFailed(ctx: Ctx): StepResult {
   const allowed = asObj(b.allowedReceipt);
   if (!grant || !consumption || !failed || !allowed) return fail(S, "E_EXECUTION_FAILED", "EXECUTION_FAILED requires grant+consumption+failedReceipt+allowedReceipt");
 
-  const gv = verifyArtifact(b.executionGrant, {
-    schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now,
-    refHashChecks: [{ path: "holdEnvelopeHash", rule: "side", artifact: b.holdEnvelope, refEquals: [{ path: "tenant", value: ctx.tenant }] }],
-  });
-  if (!gv.ok) return fail(S, "E_EXECUTION_FAILED", `executionGrant invalid: ${gv.reason}`);
+  // (G12) same grant binding as step 10 — a FAILED outcome is still an outcome for a grant that
+  // must have derived from THIS approval, action and hold.
+  const bindErr = checkGrantBinding(ctx, S, "E_EXECUTION_FAILED");
+  if (bindErr) return bindErr;
   const cv = verifyArtifact(b.executionConsumption, { schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now });
   if (!cv.ok) return fail(S, "E_EXECUTION_FAILED", `executionConsumption invalid: ${cv.reason}`);
+  // (G5) grant unexpired at consumedAt — the identical grant+consumption pair as step 10.
+  const expErr = checkGrantUnexpiredAtConsumption(ctx, S, "E_EXECUTION_FAILED");
+  if (expErr) return expErr;
 
   if (asStr(consumption.grantHash) !== refHash(b.executionGrant)) return fail(S, "E_EXECUTION_FAILED", "consumption.grantHash != refHash(grant)");
   if (asStr(consumption.attemptReceiptHash) !== receiptRefHash(failed)) return fail(S, "E_EXECUTION_FAILED", "consumption.attemptReceiptHash != failedReceipt.chain.hash (G4)");
@@ -606,6 +723,10 @@ export function step12_unknown(ctx: Ctx): StepResult {
   const grant = asObj(b.executionGrant);
   const unc = asObj(b.executionUncertainty);
   if (!grant || !unc) return fail(S, "E_UNKNOWN", "UNKNOWN_AFTER_DISPATCH requires grant+executionUncertainty");
+  // (G12) the grant is a valid artifact AND bound to THIS approval/action/hold. This step previously
+  // ran NO check on the grant beyond `unc.grantHash == refHash(grant)` — not even its signature.
+  const bindErr = checkGrantBinding(ctx, S, "E_UNKNOWN");
+  if (bindErr) return bindErr;
   // gate-signed (GATE + execution-signer, F15) + the G3 liveness fields exist + within window.
   const uv = verifyArtifact(b.executionUncertainty, { schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now });
   if (!uv.ok) return fail(S, "E_UNKNOWN", `executionUncertainty invalid: ${uv.reason}`);
@@ -635,11 +756,10 @@ export function step13_grantExpired(ctx: Ctx): StepResult {
   const grant = asObj(b.executionGrant);
   const allowed = asObj(b.allowedReceipt);
   if (!grant || !allowed) return fail(S, "E_GRANT_EXPIRED", "GRANT_EXPIRED requires grant+allowedReceipt");
-  const gv = verifyArtifact(b.executionGrant, {
-    schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now,
-    refHashChecks: [{ path: "holdEnvelopeHash", rule: "side", artifact: b.holdEnvelope, refEquals: [{ path: "tenant", value: ctx.tenant }] }],
-  });
-  if (!gv.ok) return fail(S, "E_GRANT_EXPIRED", `executionGrant invalid: ${gv.reason}`);
+  // (G12) an EXPIRED grant is still a grant that must have derived from THIS approval/action/hold —
+  // otherwise "the grant lapsed unused" can be asserted about a grant nobody in this bundle authorized.
+  const bindErr = checkGrantBinding(ctx, S, "E_GRANT_EXPIRED");
+  if (bindErr) return bindErr;
   // the grant's expiresAt is before the earliest possible execution — approximated by: the grant has
   // expired relative to verify-now (no execution window remains).
   const gExp = parseTime(grant.expiresAt);
@@ -799,10 +919,36 @@ export function step18_temporalAuthorization(ctx: Ctx): StepResult {
     const kid = asStr(getPath(a, "sig.kid"));
     if (kid) usedKids.add(kid);
   }
-  // include the receipt signers + the checkpoint signer.
+  // ── RECEIPTS ARE JUDGED AT THEIR OWN `ts`, TOO ────────────────────────────────────────────────
+  // Every receipt kid used to be thrown into the `receivedAt` cohort below and judged ONLY there.
+  // That asks one question ("was this key live at the moment the gate accepted the resolution?")
+  // and never the other ("was this key live when it signed?"). `verifyArtifact` has always asked
+  // the second question for SIDE artifacts — each is evaluated at its own issuedAt/decidedAt/
+  // consumedAt — but a receipt never passes through `verifyArtifact`, and `verifyChain` takes a
+  // kid→publicKey keyring with no window information at all. So the whole receipt chain was
+  // evaluated at one instant that belongs to none of its members: a gate key activated at 11:55
+  // validly signed the genesis DEFERRED receipt at 11:50, because 11:56:30 (receivedAt) is inside
+  // the window even though the signature is five minutes older than the key.
+  //
+  // BOTH bounds now apply, and they are not redundant — they catch opposite forgeries:
+  //   • at the receipt's OWN ts  — a signature outside its key's activation/revocation window.
+  //   • at the trusted receivedAt — a receipt BACKDATED to before a revocation (which is precisely
+  //     why the receivedAt cohort exists; the producer controls `ts`, the gate controls receivedAt).
+  // A conforming producer never signs outside its key's window, so this adds no legitimate
+  // rejection; it only removes the gap between the two questions.
   for (const r of ctx.orderedChain ?? []) {
     const rk = asStr(getPath(r, "sig.kid"));
-    if (rk) usedKids.add(rk);
+    if (!rk) continue;
+    usedKids.add(rk); // keep the receivedAt (anti-backdating) assertion below
+    const entry = ctx.resolvedKeyring?.[rk];
+    if (!entry) continue; // unknown kid: verifyChain (step 17) already rejected it
+    const tsRaw = asStr(getPath(r, "ts"));
+    const at = parseTime(tsRaw);
+    if (Number.isNaN(at)) {
+      return fail(S, "E_TEMPORAL_AUTH", `receipt seq ${String(getPath(r, "chain.seq"))} has an unparseable ts — its signer's authorization cannot be evaluated`);
+    }
+    const err = keyAuthorizedAt(rk, entry, at, tsRaw ?? "(unset)");
+    if (err) return fail(S, "E_TEMPORAL_AUTH", `${err} (evaluated at the receipt's own ts, not holdResolution.receivedAt)`);
   }
   // The CHECKPOINT is deliberately NOT folded into the receivedAt cohort below. Every other artifact
   // here was produced during the approval, so `holdResolution.receivedAt` is the right trusted

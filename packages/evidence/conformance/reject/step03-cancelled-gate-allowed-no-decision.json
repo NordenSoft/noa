@@ -1,13 +1,13 @@
 {
-  "description": "container shape: the mandatory checkpoint field is absent → E_BUNDLE_SHAPE (a bundle without its tail anchor is not well-formed)",
+  "description": "STEP_3/F19: CANCELLED_LOCAL_STATE_LOST carrying a GATE-signed ALLOWED receipt and NO Decision Artifact. An ALLOWED/BLOCKED receipt IS a human verdict (§8), so the decision requirement keys on the ARTIFACT, not on the outcome label — otherwise gate self-approval simply relabels itself CANCELLED",
   "expectVerdict": "INVALID",
-  "expectStep": "STEP_0_TENANT_EQUALITY",
-  "expectCode": "E_BUNDLE_SHAPE",
+  "expectStep": "STEP_3_HOLD_RESOLUTION",
+  "expectCode": "E_HOLD_RESOLUTION",
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {
     "spec": "noa.approval-evidence/0.1",
-    "outcome": "EXECUTED",
+    "outcome": "CANCELLED_LOCAL_STATE_LOST",
     "holdEnvelope": {
       "spec": "noa.hold/0.1",
       "holdId": "hold-001",
@@ -153,119 +153,23 @@
       "spec": "noa.hold-resolution/0.1",
       "holdId": "hold-001",
       "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
-      "decisionArtifactHash": "sha256:cf5d42de1c29eb11e4232f28dd71eb022e43ab510fcebd861486b5bae2147cd7",
-      "verdictReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
-      "status": "APPROVED",
-      "reasonCode": null,
+      "decisionArtifactHash": null,
+      "verdictReceiptHash": "sha256:b130e3f50edf0ddc486c4b579a29c4c253c432ab2e1acb8424cdd06d417cbc2f",
+      "status": "CANCELLED",
+      "reasonCode": "LOCAL_STATE_LOST",
       "receivedAt": "2026-07-14T11:56:30.000Z",
       "keyManifestVersion": 2,
       "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "G2p4mDW4ILMRP1HYM5chK+sSjmqHaCIq9j8FOa9R+zOL0qDlsCN8MKNfnq/6Ukk+fEAAZIsHc0BEuY9jtmHYCw=="
+        "value": "6ICuQ43MpmLLSlpnsw/fETuwLxLZG8f+hs4P6l9WXuv8qZI75mVXNvXwCfnZrMzgi3QKybrnkGtI+13FOgKJBQ=="
       }
     },
     "allowedReceipt": {
       "spec": "noa.receipt/0.1",
       "id": "rcpt_allowed",
       "ts": "2026-07-14T11:56:30.000Z",
-      "scope": {
-        "tenant": "tenant-acme",
-        "chain": "chain-acme-1"
-      },
-      "agent": {
-        "id": "approver-a",
-        "model": null,
-        "principal": "HUMAN"
-      },
-      "action": {
-        "id": "deploy.apply",
-        "canonical": "deploy.apply",
-        "riskClass": "HIGH",
-        "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "reversible": false,
-        "rollbackRef": null
-      },
-      "governance": {
-        "mode": "on",
-        "verdict": "ALLOWED",
-        "ruleId": "human-approved",
-        "approval": {
-          "by": "approver-1-device-2",
-          "at": "2026-07-14T11:56:30.000Z"
-        },
-        "sandboxed": false
-      },
-      "chain": {
-        "seq": 1,
-        "prevHash": "sha256:b72deb557c8efc8d669bd934f94db302ce2a38ecaf9b6003d6c326e457f8cc8d",
-        "hash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c"
-      },
-      "sig": {
-        "alg": "ed25519",
-        "kid": "approver-1-device-2",
-        "value": "AnLk2jkvVUokmtIYqGSCqEUGZL2xKi1bflQNq3w+anl1FEPpmRJyEIbs0m8tzdbmqbkrdUsmc6brnYLnXVuDBQ=="
-      }
-    },
-    "decisionArtifact": {
-      "spec": "noa.decision/0.1",
-      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
-      "decision": "APPROVE",
-      "reasonCode": "vendor-verified",
-      "reasonEncryption": {
-        "spec": "noa.encrypted-reason/0.1",
-        "recipientKid": "audit-1",
-        "suite": {
-          "kem": 32,
-          "kdf": 1,
-          "aead": 3
-        },
-        "enc": "ZW5jLXJlYXNvbg",
-        "ciphertext": "Y2lwaGVy",
-        "aadHash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
-      },
-      "decidedAt": "2026-07-14T11:56:00.000Z",
-      "approverKid": "approver-1-device-2",
-      "sig": {
-        "alg": "ed25519",
-        "kid": "approver-1-device-2",
-        "value": "5AlbtcOv6ItKmnErDHxjx5un/FpxKm6EhdiHIXw8cmvCmKVEZKDxxeV8VlZ6tYkh+y1bQDnYgW7wAljEaiVUCg=="
-      }
-    },
-    "executionGrant": {
-      "spec": "noa.execution-grant/0.1",
-      "grantId": "grant-001",
-      "holdId": "hold-001",
-      "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
-      "approvalReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
-      "issuedAt": "2026-07-14T11:57:00.000Z",
-      "expiresAt": "2026-07-14T12:30:00.000Z",
-      "maxUses": 1,
-      "nonce": "grant-nonce-01",
-      "sig": {
-        "alg": "ed25519",
-        "kid": "gate-prod-1",
-        "value": "w5e7Iq3d9GIPN/xW9bGba45UmNB+k7VEW5ytrvahHNsXihUypNQ52tKQ2Jn0+3fPnLB61yf3Y1rmL7y9aIaQCw=="
-      }
-    },
-    "executionConsumption": {
-      "spec": "noa.execution-consumption/0.1",
-      "grantHash": "sha256:2e47b7e519e50e81f322575b26a1e27c37d11677fe7f4ce6fcbb19da3729c146",
-      "consumedAt": "2026-07-14T11:58:00.000Z",
-      "attemptReceiptHash": "sha256:c1eedfbe6e5526e3925ba1195d6d63a44e7cb9bbde66cb400fc1fe33c8d217ba",
-      "result": "DISPATCHED",
-      "sig": {
-        "alg": "ed25519",
-        "kid": "gate-prod-1",
-        "value": "/+yF5lkJmPlAR+HbofkSkAPX690QFjeCxnWx6670thttq9LlfrjvIEcUpvNCC1fKOElGGHQLc5UsKFKpr7QXBQ=="
-      }
-    },
-    "executedReceipt": {
-      "spec": "noa.receipt/0.1",
-      "id": "rcpt_exec",
-      "ts": "2026-07-14T11:58:00.000Z",
       "scope": {
         "tenant": "tenant-acme",
         "chain": "chain-acme-1"
@@ -285,18 +189,32 @@
       },
       "governance": {
         "mode": "on",
-        "verdict": "EXECUTED",
+        "verdict": "ALLOWED",
+        "ruleId": "human-approved",
+        "approval": null,
         "sandboxed": false
       },
       "chain": {
-        "seq": 2,
-        "prevHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
-        "hash": "sha256:c1eedfbe6e5526e3925ba1195d6d63a44e7cb9bbde66cb400fc1fe33c8d217ba"
+        "seq": 1,
+        "prevHash": "sha256:b72deb557c8efc8d669bd934f94db302ce2a38ecaf9b6003d6c326e457f8cc8d",
+        "hash": "sha256:b130e3f50edf0ddc486c4b579a29c4c253c432ab2e1acb8424cdd06d417cbc2f"
       },
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "IOrK+ukhPi/E+jbtzhH8r+A9DbDEnoLliQzYipAzmuMMmISOuUKNA+HgQa+I/ypKbgfcPiceMh1y1ilsmdkHAg=="
+        "value": "4EfOES6q9Z1A/5/Pkv6oNDh8Iw9po7T78qm4guekDzNXM+yytcttCSpeH+eTs5jm/hz6Qk2ukKcJdVfVyRDZBA=="
+      }
+    },
+    "checkpoint": {
+      "spec": "noa.checkpoint/0.1",
+      "chain": "chain-acme-1",
+      "highestSeq": 1,
+      "headHash": "sha256:b130e3f50edf0ddc486c4b579a29c4c253c432ab2e1acb8424cdd06d417cbc2f",
+      "ts": "2026-07-14T11:59:00.000Z",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "Recr0etzwy/MCZDgzL2wLdg2dvt0Ian/HGrWztJgT5t889O8JQp409SJPHuW5DxGFbSpvG+4NmzC8bZBZetWDQ=="
       }
     }
   },

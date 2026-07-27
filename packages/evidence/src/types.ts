@@ -133,7 +133,74 @@ export type StepCode =
   | "E_CHECKPOINT_RECONCILE"
   | "E_TEMPORAL_AUTH"
   | "E_BUNDLE_SHAPE"
+  | "E_OUTCOME_ARTIFACT_SET"
   | "E_NO_TRUST_ROOT";
+
+/**
+ * The §13 outcome-keyed union, MADE MECHANICAL. The container is documented as "each outcome carries
+ * ONLY the artifacts that exist for it", but nothing enforced it: the container schema marks every
+ * optional artifact `type: object` for every outcome, and each step only reads the artifacts IT
+ * expects. So an artifact outside an outcome's union rode along completely unverified and the
+ * verifier still returned VALID_FULL_CHAIN — a positive verdict over bytes no step ever looked at.
+ *
+ * This table is the union, in one place, so a NEW outcome cannot silently inherit "anything goes":
+ * an outcome absent from the table has an EMPTY optional set and every optional artifact is refused.
+ *
+ * Scope note: this closes PRESENT-but-not-in-union only. "Required artifact missing" is deliberately
+ * left to the step that OWNS the artifact (step 10 owns the grant/consumption for EXECUTED, step 3
+ * owns the Decision Artifact, …), so a missing artifact is still attributed to its own step rather
+ * than collapsing onto this pre-rule.
+ */
+export const OUTCOME_ARTIFACT_UNION: Readonly<Record<EvidenceOutcome, ReadonlySet<string>>> = {
+  EXECUTED: new Set(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "executedReceipt"]),
+  EXECUTION_FAILED: new Set(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "failedReceipt"]),
+  DENIED: new Set(["decisionArtifact", "blockedReceipt"]),
+  EXPIRED: new Set(["timeoutReceipt"]),
+  APPROVED_NO_EXECUTION_EVIDENCE: new Set(["decisionArtifact", "allowedReceipt"]),
+  GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE: new Set(["decisionArtifact", "allowedReceipt", "executionGrant"]),
+  UNKNOWN_AFTER_DISPATCH: new Set(["decisionArtifact", "allowedReceipt", "executionGrant", "executionUncertainty"]),
+  // CANCELLED (crash before the gate durably recorded the outcome) MAY carry a pre-crash ALLOWED
+  // receipt + the decision that produced it; it may never carry execution artifacts (step 9).
+  CANCELLED_LOCAL_STATE_LOST: new Set(["decisionArtifact", "allowedReceipt"]),
+};
+
+/**
+ * The execution-artifact triple whose ABSENCE four outcomes already assert in their OWN step:
+ * step 9 (CANCELLED), step 12 (UNKNOWN), step 13 (GRANT_EXPIRED), step 14 (APPROVED_NO_EXECUTION).
+ *
+ * Those are SEMANTIC rules — "an absence-claim contradicted by an execution artifact" — and each
+ * owns its step's attribution. The union pre-rule above deliberately does NOT also report them, so a
+ * defect keeps tripping the step that owns it (the anti-cheat property: never an earlier accidental
+ * one). Nothing is weakened by the hand-off: every field here is still rejected, by its own step.
+ * What the union rule adds is everything NO step examines — a grant on a DENIED bundle, an
+ * uncertainty on a CANCELLED one, a timeout receipt on an EXECUTED one.
+ */
+const STEP_OWNED_EXECUTION_ABSENCE: ReadonlySet<string> = new Set([
+  "executionConsumption",
+  "executedReceipt",
+  "failedReceipt",
+]);
+
+/** Per-outcome fields the outcome's own step already refuses (see STEP_OWNED_EXECUTION_ABSENCE). */
+export const STEP_OWNED_ABSENCE: Readonly<Partial<Record<EvidenceOutcome, ReadonlySet<string>>>> = {
+  CANCELLED_LOCAL_STATE_LOST: STEP_OWNED_EXECUTION_ABSENCE, // step 9
+  UNKNOWN_AFTER_DISPATCH: STEP_OWNED_EXECUTION_ABSENCE, // step 12
+  GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE: STEP_OWNED_EXECUTION_ABSENCE, // step 13
+  APPROVED_NO_EXECUTION_EVIDENCE: STEP_OWNED_EXECUTION_ABSENCE, // step 14
+};
+
+/** Every optional (outcome-conditional) artifact field the container defines. */
+export const OPTIONAL_ARTIFACT_FIELDS: readonly string[] = [
+  "decisionArtifact",
+  "allowedReceipt",
+  "blockedReceipt",
+  "timeoutReceipt",
+  "executionGrant",
+  "executionConsumption",
+  "executionUncertainty",
+  "executedReceipt",
+  "failedReceipt",
+];
 
 /** The outcome of running a single named step. */
 export interface StepResult {

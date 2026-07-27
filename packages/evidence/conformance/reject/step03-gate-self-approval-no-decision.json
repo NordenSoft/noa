@@ -27,7 +27,7 @@
       },
       "canonicalization": "JCS-RFC8785",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:f0d96146653426b378236120d9f8c4a4077eed35b00ffd94083d12733f367a35",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "tenant": "tenant-acme",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "nonce": "envelope-nonce-01",
@@ -35,7 +35,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "u+WZ3RdXph0K2ZjTWpdVPFoWD7oUlgKUccclg6A97ykhqu/J5NZJX7jsLFlZaJOA9IHodedXVSnBTEqDiY2eBg=="
+        "value": "0sSXFUpEMfgAK9Jacoa9TYWGnLmU27qlEMeI08wupPGn8n3uJ48hd6lFnNSQw8JkM18Ot6FldNxeO60i6fRVCg=="
       }
     },
     "deferredReceipt": {
@@ -79,7 +79,7 @@
       "spec": "noa.key-manifest/0.1",
       "tenant": "tenant-acme",
       "version": 2,
-      "issuedAt": "2026-07-14T09:30:00.000Z",
+      "issuedAt": "2026-07-14T10:30:00.000Z",
       "expiresAt": "2026-07-15T09:30:00.000Z",
       "previousManifestHash": null,
       "keys": [
@@ -130,7 +130,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "manifest-signer-3",
-        "value": "qbcPdgnriRZEgkdS2vAYYX/RWJqIfzp0lYgj1z6niqLMpL2iZP3q872iKRb4jRjV89SXjVKQSy3PeYHvby9DBQ=="
+        "value": "49QimrPznzz9h17Bm4lyMyH9sprj+p1+7Ywt4I0OQhiwASoOrtRRL9TCziSlX+Ae8WUvoU/az1N9na+QXvRXAg=="
       }
     },
     "keyDelegation": {
@@ -152,18 +152,18 @@
     "holdResolution": {
       "spec": "noa.hold-resolution/0.1",
       "holdId": "hold-001",
-      "holdEnvelopeHash": "sha256:4e27da8c80bd06dcf3b2ead2ee0e35315c57c1ba9d2e1aab41bcdbb8ae2bf8f6",
+      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
       "decisionArtifactHash": null,
       "verdictReceiptHash": "sha256:28957a51832ed377326ec89ab43216d7248c4ee8fff8b6dcf9807e9c1df71d44",
       "status": "APPROVED",
       "reasonCode": null,
       "receivedAt": "2026-07-14T11:56:30.000Z",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:f0d96146653426b378236120d9f8c4a4077eed35b00ffd94083d12733f367a35",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "0dbQY9oF/vIV6oyi92Hr4Kv7/nIDS3wTDvD9ZgaIZ4ZmWSov0vt/QuOKcDLG0/h0KWHgCAqZOu+Pg7sczHu8Cw=="
+        "value": "DvkOGmX3qGuwFxSLc+SEJbJlZ7om+0wp9DYREKrVFaXoGSNk7Pcq9GmOKDxkAGPrG1X9+9VL5JxNt2rGszfGDg=="
       }
     },
     "allowedReceipt": {
@@ -213,7 +213,7 @@
       "grantId": "grant-001",
       "holdId": "hold-001",
       "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "holdEnvelopeHash": "sha256:4e27da8c80bd06dcf3b2ead2ee0e35315c57c1ba9d2e1aab41bcdbb8ae2bf8f6",
+      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
       "approvalReceiptHash": "sha256:28957a51832ed377326ec89ab43216d7248c4ee8fff8b6dcf9807e9c1df71d44",
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T12:30:00.000Z",
@@ -222,19 +222,19 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "Nd2zemXK/IHBLJVmANllehvQ28Rjpnj8dyLIAZa8o1ir7BNHuLsiW+5VnVwQCDu/DI+PUFrpkSVJaPOV4IhxCA=="
+        "value": "RsjAbUsycLVD0tLbUhKN54a+swBVPZoSsPggkt3Ry0U4CyzMTr6ugGKjj0NsNaI1dW7RzQ+fKpIYQ/B5FOWwAw=="
       }
     },
     "executionConsumption": {
       "spec": "noa.execution-consumption/0.1",
-      "grantHash": "sha256:8d08e851f50ef3c9203dd6ff0ef7d4e604140e559b4ff55a2f94cffedb1109dd",
+      "grantHash": "sha256:606f5f116722b14d39475ded5ce18129c536b746294f5dc9dab03bb9330473f8",
       "consumedAt": "2026-07-14T11:58:00.000Z",
       "attemptReceiptHash": "sha256:1a190387c078af49ded11939aa7b2d9650b6a5a1dae24100717a2d4b190c82e6",
       "result": "DISPATCHED",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "DzfMn2QuF8MmiGtkzIXV+Ec3nX6qsH/qsPTIk73SgaYj8sNLgnm98UuoKq0sxgoHFW1qf4MuaBlXhskVBz9cBg=="
+        "value": "jJaL2eAzHCxvbBdfpqskBqZwSjvBnTg3/SGal8E9u0t9mcKhvvF4T2i9/c00I/x7BrdtSmKPUJwg1AnEkbvhAQ=="
       }
     },
     "checkpoint": {
