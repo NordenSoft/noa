@@ -30,11 +30,25 @@ import { preCheck, preCheckAsync, buildReceipt, buildReceiptAsync } from "noa-mc
  * consistently. Signed by the SAME signer, appended to the SAME chain, so `verifyChain` covers the
  * decision and its outcome as one continuous, offline-verifiable history.
  *
+ * WHICH DECISION THIS IS THE OUTCOME OF. The id is derived from the DECISION receipt's id
+ * (`<decision-id>#outcome`) rather than from this receipt's own seq. Copying the action fields
+ * proves the outcome is about the same ACTION; it does not identify WHICH CALL, and under
+ * concurrency that is a real gap: two simultaneous calls with identical parameters produce
+ * identical action fields, the execution deliberately runs outside the chain lock, and the outcomes
+ * can therefore commit in the opposite order from their decisions (decision A, decision B, outcome
+ * B, outcome A). `chain.prevHash` then links outcome A to outcome B, not to decision A, so the
+ * "terminal chains directly onto its decision" property held only in the absence of concurrency.
+ *
+ * The decision's id is unique within the chain (`rcpt_<seq>` at decision time), so referencing it
+ * makes the pairing explicit and unambiguous for every interleaving. It costs nothing at the wire
+ * level: `id` is an existing receipt field and is INSIDE the signed hash pre-image, so the binding
+ * is attested rather than annotated, and the frozen receipt shape is untouched (no field added).
+ *
  * Returns a Promise so the sync and remote-signer paths are one code path for the caller.
  */
 function buildOutcomeReceipt({ decisionReceipt, prev, seq, failed, signer, tenant, chain, useAsyncSigner }) {
   const input = {
-    id: `rcpt_${seq}`,
+    id: `${decisionReceipt.id}#outcome`,
     ts: new Date().toISOString(),
     scope: { tenant, chain: chain ?? `${tenant}:mcp` },
     agent: { id: decisionReceipt.agent.id, model: null, principal: "POLICY" },
@@ -56,6 +70,46 @@ function buildOutcomeReceipt({ decisionReceipt, prev, seq, failed, signer, tenan
     },
   };
   return useAsyncSigner ? buildReceiptAsync(input, prev, signer) : Promise.resolve(buildReceipt(input, prev, signer));
+}
+
+/**
+ * Thrown when the wrapped tool ALREADY RAN and the terminal receipt could not be produced or
+ * recorded — the outcome signer rejected/was unreachable, or `onReceipt` threw (a receipt-log
+ * append hitting ENOSPC, a durable store refusing the write).
+ *
+ * WHY THIS TYPE EXISTS. Both of those used to propagate raw, so a call that SUCCEEDED and merely
+ * failed to be written down reached the caller as an indistinguishable bare failure. That is the
+ * one error shape a caller must not confuse: retrying "the call failed" is correct, and retrying
+ * "the call succeeded but was not recorded" duplicates the side effect — for a payment tool, twice.
+ * The pre-execution path is deliberately NOT wrapped: a decision-receipt persist failure means
+ * nothing ran, and rejecting closed there is the correct fail-closed behaviour, unchanged.
+ *
+ *   `executionHappened` — always `true`. The discriminator: the tool was invoked and settled.
+ *   `outcome`           — `"EXECUTED"` or `"FAILED"`: what the terminal receipt WOULD have said.
+ *   `result`            — the wrapped tool's return value when it succeeded (else `undefined`), so
+ *                         a caller can still complete the operation it already paid for.
+ *   `toolFailure`       — the value the tool threw when `outcome` is `"FAILED"`.
+ *   `receipt`           — the terminal receipt if it was built but not recorded (else `null`).
+ *   `cause`             — the original signing/persistence error, unchanged.
+ *
+ * This does NOT make the outcome durable — that needs a commit protocol the wrapper does not own
+ * (see THREAT-MODEL.md). It makes the ambiguity VISIBLE instead of silent, which is the part that
+ * can be fixed here.
+ */
+export class ToolOutcomeNotRecorded extends Error {
+  constructor(toolName, { outcome, result, toolFailure, receipt, cause }) {
+    super(
+      `noa-framework-adapters: "${toolName}" ALREADY RAN (outcome ${outcome}) but its terminal receipt could not be recorded — ` +
+      `do NOT blindly retry: the side effect has already happened. Cause: ${cause instanceof Error ? cause.message : String(cause)}`,
+      { cause },
+    );
+    this.name = "ToolOutcomeNotRecorded";
+    this.executionHappened = true;
+    this.outcome = outcome;
+    this.result = result;
+    this.toolFailure = toolFailure;
+    this.receipt = receipt ?? null;
+  }
 }
 
 /** Thrown by a guarded tool call when the gate decision is not ALLOW. Carries the signed receipt
@@ -156,33 +210,79 @@ export function createToolGuard({ signer, policy, tenant = "default-tenant", cha
       //
       // The original error is always re-thrown UNCHANGED after the FAILED receipt is committed, so
       // the wrapped tool stays a structural drop-in and a caller's error handling is untouched.
+      //
+      // ── WHY A BOOLEAN AND NOT A SENTINEL VALUE ────────────────────────────────────────────────
+      // `let failure = null` used `null` as BOTH "nothing was thrown" and as a thrown value, and the
+      // rethrow tested TRUTHINESS. JavaScript lets you throw anything, and `throw null` is legal, so
+      // the two meanings collided: a tool doing `throw null` produced `caught: NONE`, verdicts
+      // `[ALLOWED, EXECUTED]` and a chain-VALID receipt attesting that an operation which threw had
+      // executed. Every other falsy throw (`undefined`, `0`, `""`, `false`, `NaN`, `0n`) recorded
+      // FAILED correctly but was ALSO never re-thrown, so the caller was told the call succeeded and
+      // handed `undefined` as the result.
+      //
+      // `threw` is set ONLY by the catch block. No value a tool can throw can produce it, and no
+      // value a tool can throw can suppress it — which is the whole property that was missing. The
+      // thrown value itself is carried separately and re-thrown by IDENTITY, never by truthiness, so
+      // `throw null` reaches the caller as exactly `null`.
       let result;
-      let failure = null;
+      let threw = false;
+      let failure;
       try {
         result = await fn(args);
       } catch (e) {
+        threw = true;
         failure = e;
       }
 
-      const outcomeReceipt = await runExclusive(async () => {
-        const prev = log.at(-1) ?? null;
-        const r = buildOutcomeReceipt({
-          decisionReceipt: receipt,
-          prev,
-          seq: log.length,
-          failed: failure !== null,
-          signer,
-          tenant,
-          chain,
-          useAsyncSigner,
+      // ── AFTER THIS POINT THE TOOL HAS ALREADY RUN ─────────────────────────────────────────────
+      // Anything that fails from here on is a RECORDING failure, not an execution failure, and the
+      // two must not reach the caller as the same shape: retrying an execution failure is correct,
+      // retrying a recording failure duplicates a side effect that already happened. Both the
+      // outcome SIGNING and the outcome PERSIST are wrapped in ToolOutcomeNotRecorded, which
+      // carries the discriminator plus the result the caller already paid for.
+      const terminalOutcome = threw ? "FAILED" : "EXECUTED";
+      let outcomeReceipt = null;
+      try {
+        outcomeReceipt = await runExclusive(async () => {
+          const prev = log.at(-1) ?? null;
+          const r = buildOutcomeReceipt({
+            decisionReceipt: receipt,
+            prev,
+            seq: log.length,
+            failed: threw,
+            signer,
+            tenant,
+            chain,
+            useAsyncSigner,
+          });
+          const settled = await r;
+          log.push(settled);
+          return settled;
         });
-        const settled = await r;
-        log.push(settled);
-        return settled;
-      });
-      if (onReceipt) await onReceipt(outcomeReceipt, failure ? "FAILED" : "EXECUTED");
+      } catch (e) {
+        throw new ToolOutcomeNotRecorded(name, {
+          outcome: terminalOutcome,
+          result,
+          toolFailure: threw ? failure : undefined,
+          receipt: null,
+          cause: e,
+        });
+      }
+      if (onReceipt) {
+        try {
+          await onReceipt(outcomeReceipt, terminalOutcome);
+        } catch (e) {
+          throw new ToolOutcomeNotRecorded(name, {
+            outcome: terminalOutcome,
+            result,
+            toolFailure: threw ? failure : undefined,
+            receipt: outcomeReceipt,
+            cause: e,
+          });
+        }
+      }
 
-      if (failure) throw failure;
+      if (threw) throw failure;
       return result;
     };
   }

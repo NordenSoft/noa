@@ -117,6 +117,27 @@ function body(r: EngineResult): Record<string, unknown> {
 
 /** Compute the exact paramsHash the gate binds — via the SAME pinned projection (ENFORCED) or the
  *  caller-supplied hash (RAW). Deterministic + side-effect-free. */
+/**
+ * Describe a THROWN value without assuming it is an `Error`.
+ *
+ * JavaScript permits throwing anything, and `(e as Error).message` on `throw null` raises a
+ * TypeError from inside the very catch block whose job is to record the failure. On the dispatch
+ * path below that is not cosmetic: the grant has already been RESERVED, so an exception escaping
+ * there skips `report(...)`, leaves the reservation dangling, and produces no consumption artifact
+ * for an attempt that really happened. Reading the message defensively keeps the failure on the
+ * failure path, where it can be reported as `FAILED_BEFORE_DISPATCH`.
+ */
+function describeThrown(e: unknown): string {
+  if (e instanceof Error && typeof e.message === "string") return e.message;
+  if (typeof e === "string") return e;
+  try {
+    return `non-Error thrown: ${String(e)}`;
+  } catch {
+    // a thrown object whose own toString/Symbol.toPrimitive throws
+    return "non-Error thrown: <unstringifiable>";
+  }
+}
+
 function deriveParamsHash(input: GuardInput, snapshot: unknown): { ok: true; hash: string } | { ok: false; error: string } {
   const mode = input.mode ?? "ENFORCED";
   if (mode === "RAW") {
@@ -138,7 +159,7 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
   try {
     snapshot = structuredClone(input.params);
   } catch (e) {
-    return { outcome: "ERROR", ran: false, detail: `params not cloneable: ${(e as Error).message}` };
+    return { outcome: "ERROR", ran: false, detail: `params not cloneable: ${describeThrown(e)}` };
   }
 
   const firstHash = deriveParamsHash(input, snapshot);
@@ -195,8 +216,11 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
     ok = r.ok;
     execDetail = r.detail;
   } catch (e) {
+    // `ok` stays false on ANY throw, including a falsy one — the flag is set outside the try and
+    // only ever cleared by a successful `execute()` returning `{ ok: true }`, never inferred from
+    // the thrown value's truthiness (see describeThrown for why reading `.message` was unsafe here).
     ok = false;
-    execDetail = (e as Error).message;
+    execDetail = describeThrown(e);
   }
 
   const reported = await input.client.report(grantId, { result: ok ? "DISPATCHED" : "FAILED_BEFORE_DISPATCH" });

@@ -78,14 +78,31 @@ test("wrapOpenAITool: N calls -> N receipts, offline-verifiable", async () => {
     }
   }
 
-  // ALLOW -> 2 receipts (decision + outcome); DENY -> 1 (nothing ran, nothing to attest).
-  const allows = guard.receipts.filter((r) => r.governance.verdict === "ALLOWED").length;
-  const denies = guard.receipts.filter((r) => r.governance.verdict === "BLOCKED").length;
-  assert.equal(allows + denies, amounts.length, "exactly one DECISION receipt per call");
-  assert.equal(guard.receipts.length, allows * 2 + denies);
+  // THE EXPECTED COUNT IS INDEPENDENTLY KNOWN, NOT DERIVED FROM THE RECEIPTS.
+  // This block previously counted ALLOWED/BLOCKED receipts and then checked
+  // `receipts.length === allows * 2 + denies` — both sides read from the same array, so the
+  // arithmetic held under regressions the block exists to catch: an outcome receipt emitted BEFORE
+  // its decision, or carrying FAILED instead of EXECUTED, satisfied it unchanged.
+  //
+  // `amounts` is the ground truth: 3 ALLOW-eligible + 1 over-limit DENY, called sequentially, so
+  // the whole verdict sequence is deterministic and can simply be written down.
+  const EXPECTED_VERDICTS = ["ALLOWED", "EXECUTED", "BLOCKED", "ALLOWED", "EXECUTED", "ALLOWED", "EXECUTED"];
+  assert.equal(guard.receipts.length, EXPECTED_VERDICTS.length, "3 ALLOW (decision+outcome) + 1 DENY (decision only) = 7 receipts");
+  assert.deepEqual(
+    guard.receipts.map((r) => r.governance.verdict),
+    EXPECTED_VERDICTS,
+    "every terminal verdict AND its position: a decision always precedes its outcome, and a DENY has no outcome",
+  );
+  // Each outcome names the exact decision it settles (id `<decision-id>#outcome`).
+  for (let i = 0; i < guard.receipts.length - 1; i++) {
+    if (guard.receipts[i].governance.verdict !== "ALLOWED") continue;
+    const outcome = guard.receipts[i + 1];
+    assert.equal(outcome.id, `${guard.receipts[i].id}#outcome`, "the outcome must identify WHICH decision it settles");
+    assert.equal(outcome.action.paramsHash, guard.receipts[i].action.paramsHash);
+  }
   const v = verifyChain(guard.receipts, { keyring });
   assert.equal(v.status, "VALID");
-  assert.equal(v.count, guard.receipts.length);
+  assert.equal(v.count, EXPECTED_VERDICTS.length);
 });
 
 test("wrapOpenAITool: also supports the flat local-runtime shape (tool.name, no tool.function)", async () => {

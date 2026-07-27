@@ -680,6 +680,13 @@ async function main() {
     pendingStorePath: pendingStorePathR,
     approverKeyring: { [approverKp.kid]: approverKp.publicKey },
     approverIdentityManifest: { "human-approval-cli": [approverKp.kid] },
+    // Collect OUTCOME receipts. When the decision verdict was corrected from EXECUTED to ALLOWED
+    // (a decision receipt records what policy decided, not what happened), this scenario stopped
+    // asserting any execution evidence at all: it checked the downstream counter and the decision
+    // sequence, neither of which is a signed artifact attesting that the approved call ran. The
+    // terminal receipt moved to the onOutcome channel, so the assertion has to follow it there
+    // rather than disappear — otherwise correcting a verdict quietly deleted the coverage.
+    collectOutcomes: true,
   });
 
   const denyDeferred = await expectDeny(sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } }));
@@ -724,6 +731,21 @@ async function main() {
   ok(
     "(r) verdict sequence is [DEFERRED, ALLOWED, ALLOWED]",
     JSON.stringify(sessR.receipts.map((r) => r.governance.verdict)) === JSON.stringify(["DEFERRED", "ALLOWED", "ALLOWED"]),
+  );
+  // THE EXECUTION EVIDENCE FOR THE RETRY (restored). The third DECISION receipt says policy allowed
+  // the retry; it does not say the call ran. That claim now lives in the OUTCOME receipt, and it is
+  // asserted here — signed, offline-verifiable, and bound to the exact decision it settles — so the
+  // scenario proves "approved AND executed", not merely "approved and the counter moved".
+  ok("(r) exactly ONE outcome receipt: the approved retry, and nothing else, actually dispatched", sessR.outcomes.length === 1);
+  ok("(r) the outcome receipt carries the distinct R2 outcome spec, not the decision spec", sessR.outcomes[0].spec === OUTCOME_RECEIPT_SPEC);
+  ok("(r) the outcome status is success (the transfer really executed)", sessR.outcomes[0].outcome.status === "success");
+  ok(
+    "(r) the outcome receipt verifies offline AND is bound to the RETRY decision (id+hash)",
+    verifyOutcomeReceipt(sessR.outcomes[0], { keyring: sessR.keyring, expectedDecisionReceipt: sessR.receipts[2] }).ok === true,
+  );
+  ok(
+    "(r) the same outcome checked against the ADOPTED-APPROVAL decision is rejected (binding is to the call that ran)",
+    verifyOutcomeReceipt(sessR.outcomes[0], { keyring: sessR.keyring, expectedDecisionReceipt: sessR.receipts[1] }).ok === false,
   );
   // AGENT-LEVEL IDENTITY BINDING: with only { keyring }, attribution is kid-level — any trusted
   // key may claim any agent.id. The identityManifest pins the proxy agent's kid to "session-R"

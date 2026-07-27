@@ -105,6 +105,43 @@ test("createToolGuard: CONCURRENT calls on ONE guard with an async (remote) sign
   assert.equal(guard.receipts.length, 2 * N, "N concurrent ALLOW calls -> exactly 2N receipts, no lost/duplicated slot");
   const seqs = guard.receipts.map((r) => r.chain.seq);
   assert.deepEqual(seqs, Array.from({ length: 2 * N }, (_, i) => i), "seq is contiguous 0..2N-1 with no duplicates or gaps");
+
+  // ── LIFECYCLE, ORDER AND BINDING (not just contiguity) ──────────────────────────────────────
+  // Seq contiguity alone says the chain has 2N slots with none lost or duplicated. It says nothing
+  // about WHAT is in them: N decisions and N outcomes, each outcome AFTER the decision it settles,
+  // and each outcome identifying WHICH decision that is. The last part is what concurrency
+  // genuinely broke — execution runs outside the chain lock, so outcomes can commit in the
+  // opposite order from their decisions, and with identical parameters the receipts were
+  // indistinguishable. `chain.prevHash` therefore does NOT pair them here; the outcome's id does.
+  const verdicts = guard.receipts.map((r) => r.governance.verdict);
+  assert.equal(verdicts.filter((v) => v === "ALLOWED").length, N, "exactly N decisions");
+  assert.equal(verdicts.filter((v) => v === "EXECUTED").length, N, "exactly N terminal receipts, all successful");
+  assert.equal(verdicts.filter((v) => v !== "ALLOWED" && v !== "EXECUTED").length, 0, "no other verdict may appear");
+
+  const decisionIndexById = new Map();
+  guard.receipts.forEach((r, i) => {
+    if (r.governance.verdict === "ALLOWED") decisionIndexById.set(r.id, i);
+  });
+  assert.equal(decisionIndexById.size, N, "decision ids must be unique — otherwise the pairing below is meaningless");
+
+  const settled = new Set();
+  guard.receipts.forEach((r, i) => {
+    if (r.governance.verdict !== "EXECUTED") return;
+    assert.match(r.id, /#outcome$/, `outcome at seq ${i} must reference its decision by id`);
+    const decisionId = r.id.slice(0, -"#outcome".length);
+    const di = decisionIndexById.get(decisionId);
+    assert.notEqual(di, undefined, `outcome at seq ${i} names decision "${decisionId}", which is not in the chain`);
+    assert.ok(di < i, `a decision must be committed BEFORE the outcome that settles it (decision seq ${di}, outcome seq ${i})`);
+    assert.equal(settled.has(decisionId), false, `decision "${decisionId}" must be settled exactly once`);
+    settled.add(decisionId);
+    assert.equal(
+      r.action.paramsHash,
+      guard.receipts[di].action.paramsHash,
+      "the outcome must carry the approved action's paramsHash",
+    );
+  });
+  assert.equal(settled.size, N, "every decision is settled by exactly one outcome");
+
   const v = verifyChain(guard.receipts, { keyring: remoteKeyring });
   assert.equal(v.status, "VALID", "a corrupted/duplicate-seq chain would fail this");
   assert.equal(v.count, 2 * N);

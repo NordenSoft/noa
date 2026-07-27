@@ -18,7 +18,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createToolGuard, GuardedToolDenied } from "../src/wrap-tool.mjs";
+import { createToolGuard, GuardedToolDenied, ToolOutcomeNotRecorded } from "../src/wrap-tool.mjs";
 import { generateKeyPair, verifyChain, REFUND_GUARD_POLICY } from "noa-mcp-adapter-core";
 
 function guardWith(kid) {
@@ -80,6 +80,134 @@ test("a DENY still produces exactly ONE receipt and never calls fn (no outcome t
   assert.equal(calls, 0, "fail-closed: fn is never invoked on DENY");
   assert.deepEqual(guard.receipts.map((r) => r.governance.verdict), ["BLOCKED"]);
   assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
+});
+
+/**
+ * A THROWN VALUE IS NOT A TRUTHY VALUE (cross-family review round 3, CRITICAL).
+ *
+ * `guardCall` used `null` as BOTH the "nothing was thrown" sentinel and as a legal thrown value, and
+ * decided whether to re-throw by TRUTHINESS. JavaScript lets you throw anything, so the two meanings
+ * collided at every falsy value:
+ *
+ *   throw null       -> caught: NONE, verdicts [ALLOWED, EXECUTED], verifyChain VALID
+ *                       (a signed attestation that an operation which THREW had executed)
+ *   throw undefined  -> verdicts [ALLOWED, FAILED] but STILL not re-thrown: the receipt is honest
+ *                       and the CALLER is told the call succeeded and handed `undefined`
+ *   likewise 0, "", false, NaN, 0n
+ *
+ * Both halves are covered here: the terminal verdict must be FAILED, and the caller must receive the
+ * thrown value back by IDENTITY (`Object.is`), so `throw null` arrives as exactly `null`.
+ */
+const FALSY_THROWS = [
+  ["null", null],
+  ["undefined", undefined],
+  ["0", 0],
+  ['""', ""],
+  ["false", false],
+  ["NaN", NaN],
+  ["0n", 0n],
+];
+
+for (const [label, thrown] of FALSY_THROWS) {
+  test(`a tool that throws ${label} is FAILED, never EXECUTED, and the value reaches the caller`, async () => {
+    const { guard, keyring } = guardWith(`np-falsy-${label.replace(/\W/g, "") || "empty"}`);
+    const wire = guard.guardCall("payment.refund", async () => {
+      throw thrown;
+    });
+
+    let didThrow = false;
+    let received;
+    try {
+      await wire({ action: "payment.refund", amountMinor: 4_200 });
+    } catch (e) {
+      didThrow = true;
+      received = e;
+    }
+
+    assert.equal(didThrow, true, `throw ${label} must NOT be swallowed — the caller has to learn the call failed`);
+    assert.equal(Object.is(received, thrown), true, `the thrown value must be re-thrown UNCHANGED (got ${String(received)})`);
+    assert.deepEqual(
+      guard.receipts.map((r) => r.governance.verdict),
+      ["ALLOWED", "FAILED"],
+      "THE ASSERTION THIS BLOCK EXISTS FOR: a falsy throw is still a throw — never EXECUTED",
+    );
+    assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
+  });
+}
+
+/**
+ * POST-DISPATCH: "it ran but was not recorded" is not the same event as "it did not run".
+ *
+ * Once the wrapped tool has been invoked, every remaining failure is a RECORDING failure. Those used
+ * to propagate raw, so a call that SUCCEEDED and merely failed to be written down reached the caller
+ * as an indistinguishable bare error — and the natural response to a bare error is a retry, which
+ * duplicates a side effect that already happened.
+ */
+test("a tool that SUCCEEDS but whose terminal receipt cannot be persisted raises ToolOutcomeNotRecorded, carrying the result", async () => {
+  const kp = generateKeyPair("np-persist");
+  let calls = 0;
+  const guard = createToolGuard({
+    signer: { kid: kp.kid, privateKey: kp.privateKey },
+    policy: REFUND_GUARD_POLICY,
+    tenant: "t",
+    onReceipt: (r) => {
+      if (r.governance.verdict === "EXECUTED") throw new Error("ENOSPC: no space left on device");
+    },
+  });
+  const refund = guard.guardCall("payment.refund", async () => { calls++; return "refunded"; });
+
+  let caught = null;
+  try { await refund({ action: "payment.refund", amountMinor: 4_200 }); } catch (e) { caught = e; }
+
+  assert.ok(caught instanceof ToolOutcomeNotRecorded, `expected ToolOutcomeNotRecorded, got ${caught?.name}`);
+  assert.equal(calls, 1, "the tool really did run — that is the whole point");
+  assert.equal(caught.executionHappened, true, "THE DISCRIMINATOR: a retry here would duplicate the side effect");
+  assert.equal(caught.outcome, "EXECUTED");
+  assert.equal(caught.result, "refunded", "the caller must be able to recover the result it already paid for");
+  assert.equal(caught.cause?.message, "ENOSPC: no space left on device", "the original cause is preserved unchanged");
+});
+
+test("a PRE-execution persist failure is NOT wrapped — nothing ran, so failing closed is correct", async () => {
+  // The decision receipt is written before anything executes. A failure there must keep its existing
+  // fail-closed shape: the raw error, and no invocation.
+  const kp = generateKeyPair("np-persist-pre");
+  let calls = 0;
+  const guard = createToolGuard({
+    signer: { kid: kp.kid, privateKey: kp.privateKey },
+    policy: REFUND_GUARD_POLICY,
+    tenant: "t",
+    onReceipt: (r) => {
+      if (r.governance.verdict === "ALLOWED") throw new Error("decision log unavailable");
+    },
+  });
+  const refund = guard.guardCall("payment.refund", async () => { calls++; return "refunded"; });
+
+  let caught = null;
+  try { await refund({ action: "payment.refund", amountMinor: 4_200 }); } catch (e) { caught = e; }
+
+  assert.equal(calls, 0, "fail-closed: the tool must never run when its decision could not be recorded");
+  assert.equal(caught instanceof ToolOutcomeNotRecorded, false, "nothing ran, so this is not a post-dispatch ambiguity");
+  assert.match(caught.message, /decision log unavailable/);
+});
+
+test("a tool that FAILS and cannot record that failure also reports the execution as having happened", async () => {
+  const kp = generateKeyPair("np-persist-failed");
+  const guard = createToolGuard({
+    signer: { kid: kp.kid, privateKey: kp.privateKey },
+    policy: REFUND_GUARD_POLICY,
+    tenant: "t",
+    onReceipt: (r) => {
+      if (r.governance.verdict === "FAILED") throw new Error("receipt log gone");
+    },
+  });
+  const refund = guard.guardCall("payment.refund", async () => { throw new Error("upstream 500 after the charge"); });
+
+  let caught = null;
+  try { await refund({ action: "payment.refund", amountMinor: 4_200 }); } catch (e) { caught = e; }
+
+  assert.ok(caught instanceof ToolOutcomeNotRecorded);
+  assert.equal(caught.outcome, "FAILED");
+  assert.equal(caught.toolFailure?.message, "upstream 500 after the charge", "the tool's own error must not be lost");
 });
 
 test("the terminal receipt is bound to the SAME action as the decision it follows", async () => {
