@@ -32,12 +32,17 @@ import { createServer, connect } from "node:net";
 import { statSync, unlinkSync, chmodSync, existsSync } from "node:fs";
 import { dirname } from "node:path";
 import { loadOrCreateKeyFile, generateKeyPair } from "noa-mcp-adapter-core";
+// BOUNDARY 2 — every caught value is described through safe-throw, never a raw `.message`/`.code`/
+// `instanceof`. The fifth review's H2: `error instanceof Error ? error.message : String(error)`
+// threw on a revoked proxy (instanceof itself throws) from inside the very handler meant to report
+// the fatal error, and `err.code` on a null socket error escaped the retry classifier.
+import { describeThrown, thrownCode } from "noa-mcp-adapter-core/safe-throw";
 import { signEd25519 } from "noa-receipt";
 
 const MAX_LINE_BYTES = 65536;
 
 function oneLineError(error) {
-  const message = error instanceof Error ? error.message : String(error);
+  const message = describeThrown(error);
   return message
     .replace(/[\r\n\u2028\u2029]/g, " ")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, "?")
@@ -67,7 +72,7 @@ function assertSocketDirIsPrivate(socketPath) {
   try {
     st = statSync(dir);
   } catch (err) {
-    throw new Error(`sidecar.mjs: --socket directory "${dir}" does not exist (${err.message}). Create it with mode 0700 first.`);
+    throw new Error(`sidecar.mjs: --socket directory "${dir}" does not exist (${describeThrown(err)}). Create it with mode 0700 first.`);
   }
   if (!st.isDirectory()) throw new Error(`sidecar.mjs: --socket directory "${dir}" is not a directory`);
   if ((st.mode & 0o077) !== 0) {
@@ -92,11 +97,12 @@ function clearStaleSocket(socketPath) {
       reject(new Error(`sidecar.mjs: --socket "${socketPath}" already has a live listener -- refusing to start a second sidecar on the same path`));
     });
     probe.once("error", (err) => {
-      if (err.code === "ECONNREFUSED" || err.code === "ENOENT") {
+      const code = thrownCode(err);
+      if (code === "ECONNREFUSED" || code === "ENOENT") {
         try {
           unlinkSync(socketPath);
         } catch (unlinkErr) {
-          if (unlinkErr.code !== "ENOENT") return reject(unlinkErr);
+          if (thrownCode(unlinkErr) !== "ENOENT") return reject(unlinkErr);
         }
         return resolve();
       }
@@ -172,7 +178,7 @@ async function main() {
           // Fail-closed per REQUEST, never per PROCESS: a single malformed/hostile request must
           // never crash the sidecar out from under every other in-flight session -- that would
           // turn one bad request into an outage for every signer this process serves.
-          socket.end(JSON.stringify({ error: `internal error: ${err.message}` }) + "\n");
+          socket.end(JSON.stringify({ error: `internal error: ${describeThrown(err)}` }) + "\n");
         }
       },
       () => {

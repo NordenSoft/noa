@@ -201,6 +201,34 @@ test("createFileSessionStore: advance() poisons the store instance when the in-m
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("createFileSessionStore: a disk write that throws a FALSY value STILL poisons the store (H2 — presence, not truthiness)", () => {
+  const dir = tmpDir("noa-file-session-store-falsy-poison-");
+  const store = createFileSessionStore(dir);
+  const { signer } = signerAndKeyring("test-fss-falsy");
+  const sessionId = "session-falsy";
+  const tenant = "acme";
+
+  const p1 = prepareSessionReceipt({ name: "payment.refund", args: { amountMinor: 10 } }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
+  assert.equal(commitSessionReceipt(store, sessionId, p1.receipt, p1.segmentId, p1.tenant), true);
+
+  // The durable write is `JSON.stringify({ …, receipt })` inside appendLineSync, AFTER inner.advance()
+  // has already accepted the receipt into memory. A receipt whose toJSON throws a FALSY value makes
+  // that write throw `0` — one of the eight falsy values the fifth review fault-injected. Pre-fix the
+  // poison latch stored the thrown value and tested `if (poisoned)`, so a falsy `0` never armed it and
+  // the very next call ran against advanced-but-unpersisted memory. The latch is now a boolean
+  // PRESENCE flag, so a falsy throw poisons exactly as a truthy one does.
+  const p2 = prepareSessionReceipt({ name: "payment.refund", args: { amountMinor: 20 } }, { sessionId, store, signer, policy: REFUND_GUARD_POLICY, tenant });
+  Object.defineProperty(p2.receipt, "toJSON", { value: () => { throw 0; }, enumerable: false, configurable: true });
+
+  assert.throws(() => store.advance(sessionId, p2.receipt, p2.segmentId, tenant), "the failing advance() must throw");
+  // THE KEY ASSERTION: a FALSY thrown value still poisons the store — subsequent calls reject.
+  assert.throws(() => store.peek(sessionId, tenant), /POISONED/, "a falsy disk-write throw must STILL poison the store");
+  assert.throws(() => store.advance(sessionId, p1.receipt, p1.segmentId, tenant), /POISONED/);
+
+  store.dispose();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 // --- QA-panel fault-injection follow-up (adversarial cross-review after Adım 1-7): end() and
 // eviction each persist their OWN "end" tombstone independently of advance()'s receipt-line write
 // (see the module docstring) — a disk-write failure on THEIR write path needs the exact same

@@ -353,15 +353,17 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
   mkdirSync(dir, { recursive: true });
   const lockNonce = acquireLock(dir);
 
-  // POISON latch — see the module docstring's "FAIL-CLOSED POISON" section above. `null` means
-  // healthy; once set to an Error, every method below (except `dispose()`, which must still be
-  // reachable so a caller can clean up and let a restart recover) rejects with it instead of
-  // silently operating on a store instance whose disk state is provably no longer consistent
-  // with its in-memory state. Declared BEFORE `inner` is constructed so the `onEvict` callback
-  // passed into it below (which can run synchronously from `inner`'s OWN internal machinery —
-  // a cap-eviction inside `stateFor()`, or the background sweep timer's own `setInterval`
-  // callback) can set it directly.
-  let poisoned = null;
+  // POISON latch — see the module docstring's "FAIL-CLOSED POISON" section above. A PRESENCE FLAG,
+  // not the thrown Error itself: the fifth review's H2 found that `let poisoned = <err>` + `if
+  // (poisoned)` tested TRUTHINESS, so a disk-write that threw a FALSY value (`throw 0`, `throw null`,
+  // `throw ""`, `throw NaN`, `throw 0n`, …) set `poisoned` to a falsy value and the latch never armed
+  // — the very next call ran against advanced-but-unpersisted memory, the exact divergence the latch
+  // exists to prevent. `poisoned` is now a boolean, and the human-readable cause is captured through
+  // `describeThrown` (which is total and never reads a raw `.message`), so a falsy thrown value still
+  // poisons. Declared BEFORE `inner` so the `onEvict` callback (which can run synchronously from
+  // `inner`'s own machinery — a cap-eviction inside `stateFor()`, or the sweep timer) can set it.
+  let poisoned = false;
+  let poisonCause = "";
 
   let inner;
   try {
@@ -392,10 +394,11 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
           // assertNotPoisoned() — and the failure is surfaced loudly (console.error, not a
           // swallowed warn) so an operator watching stderr sees it immediately, not only once a
           // later call happens to reject.
-          poisoned = err;
+          poisoned = true;
+          poisonCause = describeThrown(err);
           console.error(
             `noa-mcp-adapter-core(file-session-store): eviction tombstone FAILED to persist to disk ` +
-              `for session "${sessionId}" (tenant "${tenant}"): ${describeThrown(err)} -- this store instance ` +
+              `for session "${sessionId}" (tenant "${tenant}"): ${poisonCause} -- this store instance ` +
               `is now POISONED and will refuse all further calls.`,
           );
         }
@@ -411,7 +414,7 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
       throw new Error(
         `createFileSessionStore: this store instance is POISONED and refuses all further calls ` +
           `(${callerLabel}) -- a prior advance() call accepted a receipt into the live in-memory ` +
-          `chain but then failed to durably persist it to disk (${poisoned.message}). Continuing ` +
+          `chain but then failed to durably persist it to disk (${poisonCause}). Continuing ` +
           `would let the live chain silently diverge from what a restart would reload from disk. ` +
           `Restart the process against "${dir}" -- reloadAll() will either resume cleanly from the ` +
           `last GOOD line on disk, or refuse to start with a clear error if the failed write left a ` +
@@ -448,11 +451,13 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
         // FATAL, un-rollback-able inconsistency — see the module docstring's "FAIL-CLOSED
         // POISON" section: `inner` has no API to undo an already-succeeded advance(), so this
         // store instance's disk and in-memory state are now PROVABLY diverged. Poison it (every
-        // subsequent call rejects) and fail THIS call closed too.
-        poisoned = err;
+        // subsequent call rejects) and fail THIS call closed too. The flag is set from PRESENCE of a
+        // failure, never the thrown value's truthiness — a `throw 0`/`throw null` here still poisons.
+        poisoned = true;
+        poisonCause = describeThrown(err);
         throw new Error(
           `createFileSessionStore: receipt was accepted into the live in-memory chain but FAILED ` +
-            `to persist to disk (${describeThrown(err)}) — this store instance is now POISONED and refuses ` +
+            `to persist to disk (${poisonCause}) — this store instance is now POISONED and refuses ` +
             `all further calls. Restart the process against "${dir}".`,
         );
       }
@@ -472,10 +477,11 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
         // is a direct external entry point (never invoked from inner's own internal machinery, see
         // the onEvict callback above for that distinct case), so throwing synchronously here is
         // safe and matches advance()'s own contract — poison rather than silently warn-and-continue.
-        poisoned = err;
+        poisoned = true;
+        poisonCause = describeThrown(err);
         throw new Error(
           `createFileSessionStore: session "${sessionId}" (tenant "${tenant}") was ended in memory ` +
-            `but its end-tombstone FAILED to persist to disk (${describeThrown(err)}) — this store instance ` +
+            `but its end-tombstone FAILED to persist to disk (${poisonCause}) — this store instance ` +
             `is now POISONED and refuses all further calls. Restart the process against "${dir}".`,
         );
       }

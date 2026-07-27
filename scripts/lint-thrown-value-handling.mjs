@@ -27,19 +27,58 @@
  * Usage:  node scripts/lint-thrown-value-handling.mjs [--json]
  * Exit 0 = clean, 1 = violations (printed as file:line with the offending expression).
  */
-import { readdirSync, readFileSync, statSync } from "node:fs";
+import { readdirSync, readFileSync, statSync, existsSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** The packages whose thrown-value handling this boundary governs. */
-export const GOVERNED_DIRS = [
-  "packages/adapter-core/src",
-  "packages/framework-adapters/src",
-  "packages/mcp-proxy/src",
-  "packages/gate/src",
-];
+/** The boundary OWNER: it defines the one conversion, so it is always governed. */
+const BOUNDARY_OWNER_DIR = "packages/adapter-core/src";
+
+/**
+ * The packages whose thrown-value handling this boundary governs — DERIVED, never hand-listed.
+ *
+ * The fifth review's H2 found `packages/signer-sidecar` silently omitted from a hand-written array,
+ * and it had grown raw `instanceof`/`.message`/`.code` precisely because nothing scanned it. A
+ * hand-list is exactly the failure mode the boundary exists to prevent, one directory up. The set is
+ * now every package that DEPENDS ON the boundary owner `noa-mcp-adapter-core` — the adapter/runtime
+ * layer that handles arbitrary thrown values from tools and transports — plus the owner itself. A new
+ * such package is governed automatically and cannot be forgotten; a package that does not depend on
+ * the boundary is not force-governed into false positives.
+ */
+function deriveGovernedDirs() {
+  const dirs = new Set([BOUNDARY_OWNER_DIR]);
+  let names;
+  try {
+    names = readdirSync(join(ROOT, "packages"));
+  } catch {
+    return [...dirs];
+  }
+  for (const name of names) {
+    let manifest;
+    try {
+      manifest = JSON.parse(readFileSync(join(ROOT, "packages", name, "package.json"), "utf8"));
+    } catch {
+      continue; // no manifest / unreadable → not a package
+    }
+    const deps = Object.assign(
+      {},
+      manifest.dependencies,
+      manifest.devDependencies,
+      manifest.optionalDependencies,
+      manifest.peerDependencies,
+    );
+    if (Object.prototype.hasOwnProperty.call(deps, "noa-mcp-adapter-core")) {
+      const rel = `packages/${name}/src`;
+      if (existsSync(join(ROOT, rel))) dirs.add(rel);
+    }
+  }
+  return [...dirs].sort();
+}
+
+/** The packages whose thrown-value handling this boundary governs (derived — see deriveGovernedDirs). */
+export const GOVERNED_DIRS = deriveGovernedDirs();
 
 const SANCTIONED = ["describeThrown", "describeThrownDetailed", "isErrorLike", "truncateThrown", "thrownName", "thrownCode"];
 
