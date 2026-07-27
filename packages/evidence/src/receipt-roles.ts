@@ -34,7 +34,7 @@
  * turns the suite red on its own outcome's VALID fixture.
  */
 
-import { frozenTable, intrinsics } from "noa-receipt";
+import { frozenTable, intrinsics, snapshotImmutable } from "noa-receipt";
 
 // PRISTINE MEMBERSHIP (review #6, C1). `allowed.includes(verdict)` is a POLICY DECISION, and it used
 // to dispatch through the globally-mutable `Array.prototype.includes`. A getter fired while the
@@ -138,6 +138,15 @@ export function assertReceiptRole(
   role: ReceiptRole,
   asserted: Set<ReceiptRole>,
 ): RoleAssertion {
+  // THE INGEST BOUNDARY (review #6, C2). `verifyEvidence` hands this an already-inert bundle, but
+  // `index.ts` advertises the chokepoint "for downstream reuse", so a direct caller must not be able
+  // to split the role read from the verdict read. Snapshotting an already-inert value is cheap and
+  // idempotent; snapshotting a live one is the whole point. Fail closed on a bundle that fights it.
+  try {
+    bundle = snapshotImmutable<Record<string, unknown>>(bundle);
+  } catch {
+    return { ok: false, reason: `${role} could not be read from an inert bundle (a hostile getter, a proxy trap, or a non-plain object)` };
+  }
   const raw = bundle[role];
   if (raw === undefined || raw === null) {
     if (arrayIncludes(MANDATORY_RECEIPT_ROLES, role)) {

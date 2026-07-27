@@ -9,6 +9,7 @@
  */
 
 import { RECEIPT_SPEC } from "./types.js";
+import { snapshotImmutable } from "./ingest.js";
 
 const RISK_CLASSES = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL", "IRREVERSIBLE"]);
 const PRINCIPALS = new Set(["HUMAN", "SERVICE", "POLICY", "SANDBOX_SIM"]);
@@ -69,6 +70,15 @@ function str(v: unknown): v is string {
 
 export function validateReceiptShape(value: unknown): SchemaResult {
   const errors: string[] = [];
+  // THE INGEST BOUNDARY (review #6, C2). This is the structural rule `verifyChain` enforces, and it
+  // is PUBLISHED for direct use — so it cannot assume a caller ingested first. It walks the object
+  // many times (exact-key checks, per-field type checks, NFC checks), and a flipping getter would
+  // otherwise show one shape to the key check and another to the type check.
+  try {
+    value = snapshotImmutable<unknown>(value);
+  } catch {
+    return { ok: false, errors: ["receipt: could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)"] };
+  }
   if (!isPlainObject(value)) {
     return { ok: false, errors: ["receipt: not an object"] };
   }

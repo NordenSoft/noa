@@ -13,6 +13,7 @@
 import type { Policy, Condition, Scalar } from "./dsl.js";
 import { POLICY_SPEC } from "./dsl.js";
 import { canonicalize, MAX_DEPTH } from "../jcs.js";
+import { snapshotImmutable } from "../ingest.js";
 
 const CMP_OPS = new Set(["eq", "ne", "lt", "le", "gt", "ge"]);
 
@@ -103,6 +104,13 @@ function validateCondition(c: unknown, path: string, errors: string[], depth: nu
 /** Validate a policy against the closed grammar. Pure, static, input-independent. */
 export function validatePolicy(p: unknown): PolicyValidation {
   const errors: string[] = [];
+  // THE INGEST BOUNDARY (review #6, C2). `p` is walked by the grammar check and then RE-READ by the
+  // canonicalization below; the two must see the same bytes.
+  try {
+    p = snapshotImmutable<unknown>(p);
+  } catch {
+    return { ok: false, errors: ["policy: could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)"] };
+  }
   if (typeof p !== "object" || p === null) return { ok: false, errors: ["policy: not an object"] };
   const pol = p as Record<string, unknown>;
   noExtraKeys(pol, ["spec", "id", "requiredPaths", "rules"], "policy", errors);

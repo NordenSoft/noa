@@ -24,6 +24,8 @@ import { evalSchema } from "./schema-eval.js";
 import { signingMessage, verifyEd25519 } from "./crypto.js";
 import { canonicalize } from "./jcs.js";
 import { refHash, receiptRefHash, virtualHash } from "./refhash.js";
+import { snapshotImmutable, isIngestError } from "./inert-core/ingest.js";
+import { arrayIncludes, arraySome, dateParse as pristineDateParse, strSplit } from "./inert-core/intrinsics.js";
 
 export interface KeyEntry {
   publicKey: string; // base64(DER SPKI) Ed25519
@@ -78,7 +80,7 @@ export interface VerifyOutcome {
 
 function getPath(obj: unknown, path: string): unknown {
   let cur: unknown = obj;
-  for (const seg of path.split(".")) {
+  for (const seg of strSplit(path, ".")) {
     if (typeof cur !== "object" || cur === null) return undefined;
     cur = (cur as Record<string, unknown>)[seg];
   }
@@ -93,7 +95,7 @@ function computeRefHash(rule: "side" | "receipt" | "virtual", artifact: unknown)
 
 function parseTime(v: unknown): number {
   if (typeof v !== "string") return NaN;
-  return Date.parse(v);
+  return pristineDateParse(v);
 }
 
 /** Artifact fields that declare the identity of their own signer, independent of caller context. */
@@ -135,6 +137,34 @@ function requiredApproverRole(riskClass: string | undefined): string[] {
 }
 
 export function verifyArtifact(artifact: unknown, ctx: VerifyContext): VerifyOutcome {
+  // ── THE INGEST BOUNDARY (review #6, C2 — the FOURTH entry point) ────────────────────────────────
+  // This function is PUBLISHED and was never routed. It validated the schema and the signature and
+  // then RE-READ the live artifact for the equality and time checks: with
+  // `conformance/decision/valid.json` and a getter that returned the signed `approverKid` for reads
+  // 1-3 and `attacker-seat` on the equality read, a verifier context REQUIRING `attacker-seat`
+  // returned `{ok:true}`. The signer never attested the value the verifier accepted. Two equality
+  // assertions with CONTRADICTORY expected values could both pass in the same call — a thing no
+  // inert object can do, which is precisely the tell.
+  //
+  // `ctx` is snapshotted too, and for the same reason as the artifact: `ctx.equals`,
+  // `ctx.refHashChecks`, `ctx.keyring` and `ctx.authorizationTime` are the POLICY this verification
+  // is measured against, and a policy read twice is two policies. Snapshotting the subject and
+  // leaving the policy live is the same defect one argument to the left. (`ctx.schemas` is excluded:
+  // it is the verifier's own loaded schema set, not caller evidence, and re-snapshotting a large
+  // parsed schema map on every artifact would be an O(schema) cost per verification for no gain — a
+  // caller who can substitute the verifier's schemas has already replaced the verifier.)
+  const suppliedSchemas = ctx?.schemas;
+  try {
+    artifact = snapshotImmutable<unknown>(artifact);
+    // The snapshot is FROZEN, so the schema set is re-attached by building a fresh object around it
+    // rather than by writing into it (a write would throw in strict mode).
+    ctx = { ...snapshotImmutable<VerifyContext>({ ...ctx, schemas: undefined }), schemas: suppliedSchemas } as VerifyContext;
+  } catch (e) {
+    return {
+      ok: false,
+      reason: `artifact/context rejected at the ingest boundary: ${isIngestError(e) ? (e as Error).message : "could not be reduced to inert data"}`,
+    };
+  }
   if (typeof artifact !== "object" || artifact === null || Array.isArray(artifact)) {
     return { ok: false, reason: "artifact is not an object" };
   }
@@ -212,7 +242,7 @@ export function verifyArtifact(artifact: unknown, ctx: VerifyContext): VerifyOut
     let requiredRoles: string[] | null = null;
     if (spec === "noa.decision/0.1") requiredRoles = requiredApproverRole(ctx.riskClass);
     else if (meta.signerRole) requiredRoles = [meta.signerRole];
-    if (requiredRoles && !requiredRoles.some((r) => entry.roles.includes(r))) {
+    if (requiredRoles && !arraySome(requiredRoles, (r) => arrayIncludes(entry.roles, r))) {
       return { ok: false, reason: `signer roles [${entry.roles.join(",")}] lack required ${requiredRoles.join("|")}` };
     }
 

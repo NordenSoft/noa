@@ -12,6 +12,7 @@ import { coseSign1, coseSign1Verify, type CoseSigner } from "./cose-sign1.js";
 import { canonicalize } from "../jcs.js";
 import { safeParse } from "../safe-json.js";
 import { validateReceiptShape } from "../schema.js";
+import { snapshotImmutable } from "../ingest.js";
 import type { Receipt } from "../types.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
 
@@ -40,6 +41,18 @@ export interface ReceiptCoseResult {
  * (agent.id, kid) pairing fails (ok:false) — mirroring the `UNTRUSTED` verdict.
  */
 export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityManifest?: IdentityManifest): ReceiptCoseResult {
+  // THE INGEST BOUNDARY (review #6, C2). The manifest had a hand-rolled read-once snapshot (a Map
+  // built with `Array.prototype.slice`) and the KEYRING had none. A hand-rolled boundary is the
+  // pattern this branch keeps finding defective — it protects the field its author was thinking about
+  // and nothing else, and `slice` itself dispatches through a poisonable prototype slot. Both
+  // arguments now go through the one boundary; the hand-rolled pass below is kept for its
+  // shape-validation errors, but it now walks inert data.
+  try {
+    keyring = snapshotImmutable<Keyring>(keyring);
+    if (identityManifest !== undefined) identityManifest = snapshotImmutable<IdentityManifest>(identityManifest);
+  } catch {
+    return { ok: false, kid: null, receipt: null, reason: "keyring/identityManifest could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)", warnings: [] };
+  }
   // Fail-closed on a non-object keyring: mirror verifyChain's non-object-keyring guard at the COSE
   // entry too, BEFORE any manifest work, so a null/array/non-object keyring is a clean ok:false here (not a
   // raw throw on a later `keyring[kid]`). coseSign1Verify guards as well; this keeps THIS entry point's own

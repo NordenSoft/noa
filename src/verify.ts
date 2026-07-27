@@ -6,6 +6,7 @@ import { verifyEd25519, type Keyring, type IdentityManifest } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
 import { safeParse } from "./safe-json.js";
 import { nonNfcPaths, isNFC } from "./nfc.js";
+import { snapshotImmutable } from "./ingest.js";
 
 export type VerifyStatus =
   | "VALID" // structure + hash-chain + signatures all verified against the supplied keyring
@@ -589,9 +590,12 @@ export function verifyCheckpoint(cp: Checkpoint, keyring?: Keyring): CheckpointV
   // a RAW Error (violating the "never throws / fail-closed" invariant) and never split validation from the
   // sig-preimage read below (checkpointHashInput). structuredClone deep-copies to plain, accessor-free data
   // ONCE; every read below uses the clone. (verifyChain already passes its own clone; this guards direct use.)
+  // Review #6, C2: the CHECKPOINT was cloned and the KEYRING was not — so the trust root this
+  // signature is judged against was a live read while the subject was inert. Both are now inert.
   let snap: Record<string, unknown>;
   try {
-    snap = structuredClone(cp) as unknown as Record<string, unknown>;
+    snap = snapshotImmutable<Record<string, unknown>>(cp);
+    if (keyring !== undefined) keyring = snapshotImmutable<Keyring>(keyring);
   } catch {
     return "malformed checkpoint";
   }

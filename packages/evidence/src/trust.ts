@@ -8,7 +8,7 @@
  * shape-reading + keyring assembly the step consumes. Nothing here trusts a signature by itself.
  */
 import type { KeyEntry } from "noa-approval-artifacts";
-import type { Keyring } from "noa-receipt";
+import { snapshotImmutable, type Keyring } from "noa-receipt";
 
 /** A resolved manifest key entry (a read-only reflection of the frozen `noa.key-manifest/0.1`
  *  shape — validated by its own schema at verify-time, never redefined here). */
@@ -51,6 +51,10 @@ export interface DelegationDoc {
  * non-root key can never masquerade as the trust anchor).
  */
 export function asRootKeyEntryMap(raw: unknown): Record<string, KeyEntry> {
+  // THE INGEST BOUNDARY (review #6, C2). PUBLISHED and independently callable, and every entry is
+  // read four times (type, publicKey twice, roles, revokedAt) while building the TRUST ROOT. A
+  // flipping getter would let a ROOT-typed entry be validated and a different key be installed.
+  try { raw = snapshotImmutable<unknown>(raw); } catch { return {}; }
   const out: Record<string, KeyEntry> = {};
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return out;
   for (const [kid, v] of Object.entries(raw as Record<string, unknown>)) {
@@ -72,6 +76,7 @@ export function asRootKeyEntryMap(raw: unknown): Record<string, KeyEntry> {
  * `kid->{publicKey}`.
  */
 export function asStringKeyring(raw: unknown): Keyring {
+  try { raw = snapshotImmutable<unknown>(raw); } catch { return {}; }
   const out: Keyring = {};
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) return out;
   for (const [kid, v] of Object.entries(raw as Record<string, unknown>)) {
@@ -95,6 +100,14 @@ export function buildResolvedKeyring(
   delegation: DelegationDoc,
   manifest: ManifestDoc,
 ): Record<string, KeyEntry> {
+  // THE INGEST BOUNDARY (review #6, C2). Safe when fed verifyEvidence's already-inert bundle; NOT
+  // safe when called directly, which the package entry point permits. An empty keyring is the
+  // fail-closed outcome (no key resolves ⇒ every signature check fails).
+  try {
+    rootKeyring = snapshotImmutable<Record<string, KeyEntry>>(rootKeyring);
+    delegation = snapshotImmutable<DelegationDoc>(delegation);
+    manifest = snapshotImmutable<ManifestDoc>(manifest);
+  } catch { return {}; }
   const out: Record<string, KeyEntry> = { ...rootKeyring };
   // the root-delegated manifest-signing key (verifies the Key Manifest; role per F15).
   out[delegation.delegatedKid] = {
@@ -137,6 +150,7 @@ export function buildResolvedKeyring(
  * are two independent trust roots.
  */
 export function buildReceiptKeyring(manifest: ManifestDoc): Keyring {
+  try { manifest = snapshotImmutable<ManifestDoc>(manifest); } catch { return {}; }
   const out: Keyring = {};
   for (const k of manifest.keys) {
     if ((k.type === "GATE" || k.type === "APPROVER") && typeof k.publicKey === "string") {
