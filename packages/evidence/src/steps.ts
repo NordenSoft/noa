@@ -344,6 +344,18 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
       `keyManifest window [${manifest.issuedAt} … ${manifest.expiresAt}] does not contain the verifier's now (${ctx.now}) — valid at the decision instant, unfit to authorize NOW`,
     );
   }
+  // DESIGN 2 (AUDIT dimension): even when NOT authorizing, the authorization DIMENSION must reflect
+  // the manifest window at `now`, not only the delegation's. Audit still REPORTS (never fails), but
+  // it must report the TRUTH: the fifth review's HIGH 3 found that the audit authorization dimension
+  // was derived from the delegation window alone, so a bundle with a live delegation but an
+  // already-EXPIRED manifest read as VALID_AT_DECISION_TIME — hiding that its signed key list is no
+  // longer current. Take the MORE restrictive of the two windows; never upgrade an already-closed
+  // dimension. (In `authorize` mode an expired manifest already fail-closed above, so this only ever
+  // downgrades the audit dimension.)
+  if (!Number.isNaN(nowMs) && (ctx.authorization === "VALID_AT_DECISION_TIME" || ctx.authorization === "VALID_NOW")) {
+    if (!Number.isNaN(mExp) && nowMs > mExp) ctx.authorization = "EXPIRED_NOW";
+    else if (!Number.isNaN(mIssued) && nowMs < mIssued) ctx.authorization = "NOT_YET_VALID_NOW";
+  }
 
   // Hold Envelope: GATE + hold-signer (F15), gateKid == sig.kid, bound to THIS manifest
   // (keyManifestVersion + keyManifestHash).

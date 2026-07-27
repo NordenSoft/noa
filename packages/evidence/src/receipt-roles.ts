@@ -34,6 +34,8 @@
  * turns the suite red on its own outcome's VALID fixture.
  */
 
+import { deepFreeze } from "noa-receipt";
+
 /**
  * The receipt-shaped fields of the §13 container: the mandatory `deferredReceipt` plus every
  * outcome-conditional `*Receipt`. Kept as a literal union so a NEW receipt field cannot be added to
@@ -69,14 +71,20 @@ export type ReceiptRole =
  * per-outcome policy details (steps 7-14) stay where they are — this closes the one dimension that
  * had no single home.
  */
-export const RECEIPT_ROLE_VERDICTS: Readonly<Record<ReceiptRole, ReadonlySet<string>>> = {
-  deferredReceipt: new Set(["DEFERRED"]),
-  allowedReceipt: new Set(["ALLOWED"]),
-  blockedReceipt: new Set(["BLOCKED"]),
-  timeoutReceipt: new Set(["BLOCKED"]),
-  executedReceipt: new Set(["EXECUTED"]),
-  failedReceipt: new Set(["FAILED"]),
-};
+// IMMUTABLE AT LOAD — deeply frozen, and a FROZEN ARRAY per role rather than a Set. A `Set` cannot
+// be made immutable by `Object.freeze` (its `.add()` bypasses the freeze), so the fifth review's
+// `RECEIPT_ROLE_VERDICTS.deferredReceipt.add("ALLOWED")` turned INVALID into VALID_FULL_CHAIN by
+// widening the policy table at runtime. A frozen array has no mutator that survives freezing
+// (`.push`/index-write throw), and membership is a pure `.includes`. The whole table and every array
+// in it are frozen, so neither our code nor an attacker with a reference to it can rewrite the rule.
+export const RECEIPT_ROLE_VERDICTS: Readonly<Record<ReceiptRole, readonly string[]>> = deepFreeze({
+  deferredReceipt: ["DEFERRED"],
+  allowedReceipt: ["ALLOWED"],
+  blockedReceipt: ["BLOCKED"],
+  timeoutReceipt: ["BLOCKED"],
+  executedReceipt: ["EXECUTED"],
+  failedReceipt: ["FAILED"],
+});
 
 /** Every receipt role, in container order. The enumeration test holds this to the container schema. */
 export const RECEIPT_ROLES: readonly ReceiptRole[] = Object.freeze([
@@ -88,8 +96,9 @@ export const RECEIPT_ROLES: readonly ReceiptRole[] = Object.freeze([
   "failedReceipt",
 ] as ReceiptRole[]);
 
-/** Roles the container marks mandatory (present for EVERY outcome). */
-export const MANDATORY_RECEIPT_ROLES: ReadonlySet<ReceiptRole> = new Set<ReceiptRole>(["deferredReceipt"]);
+/** Roles the container marks mandatory (present for EVERY outcome). Frozen array (not a Set), for the
+ *  same reason as RECEIPT_ROLE_VERDICTS: a Set's `.add()` survives `Object.freeze`. */
+export const MANDATORY_RECEIPT_ROLES: readonly ReceiptRole[] = Object.freeze<ReceiptRole[]>(["deferredReceipt"]);
 
 /** The outcome of routing a role through the chokepoint. `receipt` is null iff the role is absent. */
 export type RoleAssertion =
@@ -119,11 +128,13 @@ export function assertReceiptRole(
   asserted: Set<ReceiptRole>,
 ): RoleAssertion {
   const raw = bundle[role];
-  asserted.add(role);
   if (raw === undefined || raw === null) {
-    if (MANDATORY_RECEIPT_ROLES.has(role)) {
+    if (MANDATORY_RECEIPT_ROLES.includes(role)) {
+      // A mandatory role that is absent is a FAILED assertion — do NOT record it as covered.
       return { ok: false, reason: `${role} is mandatory for every outcome but is absent` };
     }
+    // "there is nothing here to attest" is a CHECKED fact — record it as covered (present:false).
+    asserted.add(role);
     return { ok: true, present: false, receipt: null };
   }
   const receipt = asObject(raw);
@@ -131,14 +142,21 @@ export function assertReceiptRole(
   const governance = asObject(receipt.governance);
   const verdict = governance ? governance.verdict : undefined;
   const allowed = RECEIPT_ROLE_VERDICTS[role];
-  if (typeof verdict !== "string" || !allowed.has(verdict)) {
+  if (typeof verdict !== "string" || !allowed.includes(verdict)) {
+    // The signer attested a verdict UNFIT for the role. This is a FAILED assertion — the coverage
+    // set must NOT record it. Recording membership BEFORE the verdict check (the fifth review's H1)
+    // made `rolesAsserted` mean ATTEMPTED, not SUCCEEDED, so step 19's coverage gate was hollow: a
+    // role could be marked covered while its own assertion failed. Coverage is recorded ONLY on the
+    // success path below, so `rolesAsserted` means "routed AND validated", and step 19 fails closed
+    // on any carried role whose signer's verdict was never PROVEN fit.
     return {
       ok: false,
       reason:
         `${role}.governance.verdict is ${JSON.stringify(verdict)} but a receipt in the ${role} role must attest ` +
-        `${[...allowed].map((v) => JSON.stringify(v)).join(" | ")} — the signature is real and the hashes bind, ` +
+        `${allowed.map((v) => JSON.stringify(v)).join(" | ")} — the signature is real and the hashes bind, ` +
         `which is exactly what makes this dangerous: the bundle assigns this receipt a role its own signed bytes do not support`,
     };
   }
+  asserted.add(role); // SUCCESS — the signer attested a verdict fit for the role. NOW it is covered.
   return { ok: true, present: true, receipt };
 }

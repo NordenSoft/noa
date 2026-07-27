@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACTS, evalSchema, type KeyEntry } from "noa-approval-artifacts";
-import type { Keyring } from "noa-receipt";
+import { snapshotImmutable, IngestError, type Keyring } from "noa-receipt";
 import {
   EVIDENCE_SPEC,
   POSITIVE_OUTCOMES,
@@ -172,7 +172,32 @@ function result(
 export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions): VerifyEvidenceResult {
   const warnings: string[] = [];
   const schemas = opts.schemas ?? loadSchemas();
-  const purpose: VerificationPurpose = opts.purpose ?? "audit";
+
+  // DESIGN 2 — `purpose` is a TypeScript union that is ERASED at runtime: nothing stopped a caller
+  // (or a CLI string) from passing "AUTHORIZE", "authorize " or "bogus", all of which silently fell
+  // through the `=== "authorize"` tests to the AUDIT default and returned VALID_*. For a verb that
+  // decides whether a live authorization check runs, an unrecognised value must FAIL CLOSED, never
+  // quietly downgrade to audit.
+  const rawPurpose = opts.purpose ?? "audit";
+  if (rawPurpose !== "audit" && rawPurpose !== "authorize") {
+    return result("UNVERIFIED", null, [], warnings, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: `unrecognised purpose ${JSON.stringify(rawPurpose)} — must be exactly "audit" or "authorize" (fail-closed: an unknown purpose is never treated as audit)` });
+  }
+  const purpose: VerificationPurpose = rawPurpose;
+
+  // THE INGEST BOUNDARY — snapshot the caller's LIVE bundle into inert, own-data-only, frozen data
+  // ONCE, here, before evalSchema or any step reads a field. Every getter is fired exactly once, so
+  // the fifth review's C1 (a `governance` getter that returns unsigned DEFERRED to the role check and
+  // signer-attested ALLOWED to the reread, read three times) is impossible by construction: the steps
+  // read only the snapshot, which has no getters. A bundle that fights the snapshot (a throwing
+  // getter, a non-plain object) is INVALID, never silently accepted.
+  let bundle: EvidenceBundle;
+  try {
+    bundle = snapshotImmutable<EvidenceBundle>(bundleInput);
+  } catch (e) {
+    const why = e instanceof IngestError ? e.message : "bundle could not be reduced to inert data";
+    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the ingest boundary: ${why}` }, [], { integrity: "BROKEN", authorization: "UNCHECKED" }, purpose);
+  }
+
   const rootKeyring = asRootKeyEntryMap(opts.tenantRoot);
   const checkpointKeyring = asStringKeyring(opts.checkpointKeyring);
 
@@ -184,12 +209,12 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
     return result("UNVERIFIED", null, [], warnings, { step: "STEP_17_CHECKPOINT_RECONCILE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --checkpoint-keyring supplied (F7a): cannot authenticate the tail-completeness anchor" });
   }
 
-  // container shape (the union structure; sub-artifact internals are validated per-step).
-  const shape = evalSchema(schemas.container as Record<string, unknown>, bundleInput);
+  // container shape (the union structure; sub-artifact internals are validated per-step). Runs over
+  // the FROZEN snapshot — the same bytes every step will read.
+  const shape = evalSchema(schemas.container as Record<string, unknown>, bundle as unknown as Record<string, unknown>);
   if (!shape.ok) {
     return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle container invalid: ${shape.errors.join("; ")}` });
   }
-  const bundle = bundleInput as EvidenceBundle;
   if (bundle.spec !== EVIDENCE_SPEC) {
     return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `spec != ${EVIDENCE_SPEC}` });
   }

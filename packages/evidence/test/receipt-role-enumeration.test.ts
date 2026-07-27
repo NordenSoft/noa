@@ -72,7 +72,8 @@ test("the role table covers exactly the container's receipt-shaped fields (deriv
   );
   for (const role of RECEIPT_ROLES) {
     const verdicts = RECEIPT_ROLE_VERDICTS[role];
-    assert.ok(verdicts && verdicts.size > 0, `role ${role} declares no acceptable verdict`);
+    assert.ok(verdicts && verdicts.length > 0, `role ${role} declares no acceptable verdict`);
+    assert.ok(Object.isFrozen(verdicts), `role ${role}'s verdict list must be frozen (immutable at load)`);
   }
 });
 
