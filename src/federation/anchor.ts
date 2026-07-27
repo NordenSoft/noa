@@ -24,6 +24,7 @@
 
 import { signEd25519 } from "../keys.js";
 import { verifyChain } from "../verify.js";
+import { snapshotImmutable, IngestError } from "../ingest.js";
 import type { Receipt } from "../types.js";
 import type { Signer } from "../builder.js";
 import { anchorSigningInput, type Anchor } from "./acceptance.js";
@@ -160,19 +161,39 @@ export function anchorForChainHead(receipts: readonly Receipt[], signer: Signer,
   if (typeof opts !== "object" || opts === null || typeof opts.ts !== "string") {
     throw new AnchorError("anchorForChainHead: opts.ts must be an RFC 3339 UTC timestamp string", []);
   }
-  const res = verifyChain(receipts as unknown[]);
+  const ts = opts.ts; // read ONCE, before verify+reread — a flipping `opts.ts` getter cannot diverge here
+
+  // THE INGEST BOUNDARY — snapshot the receipts ONCE. `verifyChain` validates the chain and the head
+  // is then located BY REREADING the array; if those two reads see a LIVE object with flipping
+  // getters, verifyChain can validate an honest chain while `.find(...)` + the head reads
+  // (`head.scope.chain`, `head.chain.seq/.hash`) return an ATTACKER frontier — so the witness key
+  // signs a frontier that was never verified (the fifth review's C3). Firing every getter once here,
+  // into frozen data, makes the verified bytes and the signed bytes provably identical. An input that
+  // is not inert data is refused before anything is signed.
+  let snap: readonly Receipt[];
+  try {
+    snap = snapshotImmutable<readonly Receipt[]>(receipts);
+  } catch (e) {
+    throw new AnchorError(
+      "anchorForChainHead: receipts could not be reduced to inert data before signing (a hostile getter, a proxy trap, or a non-plain object)",
+      e instanceof IngestError ? [e.message] : [],
+    );
+  }
+
+  const res = verifyChain(snap as unknown[]);
   if (res.status !== "VALID" && res.status !== "UNVERIFIED") {
     throw new AnchorError(
       `anchorForChainHead: refusing to anchor a chain that does not verify (${res.status}: ${res.reason ?? "no reason"})`,
       res.reason ? [res.reason] : [],
     );
   }
-  const head = (receipts as Receipt[]).find((r) => r.chain.seq === res.count - 1);
+  const head = (snap as Receipt[]).find((r) => r.chain.seq === res.count - 1);
   if (head === undefined) {
     throw new AnchorError(`anchorForChainHead: could not locate the chain head at seq ${res.count - 1}`, []);
   }
+  // Both the frontier fields below and the chain verifyChain validated come from the SAME frozen snap.
   return buildAnchor(
-    { chain: head.scope.chain, highestSeq: head.chain.seq, headHash: head.chain.hash, ts: opts.ts },
+    { chain: head.scope.chain, highestSeq: head.chain.seq, headHash: head.chain.hash, ts },
     signer,
   );
 }

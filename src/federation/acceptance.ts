@@ -31,6 +31,7 @@
 import { verifyEd25519 } from "../keys.js";
 import { canonicalize } from "../jcs.js";
 import { signingMessage } from "../signing.js";
+import { snapshotImmutable } from "../ingest.js";
 
 /**
  * Anchor signing domain — distinct from RECEIPT_SIG_DOMAIN / CHECKPOINT_SIG_DOMAIN so a witness anchor
@@ -238,6 +239,25 @@ export function verifyCompleteness(
   trustSet: TrustSet,
   opts: CompletenessOptions = {},
 ): CompletenessResult {
+  // ── THE INGEST BOUNDARY (federation-spec §4) ─────────────────────────────────────────────────────
+  // Snapshot every caller-supplied input into inert, own-data-only, frozen data ONCE, before a single
+  // §4 rule reads it. The rule reads each anchor's (chain, highestSeq, headHash, ts, sig.*) and each
+  // pinned witness's (kid, pubkey) MULTIPLE times — the distinctness dedup, the signature check, the
+  // classification, the tally. A LIVE getter can return one value to the dedup and another to the
+  // tally: the fifth review's C2 is two genuine witnesses over head A whose live getters expose A to
+  // the signature checks and B to classification (→ complete over a head nobody signed), and one
+  // physical key flipping its `kid`/`pubkey` to be tallied as two witnesses toward the quorum. Fired
+  // once here into frozen data, no getter can disagree with itself. A value that fights the snapshot
+  // (a throwing getter, a proxy trap, a non-plain object) is INVALID_INPUT — never silently confirmed.
+  try {
+    head = snapshotImmutable<ChainHead>(head);
+    anchors = snapshotImmutable<readonly Anchor[]>(anchors);
+    trustSet = snapshotImmutable<TrustSet>(trustSet);
+    opts = snapshotImmutable<CompletenessOptions>(opts);
+  } catch {
+    return r(false, "INVALID_INPUT", "an input could not be reduced to inert data at the ingest boundary (a hostile getter, a proxy trap, or a non-plain object)");
+  }
+
   // ── 0. Structural validation of the presented head (fail-closed) ────────────────────────────────
   if (typeof head !== "object" || head === null) return r(false, "INVALID_INPUT", "head is not an object");
   if (typeof head.chain !== "string" || head.chain.length === 0) {
