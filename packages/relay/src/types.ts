@@ -167,4 +167,23 @@ export interface KeyManifestRecord {
   delegation?: Record<string, unknown> | null;
   refHash: string;
   createdAt: number;
+  /**
+   * PROVENANCE, not a number: set by `RelayEngine.putManifest` on every record it accepts under the
+   * R6 version bound. It is the ONLY thing that qualifies a stored record for re-genesis recovery
+   * (see engine.ts) — a record carrying this marker was produced by a conforming publish and is
+   * therefore never "residue", whatever its version happens to be.
+   *
+   * WHY THIS EXISTS. Recovery used to be gated on a NUMERIC threshold: a stored version above
+   * 1,000,000 "cannot have been produced by a conforming publish". That was false. Each publish may
+   * advance the counter by up to MAX_VERSION_JUMP (1,000), so 1,001 ordinary accepted publishes
+   * reach 1,000,001 — and the tenant then qualifies for recovery, which bypasses monotonic conflict
+   * handling entirely and lets the manifest be rolled back to version 1 with any key list. The
+   * threshold was walkable by exactly the operation it was assumed to be out of reach of.
+   *
+   * OPTIONAL, and absence is meaningful: a record WITHOUT the marker predates this field (pre-bound
+   * residue, or a snapshot written by an older relay) and is the only kind that may re-genesis. The
+   * field is `?:` for the same reason `delegation` is — this type is exported, and making it
+   * required would break external `Store`/record implementers at compile time.
+   */
+  publishedUnderVersionBound?: true;
 }

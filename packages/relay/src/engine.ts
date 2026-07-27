@@ -536,21 +536,44 @@ export class RelayEngine {
     // the space can never be exhausted; legitimate rotations increment by one and never notice.
     // (Deliberately NOT an absolute ceiling: an absolute cap still lets the first publish land at
     // the cap and brick a fresh tenant. The bound has to be relative to what is already stored.)
-    // RECOVERY for a tenant whose stored version predates this bound. A value above
-    // MAX_SANE_VERSION cannot be produced by any publish this function now accepts, so if one is
-    // stored it is residue of the unbounded behaviour (or of an attack that exploited it) and the
-    // tenant would otherwise be permanently unable to rotate — the exact brick this bound exists to
-    // prevent, frozen into the data. Treat such a record as unpublishable-under-current-rules and
-    // allow a fresh genesis, loudly. This opens nothing: an attacker can no longer CREATE the
-    // condition, so the only records that reach it are pre-fix ones.
+    // RECOVERY for a tenant whose stored record predates this bound — gated on PROVENANCE, not on a
+    // number.
+    //
+    // The previous gate was "stored version > MAX_SANE_VERSION cannot have been produced by any
+    // publish this function accepts". That claim was FALSE, and this function is what falsified it:
+    // a publish may advance the counter by up to MAX_VERSION_JUMP (1,000), so 1,001 ordinary
+    // ACCEPTED publishes walk a fresh tenant from 1 to 1,000,001. The tenant then qualified as
+    // "residue", recovery bypassed the monotonic conflict handling below, and the manifest could be
+    // rolled back to version 1 carrying any key list — with every request in the sequence returning
+    // 200. A threshold reachable by conforming operations is not a proof of provenance; it is an
+    // assumption about one.
+    //
+    // So the engine now RECORDS the provenance instead of inferring it: every record it stores
+    // carries `publishedUnderVersionBound`, and only a record LACKING that marker — i.e. genuinely
+    // written before this rule existed — may re-genesis. The version bound is kept as a necessary
+    // second condition (defence in depth), but it is no longer sufficient on its own, and no
+    // sequence of publishes can manufacture the condition: everything this function writes is
+    // marked. A pre-fix tenant still recovers exactly once, loudly, and its replacement record is
+    // marked, so the path closes behind it.
     const stored = cur ? cur.version : null;
-    const storedIsUnreachable = stored !== null && stored > MAX_SANE_VERSION;
+    const storedWasBoundedPublish = cur?.publishedUnderVersionBound === true;
+    const storedIsUnreachable = stored !== null && stored > MAX_SANE_VERSION && !storedWasBoundedPublish;
     if (storedIsUnreachable) {
       this.log("manifest.version_recovery", {
         tenant,
         storedVersion: stored,
         attemptedVersion: version,
-        detail: "stored version exceeds MAX_SANE_VERSION and cannot have been produced by a conforming publish; allowing re-genesis",
+        detail: "stored record predates the version bound (no bounded-publish provenance) AND exceeds MAX_SANE_VERSION; allowing a one-time re-genesis",
+      });
+    } else if (stored !== null && stored > MAX_SANE_VERSION && storedWasBoundedPublish) {
+      // Reachable only by a tenant that genuinely published its way up here. It is NOT residue, so
+      // it does not recover; it rotates normally like any other tenant (there is always room above
+      // it, which is what the bound guarantees). Logged because it is worth an operator's attention.
+      this.log("manifest.high_version_bounded_publish", {
+        tenant,
+        storedVersion: stored,
+        attemptedVersion: version,
+        detail: "stored version is high but was produced by conforming publishes; re-genesis is NOT permitted (monotonicity applies)",
       });
     }
 
@@ -591,6 +614,10 @@ export class RelayEngine {
       delegation,
       refHash: manifestHash,
       createdAt: this.now(),
+      // Provenance marker (see the recovery block above and types.ts): this record is being written
+      // by a publish that passed the R6 bound, so it is never eligible for re-genesis recovery
+      // later, at any version.
+      publishedUnderVersionBound: true,
     };
     const conflictResult = (
       outcome: "stale" | "equivocation",

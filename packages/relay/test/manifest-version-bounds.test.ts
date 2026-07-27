@@ -108,6 +108,85 @@ test("R6 MIGRATION: a tenant left with a pre-fix extreme version can still re-ge
   assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "legacy", version: 2 } }).status, 200);
 });
 
+/**
+ * R6b — THE RECOVERY PREDICATE MUST NOT BE REACHABLE BY ORDINARY PUBLISHES (cross-family review,
+ * 2026-07-27).
+ *
+ * The recovery gate above was a NUMERIC threshold: a stored version over MAX_SANE_VERSION
+ * (1,000,000) "cannot have been produced by a conforming publish". `putManifest` itself falsified
+ * that — it accepts advances of up to MAX_VERSION_JUMP (1,000), so 1,001 accepted publishes walk a
+ * fresh tenant from 1 to 1,000,001. The tenant then qualified as pre-fix residue, recovery bypassed
+ * monotonic conflict handling, and the manifest could be rolled back to version 1 with an
+ * attacker-chosen key list — every request in the sequence returning 200:
+ *
+ *     acceptedConformingJumps: 1000, before: 1000001, rollbackStatus: 200, after: 1,
+ *     storedKeys: [{ kid: "attacker-recovery" }]
+ *
+ * Recovery is now gated on recorded PROVENANCE (`publishedUnderVersionBound`), so no sequence of
+ * publishes can manufacture the condition. Both halves are asserted: the walk must not open the
+ * door, and a genuine pre-fix record must still recover (that test is R6 MIGRATION, above).
+ */
+test("R6b: 1000 conforming +1000 publishes reach the recovery threshold, and recovery still REFUSES to roll the manifest back", () => {
+  const h = makeHarness();
+  const tenant = "walker";
+  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant, version: 1 } }).status, 200);
+
+  // Walk upward using ONLY publishes the engine accepts.
+  let v = 1;
+  let jumps = 0;
+  while (v <= 1_000_000) {
+    const next = v + 1_000;
+    const r = h.engine.putManifest({ manifest: { ...base, tenant, version: next } });
+    if (r.status !== 200) break;
+    v = next;
+    jumps++;
+  }
+  assert.ok(jumps >= 1_000, `the threshold must genuinely be walkable for this test to mean anything (jumps=${jumps})`);
+  assert.ok(v > 1_000_000, `stored version must be past MAX_SANE_VERSION, got ${v}`);
+
+  // THE ASSERTION THIS TEST EXISTS FOR: a walked-up tenant is not "residue" and must not re-genesis.
+  const rollback = h.engine.putManifest({
+    manifest: { ...base, tenant, version: 1, keys: [{ kid: "attacker-recovery" }] },
+  });
+  assert.equal(rollback.status, 409, `rollback must be refused, got ${rollback.status} ${JSON.stringify(rollback.body)}`);
+  assert.equal(bodyOf<{ error: string }>(rollback).error, "STALE_MANIFEST_VERSION");
+  const stored = h.store.getLatestManifest(tenant);
+  assert.equal(stored?.version, v, "the authoritative record must be untouched");
+  assert.deepEqual(stored?.manifest.keys, [], "the attacker key list must never have landed");
+
+  // The bound's own promise still holds: there is room above, so the operator can still rotate.
+  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant, version: v + 1 } }).status, 200);
+});
+
+test("R6b: every record the engine stores carries bounded-publish provenance (this is what closes the recovery path)", () => {
+  const h = makeHarness();
+  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "prov", version: 1 } }).status, 200);
+  assert.equal(
+    h.store.getLatestManifest("prov")?.publishedUnderVersionBound,
+    true,
+    "without the marker a record is indistinguishable from pre-fix residue",
+  );
+});
+
+test("R6b: a pre-fix record that has ALREADY recovered cannot recover a second time", () => {
+  // Recovery must close behind itself: the replacement record is engine-written, so it carries the
+  // provenance marker and is never eligible again.
+  const h = makeHarness();
+  h.store.putManifest({
+    tenant: "legacy2",
+    version: Number.MAX_SAFE_INTEGER,
+    manifest: { ...base, tenant: "legacy2", version: Number.MAX_SAFE_INTEGER },
+    delegation: null,
+    refHash: "sha256:" + "0".repeat(64),
+    createdAt: 0,
+  });
+  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "legacy2", version: 3 } }).status, 200);
+  // a second attempt to drop back below the (now normal) stored version is an ordinary stale publish
+  const second = h.engine.putManifest({ manifest: { ...base, tenant: "legacy2", version: 1 } });
+  assert.equal(second.status, 409);
+  assert.equal(bodyOf<{ error: string }>(second).error, "STALE_MANIFEST_VERSION");
+});
+
 test("R6: ordinary monotonic behaviour is unchanged (stale refused, idempotent republish accepted)", () => {
   const h = makeHarness();
   const m = { ...base, version: 4 };
