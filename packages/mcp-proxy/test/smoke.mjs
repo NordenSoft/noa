@@ -53,6 +53,18 @@ function tmpPath(name) {
   return path.join(workDir, name);
 }
 
+function readTextAndModeNoFollow(filePath) {
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0);
+  const fd = fs.openSync(filePath, flags);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`${filePath} is not a regular file`);
+    return { content: fs.readFileSync(fd, "utf8"), mode: stat.mode & 0o777 };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function readCounts(countsFile) {
   return JSON.parse(fs.readFileSync(countsFile, "utf8"));
 }
@@ -798,8 +810,9 @@ async function main() {
   await cliRun1.close();
   await new Promise((r) => setTimeout(r, 150));
 
-  const keyAfterRun1 = JSON.parse(fs.readFileSync(keyFilePath, "utf8"));
-  const keyFileMode = fs.statSync(keyFilePath).mode & 0o777;
+  const keyFileRun1 = readTextAndModeNoFollow(keyFilePath);
+  const keyAfterRun1 = JSON.parse(keyFileRun1.content);
+  const keyFileMode = keyFileRun1.mode;
   ok(`(n) --key-file is written mode 0600 (owner read/write only) — got 0${keyFileMode.toString(8)}`, keyFileMode === 0o600);
 
   const cliRun2Transport = new StdioClientTransport({
@@ -815,7 +828,7 @@ async function main() {
   await cliRun2.close();
   await new Promise((r) => setTimeout(r, 150));
 
-  const keyAfterRun2 = JSON.parse(fs.readFileSync(keyFilePath, "utf8"));
+  const keyAfterRun2 = JSON.parse(readTextAndModeNoFollow(keyFilePath).content);
   ok("(n) --key-file's kid is identical across a CLI restart against the same path", keyAfterRun1.kid === keyAfterRun2.kid);
   ok("(n) --key-file's publicKey is identical across a CLI restart", keyAfterRun1.publicKey === keyAfterRun2.publicKey);
 
@@ -931,9 +944,9 @@ async function main() {
   fs.mkdirSync(path.dirname(attackKeyFileOb), { recursive: true });
   fs.writeFileSync(victimOb, "ssh-ed25519 AAAA...legitimate-victim-key\n", { mode: 0o644 });
   fs.symlinkSync(victimOb, attackKeyFileOb);
-  const beforeOb = { content: fs.readFileSync(victimOb, "utf8"), mode: fs.statSync(victimOb).mode & 0o777 };
+  const beforeOb = readTextAndModeNoFollow(victimOb);
   const resultOb = await runProxyExpectingFailure(attackKeyFileOb);
-  const afterOb = { content: fs.readFileSync(victimOb, "utf8"), mode: fs.statSync(victimOb).mode & 0o777 };
+  const afterOb = readTextAndModeNoFollow(victimOb);
   ok("(o-b) CLI fails closed (non-zero exit) against a symlink-to-an-existing-file --key-file target", resultOb.failed);
   ok("(o-b) the victim file's content is byte-for-byte unchanged (no clobber)", beforeOb.content === afterOb.content);
   ok("(o-b) the victim file's permissions are unchanged (not forced to 0600)", beforeOb.mode === afterOb.mode);

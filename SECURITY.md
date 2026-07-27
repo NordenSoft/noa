@@ -2,9 +2,11 @@
 
 ## Reporting a vulnerability
 
-Email **toratoraman@gmail.com** with details and a proof-of-concept
-if you have one. Please do not open a public issue for a security report. We aim to acknowledge
-within 72 hours. This is an early-access project; coordinated disclosure is appreciated.
+Use [GitHub private vulnerability reporting](https://github.com/NordenSoft/noa/security/advisories/new)
+for encrypted, repository-scoped coordination. If GitHub reporting is unavailable, email
+**toratoraman@gmail.com** with details and a proof-of-concept if you have one. Please do not open a
+public issue for a security report. We aim to acknowledge within 72 hours. This is an early-access
+project; coordinated disclosure is appreciated.
 
 ## Design stance
 
@@ -32,6 +34,11 @@ This is a **trust layer**, so it is built to be boring and hostile-input-safe:
   step — a hash-collision / forgery channel).
 
 ## Known limits (see THREAT-MODEL.md)
+
+Temporary third-party advisory decisions are recorded in the
+[security risk register](docs/security-risk-register.md), with an owner, evidence, compensating
+controls, and a review deadline. An accepted entry is not a claim that the dependency is safe; it
+is a time-bounded decision that remains visible until removal.
 
 - Tail-truncation is only detectable with a signed checkpoint, and the checkpoint is held to the
   same keyring trust root as receipts (an unauthenticated checkpoint ⇒ `TAMPERED`, never a faked

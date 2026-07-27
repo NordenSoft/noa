@@ -45,6 +45,18 @@ function log(event, fields = {}) {
   console.log(`[${nowIso()}] ${event}`, Object.keys(fields).length ? JSON.stringify(fields) : "");
 }
 
+function requireRelayCredential(body, field, prefix) {
+  const value = body?.[field];
+  if (typeof value !== "string" || !value.startsWith(prefix)) {
+    throw new Error(`relay returned an invalid ${field}`);
+  }
+  const suffix = value.slice(prefix.length);
+  if (suffix.length !== 32 || !/^[A-Za-z0-9_-]+$/.test(suffix)) {
+    throw new Error(`relay returned a malformed ${field}`);
+  }
+  return value;
+}
+
 async function main() {
   const relay = createRelay({ config: { port: PORT, bindAddress: "127.0.0.1" } });
   const { address, port } = await relay.listen();
@@ -54,14 +66,17 @@ async function main() {
   // 1. Onboard the agent (real HTTP round trip against the relay we just started — the SAME
   //    pairing flow a real agent operator runs once, out of band).
   const pairRes = await fetch(`${relayBaseUrl}/v1/pairings`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+  if (!pairRes.ok) throw new Error(`pairing creation failed with HTTP ${pairRes.status}`);
   const pairBody = await pairRes.json();
+  const pairToken = requireRelayCredential(pairBody, "token", "noa_pair_");
   const redeemRes = await fetch(`${relayBaseUrl}/v1/pair`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ token: pairBody.token, name: AGENT_NAME }),
+    body: JSON.stringify({ token: pairToken, name: AGENT_NAME }),
   });
+  if (!redeemRes.ok) throw new Error(`agent pairing failed with HTTP ${redeemRes.status}`);
   const redeemBody = await redeemRes.json();
-  const agentApiKey = redeemBody.apiKey;
+  const agentApiKey = requireRelayCredential(redeemBody, "apiKey", "noa_agent_");
   log("agent.registered", { agentId: redeemBody.agentId, name: AGENT_NAME });
 
   // 2. Onboard the approver device: a REAL Ed25519 keypair (noa-signer, the same signing core the
@@ -74,8 +89,9 @@ async function main() {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ kid: DEVICE_KID, publicKeyHex: devicePublicKeyRawHex, custodyTier: "headless-auto-approver" }),
   });
+  if (!deviceRes.ok) throw new Error(`device registration failed with HTTP ${deviceRes.status}`);
   const deviceBody = await deviceRes.json();
-  const deviceSecret = deviceBody.deviceSecret;
+  const deviceSecret = requireRelayCredential(deviceBody, "deviceSecret", "noa_device_");
   log("device.registered", { deviceId: deviceBody.deviceId, kid: DEVICE_KID });
 
   // 3. Emit the artifacts a non-Node client needs: an env file (shell-sourceable), a JSON file
@@ -91,9 +107,21 @@ async function main() {
       null,
       2,
     ) + "\n",
+    { encoding: "utf8", mode: 0o600, flag: "wx" },
   );
-  writeFileSync(sessionEnvPath, `RELAY_BASE_URL=${relayBaseUrl}\nAGENT_API_KEY=${agentApiKey}\n`);
-  writeFileSync(keyringPath, JSON.stringify({ [DEVICE_KID]: deviceKeyPair.publicKey }, null, 2) + "\n");
+  // The loopback relay credential is the intended demo artifact. requireRelayCredential constrains
+  // it to the exact random-token format; wx prevents replacement/following an existing path and
+  // mode 0600 keeps the newly-created file owner-only.
+  writeFileSync(sessionEnvPath, `RELAY_BASE_URL=${relayBaseUrl}\nAGENT_API_KEY=${agentApiKey}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
+  writeFileSync(keyringPath, JSON.stringify({ [DEVICE_KID]: deviceKeyPair.publicKey }, null, 2) + "\n", {
+    encoding: "utf8",
+    mode: 0o600,
+    flag: "wx",
+  });
   log("session.written", { sessionJsonPath, sessionEnvPath, keyringPath });
 
   // 4. The headless auto-approver loop: poll the relay's DEVICE-authenticated pending-inbox over

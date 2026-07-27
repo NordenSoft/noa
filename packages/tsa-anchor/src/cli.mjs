@@ -15,7 +15,7 @@
  * Exit codes: 0 OK · 1 MISMATCH (verify: >=1 anchor unstamped/mismatched) · 2 TRANSPORT (stamp: TSA
  * request failed) · 3 MALFORMED (bad JSON/DER input) · 4 USAGE.
  */
-import { readFileSync, writeFileSync, statSync } from "node:fs";
+import { readSync, writeFileSync, openSync, fstatSync, closeSync, constants as fsConstants } from "node:fs";
 import { safeParse } from "noa-receipt";
 import { stampAnchor } from "./client.mjs";
 import { verifyStamp } from "./verify.mjs";
@@ -34,18 +34,41 @@ function usage(msg) {
 }
 
 function readJsonFile(path) {
-  let size;
+  const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+  let fd;
   try {
-    size = statSync(path).size;
+    fd = openSync(path, flags);
   } catch {
-    usage(`cannot stat file: ${path}`);
+    usage(`cannot open file: ${path}`);
   }
-  if (size > MAX_FILE_BYTES) usage(`file too large (>${MAX_FILE_BYTES} bytes): ${path}`);
   let text;
   try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    usage(`cannot read file: ${path}`);
+    let st;
+    try {
+      st = fstatSync(fd);
+    } catch {
+      usage(`cannot inspect file: ${path}`);
+    }
+    if (!st.isFile()) usage(`not a regular file: ${path}`);
+    if (st.size > MAX_FILE_BYTES) usage(`file too large (>${MAX_FILE_BYTES} bytes): ${path}`);
+    try {
+      const chunks = [];
+      const chunk = Buffer.allocUnsafe(64 * 1024);
+      let total = 0;
+      for (;;) {
+        const remaining = MAX_FILE_BYTES + 1 - total;
+        const n = readSync(fd, chunk, 0, Math.min(chunk.length, remaining), null);
+        if (n === 0) break;
+        total += n;
+        if (total > MAX_FILE_BYTES) usage(`file too large (>${MAX_FILE_BYTES} bytes): ${path}`);
+        chunks.push(Buffer.from(chunk.subarray(0, n)));
+      }
+      text = Buffer.concat(chunks, total).toString("utf8");
+    } catch {
+      usage(`cannot read file: ${path}`);
+    }
+  } finally {
+    closeSync(fd);
   }
   try {
     return safeParse(text, { maxLength: MAX_FILE_BYTES });

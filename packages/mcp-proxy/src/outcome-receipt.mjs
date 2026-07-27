@@ -1,7 +1,7 @@
 /**
  * outcome-receipt.mjs (R2) — the POST-execution OUTCOME receipt.
  *
- * Round-1 emits exactly ONE receipt per tools/call: the PRE-execution DECISION receipt (the
+ * The decision stage emits exactly ONE receipt per tools/call: the PRE-execution DECISION receipt (the
  * governance verdict — ALLOW/DENY/DEFERRED — recorded and hash-chained BEFORE the downstream tool
  * is ever invoked). That receipt attests "the proxy decided X"; it deliberately does NOT attest
  * that the downstream call itself completed (see THREAT-MODEL.md "Truthfulness of the action").
@@ -16,7 +16,7 @@
  * DESIGN INVARIANTS (why this is additive and backcompat-safe):
  *   1. The outcome receipt is a STANDALONE signed artifact — it is NOT inserted into the decision
  *      hash-chain. It carries no chain.seq, consumes no chain position, and never advances the
- *      session's {prev,seq}. This is what lets round-1's "N calls -> N decision receipts, seqs
+ *      session's {prev,seq}. This preserves the "N calls -> N decision receipts, seqs
  *      {0..N-1}" invariants stay byte-for-byte true (Scenarios A/J/M/E in the smoke test). Its
  *      binding to the chain is by reference (decision id + decision hash), not by chaining.
  *   2. It NEVER touches the decision receipt's signed bytes — a decision receipt built before R2

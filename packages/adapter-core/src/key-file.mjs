@@ -1,4 +1,21 @@
-import { readFileSync, writeFileSync, chmodSync, openSync, fstatSync, closeSync, constants as fsConstants } from "node:fs";
+import { readFileSync, writeFileSync, openSync, fstatSync, fchmodSync, fsyncSync, closeSync, constants as fsConstants } from "node:fs";
+
+function createPrivateKeyFile(keyFile, record) {
+  const flags =
+    fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
+  let fd;
+  try {
+    // O_EXCL makes any earlier observation non-authoritative by design: if a pathname appears
+    // before this open, creation fails. O_NOFOLLOW also refuses a symlink at the final component.
+    // All permission and write operations use this same descriptor, never the checked path.
+    fd = openSync(keyFile, flags, 0o600);
+    fchmodSync(fd, 0o600);
+    writeFileSync(fd, JSON.stringify(record, null, 2), "utf8");
+    fsyncSync(fd);
+  } finally {
+    if (fd !== undefined) closeSync(fd);
+  }
+}
 
 /**
  * loadOrCreateKeyFile — persisted-signing-identity loader shared by every caller in this repo
@@ -28,11 +45,9 @@ import { readFileSync, writeFileSync, chmodSync, openSync, fstatSync, closeSync,
  *     would reopen the TOCTOU window) to confirm it's a regular file with no group/other
  *     permission bits set -- a private key file the operator left world/group-readable is
  *     refused, not silently trusted.
- *   - The create-path's `writeFileSync(..., { flag: "wx" })` (`O_CREAT|O_EXCL|O_WRONLY`) is
- *     POSIX-specified to refuse to create THROUGH a symlink at the target path -- dangling or
- *     not -- even if one is planted in the gap between the `openSync` check above and this write:
- *     it fails closed with `EEXIST` instead of silently redirecting the newly-generated private
- *     key.
+ *   - The create path opens exactly once with `O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW`, then writes,
+ *     permission-pins and fsyncs through that descriptor. No path-based chmod follows the write,
+ *     so an attacker cannot swap the pathname between create and permission hardening.
  *
  * @param {{ keyFile: string, mintKeyPair: () => { kid: string, privateKey: string, publicKey: string }, callerLabel?: string }} options
  */
@@ -48,6 +63,10 @@ export function loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel = "loadO
 
   let fd = null;
   try {
+    // The key path can point into a caller-owned mkdtemp directory in tests. The descriptor-level
+    // O_NOFOLLOW checks below, exclusive create, and 0600 permissions make that use safe; the
+    // generic query does not model those controls across callers.
+    // codeql[js/insecure-temporary-file]
     fd = openSync(keyFile, READONLY_NOFOLLOW);
   } catch (err) {
     if (err.code === "ELOOP") {
@@ -90,9 +109,6 @@ export function loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel = "loadO
   // persist it.
   const kp = mintKeyPair();
   const record = { kid: kp.kid, privateKey: kp.privateKey, publicKey: kp.publicKey };
-  writeFileSync(keyFile, JSON.stringify(record, null, 2), { mode: 0o600, flag: "wx" });
-  // Belt-and-suspenders: writeFileSync's `mode` option only governs the permissions a NEWLY
-  // created file gets (subject to umask); an explicit chmod pins it to 0600 regardless.
-  chmodSync(keyFile, 0o600);
+  createPrivateKeyFile(keyFile, record);
   return record;
 }

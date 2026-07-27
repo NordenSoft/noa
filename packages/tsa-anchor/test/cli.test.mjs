@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
@@ -128,4 +128,20 @@ test("CLI stamp: a malformed anchor entry -> exit 3 (MALFORMED) before any netwo
   const result = await run(["stamp", "--anchors", anchorsPath, "--tsa-url", "http://127.0.0.1:1"]);
   assert.equal(result.status, 3, result.stderr);
   assert.match(result.stderr, /malformed anchor/i);
+});
+
+test("CLI refuses a symlinked JSON input instead of following a swapped path", { skip: process.platform === "win32" }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "noa-tsa-cli-nofollow-"));
+  try {
+    const target = mkAnchorsFile(dir);
+    const link = join(dir, "anchors-link.json");
+    const tsrPath = join(dir, "empty.tsr.json");
+    symlinkSync(target, link);
+    writeFileSync(tsrPath, "{}", "utf8");
+    const result = await run(["verify", "--anchors", link, "--tsr", tsrPath]);
+    assert.equal(result.status, 4, result.stdout + result.stderr);
+    assert.match(result.stderr, /cannot open file/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
