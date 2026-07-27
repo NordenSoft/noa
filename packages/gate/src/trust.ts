@@ -35,8 +35,15 @@ function generateX25519Public(): string {
 
 export interface CreateTrustInput {
   tenant: string;
-  /** riskClass tier the single alpha approver is authorized for (F15): HIGH → approve-high,
-   *  CRITICAL/IRREVERSIBLE → approve-critical. Default approve-critical (covers all tiers). */
+  /**
+   * riskClass tier the single alpha approver is authorized for (F15). The tiers are ORDERED, not
+   * disjoint: `approve-critical` strictly dominates `approve-high`, so a CRITICAL-authorized
+   * approver also clears HIGH actions. Default `approve-critical` therefore does cover all tiers —
+   * a claim that was FALSE until the lattice was unified, because approval-artifacts required
+   * exactly `approve-high` for HIGH and rejected this very default with a 422.
+   * AUTHORITY: `requiredApproverRole()` in packages/approval-artifacts/src/verify.ts; on any drift
+   * that function wins. Cross-package test: packages/approval-artifacts/test/f15-lattice.test.mjs.
+   */
   approverRole?: "approve-high" | "approve-critical";
   now?: () => number;
   /** Deterministic id source for tests (defaults to node:crypto randomUUID). */

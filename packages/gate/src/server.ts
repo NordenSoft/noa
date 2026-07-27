@@ -140,10 +140,25 @@ async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEng
   // EXCEPTION — /decision is NOT owner-scoped, deliberately. It carries the APPROVER's signed
   // Decision Artifact + verdict receipt, and the gate re-verifies both against the approver trust
   // root (D18: signature, F15 role tier, exact-action binding, APPROVE↔ALLOWED). Authorization here
-  // is cryptographic, not by API key: a foreign agent cannot forge a decision without the approver
-  // key, and the approver device legitimately reaches the gate over a different credential than the
-  // requesting agent's. Scoping this to the hold owner would break real approvals while adding no
-  // security the signature check does not already provide.
+  // is CRYPTOGRAPHIC: without the approver key a caller cannot produce a decision this route will
+  // accept, whatever API key it authenticated with. Owner-scoping would add nothing the signature
+  // check does not already provide, and would couple approval delivery to whichever agent happens
+  // to own the hold.
+  //
+  // CORRECTION (cross-family review): an earlier version of this comment justified the exception by
+  // claiming the approver device "reaches the gate over a different credential than the requesting
+  // agent's". That is NOT true of this implementation — `AgentRecord` is the gate's only principal
+  // type (src/types.ts), there is no separate approver credential, and the claim was speculation.
+  // The cryptographic argument above is the real and sufficient one; the credential-topology claim
+  // was not, and is removed rather than left standing.
+  //
+  // RESIDUAL, stated rather than papered over: because this route is not owner-scoped, its failure
+  // modes distinguish "no such hold" (404) from "hold exists, decision rejected" (422), so a caller
+  // holding a hold id can confirm that id exists. Hold ids are unguessable (randomUUID), so this
+  // reveals nothing to a caller that did not already possess the id — it is not an enumeration
+  // primitive. It is NOT collapsed to a single status because doing so would blind a legitimate
+  // approver device to why its decision was refused, which is a real operational cost paid for no
+  // real attacker gain. Revisit if hold ids ever become guessable or externally enumerable.
   if (method === "POST" && /^\/v1\/holds\/[^/]+\/decision$/.test(path)) {
     const b = await readBody(req, res, config);
     if (!b.ok) return;

@@ -3,6 +3,7 @@ import { receiptHashInput } from "./receipt-hash.js";
 import { signReceipt, type SignerKey } from "./sign.js";
 import { RECEIPT_SPEC } from "./types.js";
 import type { Receipt, ReceiptAction, ReceiptAgent, ReceiptGovernance, ReceiptScope } from "./types.js";
+import { nonNfcPaths } from "./nfc.js";
 
 /** Same shape as `noa-receipt`'s `BuildInput` (`src/builder.ts`). */
 export interface BuildInput {
@@ -35,6 +36,16 @@ export function buildReceiptDraft(input: BuildInput, prev: Receipt | null, kid: 
     action: input.action,
     governance: input.governance,
   });
+
+  // NFC ENFORCEMENT AT THE PRODUCER, before anything is hashed or signed. This package is an
+  // INDEPENDENT signing implementation, so enforcing it only in noa-receipt's builder left a second
+  // door open and the invariant was not universal. Same rule, same failure mode, both producers.
+  const nonNfc = nonNfcPaths(cloned);
+  if (nonNfc.length > 0) {
+    throw new Error(
+      `buildReceipt: refusing to sign a payload with non-NFC strings (the profile requires producers to emit Unicode NFC): ${nonNfc.join(", ")}`,
+    );
+  }
 
   const seq = prev ? prev.chain.seq + 1 : 0;
   const prevHash = prev ? prev.chain.hash : null;

@@ -76,6 +76,38 @@ test("R6: a fresh tenant cannot be opened at an exhausting version", () => {
   assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "fresh", version: 1 } }).status, 200);
 });
 
+test("R6: a fresh tenant must open at a GENESIS-scale version, not anywhere in the advance window", () => {
+  // Allowing the full +MAX_VERSION_JUMP window on a first publish let anyone open an unused tenant
+  // at 999 and shove it off its intended genesis sequence. Recoverable, but pointless surface.
+  const h = makeHarness();
+  const far = h.engine.putManifest({ manifest: { ...base, tenant: "greenfield", version: 999 } });
+  assert.equal(far.status, 422, `a fresh tenant must not open at 999, got ${far.status}`);
+  assert.equal(bodyOf<{ error: string }>(far).error, "BAD_MANIFEST_VERSION");
+  // genesis-scale values still work, and normal rotation continues from there
+  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "greenfield", version: 1 } }).status, 200);
+  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "greenfield", version: 2 } }).status, 200);
+});
+
+test("R6 MIGRATION: a tenant left with a pre-fix extreme version can still re-genesis (not bricked forever)", () => {
+  // The bound stops NEW extreme publishes, but a tenant whose record predates it would otherwise be
+  // permanently unable to rotate — the brick frozen into the data. A stored version that no
+  // conforming publish could produce is treated as recoverable.
+  const h = makeHarness();
+  const store = h.store;
+  store.putManifest({
+    tenant: "legacy",
+    version: Number.MAX_SAFE_INTEGER,
+    manifest: { ...base, tenant: "legacy", version: Number.MAX_SAFE_INTEGER },
+    delegation: null,
+    refHash: "sha256:" + "0".repeat(64),
+    createdAt: 0,
+  });
+  const recover = h.engine.putManifest({ manifest: { ...base, tenant: "legacy", version: 1 } });
+  assert.equal(recover.status, 200, `recovery re-genesis must be allowed, got ${JSON.stringify(recover.body)}`);
+  // and normal monotonic behaviour resumes from the new genesis
+  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "legacy", version: 2 } }).status, 200);
+});
+
 test("R6: ordinary monotonic behaviour is unchanged (stale refused, idempotent republish accepted)", () => {
   const h = makeHarness();
   const m = { ...base, version: 4 };

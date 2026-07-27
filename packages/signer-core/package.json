@@ -1,7 +1,7 @@
 {
   "name": "noa-signer",
   "version": "0.1.0",
-  "description": "Portable, framework-agnostic Ed25519 receipt-signing core for noa-receipt — every shell (PWA, native app, server) imports this ONE module so a receipt signed anywhere is byte-identical to what noa-receipt itself would have produced. Zero platform-SDK imports (no DOM, no React-Native, no Telegram) — @noble/curves is the signing driver, so the same code runs in a browser, a service worker, or Node.",
+  "description": "Portable, framework-agnostic Ed25519 receipt-signing core for noa-receipt \u2014 every shell (PWA, native app, server) imports this ONE module so a receipt signed anywhere is byte-identical to what noa-receipt itself would have produced. Zero platform-SDK imports (no DOM, no React-Native, no Telegram) \u2014 @noble/curves is the signing driver, so the same code runs in a browser, a service worker, or Node.",
   "keywords": [
     "ai-agent",
     "governance",
@@ -45,7 +45,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "test": "npm run build && node --test dist/test/*.test.js",
+    "test": "npm run build && node --test dist/test/*.test.js test/*.test.mjs",
     "mock-shell": "npm run build && node scripts/mock-shell-harness.mjs",
     "prepublishOnly": "npm test && npm run mock-shell"
   },

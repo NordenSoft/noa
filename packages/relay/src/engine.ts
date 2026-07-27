@@ -44,6 +44,21 @@ import type {
  */
 const MAX_VERSION_JUMP = 1_000;
 
+/**
+ * R6 — the highest version a tenant's FIRST manifest may open at. Real genesis manifests are
+ * version 1 or 2; this is generous by an order of magnitude while stopping anyone from opening an
+ * unused tenant near the top of the advance window and shoving it off its intended sequence.
+ */
+const MAX_GENESIS_VERSION = 16;
+
+/**
+ * R6 — above this, a STORED version cannot have been produced by any publish this engine now
+ * accepts (it would need >1000 conforming rotations to reach it, and the bound is enforced on every
+ * one). A record above it is residue of the pre-bound behaviour; the tenant is allowed to re-open at
+ * genesis so it is not permanently locked out of key rotation. See putManifest.
+ */
+const MAX_SANE_VERSION = 1_000_000;
+
 const RISK_CLASSES: ReadonlySet<string> = new Set([
   "LOW",
   "MEDIUM",
@@ -521,14 +536,48 @@ export class RelayEngine {
     // the space can never be exhausted; legitimate rotations increment by one and never notice.
     // (Deliberately NOT an absolute ceiling: an absolute cap still lets the first publish land at
     // the cap and brick a fresh tenant. The bound has to be relative to what is already stored.)
-    const ceiling = (cur ? cur.version : -1) + MAX_VERSION_JUMP;
-    if (version > ceiling) {
-      return err(422, "BAD_MANIFEST_VERSION", {
-        detail: `version advances too far in one publish (max +${MAX_VERSION_JUMP} beyond the stored version)`,
-        currentVersion: cur ? cur.version : null,
+    // RECOVERY for a tenant whose stored version predates this bound. A value above
+    // MAX_SANE_VERSION cannot be produced by any publish this function now accepts, so if one is
+    // stored it is residue of the unbounded behaviour (or of an attack that exploited it) and the
+    // tenant would otherwise be permanently unable to rotate — the exact brick this bound exists to
+    // prevent, frozen into the data. Treat such a record as unpublishable-under-current-rules and
+    // allow a fresh genesis, loudly. This opens nothing: an attacker can no longer CREATE the
+    // condition, so the only records that reach it are pre-fix ones.
+    const stored = cur ? cur.version : null;
+    const storedIsUnreachable = stored !== null && stored > MAX_SANE_VERSION;
+    if (storedIsUnreachable) {
+      this.log("manifest.version_recovery", {
+        tenant,
+        storedVersion: stored,
         attemptedVersion: version,
-        maxAcceptedVersion: ceiling,
+        detail: "stored version exceeds MAX_SANE_VERSION and cannot have been produced by a conforming publish; allowing re-genesis",
       });
+    }
+
+    // A FRESH tenant (or one in recovery) must open at a genesis-scale version. Allowing the full
+    // +MAX_VERSION_JUMP window on a first publish let anyone open an unused tenant at 999 and shove
+    // it off its intended genesis sequence — recoverable, but pointless surface. Real first
+    // manifests are version 1 or 2; the ceiling is generous by an order of magnitude.
+    const openingFresh = !cur || storedIsUnreachable;
+    if (openingFresh) {
+      if (version > MAX_GENESIS_VERSION) {
+        return err(422, "BAD_MANIFEST_VERSION", {
+          detail: `a tenant's first manifest must open at a genesis-scale version (<= ${MAX_GENESIS_VERSION})`,
+          currentVersion: stored,
+          attemptedVersion: version,
+          maxAcceptedVersion: MAX_GENESIS_VERSION,
+        });
+      }
+    } else {
+      const ceiling = cur!.version + MAX_VERSION_JUMP;
+      if (version > ceiling) {
+        return err(422, "BAD_MANIFEST_VERSION", {
+          detail: `version advances too far in one publish (max +${MAX_VERSION_JUMP} beyond the stored version)`,
+          currentVersion: cur!.version,
+          attemptedVersion: version,
+          maxAcceptedVersion: ceiling,
+        });
+      }
     }
 
     if (cur && version === cur.version && !delegationProvided && cur.delegation) {
@@ -563,12 +612,14 @@ export class RelayEngine {
       });
     };
 
-    const preflight = classifyManifestPut(cur, rec);
-    if (preflight === "stale" || preflight === "equivocation") {
-      return conflictResult(preflight, cur!);
+    if (!storedIsUnreachable) {
+      const preflight = classifyManifestPut(cur, rec);
+      if (preflight === "stale" || preflight === "equivocation") {
+        return conflictResult(preflight, cur!);
+      }
     }
     try {
-      this.store.putManifest(rec);
+      this.store.putManifest(rec, storedIsUnreachable ? { recovery: true } : {});
     } catch (error) {
       if (error instanceof ManifestPutConflictError) {
         return conflictResult(error.outcome, error.current);

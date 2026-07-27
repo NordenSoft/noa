@@ -539,8 +539,18 @@ export class FileStore implements Store {
   }
 
   // ── manifest ─────────────────────────────────────────────────────────────
-  putManifest(rec: KeyManifestRecord): void {
+  putManifest(rec: KeyManifestRecord, opts: { recovery?: boolean } = {}): void {
     const cur = this.manifests.get(rec.tenant);
+    if (opts.recovery) {
+      const hadR = this.manifests.has(rec.tenant);
+      const prevR = this.manifests.get(rec.tenant);
+      this.manifests.set(rec.tenant, rec);
+      this.persistOrRollback(() => {
+        if (hadR) this.manifests.set(rec.tenant, prevR!);
+        else this.manifests.delete(rec.tenant);
+      });
+      return;
+    }
     const outcome = classifyManifestPut(cur, rec);
     if (outcome === "stored") {
       const had = this.manifests.has(rec.tenant);
