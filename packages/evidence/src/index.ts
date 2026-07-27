@@ -1,6 +1,7 @@
 /**
  * `noa-approval-evidence` — the §13 Approval Evidence Bundle (`noa.approval-evidence/0.1`, D11-v2) +
- * the offline `noa verify-evidence` 18-step verifier.
+ * the offline `noa verify-evidence` 18-step verifier + the two verifier-owned boundary steps
+ * (step 0 tenant-equality, step 19 receipt-role integrity).
  *
  * Public surface: the bundle/outcome/verdict types, the `verifyEvidence` entry point (pure, offline,
  * fail-closed), and the individual named step functions (exported for conformance + downstream

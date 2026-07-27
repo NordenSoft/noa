@@ -88,7 +88,10 @@ export type EvidenceVerdict =
   | "INCONCLUSIVE" // a non-executed outcome without a fresh trusted checkpoint (F3/F5/G1)
   | "INVALID"; // fail-closed hard rejection at a named step
 
-/** The 19 named verifier steps (step 0 = the F7b tenant-equality pre-rule; steps 1-18 = §13). */
+/**
+ * The 20 named verifier steps (step 0 = the F7b tenant-equality pre-rule; steps 1-18 = §13;
+ * step 19 = the receipt-role integrity boundary, verifier-owned).
+ */
 export type StepName =
   | "STEP_0_TENANT_EQUALITY"
   | "STEP_1_HOLD_ENVELOPE"
@@ -108,7 +111,9 @@ export type StepName =
   | "STEP_15_NEGATIVE_OUTCOME_PRINCIPLE"
   | "STEP_16_CHECKPOINT_FRESHNESS"
   | "STEP_17_CHECKPOINT_RECONCILE"
-  | "STEP_18_TEMPORAL_AUTHORIZATION";
+  | "STEP_18_TEMPORAL_AUTHORIZATION"
+  /** Verifier-owned (not §13), like step 0: BOUNDARY 1's receipt-role integrity + coverage rule. */
+  | "STEP_19_RECEIPT_ROLE_INTEGRITY";
 
 /** A per-step machine-readable error code (one per failure class, distinct from the step name). */
 export type StepCode =
@@ -134,6 +139,7 @@ export type StepCode =
   | "E_TEMPORAL_AUTH"
   | "E_BUNDLE_SHAPE"
   | "E_OUTCOME_ARTIFACT_SET"
+  | "E_RECEIPT_ROLE"
   | "E_NO_TRUST_ROOT";
 
 /**
@@ -220,6 +226,13 @@ export interface VerifyEvidenceResult {
   reason?: string;
   /** Every step that ran, in order (the audit trail). */
   steps: StepResult[];
+  /**
+   * BOUNDARY 1 evidence: every receipt role routed through the role chokepoint during this run, in
+   * assertion order. Present so the enumeration test can assert — mechanically, per outcome — that
+   * the set of roles the bundle CARRIES and the set the verifier ASSERTED are the same set. A role
+   * the verifier never asserted is a receipt whose meaning nothing checked.
+   */
+  rolesAsserted: string[];
   /** Non-fatal, honest caveats (e.g. F6 opener-scoped residual, tail-truncation caveat). */
   warnings: string[];
 }

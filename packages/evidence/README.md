@@ -1,7 +1,7 @@
 # noa-approval-evidence
 
 The §13 **Approval Evidence Bundle** (`noa.approval-evidence/0.1`, D11-v2) + the offline
-**`noa verify-evidence`** 18-step verifier for the NOA Mobile Approval App.
+**`noa verify-evidence`** 18-step verifier for the NOA Mobile Approval App (plus step 0's tenant-equality pre-rule and step 19's receipt-role integrity boundary — both verifier-owned, not §13).
 
 `verifyChain` proves receipt-chain integrity. `verify-evidence` proves the harder claim: *the human
 saw THIS context, decided THIS, and exactly this executed* — still a gate-boundary claim, never a

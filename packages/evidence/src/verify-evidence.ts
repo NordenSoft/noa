@@ -45,7 +45,9 @@ import {
   step16_checkpointFreshness,
   step17_checkpointReconcile,
   step18_temporalAuthorization,
+  step19_receiptRoleIntegrity,
 } from "./steps.js";
+import { type ReceiptRole } from "./receipt-roles.js";
 
 export const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // F5 default: 24h
 
@@ -72,6 +74,10 @@ const PIPELINE: Array<(ctx: Ctx) => StepResult> = [
   step12_unknown,
   step13_grantExpired,
   step14_approvedNoExec,
+  // BOUNDARY 1 coverage: runs after every artifact-consuming step (0-14) and BEFORE the
+  // anchor/freshness gate, so a role-integrity defect is INVALID (a hard rejection) and can never be
+  // softened into INCONCLUSIVE by an unrelated missing checkpoint.
+  step19_receiptRoleIntegrity,
   step17_checkpointReconcile,
   step15_negativeOutcomePrinciple,
   step16_checkpointFreshness,
@@ -122,8 +128,9 @@ function result(
   steps: StepResult[],
   warnings: string[],
   failing?: StepResult,
+  rolesAsserted: ReceiptRole[] = [],
 ): VerifyEvidenceResult {
-  const r: VerifyEvidenceResult = { verdict, outcome, steps, warnings };
+  const r: VerifyEvidenceResult = { verdict, outcome, steps, warnings, rolesAsserted };
   if (failing) {
     r.failedStep = failing.step;
     if (failing.code) r.code = failing.code;
@@ -190,6 +197,7 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
     rootKeyring,
     checkpointKeyring,
     warnings,
+    rolesAsserted: new Set<ReceiptRole>(),
     ...(receivedAtRaw !== undefined ? { receivedAt: receivedAtRaw } : {}),
     ...(riskClassRaw !== undefined ? { riskClass: riskClassRaw } : {}),
     orderedChain,
@@ -204,7 +212,7 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
     if (!r.ok) {
       const verdict: EvidenceVerdict =
         r.code === "E_INCONCLUSIVE_NO_CHECKPOINT" || r.code === "E_STALE_CHECKPOINT" ? "INCONCLUSIVE" : "INVALID";
-      return result(verdict, bundle.outcome, steps, ctx.warnings, r);
+      return result(verdict, bundle.outcome, steps, ctx.warnings, r, [...ctx.rolesAsserted]);
     }
   }
 
@@ -219,5 +227,5 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
     // a non-executed outcome that survived step 15 necessarily has a fresh, reconciled checkpoint.
     verdict = "VALID_FULL_CHAIN";
   }
-  return result(verdict, bundle.outcome, steps, ctx.warnings);
+  return result(verdict, bundle.outcome, steps, ctx.warnings, undefined, [...ctx.rolesAsserted]);
 }

@@ -1,5 +1,6 @@
 /**
- * The §13 `verify-evidence` steps — step 0 (the F7b tenant-equality pre-rule) + the 18 ordered
+ * The §13 `verify-evidence` steps — step 0 (the F7b tenant-equality pre-rule) + step 19 (the
+ * receipt-role integrity boundary, see receipt-roles.ts) + the 18 ordered
  * checks (steps 1-18). Each step is a NAMED function with its OWN error code (`StepCode`); the
  * orchestrator (`verify-evidence.ts`) runs them in order and stops at the FIRST failure so that a
  * rejection is attributed to exactly the layer that owns it (the anti-cheat property: a defect must
@@ -29,6 +30,7 @@ import {
   type DelegationDoc,
   type ManifestDoc,
 } from "./trust.js";
+import { assertReceiptRole, RECEIPT_ROLES, type ReceiptRole } from "./receipt-roles.js";
 
 // ─── shared mutable evaluation context ──────────────────────────────────────────────────────────
 export interface Ctx {
@@ -39,6 +41,12 @@ export interface Ctx {
   rootKeyring: Record<string, KeyEntry>;
   checkpointKeyring: Keyring;
   warnings: string[];
+  /**
+   * BOUNDARY 1 bookkeeping: every receipt role routed through `roleReceipt` (the chokepoint).
+   * `step19_receiptRoleIntegrity` fails closed on any role field the bundle carries that is not in
+   * here — a role no step ever asserted is a receipt riding along with its meaning unchecked.
+   */
+  rolesAsserted: Set<ReceiptRole>;
   // populated across the pipeline:
   tenant?: string;
   receivedAt?: string; // holdResolution.receivedAt (trusted time, F10) — read raw in step 0, authenticated in step 3
@@ -80,19 +88,46 @@ function fail(step: StepName, code: StepResult["code"], reason: string): StepRes
   return { step, ok: false, code, reason };
 }
 
-/** Which chain receipt (if any) is the terminal "verdict receipt" for the outcome. */
-function verdictReceiptFor(bundle: EvidenceBundle): unknown {
-  switch (bundle.outcome) {
+/** Which receipt ROLE is the terminal "verdict receipt" for the outcome. */
+function verdictRoleFor(outcome: EvidenceOutcome): ReceiptRole {
+  switch (outcome) {
     case "DENIED":
-      return bundle.blockedReceipt;
+      return "blockedReceipt";
     case "EXPIRED":
-      return bundle.timeoutReceipt;
+      return "timeoutReceipt";
     default:
       // APPROVED path (EXECUTED / EXECUTION_FAILED / APPROVED_NO_EXECUTION_EVIDENCE /
       // GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE / UNKNOWN_AFTER_DISPATCH), and CANCELLED iff a
       // pre-crash ALLOWED receipt exists — all bind to the ALLOWED receipt.
-      return bundle.allowedReceipt;
+      return "allowedReceipt";
   }
+}
+
+/**
+ * BOUNDARY 1 — the ONLY way any step obtains a receipt BY ROLE (see `receipt-roles.ts`).
+ *
+ * There is no variant of this that returns the object without having checked what its signer
+ * attested, which is the whole point: the two halves of "this receipt plays role R here" cannot be
+ * separated by a caller, and a step added later cannot get a role receipt any other way.
+ *
+ * ATTRIBUTION. A role failure is ALWAYS reported as `STEP_19_RECEIPT_ROLE_INTEGRITY` /
+ * `E_RECEIPT_ROLE`, whichever step happened to consume the role first — one invariant, one
+ * enforcement point, one attribution, so the reject fixture for a role does not have to encode
+ * which step reaches it first (that is an ordering detail, not a property of the defect). The
+ * consuming step is named in the reason, so the audit trail still says where it was caught. This is
+ * the same "the code names the failure class" discipline the other steps follow; it is deliberately
+ * NOT the accidental-earlier-step failure mode the ordered pipeline exists to prevent.
+ */
+function roleReceipt(
+  ctx: Ctx,
+  role: ReceiptRole,
+  consumer: StepName,
+): { fail: StepResult } | { fail?: undefined; receipt: Record<string, unknown> | null } {
+  const r = assertReceiptRole(ctx.bundle as unknown as Record<string, unknown>, role, ctx.rolesAsserted);
+  if (!r.ok) {
+    return { fail: fail("STEP_19_RECEIPT_ROLE_INTEGRITY", "E_RECEIPT_ROLE", `${r.reason} [consumed by ${consumer}]`) };
+  }
+  return { receipt: r.receipt };
 }
 
 /**
@@ -310,6 +345,11 @@ export function step2_envelopeBinding(ctx: Ctx): StepResult {
   const S: StepName = "STEP_2_ENVELOPE_BINDING";
   const env = asObj(ctx.bundle.holdEnvelope);
   if (!env) return fail(S, "E_ENVELOPE_BINDING", "holdEnvelope missing");
+  // BOUNDARY 1: the receipt the envelope freezes must itself attest DEFERRED. The envelope binds it
+  // BY HASH, which proves identity and says nothing about what it means — an `ALLOWED` receipt in
+  // the root position would be an envelope freezing an action that was already decided.
+  const deferredRole = roleReceipt(ctx, "deferredReceipt", S);
+  if (deferredRole.fail) return deferredRole.fail;
   const want = receiptRefHash(asObj(ctx.bundle.deferredReceipt) as Record<string, unknown>);
   if (asStr(env.deferredReceiptHash) !== want) {
     return fail(S, "E_ENVELOPE_BINDING", "holdEnvelope.deferredReceiptHash != deferredReceipt.chain.hash (F1 rule-a)");
@@ -393,10 +433,15 @@ export function step3_holdResolution(ctx: Ctx): StepResult {
   }
   // verdictReceiptHash (G4): binds to the terminal verdict receipt for the outcome, or null when
   // (CANCELLED) no pre-crash verdict receipt exists.
-  const verdictReceipt = verdictReceiptFor(b);
+  // BOUNDARY 1: fetched BY ROLE, so the receipt this resolution binds is also proven to attest a
+  // verdict fit for that role. Binding a hash to a receipt that says the opposite of its role is the
+  // exact defect this used to wave through.
+  const vrRole = roleReceipt(ctx, verdictRoleFor(b.outcome), S);
+  if (vrRole.fail) return vrRole.fail;
+  const verdictReceipt = vrRole.receipt;
   const vrHash = hr.verdictReceiptHash;
-  if (verdictReceipt !== undefined && asObj(verdictReceipt)) {
-    const want = receiptRefHash(asObj(verdictReceipt) as Record<string, unknown>);
+  if (verdictReceipt !== null) {
+    const want = receiptRefHash(verdictReceipt);
     if (asStr(vrHash) !== want) {
       return fail(S, "E_HOLD_RESOLUTION", "holdResolution.verdictReceiptHash != verdict receipt chain.hash (G4)");
     }
@@ -449,7 +494,9 @@ export function step5_approverRole(ctx: Ctx): StepResult {
   const b = ctx.bundle;
   const decision = asObj(b.decisionArtifact);
   if (!decision) return ok(S); // no decision (EXPIRED)
-  const verdictReceipt = asObj(verdictReceiptFor(b));
+  const vrRole = roleReceipt(ctx, verdictRoleFor(b.outcome), S); // BOUNDARY 1
+  if (vrRole.fail) return vrRole.fail;
+  const verdictReceipt = vrRole.receipt;
   const approverKid = asStr(decision.approverKid);
   const sigKid = asStr(getPath(decision, "sig.kid"));
   if (approverKid === null || approverKid !== sigKid) {
@@ -486,7 +533,9 @@ export function step6_verdictReceiptBinding(ctx: Ctx): StepResult {
   const S: StepName = "STEP_6_VERDICT_RECEIPT_BINDING";
   const b = ctx.bundle;
   const deferred = asObj(b.deferredReceipt);
-  const verdictReceipt = asObj(verdictReceiptFor(b));
+  const vrRole = roleReceipt(ctx, verdictRoleFor(b.outcome), S); // BOUNDARY 1
+  if (vrRole.fail) return vrRole.fail;
+  const verdictReceipt = vrRole.receipt;
   if (!deferred) return fail(S, "E_VERDICT_BINDING", "deferredReceipt missing");
   if (!verdictReceipt) return ok(S); // CANCELLED with no verdict receipt — nothing to bind here
   for (const field of ["action.id", "action.canonical", "action.paramsHash"]) {
@@ -507,11 +556,14 @@ export function step7_denied(ctx: Ctx): StepResult {
   const S: StepName = "STEP_7_DENIED";
   const b = ctx.bundle;
   if (b.outcome !== "DENIED") return ok(S);
-  const blocked = asObj(b.blockedReceipt);
+  // BOUNDARY 1 owns "a receipt in the blockedReceipt role attested BLOCKED" (it used to be written
+  // out here, and identically in steps 8/10/11, while the allowedReceipt role — the one every
+  // approval rests on — had no such check anywhere). What stays here is what only step 7 knows: a
+  // denial needs a bound DENY decision.
+  const blockedRole = roleReceipt(ctx, "blockedReceipt", S);
+  if (blockedRole.fail) return blockedRole.fail;
+  const blocked = blockedRole.receipt;
   if (!blocked) return fail(S, "E_DENIED", "DENIED outcome requires blockedReceipt");
-  if (getPath(blocked, "governance.verdict") !== "BLOCKED") {
-    return fail(S, "E_DENIED", `blockedReceipt.governance.verdict != BLOCKED (${String(getPath(blocked, "governance.verdict"))})`);
-  }
   // bound to the DENY decision (the decision was verified in step 4 as decision=DENY).
   const decision = asObj(b.decisionArtifact);
   if (!decision || asStr(decision.decision) !== "DENY") {
@@ -527,14 +579,13 @@ export function step8_expired(ctx: Ctx): StepResult {
   const S: StepName = "STEP_8_EXPIRED";
   const b = ctx.bundle;
   if (b.outcome !== "EXPIRED") return ok(S);
-  const timeout = asObj(b.timeoutReceipt);
+  const timeoutRole = roleReceipt(ctx, "timeoutReceipt", S); // BOUNDARY 1 owns the BLOCKED verdict
+  if (timeoutRole.fail) return timeoutRole.fail;
+  const timeout = timeoutRole.receipt;
   const hr = asObj(b.holdResolution);
   if (!timeout) return fail(S, "E_EXPIRED", "EXPIRED outcome requires timeoutReceipt");
   if (getPath(timeout, "governance.ruleId") !== "approval-timeout") {
     return fail(S, "E_EXPIRED", "timeoutReceipt.governance.ruleId != approval-timeout");
-  }
-  if (getPath(timeout, "governance.verdict") !== "BLOCKED") {
-    return fail(S, "E_EXPIRED", "timeoutReceipt.governance.verdict != BLOCKED");
   }
   // signed by the GATE/POLICY signer: the receipt's principal must be POLICY (D19 builds it with the
   // policy signer, never dressed up as a human ALLOWED/DENY).
@@ -555,6 +606,11 @@ export function step9_cancelled(ctx: Ctx): StepResult {
   const S: StepName = "STEP_9_CANCELLED";
   const b = ctx.bundle;
   if (b.outcome !== "CANCELLED_LOCAL_STATE_LOST") return ok(S);
+  // BOUNDARY 1: CANCELLED MAY carry a pre-crash ALLOWED receipt (§13 union). Optional does not mean
+  // unexamined — if one is here, it must attest ALLOWED. Step 3 already refuses the gate-minted
+  // no-decision variant (F19-HUMAN); this is the verdict dimension of the same receipt.
+  const allowedRole = roleReceipt(ctx, "allowedReceipt", S);
+  if (allowedRole.fail) return allowedRole.fail;
   const hr = asObj(b.holdResolution);
   if (asStr(hr?.status) !== "CANCELLED") return fail(S, "E_CANCELLED", "holdResolution.status != CANCELLED");
   if (asStr(hr?.reasonCode) !== "LOCAL_STATE_LOST") return fail(S, "E_CANCELLED", "holdResolution.reasonCode != LOCAL_STATE_LOST");
@@ -591,7 +647,12 @@ export function step9_cancelled(ctx: Ctx): StepResult {
 function checkGrantBinding(ctx: Ctx, S: StepName, code: StepResult["code"]): StepResult | null {
   const b = ctx.bundle;
   const grant = asObj(b.executionGrant);
-  const allowed = asObj(b.allowedReceipt);
+  // BOUNDARY 1: the approval a grant derives from is fetched BY ROLE — binding a grant by hash to a
+  // receipt that does not attest ALLOWED is the same "cryptographically bound, semantically
+  // contradictory" shape this whole boundary exists to close.
+  const allowedRole = roleReceipt(ctx, "allowedReceipt", S);
+  if (allowedRole.fail) return allowedRole.fail;
+  const allowed = allowedRole.receipt;
   if (!grant) return fail(S, code, "outcome carries no executionGrant to bind");
   if (!allowed) {
     return fail(S, code, `outcome ${b.outcome} carries an executionGrant but no allowedReceipt — a grant that cannot be traced to the approval it derives from is unbound by construction`);
@@ -647,8 +708,12 @@ export function step10_executed(ctx: Ctx): StepResult {
   if (b.outcome !== "EXECUTED") return ok(S);
   const grant = asObj(b.executionGrant);
   const consumption = asObj(b.executionConsumption);
-  const executed = asObj(b.executedReceipt);
-  const allowed = asObj(b.allowedReceipt);
+  const executedRole = roleReceipt(ctx, "executedReceipt", S); // BOUNDARY 1 owns the EXECUTED verdict
+  if (executedRole.fail) return executedRole.fail;
+  const executed = executedRole.receipt;
+  const allowedRole = roleReceipt(ctx, "allowedReceipt", S);
+  if (allowedRole.fail) return allowedRole.fail;
+  const allowed = allowedRole.receipt;
   if (!grant || !consumption || !executed || !allowed) return fail(S, "E_EXECUTED", "EXECUTED requires grant+consumption+executedReceipt+allowedReceipt");
 
   // (G12) the grant is a valid artifact AND is bound to THIS approval/action/hold — one shared rule
@@ -665,7 +730,6 @@ export function step10_executed(ctx: Ctx): StepResult {
   if (asStr(consumption.grantHash) !== refHash(b.executionGrant)) return fail(S, "E_EXECUTED", "consumption.grantHash != refHash(grant) (F1)");
   if (asStr(consumption.result) !== "DISPATCHED") return fail(S, "E_EXECUTED", `consumption.result != DISPATCHED (${String(consumption.result)})`);
   if (asStr(consumption.attemptReceiptHash) !== receiptRefHash(executed)) return fail(S, "E_EXECUTED", "consumption.attemptReceiptHash != executedReceipt.chain.hash (G4)");
-  if (getPath(executed, "governance.verdict") !== "EXECUTED") return fail(S, "E_EXECUTED", "executedReceipt.governance.verdict != EXECUTED");
   // executed chains onto ALLOWED (full contiguity + signatures at step 17).
   if (asStr(getPath(executed, "chain.prevHash")) !== asStr(getPath(allowed, "chain.hash"))) {
     return fail(S, "E_EXECUTED", "executedReceipt.chain.prevHash != allowedReceipt.chain.hash");
@@ -683,8 +747,12 @@ export function step11_executionFailed(ctx: Ctx): StepResult {
   if (b.outcome !== "EXECUTION_FAILED") return ok(S);
   const grant = asObj(b.executionGrant);
   const consumption = asObj(b.executionConsumption);
-  const failed = asObj(b.failedReceipt);
-  const allowed = asObj(b.allowedReceipt);
+  const failedRole = roleReceipt(ctx, "failedReceipt", S); // BOUNDARY 1 owns the FAILED verdict
+  if (failedRole.fail) return failedRole.fail;
+  const failed = failedRole.receipt;
+  const allowedRole = roleReceipt(ctx, "allowedReceipt", S);
+  if (allowedRole.fail) return allowedRole.fail;
+  const allowed = allowedRole.receipt;
   if (!grant || !consumption || !failed || !allowed) return fail(S, "E_EXECUTION_FAILED", "EXECUTION_FAILED requires grant+consumption+failedReceipt+allowedReceipt");
 
   // (G12) same grant binding as step 10 — a FAILED outcome is still an outcome for a grant that
@@ -699,7 +767,6 @@ export function step11_executionFailed(ctx: Ctx): StepResult {
 
   if (asStr(consumption.grantHash) !== refHash(b.executionGrant)) return fail(S, "E_EXECUTION_FAILED", "consumption.grantHash != refHash(grant)");
   if (asStr(consumption.attemptReceiptHash) !== receiptRefHash(failed)) return fail(S, "E_EXECUTION_FAILED", "consumption.attemptReceiptHash != failedReceipt.chain.hash (G4)");
-  if (getPath(failed, "governance.verdict") !== "FAILED") return fail(S, "E_EXECUTION_FAILED", "failedReceipt.governance.verdict != FAILED");
   // grant issued before the failure.
   const gIssued = parseTime(grant.issuedAt);
   const failedTs = parseTime(getPath(failed, "ts"));
@@ -754,7 +821,9 @@ export function step13_grantExpired(ctx: Ctx): StepResult {
   const b = ctx.bundle;
   if (b.outcome !== "GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE") return ok(S);
   const grant = asObj(b.executionGrant);
-  const allowed = asObj(b.allowedReceipt);
+  const allowedRole = roleReceipt(ctx, "allowedReceipt", S); // BOUNDARY 1
+  if (allowedRole.fail) return allowedRole.fail;
+  const allowed = allowedRole.receipt;
   if (!grant || !allowed) return fail(S, "E_GRANT_EXPIRED", "GRANT_EXPIRED requires grant+allowedReceipt");
   // (G12) an EXPIRED grant is still a grant that must have derived from THIS approval/action/hold —
   // otherwise "the grant lapsed unused" can be asserted about a grant nobody in this bundle authorized.
@@ -781,7 +850,9 @@ export function step14_approvedNoExec(ctx: Ctx): StepResult {
   const S: StepName = "STEP_14_APPROVED_NO_EXECUTION_EVIDENCE";
   const b = ctx.bundle;
   if (b.outcome !== "APPROVED_NO_EXECUTION_EVIDENCE") return ok(S);
-  if (!asObj(b.allowedReceipt)) return fail(S, "E_APPROVED_NO_EXEC", "APPROVED_NO_EXECUTION_EVIDENCE requires the ALLOWED receipt");
+  const allowedRole = roleReceipt(ctx, "allowedReceipt", S); // BOUNDARY 1
+  if (allowedRole.fail) return allowedRole.fail;
+  if (!allowedRole.receipt) return fail(S, "E_APPROVED_NO_EXEC", "APPROVED_NO_EXECUTION_EVIDENCE requires the ALLOWED receipt");
   if (!asObj(b.holdResolution)) return fail(S, "E_APPROVED_NO_EXEC", "APPROVED_NO_EXECUTION_EVIDENCE requires the Hold Resolution (trusted decision-time)");
   if (b.executionConsumption !== undefined || b.executedReceipt !== undefined || b.failedReceipt !== undefined) {
     return fail(S, "E_APPROVED_NO_EXEC", "APPROVED_NO_EXECUTION_EVIDENCE must carry no consumption/executed/failed artifacts");
@@ -1005,4 +1076,34 @@ function keyAuthorizedAt(
     if (atMs >= rev) return `signing key "${kid}" was revoked at ${entry.revokedAt}, at or before ${atLabel} — authorization-time check (F10) fails`;
   }
   return null;
+}
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// STEP 19 — RECEIPT ROLE INTEGRITY (BOUNDARY 1's coverage half). Not a §13 step: a verifier-owned
+// invariant, like step 0's F7b pre-rule. Steps 2-14 fetch every receipt they use BY ROLE through
+// `roleReceipt`, which cannot return the object without having checked what its signer attested.
+// This step closes the OTHER half of that guarantee — the half a per-site fix can never give:
+//
+//   every receipt-role field the bundle CARRIES was actually routed through the chokepoint.
+//
+// A role present but never asserted is a receipt riding along with its meaning unexamined. That is
+// exactly how `allowedReceipt` stayed unchecked through three review rounds: four sibling roles had
+// the check because someone had reproduced an exploit at those sites, and nothing anywhere could
+// notice that the fifth did not. A seventh role wired into a new step without going through
+// `roleReceipt` does not ship silently — it fails here, on its own outcome's VALID fixture.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+export function step19_receiptRoleIntegrity(ctx: Ctx): StepResult {
+  const S: StepName = "STEP_19_RECEIPT_ROLE_INTEGRITY";
+  const b = ctx.bundle as unknown as Record<string, unknown>;
+  for (const role of RECEIPT_ROLES) {
+    if (b[role] === undefined) continue; // absent roles carry nothing to attest
+    if (ctx.rolesAsserted.has(role)) continue;
+    return fail(
+      S,
+      "E_RECEIPT_ROLE",
+      `the bundle carries "${role}" for outcome ${ctx.bundle.outcome} but no step routed it through the receipt-role chokepoint — ` +
+        `its signer's verdict was never checked against the role the bundle assigns it, so a positive verdict here would cover a receipt nothing examined`,
+    );
+  }
+  return ok(S);
 }

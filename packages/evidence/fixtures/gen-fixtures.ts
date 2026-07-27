@@ -18,8 +18,9 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACTS, signArtifact, refHash, receiptRefHash, type Signer as SideSigner } from "noa-approval-artifacts";
-import { buildReceipt, buildCheckpoint, type BuildInput, type Receipt, type Checkpoint, type Signer as ReceiptSigner } from "noa-receipt";
+import { buildReceipt, buildCheckpoint, type BuildInput, type Receipt, type Checkpoint, type Signer as ReceiptSigner, type Verdict } from "noa-receipt";
 import type { EvidenceBundle, EvidenceOutcome } from "../src/types.js";
+import type { ReceiptRole } from "../src/receipt-roles.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT = join(__dirname, "..", "..", "conformance");
@@ -109,11 +110,11 @@ function makeManifest(keys: J[], issuedAt: string = MAN_ISSUED): J {
 function action(riskClass: "HIGH" | "CRITICAL", paramsHash = PARAMS_HASH): BuildInput["action"] {
   return { id: "deploy.apply", canonical: "deploy.apply", riskClass, paramsHash, reversible: false, rollbackRef: null };
 }
-function deferredInput(riskClass: "HIGH" | "CRITICAL"): BuildInput {
+function deferredInput(riskClass: "HIGH" | "CRITICAL", verdict: Verdict = "DEFERRED"): BuildInput {
   return {
     id: "rcpt_deferred", ts: T_DEFERRED, scope: { tenant: TENANT, chain: CHAIN },
     agent: { id: "agent-a", model: null, principal: "SERVICE" },
-    action: action(riskClass), governance: { mode: "on", verdict: "DEFERRED", sandboxed: false },
+    action: action(riskClass), governance: { mode: "on", verdict, sandboxed: false },
   };
 }
 
@@ -145,6 +146,20 @@ interface BuildOpts {
   gateValidFrom?: string; // manifest ACTIVATION for the gate key (pre-activation receipt signing)
   manifestIssuedAt?: string; // manifest issuance stamp (delegation-window chronology)
   cancelledWithGateAllowed?: boolean; // CANCELLED + a GATE-signed ALLOWED receipt and NO decision
+  /** CANCELLED + a legitimate pre-crash APPROVER-signed ALLOWED receipt AND its Decision Artifact —
+   *  the §13-union-legal shape (the gate crashed after the human decided, before it recorded the
+   *  outcome). Valid on its own; used as the positive control for the CANCELLED role fixture. */
+  cancelledWithApproverAllowed?: boolean;
+  // ── 2026-07-27 cross-family review round 4 (BOUNDARY 1) ───────────────────────────────────────
+  /**
+   * Per-ROLE `governance.verdict` override, applied at RECEIPT-CONSTRUCTION time so the whole world
+   * is rebuilt around it: the receipt is genuinely signed by its normal signer, the chain re-links,
+   * every dependent hash (envelope→deferred, holdResolution→verdict receipt, consumption→attempt)
+   * is recomputed and the checkpoint is re-anchored. The result is a bundle in which EVERY
+   * signature is valid and EVERY hash binds, and the ONLY thing wrong is what the signer attested —
+   * which is exactly the attack the four earlier review rounds could not see.
+   */
+  roleVerdicts?: Partial<Record<ReceiptRole, Verdict>>;
 }
 
 /**
@@ -160,7 +175,8 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
   );
   const MAN_HASH = refHash(manifest);
 
-  const deferred = buildReceipt(deferredInput(riskClass), null, rSign("gate-prod-1"));
+  const rv = opts.roleVerdicts ?? {};
+  const deferred = buildReceipt(deferredInput(riskClass, rv.deferredReceipt ?? "DEFERRED"), null, rSign("gate-prod-1"));
   const DEF_HASH = deferred.chain.hash;
 
   const envelopeCore: J = {
@@ -190,7 +206,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
 
   function allowedReceipt(): Receipt {
     return buildReceipt(
-      { id: "rcpt_allowed", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "approver-a", model: null, principal: "HUMAN" }, action: verdictAction, governance: { mode: "on", verdict: "ALLOWED", ruleId: "human-approved", approval: { by: approverKid, at: T_ALLOWED }, sandboxed: false } },
+      { id: "rcpt_allowed", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "approver-a", model: null, principal: "HUMAN" }, action: verdictAction, governance: { mode: "on", verdict: rv.allowedReceipt ?? "ALLOWED", ruleId: "human-approved", approval: { by: approverKid, at: T_ALLOWED }, sandboxed: false } },
       deferred, rSign(approverKid),
     );
   }
@@ -236,7 +252,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     const allowed = allowedReceipt();
     const isFail = outcome === "EXECUTION_FAILED";
     const terminal = buildReceipt(
-      { id: isFail ? "rcpt_failed" : "rcpt_exec", ts: T_EXECUTED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: action(riskClass), governance: { mode: "on", verdict: isFail ? "FAILED" : "EXECUTED", sandboxed: false } },
+      { id: isFail ? "rcpt_failed" : "rcpt_exec", ts: T_EXECUTED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: action(riskClass), governance: { mode: "on", verdict: (isFail ? rv.failedReceipt : rv.executedReceipt) ?? (isFail ? "FAILED" : "EXECUTED"), sandboxed: false } },
       allowed, rSign("gate-prod-1"),
     );
     const decision = opts.omitDecision ? null : makeDecision("APPROVE", approverKid);
@@ -251,7 +267,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     };
   } else if (outcome === "DENIED") {
     const blocked = buildReceipt(
-      { id: "rcpt_blocked", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "approver-a", model: null, principal: "HUMAN" }, action: verdictAction, governance: { mode: "on", verdict: "BLOCKED", ruleId: "human-denied", approval: { by: approverKid, at: T_ALLOWED }, sandboxed: false } },
+      { id: "rcpt_blocked", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "approver-a", model: null, principal: "HUMAN" }, action: verdictAction, governance: { mode: "on", verdict: rv.blockedReceipt ?? "BLOCKED", ruleId: "human-denied", approval: { by: approverKid, at: T_ALLOWED }, sandboxed: false } },
       deferred, rSign(approverKid),
     );
     const decision = makeDecision("DENY", approverKid);
@@ -259,7 +275,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     bundle = { ...(base as EvidenceBundle), holdResolution: hr, blockedReceipt: blocked, decisionArtifact: decision, checkpoint: checkpointOver(blocked) };
   } else if (outcome === "EXPIRED") {
     const timeout = buildReceipt(
-      { id: "rcpt_timeout", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "gate-policy", model: null, principal: "POLICY" }, action: verdictAction, governance: { mode: "on", verdict: "BLOCKED", ruleId: "approval-timeout", sandboxed: false } },
+      { id: "rcpt_timeout", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "gate-policy", model: null, principal: "POLICY" }, action: verdictAction, governance: { mode: "on", verdict: rv.timeoutReceipt ?? "BLOCKED", ruleId: "approval-timeout", sandboxed: false } },
       deferred, rSign("gate-prod-1"),
     );
     const hr = holdResolution("EXPIRED", { decisionHash: null, verdictHash: timeout.chain.hash });
@@ -285,6 +301,14 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     );
     const hr = holdResolution("APPROVED", { decisionHash: refHash(decision), verdictHash: allowed.chain.hash });
     bundle = { ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed, decisionArtifact: decision, executionGrant: g, executionUncertainty: uncertainty, checkpoint: checkpointOver(allowed) };
+  } else if (outcome === "CANCELLED_LOCAL_STATE_LOST" && opts.cancelledWithApproverAllowed) {
+    // The human decided; the gate crashed before durably recording the outcome. §13 permits the
+    // pre-crash ALLOWED receipt + the decision that produced it, and step 3's F19-HUMAN rule is
+    // satisfied because the Decision Artifact IS present.
+    const allowed = allowedReceipt();
+    const decision = makeDecision("APPROVE", approverKid);
+    const hr = holdResolution("CANCELLED", { decisionHash: refHash(decision), verdictHash: allowed.chain.hash, reasonCode: "LOCAL_STATE_LOST" });
+    bundle = { ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed, decisionArtifact: decision, checkpoint: checkpointOver(allowed) };
   } else if (outcome === "CANCELLED_LOCAL_STATE_LOST" && opts.cancelledWithGateAllowed) {
     // CANCELLED carrying a pre-crash ALLOWED receipt that the GATE minted with its OWN key, and NO
     // Decision Artifact — the F19-HUMAN rule used to key on holdResolution.status, which excludes
@@ -446,7 +470,14 @@ for (const oc of OUTCOMES) {
   const w = buildWorld("EXECUTED", { allowedParamsHash: "sha256:" + "f".repeat(64) });
   emit("reject", "step06-verdict-action-mismatch", fixtureFrom(w, { description: "STEP_6: the ALLOWED verdict receipt binds a different action.paramsHash than the DEFERRED receipt (approve-different-action)", expectVerdict: "INVALID", expectStep: "STEP_6_VERDICT_RECEIPT_BINDING", expectCode: "E_VERDICT_BINDING", bundle: w.bundle }));
 }
-// STEP 7 — DENIED with blockedReceipt.governance.verdict != BLOCKED.
+// STEP 19 (was STEP 7) — DENIED with blockedReceipt.governance.verdict != BLOCKED.
+//
+// RE-ATTRIBUTED 2026-07-27, not weakened: "a receipt in role R attested a verdict fit for R" used to
+// be written out four times (steps 7/8/10/11) and NOT AT ALL for the allowedReceipt and
+// deferredReceipt roles. It is now ONE rule with ONE enforcement point (src/receipt-roles.ts), so
+// every role-verdict defect — including the two nobody had reproduced — is caught by the boundary
+// that owns the invariant instead of by whichever step happened to read the receipt. Same bundle,
+// same INVALID verdict, same reason; the owning step is now the honest one.
 {
   const w = buildWorld("DENIED");
   const bundle = clone(w.bundle);
@@ -460,7 +491,7 @@ for (const oc of OUTCOMES) {
   const hr = clone(w.bundle.holdResolution) as J; delete hr.sig; hr.verdictReceiptHash = badBlocked.chain.hash;
   bundle.holdResolution = sign(hr, "noa.hold-resolution/0.1", "gate-prod-1");
   bundle.checkpoint = buildCheckpoint(badBlocked, T_CHECKPOINT, rSign("gate-prod-1"));
-  emit("reject", "step07-denied-verdict", fixtureFrom(w, { description: "STEP_7/F18: DENIED but blockedReceipt.governance.verdict != BLOCKED", expectVerdict: "INVALID", expectStep: "STEP_7_DENIED", expectCode: "E_DENIED", bundle }));
+  emit("reject", "step19-role-blocked-verdict", fixtureFrom(w, { description: "STEP_19/BOUNDARY-1: DENIED but blockedReceipt.governance.verdict != BLOCKED (fully re-signed, every hash binds)", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle }));
 }
 // STEP 8 — EXPIRED with timeoutReceipt.governance.ruleId != approval-timeout.
 {
@@ -493,7 +524,8 @@ for (const oc of OUTCOMES) {
   bundle.executionConsumption = sign(cons, "noa.execution-consumption/0.1", "gate-prod-1");
   emit("reject", "step10-executed-result", fixtureFrom(w, { description: "STEP_10: EXECUTED but consumption.result != DISPATCHED", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_EXECUTED", bundle }));
 }
-// STEP 11 — EXECUTION_FAILED but the failedReceipt verdict is not FAILED.
+// STEP 19 (was STEP 11) — EXECUTION_FAILED but the failedReceipt verdict is not FAILED. Re-attributed
+// with step07-denied-verdict above: the role→verdict rule now has exactly one enforcement point.
 {
   const w = buildWorld("EXECUTION_FAILED");
   const bundle = clone(w.bundle);
@@ -506,7 +538,7 @@ for (const oc of OUTCOMES) {
   const cons = clone(w.bundle.executionConsumption) as J; delete cons.sig; cons.attemptReceiptHash = notFailed.chain.hash;
   bundle.executionConsumption = sign(cons, "noa.execution-consumption/0.1", "gate-prod-1");
   bundle.checkpoint = buildCheckpoint(notFailed, T_CHECKPOINT, rSign("gate-prod-1"));
-  emit("reject", "step11-failed-verdict", fixtureFrom(w, { description: "STEP_11: EXECUTION_FAILED but failedReceipt.governance.verdict != FAILED", expectVerdict: "INVALID", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_EXECUTION_FAILED", bundle }));
+  emit("reject", "step19-role-failed-verdict", fixtureFrom(w, { description: "STEP_19/BOUNDARY-1: EXECUTION_FAILED but failedReceipt.governance.verdict != FAILED (re-signed + re-chained)", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle }));
 }
 // STEP 12 — UNKNOWN_AFTER_DISPATCH with detectedAt before uptimeResetAt (G3 liveness inconsistent).
 {
@@ -682,6 +714,57 @@ for (const oc of OUTCOMES) {
 {
   const w = buildWorld("EXECUTED", { manifestIssuedAt: "2026-07-14T09:30:00.000Z" }); // before DELEG_FROM 10:00
   emit("reject", "step01-manifest-issued-before-delegation", fixtureFrom(w, { description: "STEP_1: keyManifest.issuedAt (09:30) precedes keyDelegation.validFrom (10:00) — the manifest was stamped before the delegation authorizing its signer existed. This is exactly the inconsistency the shipped fixtures used to carry; the fixture was the defect, and this pins the corrected rule", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_DELEGATION_CHAIN", bundle: w.bundle }));
+}
+
+// ═══ 3b. BOUNDARY 1 — RECEIPT SEMANTIC INTEGRITY, ONE FIXTURE PER ROLE (2026-07-27) ═══════════════
+// Round 4 reported ONE of these (allowedReceipt never checked to attest ALLOWED). It is a CLASS, and
+// the class is enumerated here: every role the verifier consumes gets a bundle in which that role's
+// receipt is REBUILT and REALLY SIGNED with a verdict belonging to a different role, with the whole
+// world re-derived around it (chain re-linked, holdResolution re-bound + gate-signed, checkpoint
+// re-anchored). Every signature verifies. Every hash binds. Only the meaning is wrong. If a role is
+// ever added without routing through the chokepoint, step 19's coverage half fails on that outcome's
+// VALID fixture — the enumeration below is the proof of TODAY's roles, the coverage rule is the
+// proof for tomorrow's.
+{
+  // allowedReceipt — the role round 4 found, and the one everything else rests on. Two outcomes, so
+  // the fixture proves it on the pure-approval path AND on the path that also carries an execution.
+  const wA = buildWorld("APPROVED_NO_EXECUTION_EVIDENCE", { roleVerdicts: { allowedReceipt: "BLOCKED" } });
+  emit("reject", "step19-role-allowed-verdict", fixtureFrom(wA, { description: "STEP_19/BOUNDARY-1: the approver signed a receipt that says BLOCKED and the bundle presents it as the APPROVAL. Cryptographically flawless, semantically the opposite of what it is used for — VALID_FULL_CHAIN before this boundary existed", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wA.bundle }));
+
+  const wE = buildWorld("EXECUTED", { roleVerdicts: { allowedReceipt: "FAILED" } });
+  emit("reject", "step19-role-allowed-verdict-executed", fixtureFrom(wE, { description: "STEP_19/BOUNDARY-1: an EXECUTED bundle whose execution grant is bound by hash to an 'approval' receipt attesting FAILED — the grant binding (G12) proves WHICH receipt, never WHAT it said", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wE.bundle }));
+
+  // deferredReceipt — the second role nobody had reproduced: the chain root the Hold Envelope binds.
+  const wD = buildWorld("APPROVED_NO_EXECUTION_EVIDENCE", { roleVerdicts: { deferredReceipt: "ALLOWED" } });
+  emit("reject", "step19-role-deferred-verdict", fixtureFrom(wD, { description: "STEP_19/BOUNDARY-1: the receipt the Hold Envelope freezes attests ALLOWED, not DEFERRED — an envelope 'freezing' an action its own root receipt says was already approved", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wD.bundle }));
+
+  // timeoutReceipt — role check only; step 8 still owns principal POLICY + ruleId approval-timeout.
+  const wT = buildWorld("EXPIRED", { roleVerdicts: { timeoutReceipt: "ALLOWED" } });
+  emit("reject", "step19-role-timeout-verdict", fixtureFrom(wT, { description: "STEP_19/BOUNDARY-1: an EXPIRED bundle whose POLICY-signed timeout receipt attests ALLOWED", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wT.bundle }));
+
+  // executedReceipt — the terminal success attestation.
+  const wX = buildWorld("EXECUTED", { roleVerdicts: { executedReceipt: "ALLOWED" } });
+  emit("reject", "step19-role-executed-verdict", fixtureFrom(wX, { description: "STEP_19/BOUNDARY-1: an EXECUTED bundle whose terminal receipt attests ALLOWED — 'it ran' asserted by a receipt that only says it was permitted to", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wX.bundle }));
+
+  // CANCELLED may carry a pre-crash ALLOWED receipt (§13 union). Optional is not unexamined.
+  // Positive control FIRST: the same §13-legal CANCELLED shape with an honest ALLOWED verdict must
+  // still verify, so the rejection below is attributable to the verdict and to nothing else.
+  const wCok = buildWorld("CANCELLED_LOCAL_STATE_LOST", { cancelledWithApproverAllowed: true });
+  emit("verdict", "cancelled-with-approver-allowed-valid", fixtureFrom(wCok, { description: "POSITIVE CONTROL for step19-role-cancelled-allowed-verdict: CANCELLED carrying the §13-legal pre-crash approver-signed ALLOWED receipt + its Decision Artifact verifies", expectVerdict: "VALID_FULL_CHAIN", bundle: wCok.bundle }));
+
+  const wC = buildWorld("CANCELLED_LOCAL_STATE_LOST", { cancelledWithApproverAllowed: true, roleVerdicts: { allowedReceipt: "EXECUTED" } });
+  emit("reject", "step19-role-cancelled-allowed-verdict", fixtureFrom(wC, { description: "STEP_19/BOUNDARY-1: CANCELLED carrying a pre-crash receipt in the allowedReceipt role that attests EXECUTED — the outcome claims nothing is known about execution while the receipt it carries says it ran", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wC.bundle }));
+}
+
+// STEP 7 — DENIED with NO blockedReceipt at all. Step 7's own rule, kept covered now that the
+// role→verdict rule moved to the boundary that owns it: a denial with no signed denial receipt.
+{
+  const w = buildWorld("DENIED");
+  const bundle = clone(w.bundle);
+  delete (bundle as Partial<EvidenceBundle>).blockedReceipt;
+  const hr = clone(w.bundle.holdResolution) as J; delete hr.sig; hr.verdictReceiptHash = null;
+  bundle.holdResolution = sign(hr, "noa.hold-resolution/0.1", "gate-prod-1");
+  emit("reject", "step07-denied-missing-blocked", fixtureFrom(w, { description: "STEP_7/F18: a DENIED outcome with no blockedReceipt — the denial is asserted by the container, not by anything the approver signed", expectVerdict: "INVALID", expectStep: "STEP_7_DENIED", expectCode: "E_DENIED", bundle }));
 }
 
 // ═══ 4. envelope-expiry FRESHNESS: late-audit of terminal-negative outcomes (EXPIRED/DENIED) ═══════

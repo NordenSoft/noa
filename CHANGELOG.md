@@ -9,6 +9,40 @@ All notable changes to `noa-receipt` are documented here. The format follows
 > **NOT RELEASED, NOT PUBLISHED, NO VERSION BUMP.** These land on a feature branch. The two
 > BREAKING items below require a MAJOR release; that decision and its timing are the maintainer's.
 
+### Security (cross-family review ROUND 4, 2026-07-27) — boundaries, not more patches
+
+Round 4 returned 0 CRITICAL / 3 HIGH, and all three continued classes earlier rounds had declared
+closed. Severity was converging while the CLASSES were not, so the response is not three more
+endpoint patches. Each class now has ONE authoritative enforcement point plus a mechanical rule that
+fails closed when a future site does not route through it.
+
+- **HIGH → BOUNDARY 1 (receipt semantic integrity).** `allowedReceipt` was never checked to actually
+  attest `ALLOWED`, on ANY of the six outcomes that carry it, while the sibling check existed for
+  `blockedReceipt` (step 7), `timeoutReceipt` (step 8), `executedReceipt` (step 10) and
+  `failedReceipt` (step 11). Reproduced: rebuild `allowedReceipt` with `governance.verdict` set to
+  `BLOCKED`, sign it with the SAME approver key, re-bind `holdResolution.verdictReceiptHash` with the
+  gate key and re-anchor the checkpoint — the verifier returned `VALID_FULL_CHAIN`, and likewise for
+  `FAILED`, `EXECUTED` and `DEFERRED`. Enumerating the class found a SECOND unchecked role the review
+  did not report: `deferredReceipt`, the chain root the Hold Envelope binds, was never required to
+  attest `DEFERRED`.
+
+  The rule now lives in `packages/evidence/src/receipt-roles.ts` — one table (role → the verdicts a
+  signer may have attested for it) and one chokepoint, `assertReceiptRole`, which cannot return the
+  receipt without having checked it. Steps 2-14 fetch every receipt they use BY ROLE through it. The
+  new `STEP_19_RECEIPT_ROLE_INTEGRITY` (verifier-owned, like step 0's F7b pre-rule; code
+  `E_RECEIPT_ROLE`) closes the half a per-site fix cannot: any role field the bundle CARRIES that no
+  step routed through the chokepoint is a hard rejection, so a seventh role wired in later without
+  the check turns its own outcome's VALID fixture red instead of shipping.
+
+  *Attribution change, not a weakening:* the four role→verdict checks that were written out inside
+  steps 7/8/10/11 moved to the boundary that owns the invariant. Same bundles, same `INVALID`
+  verdict, same reasons; `reject/step07-denied-verdict` and `reject/step11-failed-verdict` are now
+  `reject/step19-role-blocked-verdict` and `reject/step19-role-failed-verdict`, step 7 keeps its own
+  targeted rejection (`step07-denied-missing-blocked`), and six more role fixtures — one per role,
+  each fully re-signed and re-chained so every signature verifies and every hash binds — pin the rest
+  of the class. `VerifyEvidenceResult` gains `rolesAsserted` so the enumeration test can assert, per
+  outcome, that the roles the bundle carries and the roles the verifier asserted are the same set.
+
 ### Security (cross-family review, 2026-07-27)
 
 Five findings an independent review reproduced against this branch. Each was re-reproduced here

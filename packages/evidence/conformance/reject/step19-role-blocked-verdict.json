@@ -1,8 +1,8 @@
 {
-  "description": "STEP_7/F18: DENIED but blockedReceipt.governance.verdict != BLOCKED",
+  "description": "STEP_19/BOUNDARY-1: DENIED but blockedReceipt.governance.verdict != BLOCKED (fully re-signed, every hash binds)",
   "expectVerdict": "INVALID",
-  "expectStep": "STEP_7_DENIED",
-  "expectCode": "E_DENIED",
+  "expectStep": "STEP_19_RECEIPT_ROLE_INTEGRITY",
+  "expectCode": "E_RECEIPT_ROLE",
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {
