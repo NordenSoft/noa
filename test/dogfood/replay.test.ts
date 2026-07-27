@@ -10,6 +10,7 @@
 
 import { describe, it, expect } from "vitest";
 import { verifyChain } from "../../src/verify.js";
+import { buildReceipt } from "../../src/builder.js";
 import { canonicalize } from "../../src/jcs.js";
 import { sha256Prefixed } from "../../src/hash.js";
 import type { Receipt } from "../../src/types.js";
@@ -137,20 +138,32 @@ describe("dogfood: a tampered receipt FAILS", () => {
     );
     expect(receipt.governance.compliance?.verdict).toBe("ALLOW"); // committed the TRUE decision
 
-    // Forge: flip the recorded verdict to DENY while the inputs still evaluate to ALLOW.
-    const forged: Receipt = structuredClone(receipt);
-    forged.governance.compliance!.verdict = "DENY";
+    // Forge: flip the recorded verdict to DENY while the inputs still evaluate to ALLOW, and RE-SIGN
+    // so the carrier is genuinely authentic. H2 (review #6) requires a keyring for any positive
+    // result, and a stale signature would then reject at carrier auth BEFORE the semantic rule ran —
+    // which would leave the verdict-reconciliation rule this test exists for completely unexercised.
+    // Re-signing makes the test strictly harder: every signature is real and only the rule catches it.
+    const forgedBody: Receipt = structuredClone(receipt);
+    forgedBody.governance.compliance!.verdict = "DENY";
+    const forged: Receipt = buildReceipt(
+      { id: forgedBody.id, ts: forgedBody.ts, scope: forgedBody.scope, agent: forgedBody.agent, action: forgedBody.action, governance: forgedBody.governance as never },
+      null,
+      signer.signer,
+    );
 
-    // L2 proof (no keyring — isolates the semantic reconciliation from carrier auth): the re-run
-    // reproduces ALLOW, which does NOT equal the forged recorded DENY ⇒ ok:false.
-    const r = replay(forged, policy, inputs);
+    // H2 (review #6): the keyring is now REQUIRED for any positive verdict, so it is supplied here
+    // too. That makes this test STRICTER, not weaker — carrier auth and the semantic reconciliation
+    // must BOTH reject, and the assertion below still pins the semantic reason. (Isolating the
+    // semantic rule by omitting the trust root is exactly how a false green got frozen elsewhere.)
+    const r = replay(forged, policy, inputs, { keyring: signer.keyring });
     expect(r.reproducedVerdict).toBe("ALLOW");
     expect(r.reproducedByteForByte).toBe(false);
     expect(r.complianceOk).toBe(false);
     expect(r.complianceReason).toMatch(/verdict mismatch/);
     expect(r.reproducedComplianceVerdict).toBe("ALLOW");
-    // carrier integrity: the body changed under a stale signature.
-    expect(verifyChain([forged], { keyring: signer.keyring }).status).toBe("TAMPERED");
+    // …and the STALE-signature variant of the same forgery is caught independently by carrier auth.
+    expect(verifyChain([forgedBody], { keyring: signer.keyring }).status).toBe("TAMPERED");
+    expect(replay(forgedBody, policy, inputs, { keyring: signer.keyring }).complianceOk).toBe(false);
   });
 
   it("substituted INPUTS are rejected (inputsHash bind) even when the re-run verdict matches", () => {
@@ -166,7 +179,7 @@ describe("dogfood: a tampered receipt FAILS", () => {
     // Different amount that ALSO evaluates to ALLOW — so the verdict alone cannot catch this;
     // the inputsHash bind is what does.
     const wrongInputs = { action: "payment.refund", amountMinor: 999_999 };
-    const r = replay(receipt, policy, wrongInputs);
+    const r = replay(receipt, policy, wrongInputs, { keyring: signer.keyring });
     expect(r.reproducedVerdict).toBe("ALLOW");
     expect(r.reproducedByteForByte).toBe(true); // coincidentally still ALLOW…
     expect(r.complianceOk).toBe(false); // …but the recorded inputs were NOT these.
@@ -189,7 +202,7 @@ describe("dogfood: a tampered receipt FAILS", () => {
       requiredPaths: [],
       rules: [{ id: "always", when: { op: "exists", path: "action" }, then: "ALLOW" }],
     };
-    const r = replay(receipt, permissive, inputs);
+    const r = replay(receipt, permissive, inputs, { keyring: signer.keyring });
     expect(r.complianceOk).toBe(false);
     expect(r.complianceReason).toMatch(/policyHash mismatch/);
   });

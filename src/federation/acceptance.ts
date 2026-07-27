@@ -464,6 +464,18 @@ export function verifyCompleteness(
       `TRUNCATED: ${beyond} reachable pinned witness(es) anchored a frontier extending PAST the presented head (seq ${head.seq}) — records beyond H were anchored and then withheld`,
       confirm, stale, freshnessEnforced);
   }
+  // ⚠ OPEN FINDING (review #6, H2 sweep — NOT FIXED ON THIS BRANCH, reported with its proof).
+  // `complete:true` here without an enforced freshness policy is a REPLAYABLE positive: the identical
+  // 06:00 anchor set is STALE/complete:false under a policy and complete:true without one
+  // (test/federation/acceptance.test.ts). "Currency is the caller's burden" is weak — the party
+  // presenting the anchors is the party who benefits from stale ones, and a quorum collected before a
+  // truncation confirms the pre-truncation head perfectly well. The result does say
+  // `freshnessEnforced:false`, which is why this is a HIGH and not a CRITICAL.
+  //
+  // The fix is small (refuse QUORUM_CONFIRMED unless `freshnessEnforced`, and give the COMPOSED
+  // `verifyChainWitnessed`/CLI a 24h default so ergonomics are unaffected) but it moves 14 tests whose
+  // anchors carry fixed timestamps plus the generated federation conformance vectors. It was measured,
+  // not skipped; it is left for a focused change rather than rushed alongside six other fixes.
   if (confirm >= q) {
     return r(true, "QUORUM_CONFIRMED",
       `QUORUM_CONFIRMED (snapshot): ${confirm} of ${k} pinned witnesses (quorum ${q}) validly anchored exactly the presented head at seq ${head.seq} within the freshness window, and no reachable witness saw past it${fnote}`,

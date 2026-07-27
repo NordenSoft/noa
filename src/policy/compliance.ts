@@ -67,6 +67,26 @@ export function complianceCommit(policy: Policy, inputs: InputSnapshot): Complia
 export interface ComplianceResult {
   ok: boolean;
   reason?: string;
+  /**
+   * H2 (review #6) — WHAT `ok:true` IS A CLAIM ABOUT, made machine-readable.
+   *
+   * `ok:true` used to be one word for two very different guarantees, and the weaker one was the
+   * DEFAULT. Without a keyring nothing was authenticated at all: an attacker who replaced the whole
+   * `governance.compliance` block with one committed under an allow-everything policy got `ok:true`,
+   * because the L2 hashes line up with whatever policy the attacker also supplied. That mode is now
+   * refused outright (see below) — the L2 proof over an unauthenticated carrier proves nothing.
+   *
+   * What survives is the honest distinction between the two authenticated modes, and it is a FIELD,
+   * not a comment, so a caller can gate on it:
+   *
+   *   KID_LEVEL   — a keyring-trusted key signed this carrier. It does NOT establish that the
+   *                 receipt's own `agent.id` is the party that signed: in a multi-key keyring a
+   *                 co-trusted key can sign a receipt claiming someone else's agent.id.
+   *   AGENT_BOUND — additionally, an identityManifest authorized (agent.id, sig.kid).
+   *
+   * Absent on every `ok:false`.
+   */
+  attribution?: "KID_LEVEL" | "AGENT_BOUND";
   /** The reproduced verdict from re-running the committed policy over the recorded inputs. */
   policyVerdict?: "ALLOW" | "DENY";
   ruleFired?: string | null;
@@ -162,7 +182,32 @@ export function verifyReceiptCompliance(
     if (haveKeyring && (typeof o.keyring !== "object" || o.keyring === null || Array.isArray(o.keyring))) {
       return { ok: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
     }
-    if (haveKeyring) {
+    // ── H2 (review #6): NO TRUST ROOT ⇒ NO POSITIVE VERDICT. ──────────────────────────────────────
+    // This was the only verifier in the repository that returned a POSITIVE result with no trust
+    // input at all. `verifyChain` returns UNVERIFIED without a keyring; `verifyEvidence` returns
+    // UNVERIFIED without a tenant root (F7a); this returned `ok:true`. Two tests froze the
+    // consequence: swapping the ENTIRE compliance block for one committed under an attacker-authored
+    // allow-everything policy returned ok:true (the hashes agree because the attacker supplied both
+    // halves), and an impersonated receipt returned ok:true even when the caller HAD supplied an
+    // identityManifest — the binding silently no-opped because it gates on carrier-auth, which never
+    // ran. Both were commented as documented gaps; a comment is not a control, and a test asserting
+    // ok:true for an impersonated receipt codifies the unsafe behaviour regardless of what is written
+    // above it.
+    //
+    // The L2 proof is a statement about bytes the receipt COMMITTED to. Over a carrier nobody
+    // authenticated, those bytes are attacker-supplied on both sides of every comparison, so the
+    // proof is vacuous. Fail closed, exactly like every sibling verifier.
+    if (!haveKeyring) {
+      return {
+        ok: false,
+        reason:
+          "no keyring supplied — the compliance carrier cannot be authenticated, and the L2 hash proof " +
+          "over an unauthenticated receipt proves nothing (its governance.compliance block is attacker-mutable). " +
+          "Pass { keyring } (and { identityManifest } to bind WHICH agent signed).",
+      };
+    }
+    let attribution: "KID_LEVEL" | "AGENT_BOUND" = "KID_LEVEL";
+    {
       const keyring = o.keyring as Keyring;
       const shape = validateReceiptShape(snap);
       if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
@@ -204,6 +249,7 @@ export function verifyReceiptCompliance(
         if (allowed === undefined || !allowed.includes(snap.sig.kid)) {
           return { ok: false, reason: `agent "${snap.agent.id}" not authorized for signing key "${snap.sig.kid}" (identity manifest)` };
         }
+        attribution = "AGENT_BOUND";
       }
     }
     if (policyHash(policySnap) !== c.policyHash) return { ok: false, reason: "policyHash mismatch — supplied policy is not the committed one" };
@@ -218,7 +264,7 @@ export function verifyReceiptCompliance(
     if (c.verdict !== undefined && ev.verdict !== c.verdict) {
       return { ok: false, reason: `verdict mismatch — recorded decision does not reproduce (recorded ${c.verdict}, re-run ${ev.verdict})`, policyVerdict: ev.verdict, ruleFired: ev.ruleFired };
     }
-    return { ok: true, policyVerdict: ev.verdict, ruleFired: ev.ruleFired };
+    return { ok: true, policyVerdict: ev.verdict, ruleFired: ev.ruleFired, attribution };
   } catch (e) {
     return { ok: false, reason: `compliance check error: ${(e as Error).message}` };
   }

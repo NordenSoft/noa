@@ -21,6 +21,21 @@ const POLICY: Policy = {
 const kp = generateKeyPair("k1");
 const keyring = { [kp.kid]: kp.publicKey };
 
+// ── H2 (review #6): a keyring is now REQUIRED for any positive result ─────────────────────────────
+// `verifyReceiptCompliance` was the only verifier in this repository that returned a POSITIVE result
+// with no trust root, and two tests in this file froze the consequence (a swapped compliance block
+// and an impersonated receipt, both ok:true). Every test below that legitimately expects ok:true now
+// supplies { keyring }, and every test that mutates a receipt's body RE-SIGNS it — so the semantic
+// rule under test is what rejects the receipt, not an incidental stale-hash failure. Re-signing makes
+// these tests STRICTER: the carrier is genuine and only the rule catches it.
+function resign(r: ReturnType<typeof buildReceipt>): ReturnType<typeof buildReceipt> {
+  const input: BuildInput = {
+    id: r.id, ts: r.ts, scope: r.scope, agent: r.agent, action: r.action,
+    governance: r.governance as never,
+  };
+  return buildReceipt(input, null, { kid: kp.kid, privateKey: kp.privateKey });
+}
+
 function receiptWith(inputs: Record<string, unknown>, verdict: string): ReturnType<typeof buildReceipt> {
   const input: BuildInput = {
     id: "rc_0", ts: "2026-06-21T10:00:00.000Z", scope: { tenant: "t", chain: "c1" },
@@ -44,22 +59,32 @@ test("B4: a compliance-bearing receipt still verifies as a normal chain (schema 
 test("B4: on-receipt compliance proof — re-run reproduces the verdict (ALLOW)", () => {
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
-  const res = verifyReceiptCompliance(r, POLICY, inputs);
+  const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring });
   assert.equal(res.ok, true, res.reason);
   assert.equal(res.policyVerdict, "ALLOW");
+  assert.equal(res.attribution, "KID_LEVEL", "no manifest ⇒ the weaker guarantee, stated as a FIELD not a comment");
 });
 
 test("B4: on-receipt compliance proof — DENY reproduces too", () => {
   const inputs = { action: "payment.refund", amountMinor: 100_000_000 };
   const r = receiptWith(inputs, "BLOCKED");
-  const res = verifyReceiptCompliance(r, POLICY, inputs);
+  const res = verifyReceiptCompliance(r, POLICY, inputs, { keyring });
   assert.equal(res.ok, true, res.reason);
   assert.equal(res.policyVerdict, "DENY");
 });
 
+test("H2: NO KEYRING ⇒ never ok:true — an unauthenticated carrier cannot yield a positive verdict", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const r = receiptWith(inputs, "EXECUTED"); // a GENUINE receipt: the point is the missing trust root
+  const res = verifyReceiptCompliance(r, POLICY, inputs);
+  assert.equal(res.ok, false, "matches verifyChain (UNVERIFIED) and verifyEvidence (F7a) — no trust root, no green");
+  assert.match(res.reason ?? "", /no keyring supplied/);
+  assert.equal(res.attribution, undefined);
+});
+
 test("B4: substituted INPUTS are rejected (inputsHash bind)", () => {
   const r = receiptWith({ action: "payment.refund", amountMinor: 4200 }, "EXECUTED");
-  const res = verifyReceiptCompliance(r, POLICY, { action: "payment.refund", amountMinor: 999_999 });
+  const res = verifyReceiptCompliance(r, POLICY, { action: "payment.refund", amountMinor: 999_999 }, { keyring });
   assert.equal(res.ok, false);
   assert.match(res.reason ?? "", /inputsHash mismatch/);
 });
@@ -68,7 +93,7 @@ test("B4: a substituted POLICY is rejected (policyHash bind — anti policy-swap
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const permissive: Policy = { spec: "noa.policy/0.2", id: "evil", requiredPaths: [], rules: [{ id: "x", when: { op: "exists", path: "action" }, then: "ALLOW" }] };
-  const res = verifyReceiptCompliance(r, permissive, inputs);
+  const res = verifyReceiptCompliance(r, permissive, inputs, { keyring });
   assert.equal(res.ok, false);
   assert.match(res.reason ?? "", /policyHash mismatch/);
 });
@@ -83,8 +108,9 @@ test("B4: a receipt committing the OPPOSITE verdict is REJECTED (verdict reconci
   const r = receiptWith(inputs, "EXECUTED");
   assert.equal(r.governance.compliance?.verdict, "ALLOW"); // commit recorded the true decision
   // Forge: claim DENY on-receipt while the recorded inputs actually evaluate to ALLOW.
-  const forged = { ...r, governance: { ...r.governance, compliance: { ...r.governance.compliance!, verdict: "DENY" as const } } };
-  const res = verifyReceiptCompliance(forged, POLICY, inputs);
+  // RE-SIGNED, so the carrier is genuinely authentic and only the verdict rule can reject it.
+  const forged = resign({ ...r, governance: { ...r.governance, compliance: { ...r.governance.compliance!, verdict: "DENY" as const } } } as never);
+  const res = verifyReceiptCompliance(forged, POLICY, inputs, { keyring });
   assert.equal(res.ok, false);
   assert.match(res.reason ?? "", /verdict mismatch/);
   assert.equal(res.policyVerdict, "ALLOW"); // still surfaces the true re-run verdict
@@ -94,8 +120,8 @@ test("B4: backward-compat — a commitment WITHOUT a verdict still verifies (rec
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const c = r.governance.compliance!;
-  const legacy = { ...r, governance: { ...r.governance, compliance: { policyHash: c.policyHash, readSetHash: c.readSetHash, inputsHash: c.inputsHash } } };
-  const res = verifyReceiptCompliance(legacy, POLICY, inputs);
+  const legacy = resign({ ...r, governance: { ...r.governance, compliance: { policyHash: c.policyHash, readSetHash: c.readSetHash, inputsHash: c.inputsHash } } } as never);
+  const res = verifyReceiptCompliance(legacy, POLICY, inputs, { keyring });
   assert.equal(res.ok, true, res.reason);
   assert.equal(res.policyVerdict, "ALLOW");
 });
@@ -132,15 +158,19 @@ test("with a keyring, a TAMPERED carrier (corrupt signature) is REJECTED — not
   assert.match(res.reason ?? "", /not authenticated|hash mismatch|malformed/);
 });
 
-test("weaponized — swapping the WHOLE compliance block is caught by carrier auth", () => {
+test("H2: weaponized — swapping the WHOLE compliance block is REJECTED in BOTH modes (was a false green)", () => {
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const permissive: Policy = { spec: "noa.policy/0.2", id: "evil", requiredPaths: [], rules: [{ id: "x", when: { op: "exists", path: "action" }, then: "ALLOW" }] };
   const swapped = JSON.parse(JSON.stringify(r));
   swapped.governance.compliance = complianceCommit(permissive, inputs); // mutates the hashed body, stale chain.hash
-  // WITHOUT a keyring the L2 hashes line up for the swapped policy → false green (documents the gap the fix closes):
-  assert.equal(verifyReceiptCompliance(swapped, permissive, inputs).ok, true);
-  // WITH a keyring the forged carrier is rejected (recomputed hash ≠ the stale signed hash):
+  // WAS ok:true and commented "false green (documents the gap the fix closes)". A comment is not a
+  // control, and the gap was never closed — it was recorded and left. The attacker supplies BOTH
+  // sides of every hash comparison here, so the L2 proof is vacuous over an unauthenticated carrier.
+  const noRoot = verifyReceiptCompliance(swapped, permissive, inputs);
+  assert.equal(noRoot.ok, false, "an unauthenticated carrier can never be COMPLIANT");
+  assert.match(noRoot.reason ?? "", /no keyring supplied/);
+  // WITH a keyring the forged carrier is rejected on the hash too — two independent refusals.
   assert.equal(verifyReceiptCompliance(swapped, permissive, inputs, { keyring }).ok, false);
 });
 
@@ -345,8 +375,14 @@ test("a flipping `inputs` getter cannot split inputsHash from the re-run (snapsh
     // the keyring → carrier-auth ALONE (kid-level) passes. That is exactly the gap.
     const imp = compReceiptFor("alice", { kid: bobK.kid, privateKey: bobK.privateKey });
 
-    // disclosed weaker guarantee: { keyring } only → carrier-auth passes (kid-level attribution).
-    assert.equal(verifyReceiptCompliance(imp, POLICY, inputs, { keyring: bothKr }).ok, true);
+    // H2: { keyring } only → carrier-auth passes at KID level, and `ok:true` is no longer a bare
+    // claim: `attribution` says, in a field a caller can gate on, that this does NOT establish which
+    // agent signed. (The residual — a co-trusted key signing another agent's id — is the same
+    // kid-level attribution `verifyChain` exposes and is pinned across all five conformance
+    // implementations; it is reported in the review response, not silently re-verdicted here.)
+    const kidLevel = verifyReceiptCompliance(imp, POLICY, inputs, { keyring: bothKr });
+    assert.equal(kidLevel.ok, true);
+    assert.equal(kidLevel.attribution, "KID_LEVEL", "ok:true must never be readable as agent-level attribution");
 
     // with the manifest → the impersonation is rejected (alice not authorized for bob-key).
     const bound = verifyReceiptCompliance(imp, POLICY, inputs, { keyring: bothKr, identityManifest: manifest });
@@ -359,12 +395,15 @@ test("a flipping `inputs` getter cannot split inputsHash from the re-run (snapsh
     assert.equal(vc.status, "UNTRUSTED");
   });
 
-  test("identityManifest WITHOUT keyring is a no-op (binding gates an AUTHENTICATED carrier only)", () => {
-    // No keyring ⇒ no carrier-auth ⇒ the identity binding does not run; the L2 hashes still line up → ok:true
-    // (kid-level, exactly as before). This documents that the manifest gates an authenticated carrier, never a
-    // standalone agent-claim on an un-authenticated receipt.
+  test("H2: identityManifest WITHOUT keyring is REJECTED — a silently no-opped safety control is worse than none", () => {
+    // WAS ok:true for an IMPERSONATED receipt (agent.id=alice signed by bob), commented as "a no-op".
+    // A caller who supplies an identityManifest is asking for agent-level attribution; answering
+    // ok:true while the binding never ran is the most dangerous shape a verifier can take, because
+    // the caller has evidence it believes it asked for. Now the missing trust root refuses first.
     const imp = compReceiptFor("alice", { kid: bobK.kid, privateKey: bobK.privateKey });
-    assert.equal(verifyReceiptCompliance(imp, POLICY, inputs, { identityManifest: manifest }).ok, true);
+    const res = verifyReceiptCompliance(imp, POLICY, inputs, { identityManifest: manifest });
+    assert.equal(res.ok, false);
+    assert.match(res.reason ?? "", /no keyring supplied/);
   });
 
   test("a malformed identityManifest is fail-closed (ok:false), never silently ignored", () => {

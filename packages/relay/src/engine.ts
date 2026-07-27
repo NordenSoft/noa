@@ -500,10 +500,18 @@ export class RelayEngine {
     //
     // R1 — cheap structural cross-tenant guard: deep chain-verification (does this delegation
     // actually chain to a trusted root?) is out of relay scope, the mobile's job. But a delegation
-    // that itself DECLARES a tenant must not be allowed to ride along under a DIFFERENT manifest's
-    // tenant — else `GET /v1/trust?tenant=victim` could be made to serve an attacker's delegation
-    // object. Absent tenant field on the delegation ⇒ no opinion, still accepted (older delegations
-    // that don't self-describe a tenant are unaffected).
+    // that itself declares a tenant must not be allowed to ride along under a DIFFERENT manifest's
+    // tenant — else `GET /v1/trust?tenant=victim` could be made to serve an attacker's delegation.
+    //
+    // H2 (review #6) — AN OMISSION IS NOT AN ABSENCE OF OPINION. This guard used to fire only when
+    // the field was PRESENT ("absent tenant ⇒ no opinion, still accepted, older delegations are
+    // unaffected"), so an attacker bypassed the whole cross-tenant check by DELETING one field —
+    // exactly the class commit c279f4f closed in the five receipt verifiers ("an optional-field
+    // omission must not reset the tenant boundary"), recurring here through a different surface.
+    //
+    // The backward-compat carve-out was also protecting nothing: `tenant` is REQUIRED by the frozen
+    // `noa.key-delegation/0.1` schema, so a delegation without one is malformed, not legacy. A
+    // missing tenant is now a hard rejection.
     let delegation: Record<string, unknown> | null = null;
     let delegationProvided = false;
     if (input["delegation"] !== undefined) {
@@ -511,7 +519,12 @@ export class RelayEngine {
       const d = input["delegation"];
       if (!isRecord(d) || d["spec"] !== "noa.key-delegation/0.1") return err(422, "BAD_DELEGATION");
       const delegationTenant = asString(d["tenant"]);
-      if (delegationTenant !== undefined && delegationTenant !== tenant) {
+      if (delegationTenant === undefined) {
+        return err(422, "BAD_DELEGATION", {
+          detail: "delegation.tenant is required (noa.key-delegation/0.1) — an omitted tenant cannot bypass the cross-tenant guard",
+        });
+      }
+      if (delegationTenant !== tenant) {
         return err(422, "BAD_DELEGATION", {
           detail: "delegation.tenant does not match manifest.tenant",
         });

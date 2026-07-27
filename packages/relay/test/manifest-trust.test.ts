@@ -183,15 +183,23 @@ test("engine: R1 — a delegation whose tenant mismatches the manifest's tenant 
   assert.equal(h.engine.getTrust("victim").status, 404);
 });
 
-test("engine: R1 — a delegation with NO tenant field at all is still accepted (guard only fires when the field is present)", () => {
+test("engine: R1 — H2: DELETING the tenant field does NOT bypass the cross-tenant guard (was accepted 200)", () => {
+  // Review #6, H2. The preceding test proves a delegation declaring `tenant:"attacker"` is rejected
+  // 422. This one used to prove that removing the field entirely slipped the SAME cross-tenant
+  // delegation through to `GET /v1/trust` — an omission bypass, and an attacker is never short of the
+  // ability to omit a field. It is the same class commit c279f4f closed in the five receipt
+  // verifiers, recurring on a different surface. The carve-out it relied on ("older delegations that
+  // do not self-describe a tenant") was empty: `tenant` is REQUIRED by the frozen
+  // noa.key-delegation/0.1 schema.
   const h = makeHarness();
   const { tenant: _drop, ...delegationNoTenant } = DELEGATION;
   const res = h.engine.putManifest({
     manifest: { ...MANIFEST_WITH_DELEGATION, tenant: "beta", version: 1 },
     delegation: delegationNoTenant,
   });
-  assert.equal(res.status, 200);
-  assert.equal(h.engine.getTrust("beta").status, 200);
+  assert.equal(res.status, 422);
+  assert.equal((res.body as { error?: string }).error, "BAD_DELEGATION");
+  assert.equal(h.engine.getTrust("beta").status, 404, "nothing was published, so nothing is served");
 });
 
 // ── R2 — version-conflict honesty ───────────────────────────────────────────
