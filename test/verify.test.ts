@@ -552,6 +552,75 @@ test("A1: absent<->present tenant is REPORTED but not TAMPERED (an optional fiel
   );
 });
 
+// ── THE OMISSION MUST NOT RESET THE BOUNDARY (cross-family review round 3) ───────────────────────
+// The relaxation above is right in principle and was wrong in its state machine. Comparing only
+// ADJACENT receipts meant `acme -> globex` was TAMPERED while `acme -> absent -> globex` — the same
+// splice, with one optional field left out of the receipt in between — was VALID, in all five
+// implementations. Omitting an optional field is not a capability an attacker lacks, so the
+// tolerated transition became a laundering step for the very thing the check exists to catch.
+//
+// The fix carries the last PRESENT tenant across absences. These four tests pin BOTH halves: the
+// attack must fail, and the legitimate transitions the relaxation protects must keep passing (a
+// "fix" that simply re-banned absence would pass the first two and fail the last two).
+
+test("A1: acme -> absent -> globex is the SAME splice as acme -> globex -> TAMPERED (an omission cannot launder a cross-tenant change)", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", undefined, r0);
+  const r2 = mkTenantReceipt("r2", "globex", r1);
+  const r = verifyChain([r0, r1, r2], { keyring: tenantKeyring });
+  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.match(
+    r.reason ?? "",
+    /tenant-drift: seq 0 "acme" -> seq 2 "globex"/,
+    "the reason must name the LAST PRESENT value and the receipt that contradicts it — not the omission that hid it",
+  );
+  assert.equal(r.badSeq, 2);
+});
+
+test("A1: MORE omissions do not help — acme -> absent -> absent -> globex is still TAMPERED", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", undefined, r0);
+  const r2 = mkTenantReceipt("r2", undefined, r1);
+  const r3 = mkTenantReceipt("r3", "globex", r2);
+  const r = verifyChain([r0, r1, r2, r3], { keyring: tenantKeyring });
+  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.match(r.reason ?? "", /tenant-drift: seq 0 "acme" -> seq 3 "globex"/);
+});
+
+test("A1: acme -> absent -> acme stays VALID — the same tenant resuming is the producer-version change the relaxation protects", () => {
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", undefined, r0);
+  const r2 = mkTenantReceipt("r2", "acme", r1);
+  const r = verifyChain([r0, r1, r2], { keyring: tenantKeyring });
+  assert.equal(r.status, "VALID", r.reason);
+  assert.ok(
+    r.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 (none)'),
+    `the absent transitions must still be REPORTED: ${JSON.stringify(r.warnings)}`,
+  );
+});
+
+test("A1: absent -> absent -> acme stays VALID (enrichment: a producer that STARTS emitting the field commits the chain from there on)", () => {
+  const r0 = mkTenantReceipt("r0", undefined, null);
+  const r1 = mkTenantReceipt("r1", undefined, r0);
+  const r2 = mkTenantReceipt("r2", "acme", r1);
+  const r = verifyChain([r0, r1, r2], { keyring: tenantKeyring });
+  assert.equal(r.status, "VALID", r.reason);
+});
+
+test("A1: the opt-out still reports the laundered splice against the LAST PRESENT tenant, never silently drops it", () => {
+  // requireTenantConsistency:false must not mean "see nothing": the operator who opted out is
+  // exactly the one who needs the machine-readable record of what drifted.
+  const r0 = mkTenantReceipt("r0", "acme", null);
+  const r1 = mkTenantReceipt("r1", undefined, r0);
+  const r2 = mkTenantReceipt("r2", "globex", r1);
+  const r = verifyChain([r0, r1, r2], { keyring: tenantKeyring, requireTenantConsistency: false });
+  assert.equal(r.status, "VALID", r.reason);
+  assert.ok(
+    r.warnings.includes('tenant-drift: seq 0 "acme" -> seq 2 "globex"'),
+    `the splice itself must be reported, not only the two adjacent transitions: ${JSON.stringify(r.warnings)}`,
+  );
+});
+
 test("A1: present -> DIFFERENT present IS a cross-tenant splice -> TAMPERED by default", () => {
   const r0 = mkTenantReceipt("r0", "acme", null);
   const r1 = mkTenantReceipt("r1", "globex", r0);

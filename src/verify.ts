@@ -5,7 +5,7 @@ import { sha256Hex } from "./hash.js";
 import { verifyEd25519, type Keyring, type IdentityManifest } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
 import { safeParse } from "./safe-json.js";
-import { nonNfcPaths } from "./nfc.js";
+import { nonNfcPaths, isNFC } from "./nfc.js";
 
 export type VerifyStatus =
   | "VALID" // structure + hash-chain + signatures all verified against the supplied keyring
@@ -31,10 +31,17 @@ export interface VerifyOptions {
   /**
    * Chain-wide `scope.tenant` consistency. **DEFAULT: `true` (fail-closed).**
    *
-   * A `scope.tenant` that drifts across one `scope.chain` — or appears on some receipts and not
-   * others — is rejected as `TAMPERED` at the FIRST drift, the same verdict class as a `scope.chain`
-   * partition split, because it is the identical class of problem: a scope field the caller assumed
-   * was chain-wide-constant, isn't.
+   * A `scope.tenant` that drifts from one PRESENT value to a DIFFERENT present value across one
+   * `scope.chain` is rejected as `TAMPERED`, the same verdict class as a `scope.chain` partition
+   * split, because it is the identical class of problem: a scope field the caller assumed was
+   * chain-wide-constant, isn't.
+   *
+   * `scope.tenant` is OPTIONAL, so a receipt that simply OMITS it is not a cross-tenant splice — a
+   * producer that starts or stops emitting an optional field is a version change, not tampering.
+   * Absence is REPORTED in `warnings` and never fatal. It also does not RESET the comparison: the
+   * last present value is carried across absences, so `acme -> absent -> globex` is the same splice
+   * as `acme -> globex` and gets the same verdict, while `acme -> absent -> acme` (the same tenant
+   * resuming) and `absent -> acme` (enrichment) stay valid.
    *
    * **BREAKING CHANGE (was `false`).** This default previously let a mixed-tenant chain return VALID
    * with only a warning. That was documented and opt-in, which is a real defence — but defaults are
@@ -259,31 +266,59 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     // `requireTenantConsistency` DEFAULTS TO TRUE: the FIRST drift is escalated to
     // TAMPERED — the same verdict class as the `scope.chain` partition-split check in step 2, since
     // this is the identical class of problem for the sibling scope field.
-    for (let i = 1; i < ordered.length; i++) {
-      const prevR = ordered[i - 1]!;
+    // WHICH DRIFTS ARE FATAL. `scope.tenant` is OPTIONAL in the schema and the frozen spec never
+    // declared it immutable, so the two kinds of drift are not the same event:
+    //
+    //   present -> DIFFERENT present   (acme -> globex)  two distinct tenants spliced into one
+    //     chain. Every receipt is individually intact and correctly signed; the forgery is a
+    //     property of the SET — the identical class as the `scope.chain` partition split above,
+    //     which is already TAMPERED. Fail closed.
+    //
+    //   absent <-> present             (enrichment/omission)  a deployment that began emitting
+    //     (or stopped emitting) an optional field mid-chain. That is a producer-version change,
+    //     NOT a cross-tenant splice, and nothing in the frozen spec forbids it. Calling it
+    //     TAMPERED would label a legitimate transition as cryptographic tampering, tell the
+    //     operator to hunt a forgery that does not exist, and contradict this profile's own
+    //     rule that distinct failures must not collapse onto one verdict. Report it instead.
+    //
+    // ── WHY THE COMPARISON IS NOT ADJACENT ────────────────────────────────────────────────────
+    // That relaxation is right in principle and was wrong in its state machine. Comparing only
+    // ADJACENT receipts let an omission RESET the boundary: `acme -> globex` was TAMPERED, but
+    // `acme -> absent -> globex` — the same splice with one optional field left out of the receipt
+    // in between — was VALID, in all five implementations. Dropping an optional field is not a
+    // capability an attacker lacks, so the tolerated transition became a laundering step.
+    //
+    // The state machine therefore carries the LAST PRESENT tenant across absences instead of
+    // forgetting it. Absence is still never fatal and is still reported; it simply no longer erases
+    // what the chain has already committed to. `acme -> absent -> acme` stays VALID (the same tenant
+    // resumes) and `absent -> absent -> acme` stays VALID (a producer that starts emitting the
+    // field), which is exactly the legitimacy the relaxation existed to protect.
+    let lastPresentTenant: string | undefined;
+    let lastPresentSeq = -1;
+    for (let i = 0; i < ordered.length; i++) {
       const curR = ordered[i]!;
-      if (curR.scope.tenant !== prevR.scope.tenant) {
-        const msg = `tenant-drift: seq ${prevR.chain.seq} ${describeTenant(prevR.scope.tenant)} -> seq ${curR.chain.seq} ${describeTenant(curR.scope.tenant)}`;
-        tenantDriftMessages.push(msg);
-        // WHICH DRIFTS ARE FATAL. `scope.tenant` is OPTIONAL in the schema and the frozen spec never
-        // declared it immutable, so the two kinds of drift are not the same event:
-        //
-        //   present -> DIFFERENT present   (acme -> globex)  two distinct tenants spliced into one
-        //     chain. Every receipt is individually intact and correctly signed; the forgery is a
-        //     property of the SET — the identical class as the `scope.chain` partition split above,
-        //     which is already TAMPERED. Fail closed.
-        //
-        //   absent <-> present             (enrichment/omission)  a deployment that began emitting
-        //     (or stopped emitting) an optional field mid-chain. That is a producer-version change,
-        //     NOT a cross-tenant splice, and nothing in the frozen spec forbids it. Calling it
-        //     TAMPERED would label a legitimate transition as cryptographic tampering, tell the
-        //     operator to hunt a forgery that does not exist, and contradict this profile's own
-        //     rule that distinct failures must not collapse onto one verdict. Report it instead.
-        const bothPresent = prevR.scope.tenant !== undefined && curR.scope.tenant !== undefined;
-        if (bothPresent && (o.requireTenantConsistency ?? true)) {
-          return fail("TAMPERED", msg, chainId, list.length, curR.chain.seq);
+      const curT = curR.scope.tenant;
+      // adjacent transition report (unchanged): every seq-to-seq drift is machine-readable.
+      if (i > 0) {
+        const prevR = ordered[i - 1]!;
+        if (curT !== prevR.scope.tenant) {
+          tenantDriftMessages.push(
+            `tenant-drift: seq ${prevR.chain.seq} ${describeTenant(prevR.scope.tenant)} -> seq ${curR.chain.seq} ${describeTenant(curT)}`,
+          );
         }
       }
+      if (curT === undefined) continue; // absence never resets the boundary, and is never fatal
+      if (lastPresentTenant !== undefined && curT !== lastPresentTenant) {
+        const msg = `tenant-drift: seq ${lastPresentSeq} ${describeTenant(lastPresentTenant)} -> seq ${curR.chain.seq} ${describeTenant(curT)}`;
+        if (o.requireTenantConsistency ?? true) {
+          return fail("TAMPERED", msg, chainId, list.length, curR.chain.seq);
+        }
+        // opt-out: the drift is reported, never silently dropped. Named against the last PRESENT
+        // value so the message identifies the actual splice, not the omission that hid it.
+        if (!tenantDriftMessages.includes(msg)) tenantDriftMessages.push(msg);
+      }
+      lastPresentTenant = curT;
+      lastPresentSeq = curR.chain.seq;
     }
   } catch {
     // Use the captured `n` (read once, guarded, above), never re-read `receipts.length` here: a
@@ -343,9 +378,18 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     // non-NFC string is a conformance defect in the producer, not evidence of tampering. Runs after
     // the hash check so a receipt that fails integrity is reported as TAMPERED (the more serious
     // verdict) rather than as a conformance nit.
-    const nonNfc = nonNfcPaths({
-      id: r.id, ts: r.ts, scope: r.scope, agent: r.agent, action: r.action, governance: r.governance,
-    });
+    // `sig.kid` is included: it is a producer-chosen identifier string, subject to the same MUST as
+    // every other string in the receipt, and it was omitted here for the same reason both builders
+    // omitted it — the scan was written against the PAYLOAD and the kid lives beside it. A kid is
+    // precisely a field relying parties match and index on, so two kids that render identically and
+    // differ in bytes is the hazard, not a nit. `sig.value` and the `chain` hashes stay out: base64
+    // and hex are ASCII by construction, so normalization cannot apply to them.
+    const nonNfc = [
+      ...nonNfcPaths({
+        id: r.id, ts: r.ts, scope: r.scope, agent: r.agent, action: r.action, governance: r.governance,
+      }),
+      ...(isNFC(r.sig.kid) ? [] : ["sig.kid"]),
+    ];
     if (nonNfc.length > 0) {
       if (o.requireNFC) {
         return fail("MALFORMED", `non-NFC string(s) at seq ${seq}: ${nonNfc.join(", ")}`, chainId, list.length, seq);

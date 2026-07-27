@@ -411,20 +411,31 @@ func verifyChain(receipts, keyring, identity, checkpoint *Value) string {
 	// impl-py). scope.tenant sits beside scope.chain but was enforced nowhere, so a chain mixing
 	// tenants verified clean in every implementation. Tenant isolation is a security boundary; the
 	// same verdict class as the partition split above is the right one. Walked in SEQ order.
+	// Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present is a
+	// producer-version change on an OPTIONAL field and is not tampering (see src/verify.ts).
+	//
+	// The comparison is NOT adjacent: comparing neighbours let an omission RESET the boundary, so
+	// `acme -> globex` was TAMPERED while `acme -> absent -> globex` — the same splice with one
+	// optional field left out in between — was VALID in all five implementations. The last PRESENT
+	// tenant is carried across absences instead. Absence stays non-fatal; it just no longer erases
+	// what the chain already committed to.
 	nTenant := int64(len(receipts.Arr))
-	for s := int64(1); s < nTenant; s++ {
+	lastPresent := ""
+	haveLastPresent := false
+	for s := int64(0); s < nTenant; s++ {
 		cur, okCur := bySeq[s]
-		prv, okPrev := bySeq[s-1]
-		if !okCur || !okPrev {
+		if !okCur {
 			break // a gap is reported by the seq-walk below; don't pre-empt it
 		}
-		// Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present is a
-		// producer-version change on an OPTIONAL field and is not tampering (see src/verify.ts).
-		curHas := cur.get("scope").has("tenant")
-		prvHas := prv.get("scope").has("tenant")
-		if curHas && prvHas && cur.get("scope").get("tenant").Str != prv.get("scope").get("tenant").Str {
+		if !cur.get("scope").has("tenant") {
+			continue // absence never resets the boundary, and is never fatal
+		}
+		curTenant := cur.get("scope").get("tenant").Str
+		if haveLastPresent && curTenant != lastPresent {
 			return statusTampered // cross-tenant splice
 		}
+		lastPresent = curTenant
+		haveLastPresent = true
 	}
 
 	pinned := make(map[string]string)

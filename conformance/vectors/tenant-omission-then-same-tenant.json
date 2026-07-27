@@ -1,0 +1,118 @@
+[
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "tos_0",
+    "ts": "2026-06-20T09:00:00.000Z",
+    "scope": {
+      "chain": "tenant-boundary-chain",
+      "tenant": "acme"
+    },
+    "agent": {
+      "id": "agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:9c10250f78b359d3c3abdf2dcd91a50af8aa4f7529cfbf3cfead14cf2500eac6",
+      "reversible": false,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "DEFERRED",
+      "ruleId": "high-risk-deferral",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 0,
+      "prevHash": null,
+      "hash": "sha256:98be86908aabab304360c1eaa8e3a5478033dbb1a902c2de51eea69a1f1d2276"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "rDgjLoY4P9fYj0k0Hl/Bfm7LloaRJ8JCTdBHthT9a2C8aMVpI8VUC/8kygEnKE65/+axh+gdfNMaPNZrWW/DAg=="
+    }
+  },
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "tos_1",
+    "ts": "2026-06-20T09:01:00.000Z",
+    "scope": {
+      "chain": "tenant-boundary-chain"
+    },
+    "agent": {
+      "id": "agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:9c10250f78b359d3c3abdf2dcd91a50af8aa4f7529cfbf3cfead14cf2500eac6",
+      "reversible": false,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "DEFERRED",
+      "ruleId": "high-risk-deferral",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 1,
+      "prevHash": "sha256:98be86908aabab304360c1eaa8e3a5478033dbb1a902c2de51eea69a1f1d2276",
+      "hash": "sha256:85d6e6e7ee9e63e2a07a543390bca868828f5019b3907b1dfdc6230c7f065495"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "FissB6/Z90PvLD0V2Qq1wmwNDtzYJV9IdOdNkM5Nre67DC2qpwNmVVSy4mko9pZAhMlNBqaRfloV9ZWpS6miAw=="
+    }
+  },
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "tos_2",
+    "ts": "2026-06-20T09:02:00.000Z",
+    "scope": {
+      "chain": "tenant-boundary-chain",
+      "tenant": "acme"
+    },
+    "agent": {
+      "id": "agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:9c10250f78b359d3c3abdf2dcd91a50af8aa4f7529cfbf3cfead14cf2500eac6",
+      "reversible": false,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "DEFERRED",
+      "ruleId": "high-risk-deferral",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 2,
+      "prevHash": "sha256:85d6e6e7ee9e63e2a07a543390bca868828f5019b3907b1dfdc6230c7f065495",
+      "hash": "sha256:fbf49b6c5be90eb10a028eb27a7702b78d83a1e0909ce4eb0b1c275ffb614759"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "+pRspmYVbhupj0hlZuvod9i9C1g3Wn/r7DFzpymU2TZ3Isxdu+EWHX2EEq1eVXSpu5AlOUeSfrRoPL0/O81bAw=="
+    }
+  }
+]

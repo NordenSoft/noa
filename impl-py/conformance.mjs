@@ -601,6 +601,51 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   if (!tsOptOutOk) failures++;
 }
 
+// 13c. TENANT SPLICE LAUNDERED THROUGH AN OMISSION (cross-family review, 2026-07-27). 13b pins the
+// ADJACENT drift; this pins the state machine underneath it. `scope.tenant` is OPTIONAL, so
+// absent<->present is reported and never fatal — a producer that starts or stops emitting the field
+// is a version change, not a forgery. But while the comparison was adjacent, that tolerance was a
+// laundering step: `acme -> globex` was TAMPERED and `acme -> absent -> globex` — the SAME splice
+// with one optional field left out in between — was VALID, in all five verifiers.
+//
+// Both halves are pinned here, because a verifier could "fix" the attack by simply re-banning
+// absence and would then fail the second case: the relaxation itself must survive.
+{
+  const mkT2 = (seq, tenant, prev) => buildReceipt({
+    id: `rcpt_ts${seq}`,
+    ts: `2026-06-21T12:0${seq}:00.000Z`,
+    scope: tenant === undefined ? { chain: "chain-tenant-boundary" } : { tenant, chain: "chain-tenant-boundary" },
+    agent: { id: "agent-7", model: null, principal: "SERVICE" },
+    action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: sha256Prefixed(`ts${seq}`), reversible: false, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: "r1", approval: null, sandboxed: false },
+  }, prev, { kid: kp.kid, privateKey: kp.privateKey });
+
+  // (a) THE ATTACK: acme -> absent -> globex must be the same verdict as acme -> globex.
+  const s0 = mkT2(0, "acme", null);
+  const s1 = mkT2(1, undefined, s0);
+  const s2 = mkT2(2, "globex", s1);
+  const splicePath = join(dir, "tenant-splice-via-absent.json");
+  writeFileSync(splicePath, JSON.stringify([s0, s1, s2]));
+  const tsSplice = verifyChain([s0, s1, s2], { keyring }).status;
+  const tsSpliceOk = tsSplice === "TAMPERED";
+  console.log(`${tsSpliceOk ? "✓" : "✗"} TAMPERED (scope.tenant acme -> absent -> globex, omission must not reset the tenant boundary) [TS verifyChain]: ${tsSplice} (want TAMPERED)`);
+  if (!tsSpliceOk) failures++;
+  expect("TAMPERED (scope.tenant acme -> absent -> globex, omission must not reset the tenant boundary) [PY verifier]", pyVerify([splicePath, keyringPath]).code, 2);
+
+  // (b) THE RELAXATION STILL HOLDS: acme -> absent -> acme is a producer-version change, not a
+  //     splice. A fix that re-banned absence would fail here.
+  const g0 = mkT2(0, "acme", null);
+  const g1 = mkT2(1, undefined, g0);
+  const g2 = mkT2(2, "acme", g1);
+  const okPath = join(dir, "tenant-omission-same-tenant.json");
+  writeFileSync(okPath, JSON.stringify([g0, g1, g2]));
+  const tsOmit = verifyChain([g0, g1, g2], { keyring }).status;
+  const tsOmitOk = tsOmit === "VALID";
+  console.log(`${tsOmitOk ? "✓" : "✗"} VALID (scope.tenant acme -> absent -> acme, an optional field may come and go) [TS verifyChain]: ${tsOmit} (want VALID)`);
+  if (!tsOmitOk) failures++;
+  expect("VALID (scope.tenant acme -> absent -> acme, an optional field may come and go) [PY verifier]", pyVerify([okPath, keyringPath]).code, 0);
+}
+
 // 14. TENANT — scope.tenant is present but the WRONG TYPE (a number, not a string). Content is
 // re-sealed so hash+sig stay internally valid → this is a pure STRUCTURAL/shape rejection, not a
 // crypto-integrity one (MALFORMED, not TAMPERED), in both impls.

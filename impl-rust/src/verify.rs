@@ -259,20 +259,31 @@ pub fn verify_chain(
         let tenant_of = |idx: usize| -> Option<&str> {
             arr[idx].get("scope").and_then(|s| s.get("tenant")).and_then(|t| t.as_str())
         };
+        // Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present
+        // is a producer-version change on an OPTIONAL field, not tampering (see src/verify.ts).
+        //
+        // The comparison is NOT adjacent: comparing neighbours let an omission RESET the boundary,
+        // so `acme -> globex` was TAMPERED while `acme -> absent -> globex` — the same splice with
+        // one optional field left out in between — was VALID in all five implementations. The last
+        // PRESENT tenant is carried across absences instead. Absence stays non-fatal; it just no
+        // longer erases what the chain already committed to.
         let total = arr.len() as i64;
-        for s in 1..total {
-            let (cur, prev) = match (by_seq.get(&s), by_seq.get(&(s - 1))) {
-                (Some(c), Some(p)) => (*c, *p),
-                _ => break, // a gap is reported by the seq-walk below; do not pre-empt it
+        let mut last_present: Option<String> = None;
+        for s in 0..total {
+            let cur = match by_seq.get(&s) {
+                Some(c) => *c,
+                None => break, // a gap is reported by the seq-walk below; do not pre-empt it
             };
-            // Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present
-            // is a producer-version change on an OPTIONAL field, not tampering (see src/verify.ts).
-            match (tenant_of(cur), tenant_of(prev)) {
-                (Some(a), Some(b)) if a != b => {
+            let cur_tenant = match tenant_of(cur) {
+                Some(t) => t.to_string(),
+                None => continue, // absence never resets the boundary, and is never fatal
+            };
+            if let Some(prev_present) = &last_present {
+                if &cur_tenant != prev_present {
                     return (Status::Tampered, "cross-tenant splice".into());
                 }
-                _ => {}
             }
+            last_present = Some(cur_tenant);
         }
     }
 

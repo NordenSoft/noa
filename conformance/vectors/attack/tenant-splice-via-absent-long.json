@@ -1,0 +1,156 @@
+[
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "tsal_0",
+    "ts": "2026-06-20T09:00:00.000Z",
+    "scope": {
+      "chain": "tenant-boundary-chain",
+      "tenant": "acme"
+    },
+    "agent": {
+      "id": "agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:9c10250f78b359d3c3abdf2dcd91a50af8aa4f7529cfbf3cfead14cf2500eac6",
+      "reversible": false,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "DEFERRED",
+      "ruleId": "high-risk-deferral",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 0,
+      "prevHash": null,
+      "hash": "sha256:f156f13540b340ca6f33fdcf837f1d536b5181265b227c8074e8287557037d41"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "3PzB8oden/Fu4yv6OtyxqcIRcg14HX53m2LWy6L5MWljWZrDsOVt9KCFMULH/5HjVGA9YVV/AI+pAmJTEzWMCg=="
+    }
+  },
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "tsal_1",
+    "ts": "2026-06-20T09:01:00.000Z",
+    "scope": {
+      "chain": "tenant-boundary-chain"
+    },
+    "agent": {
+      "id": "agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:9c10250f78b359d3c3abdf2dcd91a50af8aa4f7529cfbf3cfead14cf2500eac6",
+      "reversible": false,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "DEFERRED",
+      "ruleId": "high-risk-deferral",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 1,
+      "prevHash": "sha256:f156f13540b340ca6f33fdcf837f1d536b5181265b227c8074e8287557037d41",
+      "hash": "sha256:ae88a76f930db0ed97de4a879a07ff05beb1fdd729c12b8958b9cfdc6ef11569"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "AjWbnIQ2A7ujMLehkuKDS2k6lZOI7CYhEn6LdfEAjoVZNdqv0m1pdAdrqF+OGpmnAQwOsWI9Y3Rd32JcjOPvCw=="
+    }
+  },
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "tsal_2",
+    "ts": "2026-06-20T09:02:00.000Z",
+    "scope": {
+      "chain": "tenant-boundary-chain"
+    },
+    "agent": {
+      "id": "agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:9c10250f78b359d3c3abdf2dcd91a50af8aa4f7529cfbf3cfead14cf2500eac6",
+      "reversible": false,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "DEFERRED",
+      "ruleId": "high-risk-deferral",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 2,
+      "prevHash": "sha256:ae88a76f930db0ed97de4a879a07ff05beb1fdd729c12b8958b9cfdc6ef11569",
+      "hash": "sha256:d8037dc5b36dd9eaa2ba5fada93279abe61c924ed4d33d37b0a7a8b0b6dcc206"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "2rN7N3IpeH2zbNLlBPTExm7qFlt0PIBeUA9AkWsMyFg/F0pW2BFNifr1XFqs0ver3jBgoXWHUVPfMNsNQxStBA=="
+    }
+  },
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "tsal_3",
+    "ts": "2026-06-20T09:03:00.000Z",
+    "scope": {
+      "chain": "tenant-boundary-chain",
+      "tenant": "globex"
+    },
+    "agent": {
+      "id": "agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:9c10250f78b359d3c3abdf2dcd91a50af8aa4f7529cfbf3cfead14cf2500eac6",
+      "reversible": false,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "DEFERRED",
+      "ruleId": "high-risk-deferral",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 3,
+      "prevHash": "sha256:d8037dc5b36dd9eaa2ba5fada93279abe61c924ed4d33d37b0a7a8b0b6dcc206",
+      "hash": "sha256:1f3b99c3f83a6de540e17af29289fca972c68e6efdffef0b69b6d8f3d8f6940a"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "QzJUq/TKKEAuO/O5dPZPLX0BGUPdFzG7pTsK1dFPkqSX/FlHngGJFBaNEaWHhdWEpfWIj0BY3EwVByctUqjgAQ=="
+    }
+  }
+]

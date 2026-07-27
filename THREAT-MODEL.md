@@ -124,8 +124,20 @@ truth or safety.
     profile has never declared it immutable, so this is **reported, never rejected** — labelling it
     `TAMPERED` would send an operator hunting a forgery that does not exist.
 
-  Both kinds are recorded as machine-readable `warnings` entries
-  (`tenant-drift: seq A "x" -> seq B "y"`). All five verifiers implement the identical rule.
+  **An omission does not RESET the boundary.** The comparison is against the last **present** tenant,
+  not against the adjacent receipt. While it was adjacent, the tolerance above was a laundering step:
+  `acme → globex` was `TAMPERED` and `acme → absent → globex` — the same splice, with one optional
+  field left out of the receipt in between — was `VALID`, in all five implementations. Dropping an
+  optional field is not a capability an attacker lacks. Carrying the last present value forward keeps
+  the relaxation intact (`acme → absent → acme` and `absent → acme` stay valid) while giving the
+  splice the same verdict however many tenant-less receipts are interleaved.
+
+  **Where each kind is reported.** A non-fatal drift lands in machine-readable `warnings`
+  (`tenant-drift: seq A "x" -> seq B "y"`). A FATAL drift is reported in `reason`, in that same
+  machine-readable form, with `badSeq` pointing at the receipt that contradicts the committed tenant
+  — a rejected result carries `warnings: []` by construction, so do not look for the fatal case
+  there. (An earlier revision of this paragraph said both kinds appear in `warnings`; that was never
+  true of the fatal one.) All five verifiers implement the identical rule.
   Matching the tenant value to *your* expected tenant remains the caller's job.
 - **Omission ≠ tampering:** this proves the integrity of the receipts that EXIST. An agent that
   simply never emits a receipt for a bad action leaves no trace to detect. It is log-integrity,
