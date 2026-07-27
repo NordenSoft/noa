@@ -15,8 +15,8 @@ export type SideEffectEvent =
   | "GATE_DENIED"
   | "DISPATCH_STARTED"
   | "TOOL_RETURNED"
-  | "TOOL_THREW_BEFORE_SIDE_EFFECT"
   | "TOOL_THREW_AFTER_DISPATCH"
+  | "TOOL_REPORTED_NO_DISPATCH"
   | "OUTCOME_RECORDED"
   | "OUTCOME_RECORD_FAILED"
   | "PROCESS_CRASHED"
@@ -47,7 +47,5 @@ export declare function isSafeToRetry(state: SideEffectState | string): boolean;
 export declare function isTerminal(state: SideEffectState | string): boolean;
 
 /** Mark a value a tool is about to throw as PROVING its throw preceded any side effect. Returns the value. */
-export declare function markThrewBeforeSideEffect<T>(err: T): T;
 
 /** Does this thrown value carry the pre-side-effect proof? Never throws for any input. */
-export declare function threwBeforeSideEffect(value: unknown): boolean;

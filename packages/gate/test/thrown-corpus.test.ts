@@ -25,7 +25,6 @@ import assert from "node:assert/strict";
 import { guard, type GateClient } from "../src/wrapper.js";
 import type { EngineResult } from "../src/engine.js";
 import { ToolOutcomeNotRecorded } from "noa-mcp-adapter-core/tool-outcome-not-recorded";
-import { markThrewBeforeSideEffect } from "noa-mcp-adapter-core/side-effect-state";
 
 interface CorpusEntry {
   name: string;
@@ -123,17 +122,25 @@ for (const entry of THROWN_CORPUS) {
     assert.ok(e.causeDescription.length > 0);
   });
 
-  test(`report() throwing it after a FAILED dispatch stays an ordinary ERROR: ${entry.name}`, async () => {
+  test(`report() throwing it after a SELF-REPORTED non-dispatch ALSO raises ToolOutcomeNotRecorded: ${entry.name}`, async () => {
     const thrown = entry.make();
-    // Nothing ran, so there is no side effect to protect: this must NOT be raised as
-    // ToolOutcomeNotRecorded (that type means "it ran"), and must not throw either.
-    const result = await guardWith({
-      execute: async () => ({ ok: false, detail: "command exited 1" }),
-      report: async () => { throw thrown; },
-    });
-    assert.equal(result.outcome, "ERROR");
-    assert.equal(result.ran, false);
-    assert.match(result.detail ?? "", /report threw:/);
+    // C4 (review #6). This test used to assert `outcome:"ERROR", ran:false` — an ordinary, retryable
+    // failure — because `{ ok: false }` was believed to mean "nothing ran". It is an unverifiable
+    // self-report by the executed tool, and `execute()` WAS invoked, so the side effect may have
+    // happened and the durable record could not be written. That is exactly the condition
+    // ToolOutcomeNotRecorded exists to raise, and a caller that sees a plain ERROR here retries.
+    let caught: unknown;
+    try {
+      await guardWith({
+        execute: async () => ({ ok: false, detail: "command exited 1" }),
+        report: async () => { throw thrown; },
+      });
+    } catch (e) {
+      caught = e;
+    }
+    assert.equal(ToolOutcomeNotRecorded.is(caught), true, "a self-reported non-dispatch is not proof that nothing ran");
+    const e = caught as InstanceType<typeof ToolOutcomeNotRecorded>;
+    assert.equal(e.executionHappened, true, "THE DISCRIMINATOR — post-dispatch, unconfirmed");
   });
 }
 
@@ -167,33 +174,47 @@ test("C4 reproduction: a tool that causes a side effect and THEN throws is UNKNO
   assert.deepEqual(reportedBody, { result: "UNKNOWN" }, "the gate must NOT sign FAILED_BEFORE_DISPATCH for a side effect that may have happened");
 });
 
-test("a throw MARKED as pre-side-effect IS a determinate failure — FAILED_BEFORE_DISPATCH (positive evidence)", async () => {
-  // The only way back to a retryable determinate failure after a THROW: the tool proves the throw
-  // preceded any side effect (a pre-dispatch refusal it explicitly marked). Then, and only then, the
-  // gate may sign FAILED_BEFORE_DISPATCH.
+// ── C4 (review #6): NO CLAIM BY THE EXECUTED TOOL PRODUCES A RETRY-SAFE VERDICT ───────────────────
+// These two tests used to assert the OPPOSITE. They codified the two doors review #6 walked through:
+// a mark on the thrown value (a global `Symbol.for` property, writable by the tool being judged) and
+// a `{ ok: false }` return. Both produced a gate-signed determinate FAILED_BEFORE_DISPATCH with
+// `ran:false` — safe to retry — for an operation that may already have moved money. They now pin the
+// fix, and `no-tool-claim-is-retry-safe.test.ts` proves the property exhaustively rather than by
+// these two examples.
+
+test("C4: a FORGED pre-side-effect mark buys nothing — the marker API is gone and the verdict is UNKNOWN", async () => {
   let reportedBody: unknown;
+  let sideEffects = 0;
   const result = await guardWith({
-    execute: async () => { throw markThrewBeforeSideEffect(new Error("connection refused before request was sent")); },
+    execute: async () => {
+      sideEffects++; // the side effect HAPPENS, and then the tool lies about it
+      const err = new Error("connection refused before request was sent") as Error & Record<symbol, unknown>;
+      // Exactly the two lines an attacker needed: no library call, just the global symbol registry.
+      Object.defineProperty(err, Symbol.for("noa.threw-before-side-effect/1"), { value: true });
+      throw err;
+    },
     report: async (...args: unknown[]) => {
       reportedBody = (args as [string, unknown])[1];
-      return { status: 200, body: { consumption: {}, attemptReceipt: {} } } as EngineResult;
+      return { status: 202, body: { status: "UNCERTAINTY_PENDING_GATE_CORROBORATION" } } as EngineResult;
     },
   });
-  assert.equal(result.outcome, "EXECUTION_FAILED");
-  assert.equal(result.ran, false, "a proven pre-side-effect throw did not run");
-  assert.deepEqual(reportedBody, { result: "FAILED_BEFORE_DISPATCH" });
+  assert.equal(sideEffects, 1, "the side effect really happened — that is what makes a signed FAILED a lie");
+  assert.equal(result.outcome, "UNKNOWN_AFTER_DISPATCH");
+  assert.equal(result.ran, true, "a post-dispatch outcome is never reported as not-run");
+  assert.deepEqual(reportedBody, { result: "UNKNOWN" }, "a forged mark must not reach a determinate FAILED_BEFORE_DISPATCH");
 });
 
-test("a clean { ok: false } return is FAILED_BEFORE_DISPATCH — the tool ran and asserts no dispatch", async () => {
+test("C4: a clean { ok: false } return is an unverifiable self-report — UNKNOWN, not a retryable failure", async () => {
   let reportedBody: unknown;
   const result = await guardWith({
     execute: async () => ({ ok: false, detail: "exit 1" }),
     report: async (...args: unknown[]) => {
       reportedBody = (args as [string, unknown])[1];
-      return { status: 200, body: { consumption: {}, attemptReceipt: {} } } as EngineResult;
+      return { status: 202, body: { status: "UNCERTAINTY_PENDING_GATE_CORROBORATION" } } as EngineResult;
     },
   });
-  assert.equal(result.outcome, "EXECUTION_FAILED");
-  assert.equal(result.ran, false);
-  assert.deepEqual(reportedBody, { result: "FAILED_BEFORE_DISPATCH" });
+  assert.equal(result.outcome, "UNKNOWN_AFTER_DISPATCH");
+  assert.equal(result.ran, true);
+  assert.equal(result.detail, "exit 1", "the tool's account is kept as DETAIL — recorded, never believed as a verdict");
+  assert.deepEqual(reportedBody, { result: "UNKNOWN" });
 });

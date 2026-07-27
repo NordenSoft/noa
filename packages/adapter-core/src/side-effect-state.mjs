@@ -56,6 +56,11 @@ function deepFreeze(o) {
 /**
  * The states. `terminal` marks states an adapter may report to a caller; `safeToRetry` marks the
  * ONLY states in which no side effect can have occurred.
+ *
+ * THE CLASS PROPERTY (C4), enforced mechanically by `side-effect-state.test.mjs`: from `DISPATCHED`
+ * onward, NO state reachable without a `RECONCILED_*` event is `safeToRetry`. The reachability is
+ * computed from the table below, so a future transition that re-opens the door fails the suite
+ * without anyone having to notice it in review.
  */
 export const SIDE_EFFECT_STATES = deepFreeze({
   /** Nothing has been dispatched. The gate may still deny; no side effect is possible. */
@@ -67,9 +72,11 @@ export const SIDE_EFFECT_STATES = deepFreeze({
   /** The tool returned AND the outcome is durably recorded. */
   EXECUTED: { terminal: true, safeToRetry: false },
   /**
-   * The tool threw BEFORE any side effect could occur, AND that is durably recorded. This is the
-   * ONLY failure state a caller may retry, and it requires positive evidence — a pre-dispatch
-   * refusal, or a tool contract that guarantees atomicity — never the absence of a success.
+   * No side effect occurred, AND that is durably recorded. Reachable in exactly two ways, both of
+   * which are observations by someone OTHER than the executed tool: the gate refused or crashed
+   * BEFORE dispatch (NOT_DISPATCHED), or the remote system of record was reconciled and reported the
+   * operation was not performed. The tool's own claim to this state was removed in review #6 — see
+   * the DISPATCHED row of TRANSITIONS.
    */
   FAILED_NO_SIDE_EFFECT: { terminal: true, safeToRetry: true },
   /**
@@ -86,8 +93,8 @@ export const SIDE_EFFECT_EVENTS = Object.freeze([
   "GATE_DENIED",
   "DISPATCH_STARTED",
   "TOOL_RETURNED",
-  "TOOL_THREW_BEFORE_SIDE_EFFECT",
   "TOOL_THREW_AFTER_DISPATCH",
+  "TOOL_REPORTED_NO_DISPATCH",
   "OUTCOME_RECORDED",
   "OUTCOME_RECORD_FAILED",
   "PROCESS_CRASHED",
@@ -110,12 +117,29 @@ const TRANSITIONS = deepFreeze({
   },
   DISPATCHED: {
     TOOL_RETURNED: "SETTLED_UNRECORDED",
-    // The tool itself proves no side effect occurred (a connection refused before the request was
-    // sent, a client-side validation error). This is the ONLY path back to a retryable failure
-    // after dispatch STARTED, and it needs the tool to say so — never inferred.
-    TOOL_THREW_BEFORE_SIDE_EFFECT: "FAILED_NO_SIDE_EFFECT",
-    // A throw that cannot prove which side of the side effect it happened on.
+    // ── C4 (review #6): THERE IS NO EXIT FROM `DISPATCHED` TO A RETRY-SAFE STATE. ────────────────
+    // There used to be one, taken on the tool's own word: `TOOL_THREW_BEFORE_SIDE_EFFECT`, proven by
+    // a mark on the thrown value. The mark was a global `Symbol.for` property, so ANY code could
+    // write it — an attacker-controlled tool incremented a side-effect counter, threw a marked
+    // error, and the gate signed a determinate FAILED_BEFORE_DISPATCH with `ran:false`, which the
+    // reducer classified safe to retry. A mark on an attacker-owned thrown value is an ASSERTION,
+    // not proof.
+    //
+    // It was removed rather than authenticated. A per-invocation token issued by the gate cannot fix
+    // this: the gate must HAND the token to the tool for the tool to return it, so the token proves
+    // only "this claim came from inside this invocation" — never "no side effect occurred". The fact
+    // being claimed is not observable to the gate, and the only party who can observe it is the
+    // party being judged. There is no construction in which the claim is verifiable, so the claim is
+    // gone.
+    //
+    // What is still determinate is what the GATE observed: everything BEFORE dispatch (see
+    // NOT_DISPATCHED). What is still recoverable is what the SYSTEM OF RECORD observed (see
+    // SIDE_EFFECT_UNCONFIRMED -> RECONCILED_NOT_PERFORMED). Between those two, the honest answer is
+    // UNCONFIRMED, and a false "no side effect" is the worst verdict this system can emit.
     TOOL_THREW_AFTER_DISPATCH: "SIDE_EFFECT_UNCONFIRMED",
+    // The tool RETURNED and asserts it did not dispatch. Structurally identical to the marked throw:
+    // an unverifiable self-report by the executed party. Not retry-safe.
+    TOOL_REPORTED_NO_DISPATCH: "SIDE_EFFECT_UNCONFIRMED",
     PROCESS_CRASHED: "SIDE_EFFECT_UNCONFIRMED",
   },
   SETTLED_UNRECORDED: {
@@ -196,34 +220,21 @@ export function isTerminal(state) {
 
 // ── DESIGN 3 wiring: classifying a THROW at the dispatch boundary ─────────────────────────────────
 /**
- * A thrown value may be MARKED, by a tool that KNOWS its throw preceded any side effect (a pre-dispatch
- * refusal — a connection refused before the request was sent, a client-side validation error), so a
- * dispatcher can classify it as `TOOL_THREW_BEFORE_SIDE_EFFECT` → FAILED_NO_SIDE_EFFECT (retryable).
- * EVERYTHING UNMARKED is `TOOL_THREW_AFTER_DISPATCH` → SIDE_EFFECT_UNCONFIRMED (NOT retryable): a bare
- * throw proves nothing about whether the side effect happened, and guessing "it failed" is exactly the
- * signed lie DESIGN 3 exists to prevent. `Symbol.for` is realm/copy-independent (matches
- * ToolOutcomeNotRecorded's brand discipline).
+ * `markThrewBeforeSideEffect` / `threwBeforeSideEffect` WERE HERE AND ARE GONE (review #6, C4).
+ *
+ * They implemented "a tool may PROVE its throw preceded any side effect" as a global
+ * `Symbol.for("noa.threw-before-side-effect/1")` property on the thrown value. `Symbol.for` is a
+ * process-wide registry, so the mark was writable by anyone — including the attacker-controlled tool
+ * whose honesty it was supposed to establish. Two lines of attacker code (`Object.defineProperty(err,
+ * Symbol.for("noa.threw-before-side-effect/1"), { value: true })`) produced a gate-signed
+ * `FAILED_BEFORE_DISPATCH` with `ran:false` for an operation that had already moved money.
+ *
+ * They are DELETED rather than hardened, and the exports are not stubbed: a stub that always returns
+ * false would leave the API shape inviting the same design back, and a dangling import fails loudly
+ * at module load, which is the correct outcome for code that depended on a forgeable proof.
+ *
+ * If a future tool contract can genuinely establish pre-dispatch failure — an idempotency key the
+ * remote honours plus an operation id it echoes — the evidence belongs on the RECONCILIATION edge
+ * (`SIDE_EFFECT_UNCONFIRMED -> RECONCILED_NOT_PERFORMED`), where the claim is made by the system of
+ * record instead of by the party being judged.
  */
-const THREW_BEFORE_SIDE_EFFECT = Symbol.for("noa.threw-before-side-effect/1");
-
-/** Attach the "no side effect had occurred when I threw" proof to a value the tool is about to throw. */
-export function markThrewBeforeSideEffect(err) {
-  try {
-    if (err !== null && (typeof err === "object" || typeof err === "function")) {
-      Object.defineProperty(err, THREW_BEFORE_SIDE_EFFECT, { value: true, enumerable: false, configurable: false });
-    }
-  } catch {
-    // a frozen/sealed/hostile value cannot carry the mark — it is then (correctly) treated as UNCONFIRMED.
-  }
-  return err;
-}
-
-/** Does this thrown value carry the pre-side-effect proof? Cannot throw for ANY input (a revoked proxy
- *  reading the brand answers false), mirroring ToolOutcomeNotRecorded.is. */
-export function threwBeforeSideEffect(value) {
-  try {
-    return (typeof value === "object" || typeof value === "function") && value !== null && value[THREW_BEFORE_SIDE_EFFECT] === true;
-  } catch {
-    return false;
-  }
-}

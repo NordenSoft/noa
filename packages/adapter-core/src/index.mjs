@@ -53,6 +53,4 @@ export {
   replay as replaySideEffectEvents,
   isSafeToRetry,
   isTerminal as isTerminalSideEffectState,
-  markThrewBeforeSideEffect,
-  threwBeforeSideEffect,
 } from "./side-effect-state.mjs";

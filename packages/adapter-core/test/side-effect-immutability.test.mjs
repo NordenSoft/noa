@@ -15,8 +15,6 @@ import {
   isSafeToRetry,
   isTerminal,
   IllegalSideEffectTransition,
-  markThrewBeforeSideEffect,
-  threwBeforeSideEffect,
 } from "../src/side-effect-state.mjs";
 
 test("H6: a prototype-chain key is an ILLEGAL transition, not a truthy Object.prototype", () => {
@@ -51,24 +49,8 @@ test("H6: the spec tables are DEEPLY frozen — inner rows/metadata cannot be re
   assert.throws(() => { EVIDENCE_OUTCOME_FOR.SIDE_EFFECT_UNCONFIRMED = "EXECUTED"; }, TypeError);
 });
 
-test("DESIGN 3: threwBeforeSideEffect is a marked-only, never-throwing brand check", () => {
-  assert.equal(threwBeforeSideEffect(new Error("bare")), false, "an unmarked throw is NOT proven pre-side-effect");
-  assert.equal(threwBeforeSideEffect(markThrewBeforeSideEffect(new Error("refused"))), true);
-  // primitives and null can't carry the brand → false, never a throw
-  for (const v of [null, undefined, 0, "", false, NaN, 0n, "x", 42]) {
-    assert.equal(threwBeforeSideEffect(v), false);
-  }
-  // a revoked proxy must answer false, never throw
-  const { proxy, revoke } = Proxy.revocable({}, {});
-  revoke();
-  assert.doesNotThrow(() => threwBeforeSideEffect(proxy));
-  assert.equal(threwBeforeSideEffect(proxy), false);
-});
-
-test("DESIGN 3: marking a frozen/hostile value does not throw (it is simply treated as UNCONFIRMED)", () => {
-  const frozen = Object.freeze(new Error("frozen"));
-  assert.doesNotThrow(() => markThrewBeforeSideEffect(frozen));
-  assert.equal(threwBeforeSideEffect(frozen), false, "a value that could not carry the mark is unconfirmed");
-  // marking a primitive is a no-op that returns it unchanged
-  assert.equal(markThrewBeforeSideEffect(0), 0);
-});
+// C4 (review #6): the two tests that stood here asserted that `threwBeforeSideEffect` was a sound
+// brand check. It was sound as a BRAND and worthless as PROOF: the brand lived in the global
+// `Symbol.for` registry, so the party whose honesty it certified could write it. The API is deleted;
+// `no-retry-safe-after-dispatch.test.mjs` now proves the property the brand was standing in for,
+// over the transition graph, where forgery is not a parameter.

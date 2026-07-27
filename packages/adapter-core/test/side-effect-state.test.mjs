@@ -36,10 +36,10 @@ const SCENARIOS = [
     "EXECUTED",
   ],
   [
-    "the tool proves it did nothing",
-    ["DISPATCH_STARTED", "TOOL_THREW_BEFORE_SIDE_EFFECT"],
-    "FAILED_NO_SIDE_EFFECT",
-    "needs the TOOL to say so; never inferred from the absence of a success",
+    "the tool CLAIMS it did nothing (C4: an unverifiable self-report by the executed party)",
+    ["DISPATCH_STARTED", "TOOL_REPORTED_NO_DISPATCH"],
+    "SIDE_EFFECT_UNCONFIRMED",
+    "review #6: the tool's word — marked throw or { ok: false } — is an assertion, not proof; only the system of record can clear it",
   ],
   [
     "the tool threw after dispatch — which side of the side effect is unknown",
@@ -102,7 +102,9 @@ test("no event reaches a safe-to-retry state once dispatch has started, except a
   // The property, over the whole table: after DISPATCH_STARTED, the ONLY ways into a retryable
   // state are the tool proving it did nothing, or reconciliation proving it. Everything else must
   // keep carrying the ambiguity.
-  const PROOFS = new Set(["TOOL_THREW_BEFORE_SIDE_EFFECT", "RECONCILED_NOT_PERFORMED"]);
+  // C4 (review #6): `TOOL_THREW_BEFORE_SIDE_EFFECT` was in this set. It was not a proof — the mark
+  // was forgeable by the tool being judged — and it is gone. Reconciliation is the only proof left.
+  const PROOFS = new Set(["RECONCILED_NOT_PERFORMED"]);
   for (const [from, meta] of Object.entries(SIDE_EFFECT_STATES)) {
     if (from === "NOT_DISPATCHED" || meta.safeToRetry) continue;
     for (const event of SIDE_EFFECT_EVENTS) {
