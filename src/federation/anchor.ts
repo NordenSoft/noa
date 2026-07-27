@@ -24,7 +24,8 @@
 
 import { signEd25519 } from "../keys.js";
 import { verifyChain } from "../verify.js";
-import { snapshotImmutable, IngestError } from "../ingest.js";
+import { snapshotImmutable, isIngestError } from "../ingest.js";
+import { arrayLength, isSafeInteger, regexpTest } from "../intrinsics.js";
 import type { Receipt } from "../types.js";
 import type { Signer } from "../builder.js";
 import { anchorSigningInput, type Anchor } from "./acceptance.js";
@@ -72,13 +73,13 @@ function frontierInputErrors(frontier: AnchorFrontier, signer: Signer): string[]
   if (typeof frontier.chain !== "string" || frontier.chain.length === 0) {
     errors.push("frontier.chain must be a non-empty string");
   }
-  if (typeof frontier.highestSeq !== "number" || !Number.isSafeInteger(frontier.highestSeq) || frontier.highestSeq < 0) {
+  if (typeof frontier.highestSeq !== "number" || !isSafeInteger(frontier.highestSeq) || frontier.highestSeq < 0) {
     errors.push("frontier.highestSeq must be a non-negative safe integer");
   }
-  if (typeof frontier.headHash !== "string" || !ANCHOR_HASH_RE.test(frontier.headHash)) {
+  if (typeof frontier.headHash !== "string" || !regexpTest(ANCHOR_HASH_RE, frontier.headHash)) {
     errors.push("frontier.headHash must be sha256:<64 hex>");
   }
-  if (typeof frontier.ts !== "string" || !ANCHOR_RFC3339_RE.test(frontier.ts)) {
+  if (typeof frontier.ts !== "string" || !regexpTest(ANCHOR_RFC3339_RE, frontier.ts)) {
     errors.push("frontier.ts must be an RFC 3339 UTC timestamp");
   }
   if (typeof signer !== "object" || signer === null) {
@@ -96,11 +97,11 @@ function frontierInputErrors(frontier: AnchorFrontier, signer: Signer): string[]
 function anchorDraftErrors(a: Anchor): string[] {
   const errors: string[] = [];
   if (typeof a.chain !== "string" || a.chain.length === 0) errors.push("anchor.chain must be a non-empty string");
-  if (typeof a.highestSeq !== "number" || !Number.isSafeInteger(a.highestSeq) || a.highestSeq < 0) {
+  if (typeof a.highestSeq !== "number" || !isSafeInteger(a.highestSeq) || a.highestSeq < 0) {
     errors.push("anchor.highestSeq must be a non-negative safe integer");
   }
-  if (typeof a.headHash !== "string" || !ANCHOR_HASH_RE.test(a.headHash)) errors.push("anchor.headHash must be sha256:<64 hex>");
-  if (typeof a.ts !== "string" || !ANCHOR_RFC3339_RE.test(a.ts)) errors.push("anchor.ts must be an RFC 3339 UTC timestamp");
+  if (typeof a.headHash !== "string" || !regexpTest(ANCHOR_HASH_RE, a.headHash)) errors.push("anchor.headHash must be sha256:<64 hex>");
+  if (typeof a.ts !== "string" || !regexpTest(ANCHOR_RFC3339_RE, a.ts)) errors.push("anchor.ts must be an RFC 3339 UTC timestamp");
   if (a.sig.alg !== "ed25519") errors.push('anchor.sig.alg must be "ed25519"');
   if (typeof a.sig.kid !== "string" || a.sig.kid.length === 0) errors.push("anchor.sig.kid must be a non-empty string");
   if (typeof a.sig.value !== "string" || a.sig.value.length === 0) errors.push("anchor.sig.value must be a non-empty string");
@@ -120,6 +121,21 @@ function anchorDraftErrors(a: Anchor): string[] {
  * (§5): a verifier pins witness keys, never the root.
  */
 export function buildAnchor(frontier: AnchorFrontier, signer: Signer): Anchor {
+  // THE INGEST BOUNDARY (review #6, C2 — the un-routed sibling). `anchorForChainHead` snapshotted its
+  // input; `buildAnchor`, which is what actually SIGNS, did not. It validated `frontier` and then
+  // RE-READ all four fields to build the signed surface, so a flipping getter could pass a valid
+  // frontier to the validator and hand a different one to the signature. Snapshot both arguments
+  // once, here, before a single field is validated: the bytes that are checked and the bytes that are
+  // signed are then provably the same bytes.
+  try {
+    frontier = snapshotImmutable<AnchorFrontier>(frontier);
+    signer = snapshotImmutable<Signer>(signer);
+  } catch (e) {
+    throw new AnchorError(
+      "buildAnchor: the frontier/signer could not be reduced to inert data before signing (a hostile getter, a proxy trap, or a non-plain object)",
+      isIngestError(e) ? [(e as Error).message] : [],
+    );
+  }
   const inErrors = frontierInputErrors(frontier, signer);
   if (inErrors.length > 0) {
     throw new AnchorError(`buildAnchor: invalid frontier/signer input: ${inErrors.join("; ")}`, inErrors);
@@ -176,7 +192,7 @@ export function anchorForChainHead(receipts: readonly Receipt[], signer: Signer,
   } catch (e) {
     throw new AnchorError(
       "anchorForChainHead: receipts could not be reduced to inert data before signing (a hostile getter, a proxy trap, or a non-plain object)",
-      e instanceof IngestError ? [e.message] : [],
+      isIngestError(e) ? [(e as Error).message] : [],
     );
   }
 
@@ -187,7 +203,23 @@ export function anchorForChainHead(receipts: readonly Receipt[], signer: Signer,
       res.reason ? [res.reason] : [],
     );
   }
-  const head = (snap as Receipt[]).find((r) => r.chain.seq === res.count - 1);
+  // PRISTINE SEARCH (review #6, C1). `.find` dispatched through the globally-mutable
+  // `Array.prototype.find`. A getter fired while the receipts were being ingested set
+  // `Array.prototype.find = () => attackerHead`, so `verifyChain` validated the genuine frozen chain
+  // and the head located immediately afterwards was an object the verifier had never seen — the
+  // witness key then signed `chain="attacker/never-verified", highestSeq=999, headHash=0x00…`. The
+  // fix is not to search more carefully; it is never to let the search be redirected. An indexed walk
+  // over own properties cannot be.
+  let head: Receipt | undefined;
+  const wantSeq = res.count - 1;
+  for (let i = 0; i < arrayLength(snap as ArrayLike<Receipt>); i++) {
+    const cand = (snap as readonly Receipt[])[i] as Receipt | undefined;
+    if (cand !== undefined && typeof cand === "object" && cand !== null
+        && typeof cand.chain === "object" && cand.chain !== null && cand.chain.seq === wantSeq) {
+      head = cand;
+      break;
+    }
+  }
   if (head === undefined) {
     throw new AnchorError(`anchorForChainHead: could not locate the chain head at seq ${res.count - 1}`, []);
   }

@@ -94,7 +94,7 @@ test("every (outcome, role) pair the §13 union permits is actually routed throu
   }
 
   const missing: string[] = [];
-  for (const [outcome, union] of Object.entries(OUTCOME_ARTIFACT_UNION) as Array<[EvidenceOutcome, ReadonlySet<string>]>) {
+  for (const [outcome, union] of Object.entries(OUTCOME_ARTIFACT_UNION) as Array<[EvidenceOutcome, { has(v: string): boolean }]>) {
     // deferredReceipt is mandatory for every outcome; the optional receipt roles come from the union.
     const roles: ReceiptRole[] = ["deferredReceipt", ...RECEIPT_ROLES.filter((r) => union.has(r))];
     const seen = asserted.get(outcome) ?? new Set<string>();

@@ -26,7 +26,24 @@ export type {
 
 export { canonicalize, JcsError } from "./jcs.js";
 export { safeParse, SafeJsonError } from "./safe-json.js";
-export { snapshotImmutable, deepFreeze, IngestError, MAX_INGEST_DEPTH } from "./ingest.js";
+export { snapshotImmutable, deepFreeze, tryIngest, isIngestError, IngestError, MAX_INGEST_DEPTH } from "./ingest.js";
+/**
+ * The inert-data primitives (review #6, C1/C3). Published so the sibling packages — which verify the
+ * SAME bytes and are held to the SAME class properties — build their policy tables and resolve their
+ * membership decisions through one implementation rather than five near-copies.
+ */
+export {
+  INERT_ARRAY_PROTOTYPE,
+  makeInertArray,
+  isInertArray,
+  frozenSet,
+  isFrozenSet,
+  frozenTable,
+  inertViolations,
+  MutablePolicyTableError,
+  type FrozenSet,
+} from "./inert.js";
+export * as intrinsics from "./intrinsics.js";
 export { isNFC, nonNfcPaths } from "./nfc.js";
 export { sha256Hex, sha256Prefixed, sha256Digest } from "./hash.js";
 export { receiptHashInput, checkpointHashInput } from "./canonicalize.js";

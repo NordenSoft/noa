@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACTS, evalSchema, type KeyEntry } from "noa-approval-artifacts";
-import { snapshotImmutable, IngestError, type Keyring } from "noa-receipt";
+import { snapshotImmutable, isIngestError, type Keyring } from "noa-receipt";
 import {
   EVIDENCE_SPEC,
   POSITIVE_OUTCOMES,
@@ -171,7 +171,24 @@ function result(
  */
 export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions): VerifyEvidenceResult {
   const warnings: string[] = [];
-  const schemas = opts.schemas ?? loadSchemas();
+
+  // THE INGEST BOUNDARY, FOR EVERY CALLER-SUPPLIED ARGUMENT (review #6, C1). The bundle was
+  // snapshotted and `opts` was not, so `purpose`, `tenantRoot`, `checkpointKeyring`, `now` and
+  // `maxAgeMs` were LIVE reads spanning the whole pipeline — the trust root that was validated by
+  // `asRootKeyEntryMap` and the trust root the steps then used were two separate reads of the same
+  // getter. Snapshotting the evidence and leaving the TRUST ROOT live is the same defect one argument
+  // to the left. `schemas` is excluded on purpose: it is the verifier's own loaded schema set (a
+  // large, already-parsed, non-caller-controlled structure), and re-snapshotting it on every call
+  // would be an O(schema) cost per verification for no security gain — a caller who can substitute
+  // the verifier's schemas has already replaced the verifier.
+  const suppliedSchemas = opts.schemas;
+  try {
+    opts = snapshotImmutable<VerifyEvidenceOptions>({ ...opts, schemas: undefined });
+  } catch (e) {
+    const why = isIngestError(e) ? (e as Error).message : "options could not be reduced to inert data";
+    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `verification options rejected at the ingest boundary: ${why}` });
+  }
+  const schemas = suppliedSchemas ?? loadSchemas();
 
   // DESIGN 2 — `purpose` is a TypeScript union that is ERASED at runtime: nothing stopped a caller
   // (or a CLI string) from passing "AUTHORIZE", "authorize " or "bogus", all of which silently fell
@@ -194,7 +211,7 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
   try {
     bundle = snapshotImmutable<EvidenceBundle>(bundleInput);
   } catch (e) {
-    const why = e instanceof IngestError ? e.message : "bundle could not be reduced to inert data";
+    const why = isIngestError(e) ? (e as Error).message : "bundle could not be reduced to inert data";
     return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the ingest boundary: ${why}` }, [], { integrity: "BROKEN", authorization: "UNCHECKED" }, purpose);
   }
 

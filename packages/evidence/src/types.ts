@@ -12,6 +12,30 @@
  * `verifyArtifact`, not re-declared here (Red Line 5: never re-invent a frozen shape).
  */
 
+import { frozenSet, frozenTable, type FrozenSet } from "noa-receipt";
+
+/**
+ * POLICY STATE IS FROZEN BY CONSTRUCTION (review #6, C3).
+ *
+ * Review #5 found a runtime-mutable `Set` in a frozen policy table and it was fixed IN ONE FILE.
+ * Every table in THIS file stayed a `Set` — and `Object.freeze` does not disable `Set.prototype.add`,
+ * so `NEGATIVE_OUTCOMES.delete("CANCELLED_LOCAL_STATE_LOST")` +
+ * `POSITIVE_OUTCOMES.add("CANCELLED_LOCAL_STATE_LOST")` turned `step15-laundering-no-anchor.json`
+ * from INCONCLUSIVE / E_INCONCLUSIVE_NO_CHECKPOINT into VALID_SEGMENT_ONLY, and
+ * `OPTIONAL_ARTIFACT_FIELDS.push(...)` simply worked.
+ *
+ * Hand-freezing the tables a review happens to name does not close this: the NEXT table is mutable
+ * again. Two mechanisms replace the discipline:
+ *
+ *   1. `frozenSet` / `frozenTable` (noa-receipt) — a membership table with no `Set` inside it, and a
+ *      deep-freeze that THROWS at construction on a `Set`/`Map`/`Date`/accessor/class instance and
+ *      re-roots every array onto the inert prototype. A mutable policy table cannot be built; the
+ *      module fails to evaluate, in every process including the build.
+ *   2. `test/security/policy-tables-inert.test.ts` — walks EVERY exported value of EVERY package
+ *      entry point and requires the same invariant of tables that never came through (1). A new table
+ *      in a new file is covered without anyone remembering this comment.
+ */
+
 export const EVIDENCE_SPEC = "noa.approval-evidence/0.1" as const;
 
 /**
@@ -31,13 +55,13 @@ export type EvidenceOutcome =
   | "CANCELLED_LOCAL_STATE_LOST";
 
 /** The two fully-proven positive outcomes — everything else is a step-15 non-executed outcome. */
-export const POSITIVE_OUTCOMES: ReadonlySet<EvidenceOutcome> = new Set<EvidenceOutcome>([
+export const POSITIVE_OUTCOMES: FrozenSet<EvidenceOutcome> = frozenSet<EvidenceOutcome>([
   "EXECUTED",
   "EXECUTION_FAILED",
 ]);
 
 /** The six non-executed outcomes subject to the step-15 fresh-checkpoint rule (F3/F5/G1). */
-export const NEGATIVE_OUTCOMES: ReadonlySet<EvidenceOutcome> = new Set<EvidenceOutcome>([
+export const NEGATIVE_OUTCOMES: FrozenSet<EvidenceOutcome> = frozenSet<EvidenceOutcome>([
   "DENIED",
   "EXPIRED",
   "APPROVED_NO_EXECUTION_EVIDENCE",
@@ -158,18 +182,18 @@ export type StepCode =
  * owns the Decision Artifact, …), so a missing artifact is still attributed to its own step rather
  * than collapsing onto this pre-rule.
  */
-export const OUTCOME_ARTIFACT_UNION: Readonly<Record<EvidenceOutcome, ReadonlySet<string>>> = {
-  EXECUTED: new Set(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "executedReceipt"]),
-  EXECUTION_FAILED: new Set(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "failedReceipt"]),
-  DENIED: new Set(["decisionArtifact", "blockedReceipt"]),
-  EXPIRED: new Set(["timeoutReceipt"]),
-  APPROVED_NO_EXECUTION_EVIDENCE: new Set(["decisionArtifact", "allowedReceipt"]),
-  GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE: new Set(["decisionArtifact", "allowedReceipt", "executionGrant"]),
-  UNKNOWN_AFTER_DISPATCH: new Set(["decisionArtifact", "allowedReceipt", "executionGrant", "executionUncertainty"]),
+export const OUTCOME_ARTIFACT_UNION: Readonly<Record<EvidenceOutcome, FrozenSet<string>>> = frozenTable({
+  EXECUTED: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "executedReceipt"]),
+  EXECUTION_FAILED: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "failedReceipt"]),
+  DENIED: frozenSet(["decisionArtifact", "blockedReceipt"]),
+  EXPIRED: frozenSet(["timeoutReceipt"]),
+  APPROVED_NO_EXECUTION_EVIDENCE: frozenSet(["decisionArtifact", "allowedReceipt"]),
+  GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant"]),
+  UNKNOWN_AFTER_DISPATCH: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant", "executionUncertainty"]),
   // CANCELLED (crash before the gate durably recorded the outcome) MAY carry a pre-crash ALLOWED
   // receipt + the decision that produced it; it may never carry execution artifacts (step 9).
-  CANCELLED_LOCAL_STATE_LOST: new Set(["decisionArtifact", "allowedReceipt"]),
-};
+  CANCELLED_LOCAL_STATE_LOST: frozenSet(["decisionArtifact", "allowedReceipt"]),
+});
 
 /**
  * The execution-artifact triple whose ABSENCE four outcomes already assert in their OWN step:
@@ -182,22 +206,22 @@ export const OUTCOME_ARTIFACT_UNION: Readonly<Record<EvidenceOutcome, ReadonlySe
  * What the union rule adds is everything NO step examines — a grant on a DENIED bundle, an
  * uncertainty on a CANCELLED one, a timeout receipt on an EXECUTED one.
  */
-const STEP_OWNED_EXECUTION_ABSENCE: ReadonlySet<string> = new Set([
+const STEP_OWNED_EXECUTION_ABSENCE: FrozenSet<string> = frozenSet([
   "executionConsumption",
   "executedReceipt",
   "failedReceipt",
 ]);
 
 /** Per-outcome fields the outcome's own step already refuses (see STEP_OWNED_EXECUTION_ABSENCE). */
-export const STEP_OWNED_ABSENCE: Readonly<Partial<Record<EvidenceOutcome, ReadonlySet<string>>>> = {
+export const STEP_OWNED_ABSENCE: Readonly<Partial<Record<EvidenceOutcome, FrozenSet<string>>>> = frozenTable({
   CANCELLED_LOCAL_STATE_LOST: STEP_OWNED_EXECUTION_ABSENCE, // step 9
   UNKNOWN_AFTER_DISPATCH: STEP_OWNED_EXECUTION_ABSENCE, // step 12
   GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE: STEP_OWNED_EXECUTION_ABSENCE, // step 13
   APPROVED_NO_EXECUTION_EVIDENCE: STEP_OWNED_EXECUTION_ABSENCE, // step 14
-};
+});
 
 /** Every optional (outcome-conditional) artifact field the container defines. */
-export const OPTIONAL_ARTIFACT_FIELDS: readonly string[] = [
+export const OPTIONAL_ARTIFACT_FIELDS: readonly string[] = frozenTable([
   "decisionArtifact",
   "allowedReceipt",
   "blockedReceipt",
@@ -207,7 +231,7 @@ export const OPTIONAL_ARTIFACT_FIELDS: readonly string[] = [
   "executionUncertainty",
   "executedReceipt",
   "failedReceipt",
-];
+]);
 
 /** The outcome of running a single named step. */
 export interface StepResult {

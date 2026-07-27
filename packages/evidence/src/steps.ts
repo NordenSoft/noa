@@ -13,7 +13,14 @@
  * (step 15) that no single-artifact verifier can express.
  */
 import { verifyArtifact, refHash, receiptRefHash, type KeyEntry } from "noa-approval-artifacts";
-import { verifyChain, verifyCheckpoint, type Keyring, type Checkpoint, type VerifyResult } from "noa-receipt";
+import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type Keyring, type Checkpoint, type VerifyResult } from "noa-receipt";
+
+// PRISTINE DECISIONS (review #6, C1). Every membership/search below is a verdict input; none of them
+// may dispatch through a globally-mutable prototype slot an ingested getter can rewrite.
+const { arrayIncludes, arrayJoin, arrayMap, arraySlice, arraySort, setAdd, setHas, setToArray } = intrinsics;
+
+/** The empty permitted-artifact set for an outcome the union table does not name (inert, shared). */
+const EMPTY_FIELD_SET = frozenSet<string>([]);
 import {
   type EvidenceBundle,
   type EvidenceOutcome,
@@ -166,15 +173,15 @@ export function step0_tenantEquality(ctx: Ctx): StepResult {
   // grant is either evidence of a grant issued against a denial, or a splice; both are rejections,
   // and neither is "valid". Enforced here (the container/shape pre-rule) with its OWN code so the
   // attribution is honest; required-artifact absence stays with the step that owns the artifact.
-  const union = OUTCOME_ARTIFACT_UNION[b.outcome as EvidenceOutcome] ?? new Set<string>();
-  const ownedElsewhere = STEP_OWNED_ABSENCE[b.outcome as EvidenceOutcome] ?? new Set<string>();
+  const union = OUTCOME_ARTIFACT_UNION[b.outcome as EvidenceOutcome] ?? EMPTY_FIELD_SET;
+  const ownedElsewhere = STEP_OWNED_ABSENCE[b.outcome as EvidenceOutcome] ?? EMPTY_FIELD_SET;
   for (const field of OPTIONAL_ARTIFACT_FIELDS) {
     if (ownedElsewhere.has(field)) continue; // the outcome's own step asserts this absence (attribution stays there)
     if ((b as unknown as Record<string, unknown>)[field] !== undefined && !union.has(field)) {
       return fail(
         S,
         "E_OUTCOME_ARTIFACT_SET",
-        `outcome ${b.outcome} does not define "${field}", but the bundle carries it — the §13 union is exhaustive, and an artifact outside it is never verified by any step (permitted here: ${[...union].sort().join(", ") || "none"})`,
+        `outcome ${b.outcome} does not define "${field}", but the bundle carries it — the §13 union is exhaustive, and an artifact outside it is never verified by any step (permitted here: ${arrayJoin(arraySort(arraySlice(union.values)), ", ") || "none"})`,
       );
     }
   }
@@ -238,7 +245,7 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   });
   if (!dv.ok) return fail(S, "E_DELEGATION_CHAIN", `keyDelegation invalid: ${dv.reason}`);
   const permissions = del.permissions;
-  if (!Array.isArray(permissions) || !permissions.includes("key-manifest-sign")) {
+  if (!Array.isArray(permissions) || !arrayIncludes(permissions, "key-manifest-sign")) {
     return fail(S, "E_DELEGATION_CHAIN", "keyDelegation.permissions lacks key-manifest-sign");
   }
   const dFrom = parseTime(del.validFrom);
@@ -572,10 +579,10 @@ export function step5_approverRole(ctx: Ctx): StepResult {
   const rc = ctx.riskClass;
   const needCritical = rc === "CRITICAL" || rc === "IRREVERSIBLE";
   const needHigh = rc === "HIGH";
-  if (needCritical && !entry.roles.includes("approve-critical")) {
+  if (needCritical && !arrayIncludes(entry.roles, "approve-critical")) {
     return fail(S, "E_APPROVER_ROLE", `action ${rc} needs approve-critical; approver holds [${entry.roles.join(",")}]`);
   }
-  if (needHigh && !entry.roles.includes("approve-high") && !entry.roles.includes("approve-critical")) {
+  if (needHigh && !arrayIncludes(entry.roles, "approve-high") && !arrayIncludes(entry.roles, "approve-critical")) {
     return fail(S, "E_APPROVER_ROLE", `action HIGH needs approve-high|approve-critical; approver holds [${entry.roles.join(",")}]`);
   }
   return ok(S);
@@ -962,7 +969,7 @@ export function step17_checkpointReconcile(ctx: Ctx): StepResult {
     ctx.warnings.push("checkpoint signer not in the supplied --checkpoint-keyring: no trusted tail anchor (VALID_SEGMENT_ONLY for positive outcomes; INCONCLUSIVE for negatives)");
   }
   // F6 opener-scoped residual (documented, not solved in alpha).
-  const agents = new Set(chain.map((r) => asStr(getPath(r, "agent.id"))));
+  const agents = new Set(arrayMap(chain, (r) => asStr(getPath(r, "agent.id"))));
   if (agents.size > 1) {
     ctx.warnings.push("checkpoint completeness is opener-scoped (F6): the chain has more than one agent.id; a co-agent's tail is not separately certified by the opener's checkpoint (needs the P2 external anchor)");
   }
@@ -1043,7 +1050,7 @@ export function step18_temporalAuthorization(ctx: Ctx): StepResult {
   const usedKids = new Set<string>();
   for (const a of [b.holdEnvelope, b.decisionArtifact, b.holdResolution, b.executionGrant, b.executionConsumption, b.executionUncertainty]) {
     const kid = asStr(getPath(a, "sig.kid"));
-    if (kid) usedKids.add(kid);
+    if (kid) setAdd(usedKids, kid);
   }
   // ── RECEIPTS ARE JUDGED AT THEIR OWN `ts`, TOO ────────────────────────────────────────────────
   // Every receipt kid used to be thrown into the `receivedAt` cohort below and judged ONLY there.
@@ -1065,7 +1072,7 @@ export function step18_temporalAuthorization(ctx: Ctx): StepResult {
   for (const r of ctx.orderedChain ?? []) {
     const rk = asStr(getPath(r, "sig.kid"));
     if (!rk) continue;
-    usedKids.add(rk); // keep the receivedAt (anti-backdating) assertion below
+    setAdd(usedKids, rk); // keep the receivedAt (anti-backdating) assertion below
     const entry = ctx.resolvedKeyring?.[rk];
     if (!entry) continue; // unknown kid: verifyChain (step 17) already rejected it
     const tsRaw = asStr(getPath(r, "ts"));
@@ -1084,7 +1091,7 @@ export function step18_temporalAuthorization(ctx: Ctx): StepResult {
   // revoked signer still anchor the tail. A checkpoint is authorized at ITS OWN timestamp.
   const cpKid = asStr(getPath(b.checkpoint, "sig.kid"));
 
-  for (const kid of usedKids) {
+  for (const kid of setToArray(usedKids)) {
     const entry = ctx.resolvedKeyring?.[kid];
     if (!entry) continue;
     const err = keyAuthorizedAt(kid, entry, rAt, ctx.receivedAt ?? "(unset)");
@@ -1152,7 +1159,7 @@ export function step19_receiptRoleIntegrity(ctx: Ctx): StepResult {
   const b = ctx.bundle as unknown as Record<string, unknown>;
   for (const role of RECEIPT_ROLES) {
     if (b[role] === undefined) continue; // absent roles carry nothing to attest
-    if (ctx.rolesAsserted.has(role)) continue;
+    if (setHas(ctx.rolesAsserted, role)) continue;
     return fail(
       S,
       "E_RECEIPT_ROLE",

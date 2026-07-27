@@ -19,6 +19,7 @@
 
 import { verifyChain, verifyChainText, DEFAULT_MAX_RECEIPTS, type VerifyResult, type VerifyOptions } from "../verify.js";
 import { safeParse } from "../safe-json.js";
+import { snapshotImmutable } from "../ingest.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
 import type { Checkpoint } from "../types.js";
 import {
@@ -108,6 +109,30 @@ export function verifyChainWitnessed(
   keyring: Keyring | undefined,
   opts: WitnessedOptions,
 ): WitnessedResult {
+  // THE INGEST BOUNDARY (review #6, C2 — the fifth un-routed entry point). The chain was snapshotted
+  // and `opts` was not, so every option was a LIVE read: `opts.maxReceipts` was read twice (the DoS
+  // pre-guard, then the bound passed to verifyChain), `opts.freshness` twice (the presence test, then
+  // the value), and `opts.checkpoint`/`identityManifest`/`requireTenantConsistency` once each into the
+  // options the chain verifier trusts. A getter that answers differently across those reads splits
+  // the policy that was CHECKED from the policy that was ENFORCED. `opts.anchors`/`opts.trustSet` were
+  // snapshotted downstream inside `verifyCompleteness`, which is exactly the pattern that leaves the
+  // NEXT field open; every caller-supplied argument is now inert before it is read at all.
+  //
+  // `chain` is deliberately NOT snapshotted here: `verifyChain` owns its own bounded ingest (it must
+  // reject an over-bound array WITHOUT paying an O(n) traversal first), and duplicating the snapshot
+  // here would defeat that guard.
+  try {
+    opts = snapshotImmutable<WitnessedOptions>(opts);
+    if (keyring !== undefined) keyring = snapshotImmutable<Keyring>(keyring);
+  } catch {
+    // Fail closed on BOTH halves: an options object that fights the snapshot yields an UNVERIFIED
+    // chain result and an INVALID_INPUT witness result, never a partial acceptance.
+    return {
+      chain: { status: "MALFORMED", count: 0, reason: "options could not be reduced to inert data at the ingest boundary (a hostile getter, a proxy trap, or a non-plain object)" } as VerifyResult,
+      witness: verifyCompleteness(INVALID_HEAD, [], { witnesses: [], quorum: 0 }),
+    };
+  }
+
   const verifyOpts: VerifyOptions = {};
   if (keyring !== undefined) verifyOpts.keyring = keyring;
   if (opts.checkpoint !== undefined) verifyOpts.checkpoint = opts.checkpoint;
