@@ -36,6 +36,14 @@ import type {
   RiskClass,
 } from "./types.js";
 
+/**
+ * R6 — the maximum a single manifest publish may advance the per-tenant version counter beyond the
+ * currently-stored one (and, on a fresh tenant, beyond -1). Generous by three orders of magnitude
+ * for a counter real deployments increment by ONE per rotation; small enough that the version space
+ * can never be exhausted, so a rotation is always still possible above whatever is stored.
+ */
+const MAX_VERSION_JUMP = 1_000;
+
 const RISK_CLASSES: ReadonlySet<string> = new Set([
   "LOW",
   "MEDIUM",
@@ -459,6 +467,13 @@ export class RelayEngine {
     const tenant = asString(manifest["tenant"]) ?? "default";
     const version = typeof manifest["version"] === "number" ? (manifest["version"] as number) : undefined;
     if (version === undefined) return err(422, "MANIFEST_MISSING_VERSION");
+    // R6 — the version must be a safe, non-negative INTEGER. Fractional and non-finite values were
+    // already refused, but only as a side effect of JCS rejecting them inside safeRefHash() below;
+    // nothing validated the field itself, so `Number.MAX_SAFE_INTEGER` — a perfectly good JCS
+    // integer — was accepted.
+    if (!Number.isSafeInteger(version) || version < 0) {
+      return err(422, "BAD_MANIFEST_VERSION", { detail: "version must be a non-negative safe integer" });
+    }
     const manifestHash = safeRefHash(manifest);
     if (manifestHash === null) return err(422, "BAD_MANIFEST", { detail: "not JCS-canonicalizable" });
 
@@ -496,6 +511,26 @@ export class RelayEngine {
     // Omission still preserves a previously-stored delegation for a legitimate same-manifest retry.
     // A genuine higher-version rotation that omits delegation still nulls it out (existing behavior).
     const cur = this.store.getLatestManifest(tenant);
+
+    // R6 — BOUNDED ADVANCE. Monotonicity is the anti-rollback rule and is unchanged; the problem was
+    // that nothing capped how far a single publish could advance the counter. A publish at
+    // MAX_SAFE_INTEGER stored fine and then made every future rotation STALE — permanently. Since
+    // key-manifest rotation is precisely how an operator recovers from a compromised key, one
+    // request with a stolen agent credential could lock the operator out of their own recovery path
+    // for good. Capping the advance guarantees there is ALWAYS room above the current version, so
+    // the space can never be exhausted; legitimate rotations increment by one and never notice.
+    // (Deliberately NOT an absolute ceiling: an absolute cap still lets the first publish land at
+    // the cap and brick a fresh tenant. The bound has to be relative to what is already stored.)
+    const ceiling = (cur ? cur.version : -1) + MAX_VERSION_JUMP;
+    if (version > ceiling) {
+      return err(422, "BAD_MANIFEST_VERSION", {
+        detail: `version advances too far in one publish (max +${MAX_VERSION_JUMP} beyond the stored version)`,
+        currentVersion: cur ? cur.version : null,
+        attemptedVersion: version,
+        maxAcceptedVersion: ceiling,
+      });
+    }
+
     if (cur && version === cur.version && !delegationProvided && cur.delegation) {
       delegation = cur.delegation;
     }
