@@ -419,6 +419,23 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     tailChecked = cpVerify === "ok";
     if (cpVerify !== "ok") {
       warnings.push("checkpoint present but not authenticated (no keyring) — tail NOT verified");
+    } else if (!haveManifest) {
+      // SCOPE OF `tailChecked` WITHOUT A MANIFEST (THREAT-MODEL.md T-tail-reheading). The §5b
+      // genesis binding above is the control that ties checkpoint authority to the chain OPENER,
+      // and it runs ONLY when an identityManifest is supplied. Without one, checkpoint
+      // authentication is KID-LEVEL: *any* key in the keyring can mint a checkpoint over *any*
+      // head, so a co-trusted key holder can drop the most-recent receipts, sign its own
+      // checkpoint over the truncated head, and this function returns VALID with
+      // `tailChecked: true`. That verdict is correct for what was actually checked, but
+      // `tailChecked: true` is exactly the field a relying party reads as "the tail was
+      // verified" — so the scope of that check has to travel WITH it, not only in the threat
+      // model. The pre-existing no-manifest warning below states the ATTRIBUTION consequence
+      // (which agent.id signed); this states the TRUNCATION consequence, which is the sharper
+      // one and was previously unstated at runtime. Additive: no verdict, no tailChecked value,
+      // and no existing warning changes.
+      warnings.push(
+        "checkpoint authenticated but no identityManifest supplied: the tail check is KID-LEVEL — any keyring-trusted key can mint a checkpoint over any head, so a co-trusted key holder can truncate the tail and still produce tailChecked:true (supply an identityManifest to bind checkpoint authority to the chain opener)",
+      );
     }
   } else {
     warnings.push("no checkpoint supplied: tail-truncation (deleting most-recent receipts) cannot be detected offline");
