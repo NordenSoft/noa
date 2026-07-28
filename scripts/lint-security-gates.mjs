@@ -40,6 +40,23 @@ const rel = (p) => path.relative(ROOT, p);
  * The trusted computing base (ADR §5.8). L2/L3 apply here and only here — a lint that shouted about
  * every file in the repository would be ignored within a week.
  */
+/**
+ * EXPLICITLY OUT of the TCB, each with the reason. This list is not decoration: together with TCB
+ * it must account for EVERY file under `src/`, and the reconciliation below fails if it does not.
+ *
+ * Without that, L2 and L3 have a trivial bypass — move a decision path into a new file and the
+ * lints simply stop seeing it. A hardcoded subject list that nothing reconciles is the poison
+ * matrix again, wearing a different hat: correct on the day it was written, silent thereafter.
+ */
+const OUT_OF_TCB = {
+  "src/index.ts": "re-export surface only; no decision logic (its exports are gated by L1)",
+  "src/types.ts": "type declarations and one spec constant",
+  "src/builder.ts": "PRODUCER — the signer's own data, trusted by definition (ADR §3.3)",
+  "src/cli.ts": "calls the boundary; takes no verdict of its own",
+  "src/pii.ts": "advisory helper, not on any verdict path",
+  "src/ingest.ts": "hostile-object boundary — deleted by bytes-in (ADR §4); exempt so its removal is the fix, not a lint bypass",
+};
+
 const TCB = [
   "src/verify.ts",
   "src/schema.ts",
@@ -136,6 +153,39 @@ function L2() {
 // module-private tables, closures and symbol-keyed sets were invisible to it by construction. A
 // source lint reads the declarations directly and has no such blind spot — which is the clearest
 // case in the ADR where the mechanism was the defect.
+/**
+ * TCB RECONCILIATION — every file under `src/` is either in the TCB (and linted) or explicitly
+ * exempted (with a reason). A new file that is neither is a decision path nobody classified, and it
+ * defaults to being a FINDING rather than to being invisible.
+ */
+function reconcileTCB() {
+  const seen = new Set();
+  const walk = (dir) => {
+    for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const rp = `${dir}/${e.name}`;
+      if (e.isDirectory()) walk(rp);
+      else if (e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) seen.add(rp);
+    }
+  };
+  walk("src");
+  let n = 0;
+  for (const f of seen) {
+    if (!TCB.includes(f) && !(f in OUT_OF_TCB)) {
+      add("L0", f, 0,
+        "file under src/ is in neither the TCB list nor OUT_OF_TCB — an unclassified module is a " +
+        "decision path L2/L3 cannot see. Classify it in scripts/lint-security-gates.mjs.");
+      n++;
+    }
+  }
+  for (const f of [...TCB, ...Object.keys(OUT_OF_TCB)]) {
+    if (!seen.has(f)) {
+      add("L0", f, 0, "classified in the TCB/OUT_OF_TCB lists but no longer exists — the list is describing code that is gone.");
+      n++;
+    }
+  }
+  return n;
+}
+
 function L3() {
   let n = 0;
   for (const f of TCB) {
@@ -247,6 +297,12 @@ function L7() {
  * at the moment the lint landed; exceeding it fails even in warn mode, so the number only falls.
  */
 const LINTS = [
+  // L0 runs FIRST and BLOCKS unconditionally. It is deliberately not part of any budget: if an
+  // unclassified file could be absorbed by L3's allowance, then fixing one mutable table would buy
+  // the right to hide one whole decision module, and the scoreboard would net to zero while the
+  // blind spot grew. Coverage of the subject list is a precondition for every other lint's number
+  // meaning anything, so it cannot itself be traded against them.
+  { id: "L0", name: "TCB coverage (every src/ file is classified)", run: reconcileTCB, mode: "block" },
   { id: "L1", name: "boundary (generated entry-point registry)", run: L1, mode: "warn", budget: 21,
     ratchet: "blocks when the bytes-in migration (ADR §3, P3) reaches 0. The registry-staleness half already blocks — see below." },
   { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "warn", budget: 63,
