@@ -13,6 +13,14 @@
 import { buildReceipt, verifyChain, generateKeyPair } from "../../dist/src/index.js";
 import { sha256Prefixed } from "../../dist/src/hash.js";
 
+
+/**
+ * Documents are BYTES at every security-sensitive entry point (ADR §3.1). An example is the first
+ * thing a new caller copies, so it shows the byte form rather than a convenience wrapper.
+ */
+const enc = new TextEncoder();
+const b = (v) => enc.encode(JSON.stringify(v));
+
 const kp = generateKeyPair("proxy-key");
 const signer = { kid: kp.kid, privateKey: kp.privateKey };
 const keyring = { [kp.kid]: kp.publicKey };
@@ -92,4 +100,4 @@ for (const c of calls) {
   console.log(`${allow ? "ALLOW" : "BLOCK"}  ${c.name.padEnd(16)} -> ${r.governance.verdict} (${r.governance.ruleId})`);
 }
 
-console.log("\nReceipts:", state.chain.length, "| verification:", verifyChain(state.chain, { keyring }).status);
+console.log("\nReceipts:", state.chain.length, "| verification:", verifyChain(b(state.chain), { keyring: b(keyring) }).status);
