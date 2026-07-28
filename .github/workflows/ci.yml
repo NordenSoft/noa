@@ -55,7 +55,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Install the root FIRST — a file: link install builds its target
+      - name: "Install the root FIRST — a file: link install builds its target"
         # NOT optional, and not obvious. `npm ci` inside a package whose manifest says
         # `noa-receipt: file:../..` makes npm run the LINK TARGET's `prepare` script — and this
         # repository's root `prepare` is `npm run build` (tsc). Without the root's own devDeps
