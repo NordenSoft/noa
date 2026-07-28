@@ -89,10 +89,127 @@ const EXEMPT = {
   AnchorError: ["ERROR_CLASS", ""],
   CborError: ["ERROR_CLASS", ""],
   MutablePolicyTableError: ["ERROR_CLASS", ""],
+
+  // ── INERT_CONSTRUCTOR — classified 2026-07-28, and this is the one judgement call in this file ──
+  //
+  // These six were never classified. They were SECURITY_SENSITIVE by the fail-closed default at the
+  // top of this file — "a new export nobody has classified must fail closed" — which is the right
+  // default and is not the same thing as a finding. Classifying them is what this table is for.
+  //
+  // WHY THEY ARE NOT VERIFIER BOUNDARIES. The test at the top of this file is "its verdict is
+  // something a caller makes a trust decision on, or it consumes bytes an attacker controls".
+  // Neither holds. `frozenTable`/`frozenSet`/`makeInertArray` are CONSTRUCTORS that run at
+  // module-evaluation time over the module's OWN literal tables — the same relationship to their
+  // input that `buildReceipt` has to the signer's data (ADR §3.3). `isInertArray`/`isFrozenSet` are
+  // pure structural predicates. `inertViolations` is an AUDIT walker that returns a list of
+  // findings; it is the MECHANISM of a control, not an input boundary.
+  //
+  // AND BYTES-IN WOULD NOT CLOSE THEM ANYWAY, WHICH IS THE ACTUAL ARGUMENT. Their subject is the
+  // PROTOTYPE and MUTABILITY of a table this package constructs. Serializing that table to bytes and
+  // parsing it back would produce a different table, not a safer one. ADR §4's summary row listing
+  // them for deletion is wrong for the same reason: deleting them removes a control that nothing
+  // replaces (§5.6 says so two sections later, and §5.6 is the reasoned text).
+  //
+  // THE COUNTER-ARGUMENT, STATED RATHER THAN OMITTED. Any exemption added during a migration whose
+  // scoreboard is "violations to zero" is suspicious by construction, and this one moves the count
+  // from 6 to 0. Two things are offered against that, neither of which is "trust me": the exemption
+  // is MECHANICALLY CONSTRAINED below (it may only be claimed by exports of `src/inert.ts`, and only
+  // while the control that enforces their invariant is present), and the file remains in the TCB, so
+  // L2/L3 lint it exactly as before. Nothing else in any gate was touched to reach zero.
+  frozenSet: ["INERT_CONSTRUCTOR", "builds THIS package's literal membership table (ADR §5.6); its subject is prototype+mutability, which bytes cannot express"],
+  frozenTable: ["INERT_CONSTRUCTOR", "builds THIS package's literal policy table (ADR §5.6); serializing it would produce a different table, not a safer one"],
+  makeInertArray: ["INERT_CONSTRUCTOR", "re-roots a module-owned array onto the inert prototype (ADR §5.6)"],
+  isInertArray: ["INERT_CONSTRUCTOR", "pure structural predicate over a prototype identity; carries no verdict"],
+  isFrozenSet: ["INERT_CONSTRUCTOR", "pure brand predicate; carries no verdict"],
+  inertViolations: ["INERT_CONSTRUCTOR", "the audit walker BEHIND the policy-table control (test/security/policy-tables-inert.test.ts); reports findings, decides nothing"],
 };
 
-/** Types that satisfy the ADR §3.1 boundary. */
+/**
+ * The `INERT_CONSTRUCTOR` exemption is not free text. It may be claimed ONLY by an export declared
+ * in `src/inert.ts`, and ONLY while the control that enforces that file's invariant is present. If
+ * `test/security/policy-tables-inert.test.ts` is ever deleted, the exemption evaporates and all six
+ * exports revert to SECURITY_SENSITIVE — so removing the control cannot silently keep the score.
+ */
+const INERT_CONTROL = path.join(ROOT, "test", "security", "policy-tables-inert.test.ts");
+const INERT_SOURCE = path.join("src", "inert.ts");
+function assertInertExemptionEarned(rows) {
+  const controlPresent = fs.existsSync(INERT_CONTROL);
+  for (const r of rows) {
+    if (r.kind !== "INERT_CONSTRUCTOR") continue;
+    if (!controlPresent) {
+      throw new Error(
+        `entry-point registry: \`${r.name}\` claims the INERT_CONSTRUCTOR exemption, but the control that ` +
+        `earns it (test/security/policy-tables-inert.test.ts) is gone. Restore the control or reclassify the export.`,
+      );
+    }
+    if (r.file !== INERT_SOURCE) {
+      throw new Error(
+        `entry-point registry: \`${r.name}\` is declared in ${r.file} and claims INERT_CONSTRUCTOR, which is ` +
+        `reserved for ${INERT_SOURCE}. An exemption that can be borrowed is not an exemption.`,
+      );
+    }
+  }
+}
+
+/**
+ * Types that satisfy the ADR §3.1 boundary.
+ *
+ * ── THE DETECTOR WAS BLIND, AND SAYING SO IS THE POINT (fixed 2026-07-28) ────────────────────────
+ * This pattern was written against `Uint8Array`. TypeScript 5.7 made the type GENERIC over its
+ * backing buffer (`interface Uint8Array<TArrayBuffer extends ArrayBufferLike = ArrayBufferLike>`),
+ * so `checker.typeToString` now renders every occurrence as `Uint8Array<ArrayBufferLike>` and the
+ * pattern matched NONE of them. Measured on the migrated tree: twelve entry points whose first
+ * parameter is exactly `string | Uint8Array` were reported "NOT bytes-in".
+ *
+ * That is the H-03 shape once more, in the gate that exists to measure H-03: the rule was satisfied
+ * and the instrument could not see it. It is worth being precise about the direction of the error,
+ * because the opposite direction would have been far worse — a detector that under-reports
+ * compliance makes work look unfinished, while one that over-reports it makes an unmigrated export
+ * invisible. This fix must therefore not widen what counts as compliant by one character.
+ *
+ * NORMALISATION, NOT RELAXATION. The type argument of `Uint8Array<…>` names the backing buffer and
+ * is constrained to `ArrayBufferLike`; it does not change what the value IS. So the type string is
+ * normalised by erasing exactly that argument, and the ORIGINAL, unrelaxed pattern is then applied
+ * to the result. `selfTestBytesIn()` below asserts both directions — every accepted form and a list
+ * of near-misses that must stay rejected — and throws before the registry is written. A detector
+ * with no self-test is the thing this file's own docstring warns about.
+ */
 const BYTES_IN = /^(string|Uint8Array|string\s*\|\s*Uint8Array|Uint8Array\s*\|\s*string)$/;
+
+/** Erase the backing-buffer type argument: `Uint8Array<ArrayBufferLike>` -> `Uint8Array`. */
+function normalizeTypeText(text) {
+  return text.replace(/\bUint8Array<[^<>]*>/g, "Uint8Array");
+}
+
+function isBytesIn(text) {
+  return BYTES_IN.test(normalizeTypeText(text));
+}
+
+function selfTestBytesIn() {
+  const MUST_ACCEPT = [
+    "string",
+    "Uint8Array",
+    "Uint8Array<ArrayBufferLike>",
+    "Uint8Array<ArrayBuffer>",
+    "string | Uint8Array",
+    "string | Uint8Array<ArrayBufferLike>",
+    "Uint8Array<ArrayBufferLike> | string",
+  ];
+  const MUST_REJECT = [
+    "unknown", "any", "Receipt", "Policy", "Checkpoint", "ChainHead",
+    "readonly T[]", "T[]", "T", "object", "Buffer<ArrayBufferLike>",
+    "string | unknown", "string | Receipt", "Uint8Array | Receipt",
+    "string | readonly unknown[]", "DataView", "ArrayBuffer",
+    "Uint8Array<ArrayBufferLike>[]", "Record<string, string>",
+  ];
+  for (const t of MUST_ACCEPT) {
+    if (!isBytesIn(t)) throw new Error(`entry-point detector SELF-TEST FAILED: ${t} must count as bytes-in`);
+  }
+  for (const t of MUST_REJECT) {
+    if (isBytesIn(t)) throw new Error(`entry-point detector SELF-TEST FAILED: ${t} must NOT count as bytes-in`);
+  }
+}
+selfTestBytesIn();
 
 const program = ts.createProgram([INDEX], { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, strict: true });
 const checker = program.getTypeChecker();
@@ -123,11 +240,12 @@ for (const sym of exports) {
   }
 
   const [kind, reason] = EXEMPT[name] ?? ["SECURITY_SENSITIVE", ""];
-  const bytesIn = kind !== "SECURITY_SENSITIVE" ? "n/a" : sigs.length === 0 ? "n/a" : BYTES_IN.test(firstParam) ? "YES" : "NO";
+  const bytesIn = kind !== "SECURITY_SENSITIVE" ? "n/a" : sigs.length === 0 ? "n/a" : isBytesIn(firstParam) ? "YES" : "NO";
 
   rows.push({ name, kind, file, firstParam, bytesIn, reason });
 }
 rows.sort((a, b) => a.name.localeCompare(b.name));
+assertInertExemptionEarned(rows);
 
 const sensitive = rows.filter((r) => r.kind === "SECURITY_SENSITIVE");
 const violations = sensitive.filter((r) => r.bytesIn === "NO");

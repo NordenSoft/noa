@@ -9,6 +9,7 @@ import { parseDocument } from "./bytes.js";
 import { inertOptions, type OptionSchema } from "./opts.js";
 import { arrayPush, arrayIncludes, dateParse, mapHas, mapGet, mapSet, objectKeys, objectGetOwnPropertyNames, isSafeInteger, arraySlice, setAdd, setSize } from "./intrinsics.js";
 import { isSha256Hash, isRfc3339 } from "./scan.js";
+import { frozenTable } from "./inert.js";
 
 export type VerifyStatus =
   | "VALID" // structure + hash-chain + signatures all verified against the supplied keyring
@@ -617,7 +618,10 @@ export function verifyChainText(text: string, opts: VerifyOptions = {}): VerifyR
 
 type CheckpointVerdict = "ok" | "unverified" | "bad spec" | "malformed checkpoint" | "bad checkpoint signature";
 
-const CHECKPOINT_KEYS = ["spec", "chain", "highestSeq", "headHash", "ts", "sig"];
+// The allow-list a checkpoint's key set is decided against — a policy table, so it is built through
+// `frozenTable`: deep-frozen, re-rooted onto the inert array prototype, and refused at construction
+// if it ever contains anything mutable (ADR §5.6).
+const CHECKPOINT_KEYS = frozenTable(["spec", "chain", "highestSeq", "headHash", "ts", "sig"]);
 // Formats are decided by hand-written scanners (src/scan.ts), never by a RegExp: `RegExp.prototype.test`
 // performs a dynamic `Get(re, "exec")`, so even a CAPTURED `test` dispatches through the writable
 // `RegExp.prototype.exec` — reproduced in `c02_regexp_witness.mjs` against the captured wrapper.

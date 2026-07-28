@@ -21,6 +21,7 @@ import { verifyChain, verifyChainText, DEFAULT_MAX_RECEIPTS, type VerifyResult, 
 import { safeParse } from "../safe-json.js";
 import { parseDocument } from "../bytes.js";
 import { inertOptions, type OptionSchema } from "../opts.js";
+import { frozenTable } from "../inert.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
 import type { Checkpoint } from "../types.js";
 import {
@@ -57,7 +58,10 @@ export interface WitnessedResult {
 }
 
 /** A head that verifyCompleteness rejects as INVALID_INPUT — used when no trustworthy head can be derived. */
-const INVALID_HEAD: ChainHead = { chain: "", seq: -1, hash: "" };
+// The sentinel a malformed chain collapses to. It is a module-level shared value returned to
+// callers, so it is built inert at construction (ADR §5.6): frozen and null-rooted, so no caller and
+// no prototype pollution can rewrite what "invalid head" means for every other caller.
+const INVALID_HEAD: ChainHead = frozenTable({ chain: "", seq: -1, hash: "" }) as ChainHead;
 
 /**
  * Derive the presented head H = (chain, seq, hash) from the parsed receipts, defensively: the highest-seq

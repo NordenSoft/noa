@@ -49,10 +49,17 @@ import {
   ownKeys,
 } from "./intrinsics.js";
 
-/** `Array.prototype` methods that MUTATE. An inert array does not carry them at all. */
-const MUTATORS: readonly string[] = [
+/**
+ * `Array.prototype` methods that MUTATE. An inert array does not carry them at all.
+ *
+ * Frozen at construction like every other table in the TCB. It cannot go through `makeInertArray`
+ * (that function is defined below and depends on the prototype this list helps build), so it is
+ * frozen directly — the invariant is "cannot be rewritten after load", and `Object.freeze` on an
+ * array of primitives delivers exactly that.
+ */
+const MUTATORS: readonly string[] = objectFreeze([
   "push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin",
-];
+]);
 
 /**
  * A frozen, null-rooted stand-in for `Array.prototype`, built once from the pristine intrinsic.

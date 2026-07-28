@@ -63,10 +63,16 @@ const TCB = [
   // read. They are in the TCB from their first commit rather than after someone notices.
   "src/bytes.ts",
   "src/opts.ts",
-  // Exempting this was my own first instance of the very bypass L0 now blocks: it declares
-  // SECURITY_SENSITIVE exports (snapshotImmutable / tryIngest), so it is in the TCB by derivation,
-  // and bytes-in deleting it later is the fix — not a reason to stop linting it now.
-  "src/ingest.ts",
+  // THE FORMAT SCANNERS (ADR §5.5, added 2026-07-28). A decision path by construction: these
+  // functions decide whether a hash, a timestamp or a params-hash is well-formed, and those verdicts
+  // gate a witness quorum and a receipt's structural validity. They exist BECAUSE the regex engine
+  // could not stay on this path (c02_regexp_witness), so linting them is not optional.
+  //
+  // The entry it replaces was `src/ingest.ts`, deleted by bytes-in — and the comment that used to sit
+  // here is worth preserving in substance: exempting `ingest.ts` was this file author's own first
+  // instance of the bypass L0 now blocks. It declared SECURITY_SENSITIVE exports, so it was in the
+  // TCB by derivation; deleting it later was the fix, not a reason to stop linting it meanwhile.
+  "src/scan.ts",
   "src/schema.ts",
   "src/keys.ts",
   "src/safe-json.ts",
@@ -411,16 +417,34 @@ const LINTS = [
   // blind spot grew. Coverage of the subject list is a precondition for every other lint's number
   // meaning anything, so it cannot itself be traded against them.
   { id: "L0", name: "TCB coverage (every src/ file is classified)", run: reconcileTCB, mode: "block" },
-  { id: "L1", name: "boundary (generated entry-point registry)", run: L1, mode: "warn", budget: 21,
-    ratchet: "blocks when the bytes-in migration (ADR §3, P3) reaches 0. The registry-staleness half already blocks — see below." },
-  // BUDGET RAISED 63 → 64 on 2026-07-28, and the reason must be legible or this is indistinguishable
-  // from loosening a gate to make a run go green: `src/ingest.ts` MOVED INTO the TCB (it declares
-  // SECURITY_SENSITIVE exports, so L0 now derives its membership rather than accepting my
-  // exemption). The subject set grew by one file; no violation was added and none was forgiven.
-  { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "warn", budget: 64,
+  // FLIPPED warn(21) -> BLOCK on 2026-07-28, and the budget is DELETED rather than set to 0, per the
+  // rule at the top of this file: "when a budget reaches 0 the lint is flipped to mode:'block' and
+  // the budget deleted". Measured 0 — every security-sensitive export now takes string|Uint8Array.
+  //
+  // Two things went into that number and both belong in the record. Twelve of the twenty-one were
+  // migrated code the DETECTOR could not see: the bytes-in pattern predated TypeScript 5.7 making
+  // `Uint8Array` generic, so `Uint8Array<ArrayBufferLike>` matched nothing (fixed, with a two-way
+  // self-test, in gen-entry-point-registry.mjs). Six were `src/inert.ts` exports that had never been
+  // CLASSIFIED and were SECURITY_SENSITIVE by the fail-closed default; they are now
+  // INERT_CONSTRUCTOR, with the reasoning and the counter-argument written out at the exemption and
+  // a mechanical constraint that voids it if the control earning it is deleted. Three were the
+  // deleted ingest exports. No budget anywhere was raised and no scan root was narrowed.
+  { id: "L1", name: "boundary (generated entry-point registry)", run: L1, mode: "block" },
+  // BUDGET RATCHETED 64 → 35 on 2026-07-28 (measured). Budgets move DOWNWARD only, and this one moved
+  // because the four C-02 sinks and the C-02(f) regex path left the decision path: membership is now
+  // `arrayIncludes`/`membership()`, presence is `hasOwn`, and every format decision is a hand-written
+  // character walk in `src/scan.ts`. It stays in WARN mode because 35 is not 0 — the residue is
+  // mostly `for…of` over `safeParse` output and array HOFs in non-verdict positions, and claiming
+  // "blocking" for a gate the code does not yet satisfy is the failure mode this table exists to
+  // prevent. The earlier note here recorded a RAISE 63 → 64 when `src/ingest.ts` moved into the TCB;
+  // that file no longer exists, and `src/scan.ts` took its place in the subject set.
+  { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "warn", budget: 35,
     ratchet: "blocks when the decision path stops calling includes/has/HOFs/for-of/regex (ADR §5.5, P3)." },
-  { id: "L3", name: "no mutable policy state (module-level tables)", run: L3, mode: "warn", budget: 10,
-    ratchet: "blocks when every TCB table is Object.create(null) + deep-frozen at construction (ADR §5.6, P3)." },
+  // FLIPPED warn(10) -> BLOCK on 2026-07-28, budget deleted. Measured 0: every module-level table in
+  // the TCB is now built frozen and null-rooted at construction. The last three were CHECKPOINT_KEYS
+  // (verify.ts), MUTATORS (inert.ts) and INVALID_HEAD (verify-witnessed.ts) — a shared sentinel any
+  // caller could have rewritten for every other caller.
+  { id: "L3", name: "no mutable policy state (module-level tables)", run: L3, mode: "block" },
   { id: "L4", name: "mutation-observable (control knockout)", run: () => 0, mode: "external",
     ratchet: "run by `npm run lint:knockout` — a separate process because each control must be knocked out and the suite re-run." },
   { id: "L5", name: "verdicts pinned by exact value", run: L5, mode: "block" },
