@@ -135,6 +135,10 @@ const _dateNow = Date.now;
 const _regexpTest = RegExp.prototype.test;
 const _regexpExec = RegExp.prototype.exec;
 const _bufferFrom = Buffer.from;
+// `globalThis.structuredClone` is a writable property of a mutable global. The PRODUCER paths use it
+// to snapshot the signer's own input, so a poisoned copy makes the signer sign something other than
+// what it was given. Captured like everything else here.
+const _structuredClone = globalThis.structuredClone;
 const _bufferAlloc = Buffer.alloc;
 const _bufferConcat = Buffer.concat;
 const _bufferCompare = Buffer.compare;
@@ -265,6 +269,7 @@ export function bufferAlloc(n: number): Buffer { return _apply(_bufferAlloc, und
 export function bufferConcat(list: readonly Uint8Array[]): Buffer { return _apply(_bufferConcat, undefined as never, [list as never]) as Buffer; }
 export function bufferCompare(a: Uint8Array, b: Uint8Array): number { return _apply(_bufferCompare, undefined as never, [a, b]) as number; }
 export function isBuffer(v: unknown): v is Buffer { return _apply(_bufferIsBuffer, undefined as never, [v]) as boolean; }
+export function structuredCloneValue<T>(v: T): T { return _apply(_structuredClone as never, undefined as never, [v] as never) as T; }
 export function bufToString(b: Uint8Array, enc: BufferEncoding): string { return _apply(_bufToString, b as never, [enc]) as string; }
 export function bufEquals(a: Uint8Array, b: Uint8Array): boolean { return _apply(_bufEquals, a as never, [b]) as boolean; }
 export function bufSubarray(b: Uint8Array, s?: number, e?: number): Buffer { return _apply(_bufSlice, b as never, [s, e]) as Buffer; }

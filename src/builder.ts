@@ -7,7 +7,7 @@ import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./sig
 import { validateReceiptShapeParsed } from "./schema.js";
 import { nonNfcPaths, isNFC } from "./nfc.js";
 import { isSha256Hash, isRfc3339 } from "./scan.js";
-import { arrayPush } from "./intrinsics.js";
+import { arrayPush, structuredCloneValue } from "./intrinsics.js";
 
 export interface Signer {
   kid: string;
@@ -76,7 +76,7 @@ export class BuilderError extends Error {
 function buildDraft(input: BuildInput, prev: Receipt | null, kid: string): { draft: Receipt; hashInput: string } {
   let cloned: Pick<BuildInput, "id" | "ts" | "scope" | "agent" | "action" | "governance">;
   try {
-    cloned = structuredClone({
+    cloned = structuredCloneValue({
       id: input.id,
       ts: input.ts,
       scope: input.scope,
@@ -232,7 +232,7 @@ function checkpointDraftErrors(cp: Checkpoint): string[] {
 export function buildCheckpoint(head: Receipt, ts: string, signer: Signer): Checkpoint {
   let headSnap: { chain: string; seq: number; hash: string };
   try {
-    headSnap = structuredClone({ chain: head.scope.chain, seq: head.chain.seq, hash: head.chain.hash });
+    headSnap = structuredCloneValue({ chain: head.scope.chain, seq: head.chain.seq, hash: head.chain.hash });
   } catch (e) {
     throw new BuilderError(`buildCheckpoint: head is not structured-cloneable (${(e as Error).message})`, []);
   }
