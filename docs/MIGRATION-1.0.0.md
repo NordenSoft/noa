@@ -56,14 +56,20 @@ establish that no side effect occurred.*
 | Request | Before | After |
 |---|---|---|
 | `FAILED_BEFORE_DISPATCH`, grant `RESERVED` | `200` + signed consumption + signed FAILED receipt | **`202`** `UNCERTAINTY_PENDING_GATE_CORROBORATION`, claim recorded and attributed, **nothing signed** |
-| `FAILED_BEFORE_DISPATCH`, grant `UNUSED` | `409 GRANT_NOT_RESERVED` | **`200`** + signed consumption + signed FAILED receipt |
 | `DISPATCHED`, grant `RESERVED` | `200` | `200` — unchanged |
-| `DISPATCHED` or `UNKNOWN`, grant `UNUSED` | `409` | `409` — unchanged |
+| anything, grant `UNUSED` | `409 GRANT_NOT_RESERVED` | `409` — unchanged |
+
+`report()` now signs **no determinate negative in any state**. An interim version of this change
+preserved the `UNUSED` case as "gate-observed"; adversarial review showed the premise was false —
+`decide()` signs and releases the `ExecutionGrant` before any reservation, so `UNUSED` means "the
+agent did not call `reserve()`", not "nothing was dispatched".
 
 **What you must change.** A client that treats a `200` from `/report` as universal must handle `202`.
 A client that reported `FAILED_BEFORE_DISPATCH` *after* reserving now receives `202` and no artifact;
-that is the fix, not a regression. If your tool genuinely refuses before dispatch, **report before
-reserving** — then the gate observes the non-dispatch itself and the determinate negative is yours.
+that is the fix, not a regression. If your tool genuinely refuses before dispatch, **do not reserve at all** — the grant simply
+expires unused, and the evidence layer renders that as `APPROVED_NO_EXECUTION_EVIDENCE`, which is
+the honest description. The determinate negative you can still rely on comes from `guard()`'s
+pre-dispatch refusals, where the wrapper never invoked your tool.
 
 ### 2.2 `noa-framework-adapters` — `createToolGuard`
 

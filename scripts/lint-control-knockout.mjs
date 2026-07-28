@@ -41,10 +41,10 @@ const ONLY = onlyIdx > -1 ? process.argv[onlyIdx + 1] : null;
 const KNOCKOUTS = [
   {
     id: "c04-gate-observation",
-    control: "C-04 — the gate signs a determinate FAILED_BEFORE_DISPATCH only when it observed non-dispatch itself",
+    control: "C-04 — report() signs no determinate negative in ANY state (the UNUSED 409 and the attributed-claim 202)",
     file: "packages/gate/src/engine.ts",
-    find: 'if (result === "FAILED_BEFORE_DISPATCH" && !gateObservedNoDispatch) {',
-    replace: 'if (false as boolean && result === "FAILED_BEFORE_DISPATCH" && !gateObservedNoDispatch) {',
+    find: 'if (result === "FAILED_BEFORE_DISPATCH") {',
+    replace: 'if (false as boolean) {',
     suite: ["packages/gate", "npm", ["test"]],
   },
   {

@@ -107,35 +107,59 @@ test("C-04: a RESERVED grant's FAILED_BEFORE_DISPATCH report is an ATTRIBUTED CL
 });
 
 /**
- * The complementary half, and it matters exactly as much: over-deleting the determinate negative
- * would be its own defect. `UNUSED` means the F8a CAS never ran, so the gate itself knows no
- * dispatch was ever authorized — that is a GATE observation, not the caller's word, and it stays
- * determinate and signed. An over-correction that made every refusal look like an unknown would
- * teach operators that UNKNOWN means nothing.
+ * ── THIS TEST ALSO CERTIFIED A DEFECT, AND IT WAS MINE ─────────────────────────────────────────
+ *
+ * The first version of the C-04 fix (b92d517) asserted here that an `UNUSED` grant STILL signs a
+ * determinate FAILED_BEFORE_DISPATCH, on the reasoning that "the F8a CAS never ran, so the gate
+ * never authorized a dispatch". Adversarial review falsified the premise: `decide()` issues a
+ * gate-SIGNED ExecutionGrant and `holdView()` hands it to the agent while the record is still
+ * `UNUSED`. The authorization IS the signed grant; `reserve()` is only the single-use burn, and it
+ * is a voluntary call the executing party alone decides whether to make.
+ *
+ * So the fix had RELOCATED C-04 and made it cheaper: an agent holding the signed grant could
+ * execute out of band, skip `reserve()` entirely, and collect the same signed "it did not run" with
+ * one fewer HTTP call than the original attack. The line the first fix deleted — the `UNUSED` 409 —
+ * was the only thing that had been blocking it.
+ *
+ * INVERTED, not deleted, for the same reason as the test above: so there is a standing mechanical
+ * objection if anyone restores it.
  */
-test("C-04 did not over-correct: an UNUSED grant (the gate's OWN observation) still signs a determinate FAILED_BEFORE_DISPATCH", () => {
+test("C-04: an UNUSED grant signs NOTHING — the gate authorized at decide(), so reserve() is not an observation", () => {
   const fx = setupGate({ approverRole: "approve-high" });
   const grantId = approveAndGrant(fx, "chain-fail-unused");
-  // NO reserve() — the CAS never runs, so the grant never leaves UNUSED.
   assert.equal(fx.engine.getGrant(grantId)!.status, "UNUSED");
+
+  // The agent already holds the gate's SIGNED authorization at this point — that is the premise
+  // the old assertion got wrong, so it is asserted here rather than assumed.
+  const grant = fx.engine.getGrant(grantId)!.grant;
+  assert.equal(typeof grant.sig.value, "string");
+  assert.ok(grant.sig.value.length > 0, "the grant is signed and released BEFORE any reservation");
 
   const r = fx.engine.report(grantId, { result: "FAILED_BEFORE_DISPATCH" }, fx.agent);
 
-  assert.equal(r.status, 200);
-  const body = r.body as { consumption: Record<string, unknown>; attemptReceipt: Record<string, unknown> };
-  assert.equal(body.consumption["result"], "FAILED_BEFORE_DISPATCH");
-  assert.equal(typeof (body.consumption["sig"] as { value: string }).value, "string");
-  assert.equal((body.attemptReceipt["governance"] as { verdict: string }).verdict, "FAILED");
-  assert.equal(fx.engine.getGrant(grantId)!.status, "REPORTED", "a determinate outcome DOES terminally consume the grant");
+  assert.equal(r.status, 409, "no state of this method observes non-dispatch, so none may sign a determinate negative");
+  assert.equal((r.body as { error: string }).error, "GRANT_NOT_RESERVED");
+  const rec = fx.engine.getGrant(grantId)!;
+  assert.equal(rec.consumption, null, "nothing is signed");
+  assert.equal(rec.status, "UNUSED", "and the grant is not consumed by a report the gate cannot act on");
 });
 
-test("C-04: a caller cannot manufacture an authorization it never obtained — DISPATCHED/UNKNOWN on an UNUSED grant stay 409", () => {
-  for (const result of ["DISPATCHED", "UNKNOWN"] as const) {
-    const fx = setupGate({ approverRole: "approve-high" });
-    const grantId = approveAndGrant(fx, `chain-409-${result}`);
+/**
+ * NOT AN OVER-CORRECTION — the determinate negative survives where it is genuinely observed.
+ * `guard()` refuses BEFORE calling `execute()` on every pre-dispatch path (deny, expiry,
+ * cancellation, params mismatch, a lost reserve race) and reports `ran: false`. There the
+ * non-dispatch is observed by someone other than the tool: the wrapper never invoked it. That half
+ * is enumerated in packages/gate/test/no-tool-claim-is-retry-safe.test.ts; this asserts the
+ * boundary from the engine's side, so the two cannot drift apart.
+ */
+test("C-04 did not over-correct: a caller that never reserved is refused, not silently accepted", () => {
+  const fx = setupGate({ approverRole: "approve-high" });
+  for (const result of ["DISPATCHED", "FAILED_BEFORE_DISPATCH", "UNKNOWN"] as const) {
+    const grantId = approveAndGrant(fx, `chain-nores-${result}`, `idem-nores-${result}`);
     const r = fx.engine.report(grantId, { result }, fx.agent);
-    assert.equal(r.status, 409, `${result} without a reservation must not be accepted`);
+    assert.equal(r.status, 409, `${result} on an UNUSED grant must be refused`);
     assert.equal((r.body as { error: string }).error, "GRANT_NOT_RESERVED");
+    assert.equal(fx.engine.getGrant(grantId)!.consumption, null, "and must sign nothing");
   }
 });
 
@@ -163,18 +187,21 @@ test("NC-2.7: two invocations of the SAME action stay distinguishable by grant b
   // hold, so the realistic case is a caller that simply submits a new request.
   const grantB = approveAndGrant(fx, "chain-corr", "idem-B");
   assert.notEqual(grantB, grantA, "a second hold yields its own grant");
-  const rB = fx.engine.report(grantB, { result: "FAILED_BEFORE_DISPATCH" }, fx.agent);
-  assert.equal(rB.status, 200, "B never reserved, so its determinate negative is gate-observed and TRUE");
+  assert.equal(fx.engine.reserve(grantB, fx.agent).status, 200);
+  const rB = fx.engine.report(grantB, { result: "DISPATCHED" }, fx.agent);
+  assert.equal(rB.status, 200);
 
   const body = rB.body as { consumption: Record<string, unknown>; attemptReceipt: Record<string, unknown> };
   const recA = fx.engine.getGrant(grantA)!;
   const recB = fx.engine.getGrant(grantB)!;
 
-  // The honest part: A is untouched and still carries no terminal artifact.
-  assert.equal(recA.status, "RESERVED", "the dispatched grant is NOT resolved by B's report");
-  assert.equal(recA.consumption, null, "no consumption is signed for the dispatched invocation");
+  // A is untouched: B's terminal artifact says nothing about A.
+  assert.equal(recA.status, "RESERVED", "the first invocation is NOT resolved by the second's report");
+  assert.equal(recA.consumption, null, "no consumption is signed for the first invocation");
 
-  // THE PINNED PROPERTY: the artifacts are separable by their grant binding.
+  // THE PINNED PROPERTY: the artifacts are separable by their grant binding. The action fields are
+  // identical by construction, so the grant binding is the ONLY thing that keeps two invocations of
+  // one action distinguishable to a consumer.
   assert.notEqual(
     body.consumption["grantHash"],
     undefined,

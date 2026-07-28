@@ -619,47 +619,59 @@ export class GateEngine {
     // F8c — a second TERMINAL report is rejected; an UNKNOWN hint is NOT terminal.
     if (rec.reportedAt !== null) return err(409, "GRANT_ALREADY_REPORTED");
 
-    // ── C-04: WHO OBSERVED THE NON-DISPATCH? ─────────────────────────────────────────────────────
-    // THE INVARIANT: once the gate has authorized a dispatch (the F8a CAS UNUSED→RESERVED), no
-    // self-report by the executing party may establish that no side effect occurred.
+    // ── C-04: THIS METHOD HAS NO OBSERVATION OF NON-DISPATCH, IN ANY STATE ───────────────────────
+    // THE INVARIANT: once an external operation has been invoked, no self-report by the executing
+    // party may establish that no side effect occurred. A determinate negative requires an observer
+    // OTHER than the executed party.
     //
-    // The gate's grant status IS the gate's own observation, and it is the only observation the
-    // gate has. `UNUSED` means the CAS never ran: the gate never authorized a dispatch, so "nothing
-    // ran" is a fact the GATE knows, independently of anything the caller says. `RESERVED` means
-    // the gate DID authorize one, and from that instant the only party who can observe whether a
-    // side effect occurred is the party being judged. There is no construction in which that claim
-    // is verifiable (the reasoning is stated in full, once, at
-    // packages/adapter-core/src/side-effect-state.mjs:117-143), so the claim is not authenticated —
-    // it is no longer believed.
+    // THE CORRECTION THAT MATTERS (adversarial review, 2026-07-28 — read this before touching the
+    // branches below). An earlier version of this fix keyed determinacy on the grant's status: it
+    // signed a determinate FAILED_BEFORE_DISPATCH when the grant was still `UNUSED`, reasoning that
+    // "the F8a CAS never ran, so the gate never authorized a dispatch."
     //
-    // Pre-fix this method read `result` and signed whatever it was handed, with the UNUSED case
-    // rejected outright — so the ONE state in which the determinate negative is knowable was the
-    // one state that could not produce it, and the states in which it is UNknowable produced it on
-    // demand. The status check below inverts exactly that.
+    // That premise is FALSE, and the code three hundred lines up says so: `decide()` issues a
+    // gate-SIGNED `ExecutionGrant` (`issueGrant`, ~:518) and `holdView()` hands it straight to the
+    // agent as `executionGrant` (~:786) while the record is still `UNUSED`. The authorization is the
+    // signed grant. `reserve()` is the single-use BURN, not the authorization — and it is a
+    // voluntary call the executing party alone decides whether to make.
     //
-    // Deliberately NOT an over-correction (the complementary half matters as much): a caller that
-    // never reserved still gets a determinate, gate-observed FAILED_BEFORE_DISPATCH consumption. An
-    // over-correction that made every refusal look like an unknown would teach operators that
-    // UNKNOWN means nothing, which is its own defect.
-    const gateObservedNoDispatch = rec.status === "UNUSED";
-    if (result === "DISPATCHED" && gateObservedNoDispatch) {
-      // The caller claims it dispatched, but the gate never authorized one. Its word does not
-      // create an authorization retroactively.
+    // So `UNUSED` never meant "no dispatch was authorized". It means "the agent did not tell me it
+    // was about to dispatch", which is a statement about the agent's cooperation, not an
+    // observation of the world. An agent holding the signed grant could execute out of band, skip
+    // `reserve()` entirely, and collect a gate-signed determinate "it did not run" — the C-04
+    // artifact, obtained with ONE FEWER call than the original attack. The fix had relocated the
+    // vulnerability and made it cheaper.
+    //
+    // THE RULE NOW, WITHOUT AN EXCEPTION: `report()` never signs a determinate negative. There is no
+    // state in which it can, because there is no state in which this method observes non-dispatch.
+    //   • `UNUSED`   → 409. The gate has nothing to say; an unreserved grant that is never used
+    //                  simply leaves the hold without execution evidence, which the evidence layer
+    //                  already renders as APPROVED_NO_EXECUTION_EVIDENCE (a frozen §13 member).
+    //   • `RESERVED` → 202. An attributed claim routed through the EXISTING uncertainty mechanism.
+    //
+    // NOT AN OVER-CORRECTION, and this is where the determinate negative genuinely lives: the
+    // wrapper's pre-dispatch refusals (`packages/gate/src/wrapper.ts` — DENIED, EXPIRED, CANCELLED,
+    // params mismatch, a lost reserve race) all return `ran: false`, and there the non-dispatch IS
+    // observed by someone other than the tool: the wrapper refused BEFORE calling `execute()`. The
+    // other exit is `RECONCILED_NOT_PERFORMED`, on evidence from the system of record. Both survive
+    // untouched; what is deleted is the one that only looked like an observation.
+    if (rec.status === "UNUSED") {
       return err(409, "GRANT_NOT_RESERVED", { detail: "reserve strictly BEFORE dispatch (F8a)" });
     }
-    if (result === "UNKNOWN" && gateObservedNoDispatch) {
-      return err(409, "GRANT_NOT_RESERVED", { detail: "reserve strictly BEFORE dispatch (F8a)" });
-    }
-    if (result === "FAILED_BEFORE_DISPATCH" && !gateObservedNoDispatch) {
-      // C-04. The grant is RESERVED: the gate authorized a dispatch and cannot see what followed.
-      // The claim is RECORDED, ATTRIBUTED to the claimant, and routed through the EXISTING
-      // uncertainty mechanism — the same path an explicit UNKNOWN takes. No new wire outcome, no
-      // widening of the frozen §13 union: the evidence-layer rendering is UNKNOWN_AFTER_DISPATCH,
-      // and a determinate artifact appears only if `corroborateUncertainty` establishes one from
-      // the gate's OWN observation.
-      rec.claimedResult = "FAILED_BEFORE_DISPATCH";
-      rec.claimedBy = agent.id;
-      rec.claimedAt = this.now();
+    if (result === "FAILED_BEFORE_DISPATCH") {
+      // The grant is RESERVED: the gate authorized a dispatch and cannot see what followed. The
+      // claim is RECORDED and ATTRIBUTED, then routed through the EXISTING uncertainty mechanism —
+      // the same path an explicit UNKNOWN takes. No new wire outcome, no widening of the frozen §13
+      // union: the evidence-layer rendering is UNKNOWN_AFTER_DISPATCH, and a determinate artifact
+      // appears only if `corroborateUncertainty` establishes one from the gate's OWN observation.
+      //
+      // `claimedBy` keeps the FIRST claimant, not the last: attribution that a later caller can
+      // overwrite is not attribution.
+      if (rec.claimedResult === null) {
+        rec.claimedResult = "FAILED_BEFORE_DISPATCH";
+        rec.claimedBy = agent.id;
+        rec.claimedAt = this.now();
+      }
       rec.unknownHintAt = this.now();
       this.store.putGrant(rec);
       this.corroborateUncertainty(rec);
@@ -670,7 +682,7 @@ export class GateEngine {
           status: "UNCERTAINTY_PENDING_GATE_CORROBORATION",
           claimRecorded: "FAILED_BEFORE_DISPATCH",
           detail:
-            "the grant was RESERVED, so the gate authorized a dispatch and cannot observe whether a side " +
+            "the gate authorized this dispatch when it signed the grant and cannot observe whether a side " +
             "effect occurred; a pre-dispatch failure is recorded as an attributed claim, never as a " +
             "determinate signed outcome",
         },
@@ -687,19 +699,22 @@ export class GateEngine {
       return { status: 202, body: { status: "UNCERTAINTY_PENDING_GATE_CORROBORATION" } };
     }
 
-    // ── ONLY TWO GATE-OBSERVED OUTCOMES REACH HERE ───────────────────────────────────────────────
-    //   result === "DISPATCHED"             ⇒ rec.status === "RESERVED"  (the gate ran the CAS)
-    //   result === "FAILED_BEFORE_DISPATCH" ⇒ rec.status === "UNUSED"    (the gate never ran it)
-    // Both are facts the GATE holds in its own store. Neither is the executing party's word. Every
-    // other (result, status) pair was dispositioned above. This is the whole of C-04's fix: the
-    // signature below is now unreachable except from a gate observation.
+    // ── EXACTLY ONE OUTCOME REACHES HERE ─────────────────────────────────────────────────────────
+    //   result === "DISPATCHED"  ⇒  rec.status === "RESERVED"
+    // Every other (result, status) pair was dispositioned above: UNUSED is 409 in all three cases,
+    // FAILED_BEFORE_DISPATCH is a 202 attributed claim, UNKNOWN is a 202 hint.
     //
-    // F8b order: (reserve already done, on the DISPATCHED branch) → the wrapper dispatched → the
-    // GATE writes the durable EXECUTED/FAILED receipt (gate/policy signer, never the wrapper) →
-    // signs the Consumption.
+    // THAT IS THE WHOLE OF C-04'S FIX, and it is a NEGATIVE claim rather than a positive one: this
+    // method can no longer sign ANY determinate negative, in any state, because there is no state in
+    // which it observes non-dispatch. `buildConsumption` is still typed to accept
+    // FAILED_BEFORE_DISPATCH so that consumptions signed before this change still verify — the wire
+    // format is untouched and history is not rewritten — but no code path here produces one.
+    //
+    // F8b order: (reserve already done) → the wrapper dispatched → the GATE writes the durable
+    // EXECUTED receipt (gate/policy signer, never the wrapper) → signs the Consumption.
     const hold = this.store.getHold(rec.holdId);
     if (!hold || !hold.decisionReceipt) return err(409, "HOLD_STATE_INVALID");
-    const outcome = result === "DISPATCHED" ? "EXECUTED" : "FAILED";
+    const outcome = "EXECUTED"; // only DISPATCHED reaches here
     const attemptReceipt = buildAttemptReceipt({
       id: this.trust.newId(),
       ts: this.iso(this.now()),
@@ -715,7 +730,7 @@ export class GateEngine {
       grant: rec.grant,
       consumedAt: this.iso(this.now()),
       attemptReceipt,
-      result: result === "DISPATCHED" ? "DISPATCHED" : "FAILED_BEFORE_DISPATCH",
+      result: "DISPATCHED", // the only outcome this method can still sign
       gate: this.trust.gate,
     });
     rec.status = "REPORTED";

@@ -46,7 +46,7 @@ action did not run.
 |---|---|
 | Component | `noa-gate` — `EngineResult report()` in `packages/gate/src/engine.ts`, reachable over `POST /v1/grants/:grantId/report` |
 | Affected versions | `noa-gate@0.1.0` (**the package is not published to any registry**; version range to be confirmed before publication) |
-| Fixed in | commit `b92d517` on `arp-interop-response-20260727`; **not yet on `main` and not released** |
+| Fixed in | commits `b92d517` + the correction that followed adversarial review, on `arp-interop-response-20260727`; **not yet on `main` and not released** |
 | CWE | CWE-345 *Insufficient Verification of Data Authenticity* |
 | CVSS | not scored — scoring is deferred to publication, when the affected range is known |
 
@@ -69,15 +69,20 @@ The gate issues a single-use execution grant and tracks its status. The intended
 and signed a terminal attempt receipt plus an `noa.execution-consumption/0.1` artifact carrying the
 reported result verbatim.
 
-The grant status is the gate's **own** observation, and the only one it has:
+`report()` had no observation of non-dispatch available to it in **any** state:
 
-- `UNUSED` — the CAS never ran. The gate never authorized a dispatch, so "nothing was dispatched" is a
-  fact the gate holds independently of anything the caller says.
-- `RESERVED` — the gate authorized a dispatch. From that instant it cannot see what followed.
+- The gate **authorizes at `decide()`**, which issues a gate-*signed* `ExecutionGrant` and hands it
+  to the agent. `reserve()` is the single-use *burn*, not the authorization, and it is a voluntary
+  call the executing party alone decides whether to make.
+- So `UNUSED` means "the agent did not tell me it was about to dispatch" — a statement about the
+  agent's cooperation, not about the world. `RESERVED` means the agent did tell us, after which the
+  gate still cannot see what followed.
 
-The defect is that this was inverted. `report()` **rejected** the one state in which the negative is
-knowable (`UNUSED` returned `409 GRANT_NOT_RESERVED`) and **signed** it on demand in the states where
-it is unknowable.
+The defect is that `report()` signed a determinate negative on the caller's word in the `RESERVED`
+state. *(A first fix relocated it rather than closing it, by preserving the `UNUSED` case on the
+false premise that reservation was the authorization. That variant is separately preserved as a
+regression fixture, `test/security/r7-exploits/c04_relocated.mjs`, and would have been **cheaper** to
+exploit than the original — the attacker simply never calls `reserve()`.)*
 
 ```
 reserve(grant)                        -> 200, status RESERVED   (dispatch AUTHORIZED)
@@ -96,10 +101,17 @@ report, sweep window elapsed. The finding is that asymmetry.
 The status check is inverted, and that is the whole of it — no new mechanism, no new artifact, no wire
 change.
 
-- A determinate `FAILED_BEFORE_DISPATCH` is signed **only** when the gate observed the non-dispatch
-  itself (`status === "UNUSED"`). This path is preserved deliberately: an over-correction that made
-  every refusal look like an unknown would teach operators that `UNKNOWN` means nothing, which is its
-  own defect.
+- **`report()` signs no determinate negative in any grant state.** A first attempt at this fix
+  preserved the `UNUSED` case, reasoning that the F8a CAS had never run so no dispatch had been
+  authorized. Adversarial review falsified that premise: `decide()` issues a gate-*signed*
+  `ExecutionGrant` and releases it to the agent while the record is still `UNUSED`. The
+  authorization is the signed grant; `reserve()` is only the single-use burn, and it is a voluntary
+  call the executing party alone decides whether to make. Preserving that case would have relocated
+  the vulnerability and made it *cheaper* — one fewer HTTP call than the original attack.
+- Not an over-correction: the determinate negative survives where it is genuinely observed — the
+  wrapper's pre-dispatch refusals (deny, expiry, cancellation, params mismatch, lost reserve race),
+  where `execute()` was provably never invoked, and `RECONCILED_NOT_PERFORMED` from the system of
+  record.
 - After reservation the same claim is recorded as an **attributed claim** — `claimedResult`,
   `claimedBy`, `claimedAt`, gate-local, in no signed artifact — and routed through the **existing**
   uncertainty mechanism, returning `202 UNCERTAINTY_PENDING_GATE_CORROBORATION`.
@@ -115,10 +127,11 @@ discriminator).
 
 1. **Reject `FAILED_BEFORE_DISPATCH` at the edge.** A reverse proxy in front of `POST
    /v1/grants/:grantId/report` can rewrite that body to `{"result":"UNKNOWN"}`. This is behaviourally
-   close to the fix and needs no gate change. It also disables the *legitimate* pre-reservation
-   determinate negative, which for most deployments is an acceptable trade.
-2. **Do not treat a `FAILED_BEFORE_DISPATCH` consumption as retry-safe** unless the corresponding
-   grant record shows the grant never left `UNUSED`.
+   equivalent to the fix for the `RESERVED` case and needs no gate change.
+2. **Do not treat any `FAILED_BEFORE_DISPATCH` consumption as retry-safe.** There is no grant state
+   that makes it trustworthy: the gate cannot observe non-dispatch from `/report` at all. Trust only
+   a pre-dispatch refusal reported by `guard()` (`ran: false`, the tool was never invoked) or
+   positive reconciliation against the system of record.
 3. **Reconcile against the system of record before any retry** of a non-idempotent action. This is
    correct regardless of this advisory: see `NON-CLAIMS.md` NC-2.5 — nothing in NOA is an exactly-once
    guarantee.

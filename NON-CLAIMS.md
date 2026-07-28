@@ -73,9 +73,19 @@ reachable **only** where a party other than the executed one observed the non-di
 
 | Determinate negative | Who observed it |
 |---|---|
-| `FAILED_BEFORE_DISPATCH` (gate) | The gate's own grant status is `UNUSED` — the F8a CAS never ran, so no dispatch was ever authorized. |
-| Pre-dispatch refusal (`guard()`) | The gate refused before `execute()` was called: deny, expiry, cancellation, params mismatch, a lost reserve race. `ran: false`. |
+| Pre-dispatch refusal (`guard()`) | The wrapper refused BEFORE calling `execute()`: deny, expiry, cancellation, params mismatch, a lost reserve race. The tool was never invoked, and someone other than the tool observed that. `ran: false`. |
 | `RECONCILED_NOT_PERFORMED` | Positive evidence from the remote system of record. |
+
+**The gate's `/report` endpoint is not on that list, in any grant state, and the reason is worth
+stating because we got it wrong once.** An earlier version of the C-04 fix signed a determinate
+`FAILED_BEFORE_DISPATCH` when the grant was still `UNUSED`, reasoning that the F8a CAS had never run
+so no dispatch had been authorized. **That premise was false.** `decide()` issues a gate-*signed*
+`ExecutionGrant` and hands it to the agent while the record is still `UNUSED`; the authorization is
+the signed grant, and `reserve()` is only the single-use burn — a voluntary call the executing party
+alone decides whether to make. An agent could execute out of band, skip `reserve()`, and collect the
+determinate artifact with one fewer call than the original attack. `UNUSED` never meant "nothing was
+dispatched"; it meant "the agent did not tell me it was about to". Regression:
+`test/security/r7-exploits/c04_relocated.mjs`, pinned CLOSED.
 
 Everything else after invocation is `UNKNOWN_AFTER_DISPATCH`.
 
