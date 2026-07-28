@@ -42,11 +42,15 @@ function kp() {
   };
 }
 
+/** Documents are bytes at the boundary (ADR §3.1). */
+const enc = new TextEncoder();
+const b = (v) => enc.encode(JSON.stringify(v));
+
 const ENVELOPE_HASH = "sha256:" + "1".repeat(64);
 
 function decisionSignedBy(kid, keys) {
   return signArtifact(
-    {
+    b({
       spec: "noa.decision/0.1",
       holdEnvelopeHash: ENVELOPE_HASH,
       decision: "APPROVE",
@@ -54,7 +58,7 @@ function decisionSignedBy(kid, keys) {
       reasonEncryption: null,
       decidedAt: "2026-07-14T11:56:00.000Z",
       approverKid: kid,
-    },
+    }),
     ARTIFACTS["noa.decision/0.1"].domain,
     { kid, privateKey: keys.privateKey },
   );
@@ -68,12 +72,12 @@ function verifyAt(riskClass, roles) {
   const kid = "approver-x";
   const keys = kp();
   const decision = decisionSignedBy(kid, keys);
-  return verifyArtifact(decision, {
+  return verifyArtifact(b(decision), b({
     schemas,
     keyring: keyring(kid, keys, roles),
     now: "2026-07-14T12:00:00.000Z",
     riskClass,
-  });
+  }));
 }
 
 test("approve-critical satisfies a HIGH action (the tier ORDER — this was the 422)", () => {

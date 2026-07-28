@@ -14,6 +14,10 @@ import { verifyEd25519 } from "../src/crypto.js";
 import { verifyArtifact, type KeyEntry, type VerifyContext } from "../src/verify.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
+/** Documents are bytes at the boundary (ADR §3.1). */
+const enc = new TextEncoder();
+const b = (v: unknown): Uint8Array => enc.encode(JSON.stringify(v));
+
 const ROOT = join(HERE, "..", "..");
 const SCHEMA_DIR = join(ROOT, "schema");
 const CONF_DIR = join(ROOT, "conformance");
@@ -75,7 +79,7 @@ test("every valid vector ACCEPTS and every rejection vector REJECTS", () => {
   const failures: string[] = [];
   for (const { slug, file, vec } of vectors) {
     const ctx: VerifyContext = { ...vec.context, schemas, keyring };
-    const res = verifyArtifact(vec.artifact, ctx);
+    const res = verifyArtifact(b(vec.artifact), b(ctx));
     const wantOk = vec.expect === "ACCEPT";
     if (res.ok !== wantOk) {
       failures.push(`${slug}/${file}: expected ${vec.expect} but verifier returned ok=${res.ok}${res.reason ? ` (${res.reason})` : ""}`);
@@ -87,7 +91,7 @@ test("every valid vector ACCEPTS and every rejection vector REJECTS", () => {
 // Per-vector named subtests give a readable pass/fail line per fixture.
 for (const { slug, file, vec } of vectors) {
   test(`${slug}/${file.replace(/\.json$/, "")} → ${vec.expect}`, () => {
-    const res = verifyArtifact(vec.artifact, { ...vec.context, schemas, keyring });
+    const res = verifyArtifact(b(vec.artifact), b({ ...vec.context, schemas, keyring }));
     assert.equal(res.ok, vec.expect === "ACCEPT", res.reason);
   });
 }
@@ -141,11 +145,11 @@ test("Decision verifier rejects the OpenSSL small-order universal forgery", () =
   forgedKeyring[artifact.sig.kid]!.publicKey =
     "MCowBQYDK2VwAyEAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
-  const result = verifyArtifact(artifact, {
+  const result = verifyArtifact(b(artifact), b({
     ...loaded.vec.context,
     schemas,
     keyring: forgedKeyring,
-  });
+  }));
   assert.equal(result.ok, false);
   assert.match(result.reason ?? "", /invalid signature/);
 });
@@ -157,19 +161,19 @@ test("live authorization evaluates revocation at verifier time, not signer-contr
   const artifact = structuredClone(loaded.vec.artifact) as { sig: { kid: string } };
   historicalKeyring[artifact.sig.kid]!.revokedAt = "2026-07-14T11:58:00.000Z";
 
-  const historical = verifyArtifact(artifact, {
+  const historical = verifyArtifact(b(artifact), b({
     ...loaded.vec.context,
     schemas,
     keyring: historicalKeyring,
-  });
+  }));
   assert.equal(historical.ok, true, historical.reason);
 
-  const liveAuthorization = verifyArtifact(artifact, {
+  const liveAuthorization = verifyArtifact(b(artifact), b({
     ...loaded.vec.context,
     schemas,
     keyring: historicalKeyring,
     authorizationTime: "2026-07-14T12:00:00.000Z",
-  });
+  }));
   assert.equal(liveAuthorization.ok, false);
   assert.match(liveAuthorization.reason ?? "", /revoked/);
 });
@@ -177,12 +181,12 @@ test("live authorization evaluates revocation at verifier time, not signer-contr
 test("an invalid verifier-controlled authorization time fails closed", () => {
   const loaded = vectors.find(({ slug, vec }) => slug === "decision" && vec.expect === "ACCEPT");
   assert.ok(loaded, "valid Decision vector must exist");
-  const result = verifyArtifact(loaded.vec.artifact, {
+  const result = verifyArtifact(b(loaded.vec.artifact), b({
     ...loaded.vec.context,
     schemas,
     keyring,
     authorizationTime: "not-a-time",
-  });
+  }));
   assert.equal(result.ok, false);
   assert.match(result.reason ?? "", /authorizationTime/);
 });

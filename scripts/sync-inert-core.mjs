@@ -19,12 +19,21 @@
  *   node scripts/sync-inert-core.mjs            # rewrite the vendored copies
  *   node scripts/sync-inert-core.mjs --check    # fail if any copy is stale (CI)
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const SOURCES = ["intrinsics.ts", "inert.ts", "ingest.ts"];
+/**
+ * RETARGETED 2026-07-28. `src/ingest.ts` no longer exists: the bytes-in boundary deleted the object
+ * ingest it implemented, and a vendored copy of a deleted file is a copy of a control that has no
+ * source. The vendored set is now the boundary that REPLACED it — the strict parser, the byte
+ * ceiling/decoder, and the hand-written format scanners — plus the inert-data primitives, which
+ * survive because they are policy-table construction rather than an input boundary (ADR §5.6).
+ */
+const SOURCES = ["intrinsics.ts", "inert.ts", "scan.ts", "safe-json.ts", "bytes.ts", "opts.ts"];
+/** Files a previous SOURCES list generated that must now be REMOVED from every target. */
+const RETIRED = ["ingest.ts"];
 /** Packages that cannot depend on `noa-receipt` and therefore carry a generated copy. */
 const TARGETS = [join(ROOT, "packages", "approval-artifacts", "src", "inert-core")];
 
@@ -42,6 +51,15 @@ let stale = 0;
 const check = process.argv.includes("--check");
 for (const dir of TARGETS) {
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  // A retired copy left on disk still compiles and still imports; deleting the source without
+  // deleting the vendored copy is how a deleted control keeps a live second life.
+  for (const name of RETIRED) {
+    const dead = join(dir, name);
+    if (!existsSync(dead)) continue;
+    stale++;
+    if (check) console.error(`::error::inert-core copy is RETIRED but still present: ${dead.slice(ROOT.length + 1)} (run: node scripts/sync-inert-core.mjs)`);
+    else { rmSync(dead); console.log(`removed ${dead.slice(ROOT.length + 1)}`); }
+  }
   for (const name of SOURCES) {
     const want = BANNER(name) + readFileSync(join(ROOT, "src", name), "utf8");
     const dest = join(dir, name);

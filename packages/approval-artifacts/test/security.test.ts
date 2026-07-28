@@ -1,18 +1,26 @@
 /**
- * C2 for `noa-approval-artifacts` — the package review #6 named as "the fourth entry point exists,
- * and a fifth".
+ * C2/C3 for `noa-approval-artifacts` — the package review #6 named as "the fourth entry point
+ * exists, and a fifth". REWRITTEN 2026-07-28 for the bytes-in boundary, and the rewrite is the
+ * point rather than a chore.
  *
- *   1. `verifyArtifact` — PUBLISHED, un-routed. It validated the schema and the signature and then
- *      re-read the LIVE artifact for the equality and time checks: with `conformance/decision/valid.json`
- *      and a getter returning the signed `approverKid` for reads 1-3 and `attacker-seat` on the
- *      equality read, a verifier context REQUIRING `attacker-seat` returned `{ok:true}`. The signer
- *      never attested the value the verifier accepted.
- *   2. `signArtifact` — the producer twin: `doc` was read three times, and the bytes SIGNED (read #2)
- *      were not the bytes RETURNED (read #3).
+ * WHAT THESE TESTS USED TO DO, AND WHY THAT IS NO LONGER THE RIGHT SHAPE. Each one built a LIVE
+ * JavaScript object with a flipping getter and asserted that the verifier's ingest boundary had
+ * neutralised it — that the getter fired at most once, that two contradictory equality assertions
+ * could not both pass, that a hostile throw did not escape. Those assertions were correct, and they
+ * were assertions about a DEFENCE. `verifyArtifact` and `signArtifact` now take BYTES, so the
+ * objects those attacks require are never constructed inside the boundary at all.
  *
- * Both are probed rather than asserted-about: a getter must fire at most once, a hostile throw must
- * not escape raw, and the two-contradictory-equalities falsification — which no inert object can
- * satisfy — must be impossible.
+ * The tests are therefore not deleted and not weakened. Each is re-aimed at the two questions that
+ * still have content:
+ *
+ *   1. IS THE ATTACK STILL EXPRESSIBLE AS BYTES? For the flipping-value attack it IS — the byte-form
+ *      analogue of "one field with two values" is a DUPLICATE JSON KEY, and that is asserted to be
+ *      rejected by the strict parser. For the prototype-chain attack it is `__proto__`, likewise
+ *      asserted rejected. An attack that survives the change of representation must still be tested
+ *      in the representation that survives.
+ *   2. DOES THE BOUNDARY REFUSE THE OBJECT FORM? A caller that hands `verifyArtifact` a live object
+ *      must get a REFUSAL, not a best-effort traversal. This is the assertion that keeps the
+ *      migration from being quietly reverted by a future convenience overload.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -26,6 +34,9 @@ import { generateKeyPair } from "../src/crypto.js";
 import { inertViolations } from "../src/inert-core/inert.js";
 import * as pkg from "../src/index.js";
 
+const enc = new TextEncoder();
+const b = (v: unknown): Uint8Array => enc.encode(JSON.stringify(v));
+
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");  // dist/test -> package root
 const schemas: Record<string, unknown> = {};
 for (const meta of Object.values(ARTIFACTS)) {
@@ -36,104 +47,120 @@ const fx = JSON.parse(readFileSync(join(ROOT, "conformance", "decision", "valid.
   artifact: Record<string, unknown>;
   context: Record<string, unknown>;
 };
-const baseCtx = { ...fx.context, schemas, keyring } as Parameters<typeof verifyArtifact>[1];
+const baseCtx = { ...fx.context, schemas, keyring };
 
 test("control: the genuine vector verifies", () => {
-  assert.equal(verifyArtifact(fx.artifact, baseCtx).ok, true);
+  assert.equal(verifyArtifact(b(fx.artifact), b(baseCtx)).ok, true);
 });
 
-test("C2: a flipping approverKid cannot satisfy the signature AND an attacker equality (the review-#6 repro)", () => {
+test("boundary: a live OBJECT artifact is refused, not traversed", () => {
+  // The whole class-A surface reduces to this assertion. If it ever passes an object through, every
+  // flipping-getter test below becomes vacuous — which is exactly how a control rots.
+  const res = verifyArtifact(fx.artifact as unknown as Uint8Array, b(baseCtx));
+  assert.equal(res.ok, false);
+  assert.match(String(res.reason), /expected Uint8Array or string/);
+});
+
+test("boundary: a live OBJECT context is refused, not traversed", () => {
+  const res = verifyArtifact(b(fx.artifact), baseCtx as unknown as Uint8Array);
+  assert.equal(res.ok, false);
+  assert.match(String(res.reason), /expected Uint8Array or string/);
+});
+
+test("C2 as BYTES: the flipping approverKid becomes a duplicate key, and the parser rejects it", () => {
+  // The object attack was a getter answering `SIGNED` to the signature check and `attacker-seat` to
+  // the equality check. Its byte-form analogue is the only way to write "this field has two values"
+  // in JSON: the same key twice. `JSON.parse` would silently keep the last one — which is precisely
+  // why the boundary does not use `JSON.parse`.
   const SIGNED = fx.artifact.approverKid as string;
   const ATTACK = "attacker-seat";
-  const ctx = { ...baseCtx, equals: [{ path: "approverKid", value: ATTACK }] } as typeof baseCtx;
-  // Sanity: a STATIC attacker value is rejected, so any ok:true below comes from the flip alone.
-  assert.equal(verifyArtifact({ ...fx.artifact, approverKid: ATTACK }, ctx).ok, false);
-  for (let flipAt = 1; flipAt <= 10; flipAt++) {
-    let n = 0;
-    const hostile: Record<string, unknown> = {};
-    for (const k of Object.keys(fx.artifact)) {
-      if (k === "approverKid") {
-        Object.defineProperty(hostile, "approverKid", {
-          enumerable: true, configurable: true,
-          get() { n++; return n >= flipAt ? ATTACK : SIGNED; },
-        });
-      } else hostile[k] = fx.artifact[k];
-    }
-    const res = verifyArtifact(hostile, ctx);
-    assert.equal(res.ok, false, `flip at read ${flipAt} produced ok:true — the signer attested ${SIGNED}, the verifier required ${ATTACK}`);
-    assert.ok(n <= 1, `the artifact's getter fired ${n} times (flipAt=${flipAt}) — two reads can disagree`);
-  }
+  const ctx = b({ ...baseCtx, equals: [{ path: "approverKid", value: ATTACK }] });
+
+  const single = JSON.stringify(fx.artifact);
+  const dup = single.replace(
+    `"approverKid":${JSON.stringify(SIGNED)}`,
+    `"approverKid":${JSON.stringify(SIGNED)},"approverKid":${JSON.stringify(ATTACK)}`,
+  );
+  assert.notEqual(dup, single, "fixture no longer contains approverKid — this test would test nothing");
+
+  const res = verifyArtifact(enc.encode(dup), ctx);
+  assert.equal(res.ok, false, "a duplicate key must never resolve to one of its values");
+  assert.match(String(res.reason), /duplicate object key/);
+
+  // And the static attacker value is still rejected on its own, so nothing above passes by accident.
+  assert.equal(verifyArtifact(b({ ...fx.artifact, approverKid: ATTACK }), ctx).ok, false);
 });
 
-test("C2: two CONTRADICTORY equality assertions can never both pass (no inert object can do that)", () => {
+test("C2 as BYTES: two CONTRADICTORY equality assertions can never both pass", () => {
+  // This one loses nothing in translation: the policy is still a policy, it is just inert now.
   const SIGNED = fx.artifact.approverKid as string;
-  const ctx = {
+  const ctx = b({
     ...baseCtx,
     equals: [{ path: "approverKid", value: SIGNED }, { path: "approverKid", value: "attacker-seat" }],
-  } as typeof baseCtx;
-  let n = 0;
-  const hostile: Record<string, unknown> = {};
-  for (const k of Object.keys(fx.artifact)) {
-    if (k === "approverKid") {
-      Object.defineProperty(hostile, "approverKid", { enumerable: true, configurable: true, get() { return ++n <= 4 ? SIGNED : "attacker-seat"; } });
-    } else hostile[k] = fx.artifact[k];
-  }
-  assert.equal(verifyArtifact(hostile, ctx).ok, false, "one field cannot equal two different values at once");
-});
-
-test("C2: the verification CONTEXT is ingested too — a flipping policy is one policy", () => {
-  // The context is the policy this artifact is measured against. Snapshotting the subject and leaving
-  // the policy live is the same defect one argument to the left.
-  let n = 0;
-  const hostileCtx: Record<string, unknown> = { ...baseCtx };
-  Object.defineProperty(hostileCtx, "equals", {
-    enumerable: true, configurable: true,
-    get() { return ++n === 1 ? [] : [{ path: "approverKid", value: "attacker-seat" }]; },
   });
-  const res = verifyArtifact(fx.artifact, hostileCtx as unknown as typeof baseCtx);
-  assert.ok(n <= 1, `ctx.equals was read ${n} times`);
-  assert.ok(res.ok === true || res.ok === false); // either verdict is sound; two policies is not
+  assert.equal(verifyArtifact(b(fx.artifact), ctx).ok, false, "one field cannot equal two different values at once");
 });
 
-test("C2: a hostile throw fails CLOSED (no raw error escapes verifyArtifact)", () => {
+test("C2 as BYTES: a `__proto__` key in either document is rejected, never applied", () => {
+  // The prototype-chain attacks (`spec in ARTIFACTS`, `ctx.schemas[spec]`, `\"sig\" in doc`) all
+  // required an inherited property. Over bytes the only route to one is a `__proto__` key, and the
+  // strict parser refuses it outright rather than deciding what it means.
+  const poisoned = `{"spec":"noa.decision/0.1","__proto__":{"sig":{"alg":"ed25519","kid":"x","value":"y"}}}`;
+  const res = verifyArtifact(enc.encode(poisoned), b(baseCtx));
+  assert.equal(res.ok, false);
+  assert.match(String(res.reason), /forbidden object key/);
+});
+
+test("C2: no input shape makes verifyArtifact throw (fail-closed is a returned verdict)", () => {
   const { proxy, revoke } = Proxy.revocable({}, {});
   revoke();
-  const hostile: Record<string, unknown> = { spec: "noa.decision/0.1" };
-  Object.defineProperty(hostile, "boom", { enumerable: true, get() { throw proxy; } });
-  let res: { ok: boolean } | undefined;
-  assert.doesNotThrow(() => { res = verifyArtifact(hostile, baseCtx); });
-  assert.equal(res?.ok, false);
+  // The label is a fixed literal per case: `String(revokedProxy)` itself throws, and a test whose
+  // FAILURE MESSAGE throws reports the wrong defect (it did, on the first run of this rewrite).
+  const cases: Array<[string, unknown]> = [
+    ["undefined", undefined], ["null", null], ["number", 0], ["empty string", ""],
+    ["non-JSON text", "not json"], ["a JSON array", "[]"], ["truncated JSON", "{"],
+    ["a revoked Proxy", proxy], ["invalid UTF-8 bytes", new Uint8Array([0xff, 0xfe])],
+  ];
+  for (const [label, bad] of cases) {
+    let res: { ok: boolean } | undefined;
+    assert.doesNotThrow(() => { res = verifyArtifact(bad as never, b(baseCtx)); }, `threw on ${label}`);
+    assert.equal(res?.ok, false, `accepted ${label}`);
+  }
 });
 
-test("C2: signArtifact signs the bytes it returns (one snapshot, not three reads)", () => {
+test("C2: signArtifact signs the bytes it was given, and the object form is refused", () => {
   const kp = generateKeyPair("signer-1");
-  let n = 0;
+  // The object attack: a `reasonCode` getter answering "vendor-verified" to the read that was SIGNED
+  // and "SWAPPED-AFTER-SIGNING" to the read that was RETURNED. It cannot be built here any more,
+  // because the document is bytes — so the test asserts the refusal AND the byte-path invariant.
   const doc: Record<string, unknown> = { spec: "noa.decision/0.1", decision: "APPROVE" };
-  Object.defineProperty(doc, "reasonCode", {
-    enumerable: true, configurable: true,
-    get() { return ++n === 1 ? "vendor-verified" : "SWAPPED-AFTER-SIGNING"; },
-  });
-  const signed = signArtifact(doc, "noa.decision/0.1", { kid: kp.kid, privateKey: kp.privateKey });
-  assert.ok(n <= 1, `signArtifact read the doc ${n} times — it used to sign read #2 and return read #3`);
+  Object.defineProperty(doc, "reasonCode", { enumerable: true, configurable: true, get() { return "x"; } });
+  assert.throws(
+    () => signArtifact(doc as unknown as Uint8Array, "noa.decision/0.1", { kid: kp.kid, privateKey: kp.privateKey }),
+    /expected Uint8Array or string/,
+  );
+  const signed = signArtifact<{ spec: string; decision: string; reasonCode: string }>(
+    b({ spec: "noa.decision/0.1", decision: "APPROVE", reasonCode: "vendor-verified" }),
+    "noa.decision/0.1", { kid: kp.kid, privateKey: kp.privateKey },
+  );
   assert.equal(signed.reasonCode, "vendor-verified", "the RETURNED bytes are the SIGNED bytes");
 });
 
-test("C2: signArtifact's sig guard reads OWN properties of an inert snapshot, not a prototype chain", () => {
+test("C2: signArtifact's sig guard is an own-property test over parsed bytes", () => {
   const kp = generateKeyPair("signer-2");
-  // (a) `"sig" in doc` walked the PROTOTYPE CHAIN — so an object merely INHERITING a `sig` was
-  //     refused, and against a Proxy the `has` trap would have been attacker code invoked by the
-  //     guard itself. The boundary now refuses any non-plain object outright, which subsumes it:
-  //     a document with a custom prototype is not JSON-shaped data and never reaches the signer.
-  const child = Object.create({ sig: { alg: "ed25519", kid: "x", value: "y" } }) as Record<string, unknown>;
-  child.spec = "noa.decision/0.1";
-  assert.throws(() => signArtifact(child, "noa.decision/0.1", { kid: kp.kid, privateKey: kp.privateKey }), /non-plain object/);
-  // (b) an OWN `sig` is still refused — the guard itself is intact, it just runs on inert data.
+  const signer = { kid: kp.kid, privateKey: kp.privateKey };
+  // (a) an INHERITED `sig` cannot exist: `__proto__` is refused by the parser before the guard runs.
   assert.throws(
-    () => signArtifact({ spec: "noa.decision/0.1", sig: { alg: "ed25519", kid: "x", value: "y" } }, "noa.decision/0.1", { kid: kp.kid, privateKey: kp.privateKey }),
+    () => signArtifact(enc.encode(`{"spec":"noa.decision/0.1","__proto__":{"sig":{"alg":"ed25519","kid":"x","value":"y"}}}`), "noa.decision/0.1", signer),
+    /forbidden object key/,
+  );
+  // (b) an OWN `sig` is still refused — the guard is intact, it just runs on inert data.
+  assert.throws(
+    () => signArtifact(b({ spec: "noa.decision/0.1", sig: { alg: "ed25519", kid: "x", value: "y" } }), "noa.decision/0.1", signer),
     /already has a sig field/,
   );
   // (c) a plain document signs, and carries the SIGNER'S kid.
-  const signed = signArtifact({ spec: "noa.decision/0.1", decision: "APPROVE" }, "noa.decision/0.1", { kid: kp.kid, privateKey: kp.privateKey });
+  const signed = signArtifact(b({ spec: "noa.decision/0.1", decision: "APPROVE" }), "noa.decision/0.1", signer);
   assert.equal(signed.sig.kid, kp.kid);
 });
 
@@ -144,4 +171,19 @@ test("C3: no exported value of this package is runtime-mutable policy state", ()
     for (const v of inertViolations(value, name)) problems.push(v);
   }
   assert.deepEqual(problems, [], `runtime-mutable policy state:\n  ${problems.join("\n  ")}`);
+});
+
+test("C3: the ARTIFACTS registry is NULL-ROOTED, so Object.prototype cannot forge a member", () => {
+  // The structural half of the C-03 fix, asserted directly rather than inferred from the exploit.
+  assert.equal(Object.getPrototypeOf(ARTIFACTS), null);
+  const SPEC = "attacker.unsigned/1";
+  Object.defineProperty(Object.prototype, SPEC, { value: { domain: null }, configurable: true, enumerable: false });
+  try {
+    assert.equal((ARTIFACTS as Record<string, unknown>)[SPEC], undefined, "a null-rooted table has no chain to walk");
+    const res = verifyArtifact(b({ spec: SPEC, tenant: "victim" }), b({ schemas: {} }));
+    assert.equal(res.ok, false);
+    assert.match(String(res.reason), /unknown or missing spec/);
+  } finally {
+    delete (Object.prototype as Record<string, unknown>)[SPEC];
+  }
 });

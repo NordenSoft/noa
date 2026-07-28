@@ -24,7 +24,8 @@ import { evalSchema } from "./schema-eval.js";
 import { signingMessage, verifyEd25519 } from "./crypto.js";
 import { canonicalize } from "./jcs.js";
 import { refHash, receiptRefHash, virtualHash } from "./refhash.js";
-import { snapshotImmutable, isIngestError } from "./inert-core/ingest.js";
+import { parseDocument } from "./inert-core/bytes.js";
+import { hasOwn } from "./inert-core/intrinsics.js";
 import { arrayIncludes, arraySome, dateParse as pristineDateParse, strSplit } from "./inert-core/intrinsics.js";
 
 export interface KeyEntry {
@@ -136,47 +137,63 @@ function requiredApproverRole(riskClass: string | undefined): string[] {
   return ["approve-high", "approve-critical"];
 }
 
-export function verifyArtifact(artifact: unknown, ctx: VerifyContext): VerifyOutcome {
-  // ── THE INGEST BOUNDARY (review #6, C2 — the FOURTH entry point) ────────────────────────────────
-  // This function is PUBLISHED and was never routed. It validated the schema and the signature and
-  // then RE-READ the live artifact for the equality and time checks: with
-  // `conformance/decision/valid.json` and a getter that returned the signed `approverKid` for reads
-  // 1-3 and `attacker-seat` on the equality read, a verifier context REQUIRING `attacker-seat`
-  // returned `{ok:true}`. The signer never attested the value the verifier accepted. Two equality
-  // assertions with CONTRADICTORY expected values could both pass in the same call — a thing no
-  // inert object can do, which is precisely the tell.
-  //
-  // `ctx` is snapshotted too, and for the same reason as the artifact: `ctx.equals`,
-  // `ctx.refHashChecks`, `ctx.keyring` and `ctx.authorizationTime` are the POLICY this verification
-  // is measured against, and a policy read twice is two policies. Snapshotting the subject and
-  // leaving the policy live is the same defect one argument to the left. (`ctx.schemas` is excluded:
-  // it is the verifier's own loaded schema set, not caller evidence, and re-snapshotting a large
-  // parsed schema map on every artifact would be an O(schema) cost per verification for no gain — a
-  // caller who can substitute the verifier's schemas has already replaced the verifier.)
-  const suppliedSchemas = ctx?.schemas;
-  try {
-    artifact = snapshotImmutable<unknown>(artifact);
-    // The snapshot is FROZEN, so the schema set is re-attached by building a fresh object around it
-    // rather than by writing into it (a write would throw in strict mode).
-    ctx = { ...snapshotImmutable<VerifyContext>({ ...ctx, schemas: undefined }), schemas: suppliedSchemas } as VerifyContext;
-  } catch (e) {
-    return {
-      ok: false,
-      reason: `artifact/context rejected at the ingest boundary: ${isIngestError(e) ? (e as Error).message : "could not be reduced to inert data"}`,
-    };
+/**
+ * Verify one side artifact against a verification context. **BOTH ARGUMENTS ARE BYTES** (ADR §3.1).
+ *
+ * ── WHY THE CONTEXT IS BYTES TOO, AND NOT ONLY THE ARTIFACT ──────────────────────────────────────
+ * Review #6's C2 was found here: the function validated the schema and the signature and then
+ * RE-READ the live artifact for the equality and time checks, so a getter that returned the signed
+ * `approverKid` on reads 1-3 and `attacker-seat` on the equality read made a context REQUIRING
+ * `attacker-seat` return `{ok:true}` — the signer never attested the value the verifier accepted.
+ * The tell was that two equality assertions with CONTRADICTORY expected values both passed in one
+ * call, which no inert object can do.
+ *
+ * The previous fix snapshotted the artifact AND the context — but deliberately EXCLUDED
+ * `ctx.schemas` on a cost argument. That exclusion was the remaining hole, and it is the one C-03
+ * went through: `ctx.schemas[spec]` on a plain `{}` resolves through `Object.prototype`, so a single
+ * pollution supplied a permissive schema for an unregistered spec. Snapshotting the subject and
+ * leaving one member of the policy live is the same defect one argument to the left, which is
+ * exactly what the earlier comment said about `ctx` — and then it made an exception.
+ *
+ * There is now no exception, because there is no traversal: both arguments are decoded and parsed by
+ * the same strict parser the kernel uses, and everything below reads `safeParse` output —
+ * null-prototype, accessor-free, duplicate-key-free, depth-bounded. `ctx.schemas` is JSON (it is a
+ * set of JSON Schema documents), so making it bytes costs a parse of a few kilobytes per call and
+ * removes the last live object from the boundary.
+ *
+ * Never throws: every failure is a returned `{ok:false, reason}`.
+ */
+export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uint8Array | string): VerifyOutcome {
+  const parsedArtifact = parseDocument(artifactBytes, "artifact");
+  if (!parsedArtifact.ok) return { ok: false, reason: parsedArtifact.reason };
+  const parsedCtx = parseDocument(ctxBytes, "context");
+  if (!parsedCtx.ok) return { ok: false, reason: parsedCtx.reason };
+  const artifact = parsedArtifact.value;
+  const ctxValue = parsedCtx.value;
+  if (typeof ctxValue !== "object" || ctxValue === null || Array.isArray(ctxValue)) {
+    return { ok: false, reason: "context is not an object" };
   }
+  const ctx = ctxValue as VerifyContext;
   if (typeof artifact !== "object" || artifact === null || Array.isArray(artifact)) {
     return { ok: false, reason: "artifact is not an object" };
   }
   const doc = artifact as Record<string, unknown>;
   const spec = doc.spec;
-  if (typeof spec !== "string" || !(spec in ARTIFACTS)) {
+  // OWN-PROPERTY PROBE, never `in` (C-03). `spec in ARTIFACTS` walks the prototype chain, so one
+  // `Object.defineProperty(Object.prototype, "attacker.unsigned/1", …)` registered an artifact type
+  // nobody shipped. `ARTIFACTS` is now null-rooted as well (frozenTable re-roots), so this is belt
+  // and braces — deliberately, because the two controls fail independently.
+  if (typeof spec !== "string" || !hasOwn(ARTIFACTS, spec)) {
     return { ok: false, reason: `unknown or missing spec: ${JSON.stringify(spec)}` };
   }
   const meta = ARTIFACTS[spec]!;
 
   // 1. STRUCTURAL
-  const schema = ctx.schemas[spec];
+  // Same own-property discipline: `ctx.schemas` came from `safeParse` (null-prototype), but the
+  // probe does not depend on that being true — which is the point of a control.
+  const schemas = ctx.schemas;
+  if (typeof schemas !== "object" || schemas === null) return { ok: false, reason: `no schema loaded for ${spec}` };
+  const schema = hasOwn(schemas, spec) ? schemas[spec] : undefined;
   if (!schema) return { ok: false, reason: `no schema loaded for ${spec}` };
   const structural = evalSchema(schema as Record<string, unknown>, artifact);
   if (!structural.ok) return { ok: false, reason: `schema: ${structural.errors.join("; ")}` };

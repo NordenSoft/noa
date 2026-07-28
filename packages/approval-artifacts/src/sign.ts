@@ -6,7 +6,7 @@
  */
 import { signingMessage, signEd25519 } from "./crypto.js";
 import { canonicalize } from "./jcs.js";
-import { snapshotImmutable } from "./inert-core/ingest.js";
+import { parseDocument } from "./inert-core/bytes.js";
 import { hasOwn, objectAssign } from "./inert-core/intrinsics.js";
 
 export interface Signer {
@@ -30,12 +30,22 @@ export interface Signer {
  * attacker code invoked by the guard itself.
  */
 export function signArtifact<T extends Record<string, unknown>>(
-  doc: T,
+  docBytes: Uint8Array | string,
   domain: string,
   signer: Signer,
 ): T & { sig: { alg: "ed25519"; kid: string; value: string } } {
-  const snap = snapshotImmutable<T>(doc);
-  const key = snapshotImmutable<Signer>(signer);
+  // The document is BYTES. `snapshotImmutable` existed here to make "guarded == signed == returned"
+  // true over a live object read three times; a byte sequence parsed once makes it true by
+  // construction, which is why the snapshot could be deleted rather than tightened.
+  const parsed = parseDocument(docBytes, "document");
+  if (!parsed.ok) throw new Error(`signArtifact: ${parsed.reason}`);
+  if (typeof parsed.value !== "object" || parsed.value === null || Array.isArray(parsed.value)) {
+    throw new Error("signArtifact: document must be a JSON object");
+  }
+  const snap = parsed.value as T;
+  // The SIGNER is the caller's own key material, not attacker input (ADR §3.3), so it stays an
+  // object — but each member is read exactly once, into a local, before anything is signed with it.
+  const key: Signer = { kid: signer.kid, privateKey: signer.privateKey };
   if (hasOwn(snap as object, "sig")) throw new Error("signArtifact: doc already has a sig field");
   const msg = signingMessage(domain, canonicalize(snap));
   const value = signEd25519(key.privateKey, msg);

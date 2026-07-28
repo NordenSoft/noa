@@ -216,7 +216,8 @@ function describe(v: unknown): string {
 }
 
 /**
- * Deep-freeze a policy table and REFUSE anything that could be mutated after load.
+ * Deep-freeze a policy table, RE-ROOT IT ONTO A NULL PROTOTYPE, and REFUSE anything that could be
+ * mutated after load.
  *
  * Accepted: primitives, plain objects (`Object.prototype`- or null-rooted), arrays, and `FrozenSet`s.
  * Rejected (thrown, at construction): `Set`, `Map`, `WeakSet`, `WeakMap`, `Date`, `RegExp`, typed
@@ -225,6 +226,19 @@ function describe(v: unknown): string {
  *
  * Arrays are re-rooted onto `INERT_ARRAY_PROTOTYPE`, so a policy table's membership arrays cannot be
  * redirected by poisoning `Array.prototype`.
+ *
+ * ── C-03, AND WHY FREEZING WAS NEVER ENOUGH (ADR §5.6; fixed 2026-07-28) ─────────────────────────
+ * The previous version froze the table and LEFT IT ROOTED ON `Object.prototype`. Freezing an object
+ * says nothing about what it INHERITS, and a policy table is read by membership tests
+ * (`spec in TABLE`) and indexed reads (`TABLE[spec]`) — both of which walk the prototype chain.
+ * `c03_frozentable_proto.mjs` defined ONE property on `Object.prototype` and the frozen `ARTIFACTS`
+ * registry answered with it: an unsigned, unregistered artifact verified `{ok:true}` against a
+ * table nobody had modified. Nothing about the table changed, which is exactly why freezing it
+ * could not help.
+ *
+ * A null-rooted table has no chain to walk. `TABLE[x]` is `undefined` for every `x` that is not an
+ * own property, whatever `Object.prototype` says. That is the structural form of the control; the
+ * own-property probes at the call sites are the belt to this pair of braces.
  */
 export function frozenTable<T>(table: T, path = "<table>"): T {
   return freezeInert(table, path) as T;
@@ -259,6 +273,9 @@ function freezeInert(v: unknown, path: string): unknown {
     }
     freezeInert(d.value, `${path}.${k}`);
   }
+  // Re-root BEFORE freezing: `Object.setPrototypeOf` on a frozen object throws. A frozen table that
+  // still inherits from `Object.prototype` is the C-03 defect verbatim.
+  if (proto === OBJECT_PROTOTYPE) objectSetPrototypeOf(v as object, null);
   return objectFreeze(v);
 }
 
@@ -282,6 +299,12 @@ export function inertViolations(v: unknown, path: string, seen: WeakSet<object> 
       return;
     }
     if (!objectIsFrozenSafe(value)) arrayPush(out, `${at} is not frozen`);
+    if (!isArray(value) && getPrototypeOf(value as object) === OBJECT_PROTOTYPE) {
+      // C-03's class, made mechanical. A frozen table rooted on `Object.prototype` answers
+      // membership tests and indexed reads with whatever a single `Object.defineProperty` on that
+      // prototype says — and nothing about the table itself has to change for it to happen.
+      arrayPush(out, `${at} is rooted on the LIVE Object.prototype — one Object.prototype pollution forges a member of this table (C-03; use frozenTable, which re-roots onto null)`);
+    }
     if (isArray(value)) {
       const arr = value as unknown[];
       if (getPrototypeOf(value as object) === ARRAY_PROTOTYPE) {
