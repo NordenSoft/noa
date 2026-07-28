@@ -71,6 +71,32 @@ const TOOL_BEHAVIOURS: Array<{ name: string; execute: () => Promise<{ ok: boolea
     name: "throws a Proxy whose get trap throws",
     execute: async () => { throw new Proxy({}, { get() { throw new Error("trap"); } }); },
   },
+  // ── H-02c (review #7): the tool RETURNS, and the hostile code is in the READ of its self-report.
+  // Every entry above puts the attacker's code in the value the tool THROWS. These put it in the
+  // value the tool RETURNS — an accessor or Proxy trap that runs while `guard()` reads `ok`/`detail`.
+  // Pre-fix that read happened AFTER a state transition had been taken, so the reducer was asked
+  // for an event its new state does not model and `IllegalSideEffectTransition` escaped `guard()`
+  // RAW — an ordinary Error with no `executionHappened`, for a tool that had already run.
+  {
+    name: "returns { ok: true } with a THROWING `detail` getter (the read is the exploit)",
+    execute: async () => Object.defineProperty({ ok: true }, "detail", { get() { throw new Error("hostile detail getter"); } }) as { ok: boolean; detail?: string },
+  },
+  {
+    name: "returns { ok: false } with a THROWING `detail` getter",
+    execute: async () => Object.defineProperty({ ok: false }, "detail", { get() { throw new Error("hostile detail getter"); } }) as { ok: boolean; detail?: string },
+  },
+  {
+    name: "returns a Proxy whose every get trap throws",
+    execute: async () => new Proxy({}, { get() { throw new Error("trap"); } }) as { ok: boolean; detail?: string },
+  },
+  {
+    name: "returns an object whose `ok` getter FLIPS between reads (TOCTOU on the self-report)",
+    execute: async () => { let n = 0; return Object.defineProperty({}, "ok", { get() { return n++ === 0; } }) as { ok: boolean; detail?: string }; },
+  },
+  {
+    name: "returns a revoked Proxy (defeats instanceof; every trap throws)",
+    execute: async () => { const { proxy, revoke } = Proxy.revocable({}, {}); revoke(); return proxy as { ok: boolean; detail?: string }; },
+  },
 ];
 
 for (const behaviour of TOOL_BEHAVIOURS) {

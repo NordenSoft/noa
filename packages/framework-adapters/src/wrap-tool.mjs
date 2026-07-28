@@ -19,7 +19,7 @@
  * credentials/write authority live, or an agent framework could bypass it by calling the
  * underlying API directly instead of through the guarded tool object these adapters return.
  */
-import { preCheck, preCheckAsync, buildReceipt, buildReceiptAsync, ToolOutcomeNotRecorded } from "noa-mcp-adapter-core";
+import { preCheck, preCheckAsync, buildReceipt, buildReceiptAsync, ToolOutcomeNotRecorded, nextSideEffectState, EVIDENCE_OUTCOME_FOR } from "noa-mcp-adapter-core";
 
 /**
  * Build the POST-attempt terminal receipt, chained onto the decision receipt.
@@ -235,7 +235,68 @@ export function createToolGuard({ signer, policy, tenant = "default-tenant", cha
       // retrying a recording failure duplicates a side effect that already happened. Both the
       // outcome SIGNING and the outcome PERSIST are wrapped in ToolOutcomeNotRecorded, which
       // carries the discriminator plus the result the caller already paid for.
-      const terminalOutcome = threw ? "FAILED" : "EXECUTED";
+      //
+      // ── H-02a: THE TERMINAL OUTCOME IS THE REDUCER'S, NOT THIS FUNCTION'S ────────────────────
+      // This line used to read `threw ? "FAILED" : "EXECUTED"` — the outcome computed LOCALLY from
+      // the tool's own behaviour. `FAILED` is not a neutral word here: it is the receipt-level
+      // rendering of a RETRY-SAFE outcome. The gate builds exactly this verdict for a
+      // `FAILED_BEFORE_DISPATCH` consumption, and the reducer classifies its state
+      // (`FAILED_NO_SIDE_EFFECT`) `safeToRetry: true`. So a tool that moved money and then threw
+      // left a signed, chain-VALID receipt attesting a retry-safe failure — C-04's exact shape,
+      // one package over, reached without any realm compromise.
+      //
+      // The reducer already models this correctly and refuses to be talked out of it: from
+      // DISPATCHED there is NO transition to a retry-safe state without a `RECONCILED_*` event.
+      // Routing through it rather than re-deriving an answer here is the whole fix; the reasoning
+      // lives once, at packages/adapter-core/src/side-effect-state.mjs:117-143.
+      const sideEffectState = nextSideEffectState(
+        nextSideEffectState("NOT_DISPATCHED", "DISPATCH_STARTED"), // → DISPATCHED
+        threw ? "TOOL_THREW_AFTER_DISPATCH" : "TOOL_RETURNED",
+      ); // → SIDE_EFFECT_UNCONFIRMED : SETTLED_UNRECORDED
+      // A throw after invocation lands in `SIDE_EFFECT_UNCONFIRMED`, whose only exits are
+      // `RECONCILED_*` — positive evidence from the remote system of record, which this in-process
+      // adapter does not have and cannot obtain. Its §13 evidence outcome is
+      // `UNKNOWN_AFTER_DISPATCH`, and `noa.receipt/0.1`'s frozen verdict enum has no member for it
+      // (ALLOWED · BLOCKED · DEFERRED · EXECUTED · FAILED · ROLLED_BACK · SIMULATED). Widening a
+      // frozen wire format across five conforming verifiers, to carry a claim that is unverifiable
+      // by construction, would be the wrong trade by a wide margin.
+      //
+      // So NO terminal receipt is signed. That is exactly the answer the gate gives for the same
+      // state (`report{UNKNOWN}` → 202, no consumption; an Execution Uncertainty only on the gate's
+      // OWN corroboration). Silence about an unknown is honest; a signed FAILED is not. The ALLOWED
+      // decision receipt still stands, so the chain still records that the call was authorized and
+      // dispatched — what disappears is only the false terminal claim about its effect.
+      //
+      // THE PREDICATE IS THE REDUCER'S, NOT A RESTATEMENT OF IT. Rather than testing the state name
+      // (which would drift the moment the graph changes) this ASKS the reducer whether recording an
+      // outcome is a legal move from here. `SETTLED_UNRECORDED --OUTCOME_RECORDED--> EXECUTED` is
+      // legal; from `SIDE_EFFECT_UNCONFIRMED` it is not modelled and `nextSideEffectState` refuses.
+      // If a future transition ever makes a post-throw outcome recordable, this branch follows it
+      // automatically instead of silently contradicting it.
+      let recordedState = null;
+      try {
+        recordedState = nextSideEffectState(sideEffectState, "OUTCOME_RECORDED");
+      } catch {
+        recordedState = null; // the reducer models no in-invocation path to a terminal outcome
+      }
+      if (recordedState === null) {
+        // The caller is told through the ONE type that means "it already ran":
+        // `executionHappened === true`, with the original thrown value carried BY IDENTITY as both
+        // `cause` and `toolFailure`, so a caller that knows what its tool throws still gets it.
+        throw new ToolOutcomeNotRecorded(name, {
+          outcome: "EXECUTED",
+          result,
+          toolFailure: failure,
+          receipt: null,
+          cause: failure,
+          component: "noa-framework-adapters",
+        });
+      }
+
+      // The terminal verdict is the REDUCER'S recorded state, not a local re-derivation from
+      // `threw` (which is provably false on this path). `EVIDENCE_OUTCOME_FOR[recordedState]`
+      // is "EXECUTED"; the receipt verdict is the same word.
+      const terminalOutcome = recordedState;
       let outcomeReceipt = null;
       try {
         outcomeReceipt = await runExclusive(async () => {
@@ -244,7 +305,7 @@ export function createToolGuard({ signer, policy, tenant = "default-tenant", cha
             decisionReceipt: receipt,
             prev,
             seq: log.length,
-            failed: threw,
+            failed: false,
             signer,
             tenant,
             chain,
@@ -258,7 +319,7 @@ export function createToolGuard({ signer, policy, tenant = "default-tenant", cha
         throw new ToolOutcomeNotRecorded(name, {
           outcome: terminalOutcome,
           result,
-          toolFailure: threw ? failure : undefined,
+          toolFailure: undefined,
           receipt: null,
           cause: e,
           component: "noa-framework-adapters",
@@ -271,7 +332,7 @@ export function createToolGuard({ signer, policy, tenant = "default-tenant", cha
           throw new ToolOutcomeNotRecorded(name, {
             outcome: terminalOutcome,
             result,
-            toolFailure: threw ? failure : undefined,
+            toolFailure: undefined,
             receipt: outcomeReceipt,
             cause: e,
             component: "noa-framework-adapters",
@@ -279,7 +340,6 @@ export function createToolGuard({ signer, policy, tenant = "default-tenant", cha
         }
       }
 
-      if (threw) throw failure;
       return result;
     };
   }

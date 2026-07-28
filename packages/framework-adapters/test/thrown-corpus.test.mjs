@@ -39,7 +39,20 @@ function guardWith(kid, onReceipt) {
 
 let n = 0;
 for (const entry of THROWN_CORPUS) {
-  test(`DOOR 1 — the TOOL throws it: FAILED is recorded and the value is re-thrown by identity: ${entry.name}`, async () => {
+  /**
+   * ── H-02a — THIS TEST USED TO CERTIFY THE DEFECT ─────────────────────────────────────────────
+   * It asserted, GREEN, that a tool which throws leaves `["ALLOWED", "FAILED"]` — a signed,
+   * chain-VALID terminal receipt whose verdict is the receipt-level rendering of a RETRY-SAFE
+   * outcome (the gate emits exactly this verdict for a `FAILED_BEFORE_DISPATCH` consumption, and
+   * the reducer marks that state `safeToRetry: true`). The tool may have moved money before it
+   * threw; only the tool can know, and the tool is the party being judged.
+   *
+   * INVERTED, not deleted. Two properties are preserved exactly:
+   *   • a falsy thrown value is still a throw — the caller is never told it succeeded;
+   *   • the ORIGINAL value reaches the caller BY IDENTITY — now as `cause`/`toolFailure`, which is
+   *     where it must live once the caller is also owed the anti-retry discriminator.
+   */
+  test(`DOOR 1 — the TOOL throws it: NO terminal receipt is signed and the value survives by identity: ${entry.name}`, async () => {
     const thrown = entry.make();
     const { guard, keyring } = guardWith(`corpus-tool-${n++}`);
     const refund = guard.guardCall("payment.refund", async () => { throw thrown; });
@@ -54,11 +67,18 @@ for (const entry of THROWN_CORPUS) {
     }
 
     assert.equal(threw, true, "a falsy thrown value is still a throw — the caller must not be told it succeeded");
-    assert.ok(Object.is(caught, thrown), "the ORIGINAL value must reach the caller, by identity, never re-wrapped");
+    assert.equal(
+      ToolOutcomeNotRecorded.is(caught),
+      true,
+      "a post-invocation throw is SIDE_EFFECT_UNCONFIRMED; the caller is owed the anti-retry discriminator",
+    );
+    assert.equal(caught.executionHappened, true, "THE DISCRIMINATOR");
+    assert.ok(Object.is(caught.toolFailure, thrown), "the ORIGINAL value must survive by identity, never re-read");
+    assert.ok(Object.is(caught.cause, thrown), "and be reachable as `cause` too");
     assert.deepEqual(
       guard.receipts.map((r) => r.governance.verdict),
-      ["ALLOWED", "FAILED"],
-      "decision then terminal FAILED — nothing may claim EXECUTED",
+      ["ALLOWED"],
+      "the decision stands; NO terminal verdict is signed for an outcome nobody can observe",
     );
     assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
   });
@@ -92,10 +112,20 @@ for (const entry of THROWN_CORPUS) {
     assert.ok(caught.causeDescription.length > 0, "and a SAFE description is available without touching it");
   });
 
-  test(`DOOR 2b — the RECORDING throws it after a FAILED call: both failures are preserved: ${entry.name}`, async () => {
+  /**
+   * ── H-02a — the premise of the old DOOR 2b no longer exists, and that IS the fix ─────────────
+   * It used to install an `onReceipt` hook keyed on `verdict === "FAILED"` and assert both failures
+   * were preserved through it. There is no FAILED receipt after a tool throw any more, so the hook
+   * can never fire. Rather than delete the case (which would leave no mechanical objection if the
+   * FAILED receipt came back), it now asserts the ABSENCE mechanically: the recording path is never
+   * reached, and the tool's own value still survives by identity.
+   */
+  test(`DOOR 2b — a tool throw never reaches the recording path at all, and its value survives: ${entry.name}`, async () => {
     const thrown = entry.make();
     const toolFailure = new Error("upstream 500 after the charge");
+    let recordingHookSawTerminal = 0;
     const { guard } = guardWith(`corpus-recf-${n++}`, (r) => {
+      if (r.governance.verdict !== "ALLOWED") recordingHookSawTerminal++;
       if (r.governance.verdict === "FAILED") throw thrown;
     });
     const refund = guard.guardCall("payment.refund", async () => { throw toolFailure; });
@@ -106,10 +136,11 @@ for (const entry of THROWN_CORPUS) {
     } catch (e) {
       caught = e;
     }
+    assert.equal(recordingHookSawTerminal, 0, "no terminal receipt is built, so no terminal recording is attempted");
     assert.equal(ToolOutcomeNotRecorded.is(caught), true);
-    assert.equal(caught.outcome, "FAILED");
+    assert.equal(caught.executionHappened, true);
     assert.ok(Object.is(caught.toolFailure, toolFailure), "the tool's own error must not be lost");
-    assert.ok(Object.is(caught.cause, thrown));
+    assert.ok(Object.is(caught.cause, toolFailure), "with nothing else to blame, the cause IS the tool's failure");
   });
 }
 

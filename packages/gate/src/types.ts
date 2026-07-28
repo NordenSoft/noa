@@ -150,6 +150,17 @@ export interface GrantRecord {
   reportedAt: number | null;
   /** an UNKNOWN hint was seen (triggers targeted corroboration); NOT terminal. */
   unknownHintAt: number | null;
+  /**
+   * C-04 — an outcome the EXECUTING PARTY asserted that the gate cannot verify, kept as an
+   * ATTRIBUTED CLAIM and never promoted to a signed determinate outcome. Recorded so the claim is
+   * not lost (an operator still wants to know what the caller said), and attributed so it reads as
+   * "X said this" rather than as "this is what happened". Deliberately gate-local state: it is not
+   * a member of any signed artifact, so no wire format widens to carry it.
+   */
+  claimedResult: "FAILED_BEFORE_DISPATCH" | null;
+  /** identity of the party that made `claimedResult`. A claim without a claimant is a fact. */
+  claimedBy: string | null;
+  claimedAt: number | null;
   consumption: ExecutionConsumption | null;
   uncertainty: ExecutionUncertainty | null;
   createdAt: number;

@@ -29,28 +29,50 @@ function guardWith(kid) {
   };
 }
 
-test("a tool that THROWS before any side effect is never attested as EXECUTED", async () => {
+/**
+ * ── H-02a — the test name itself carried the false premise ───────────────────────────────────────
+ * It was "a tool that THROWS **before any side effect**" — but that is precisely the fact nobody
+ * outside the tool can establish. The old body asserted `["ALLOWED", "FAILED"]`: a signed terminal
+ * verdict certifying a retry-safe non-event, on the word of the party being judged. The `let
+ * sideEffects = 0` line was the tell — the harness could only "prove" no side effect by declaring
+ * one had not happened.
+ *
+ * The assertion the file exists for is UNCHANGED and still the point: nothing may claim EXECUTED.
+ * What is added is its mirror: nothing may claim FAILED either.
+ */
+test("a tool that throws is attested neither EXECUTED nor FAILED — the outcome is unobservable", async () => {
   const { guard, keyring } = guardWith("np-1");
-  let sideEffects = 0;
   const wire = guard.guardCall("payment.refund", async () => {
     throw new Error("connection refused before any side effect");
   });
 
-  await assert.rejects(
-    () => wire({ action: "payment.refund", amountMinor: 5_000 }),
-    /connection refused before any side effect/,
-    "the ORIGINAL error must propagate unchanged — the wrapper is a structural drop-in",
-  );
+  let caught;
+  try {
+    await wire({ action: "payment.refund", amountMinor: 5_000 });
+  } catch (e) {
+    caught = e;
+  }
 
-  assert.equal(sideEffects, 0, "nothing happened in the outside world");
+  assert.equal(ToolOutcomeNotRecorded.is(caught), true, "the caller is owed the anti-retry discriminator");
+  assert.equal(caught.executionHappened, true);
+  assert.match(
+    caught.causeDescription,
+    /connection refused before any side effect/,
+    "the ORIGINAL error must still be recoverable — the wrapper loses no information",
+  );
   const verdicts = guard.receipts.map((r) => r.governance.verdict);
-  assert.deepEqual(verdicts, ["ALLOWED", "FAILED"], "decision then terminal-FAILED; no EXECUTED anywhere");
+  assert.deepEqual(verdicts, ["ALLOWED"], "the decision stands alone; no terminal verdict is signed");
   assert.equal(
     guard.receipts.some((r) => r.governance.verdict === "EXECUTED"),
     false,
-    "THE ASSERTION THIS FILE EXISTS FOR: nothing may claim EXECUTED when nothing executed",
+    "THE ASSERTION THIS FILE EXISTS FOR: nothing may claim EXECUTED when nothing is known to have executed",
   );
-  assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID", "both receipts still form one valid chain");
+  assert.equal(
+    guard.receipts.some((r) => r.governance.verdict === "FAILED"),
+    false,
+    "ITS MIRROR (H-02a): nothing may claim FAILED either — the tool's throw is not evidence of non-execution",
+  );
+  assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
 });
 
 test("a tool that SUCCEEDS is attested EXECUTED — but only after it returned", async () => {
@@ -95,8 +117,11 @@ test("a DENY still produces exactly ONE receipt and never calls fn (no outcome t
  *                       and the CALLER is told the call succeeded and handed `undefined`
  *   likewise 0, "", false, NaN, 0n
  *
- * Both halves are covered here: the terminal verdict must be FAILED, and the caller must receive the
- * thrown value back by IDENTITY (`Object.is`), so `throw null` arrives as exactly `null`.
+ * Both halves are still covered here. H-02a moved WHERE the value is carried, and only that: a
+ * post-invocation throw signs NO terminal verdict (the outcome is unobservable — see the head of
+ * this file), and the thrown value reaches the caller by IDENTITY as `toolFailure`/`cause`, so
+ * `throw null` is still recoverable as exactly `null`. The falsy-throw property this block exists
+ * for — a falsy throw is still a throw, never a silent success — is unchanged.
  */
 const FALSY_THROWS = [
   ["null", null],
@@ -109,7 +134,7 @@ const FALSY_THROWS = [
 ];
 
 for (const [label, thrown] of FALSY_THROWS) {
-  test(`a tool that throws ${label} is FAILED, never EXECUTED, and the value reaches the caller`, async () => {
+  test(`a tool that throws ${label} is never EXECUTED, never FAILED, and the value reaches the caller`, async () => {
     const { guard, keyring } = guardWith(`np-falsy-${label.replace(/\W/g, "") || "empty"}`);
     const wire = guard.guardCall("payment.refund", async () => {
       throw thrown;
@@ -125,11 +150,16 @@ for (const [label, thrown] of FALSY_THROWS) {
     }
 
     assert.equal(didThrow, true, `throw ${label} must NOT be swallowed — the caller has to learn the call failed`);
-    assert.equal(Object.is(received, thrown), true, `the thrown value must be re-thrown UNCHANGED (got ${String(received)})`);
+    assert.equal(ToolOutcomeNotRecorded.is(received), true, "post-invocation: the caller is owed the anti-retry discriminator");
+    assert.equal(
+      Object.is(received.toolFailure, thrown),
+      true,
+      `the thrown value must survive by IDENTITY (got ${String(received.toolFailure)})`,
+    );
     assert.deepEqual(
       guard.receipts.map((r) => r.governance.verdict),
-      ["ALLOWED", "FAILED"],
-      "THE ASSERTION THIS BLOCK EXISTS FOR: a falsy throw is still a throw — never EXECUTED",
+      ["ALLOWED"],
+      "THE ASSERTION THIS BLOCK EXISTS FOR: a falsy throw is still a throw — never EXECUTED; and (H-02a) never FAILED either",
     );
     assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
   });
@@ -190,13 +220,20 @@ test("a PRE-execution persist failure is NOT wrapped — nothing ran, so failing
   assert.match(caught.message, /decision log unavailable/);
 });
 
-test("a tool that FAILS and cannot record that failure also reports the execution as having happened", async () => {
+/**
+ * H-02a — there is no FAILED receipt to fail to record any more, so the `onReceipt` hook below can
+ * never fire. The test is kept (not deleted) and asserts that ABSENCE mechanically, so restoring
+ * the FAILED receipt would be caught here as well as at the verdict assertions above.
+ */
+test("a tool that throws reaches no terminal recording at all, and still reports the execution as having happened", async () => {
   const kp = generateKeyPair("np-persist-failed");
+  let terminalRecordings = 0;
   const guard = createToolGuard({
     signer: { kid: kp.kid, privateKey: kp.privateKey },
     policy: REFUND_GUARD_POLICY,
     tenant: "t",
     onReceipt: (r) => {
+      if (r.governance.verdict !== "ALLOWED") terminalRecordings++;
       if (r.governance.verdict === "FAILED") throw new Error("receipt log gone");
     },
   });
@@ -205,8 +242,9 @@ test("a tool that FAILS and cannot record that failure also reports the executio
   let caught = null;
   try { await refund({ action: "payment.refund", amountMinor: 4_200 }); } catch (e) { caught = e; }
 
+  assert.equal(terminalRecordings, 0, "no terminal receipt is built, so none is recorded");
   assert.ok(caught instanceof ToolOutcomeNotRecorded);
-  assert.equal(caught.outcome, "FAILED");
+  assert.equal(caught.executionHappened, true);
   assert.equal(caught.toolFailure?.message, "upstream 500 after the charge", "the tool's own error must not be lost");
 });
 

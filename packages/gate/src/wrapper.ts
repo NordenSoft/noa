@@ -228,7 +228,25 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
   let execDetail: string | undefined;
   try {
     const r = await input.execute();
-    if (r.ok) {
+    // ── READ THE ENTIRE SELF-REPORT BEFORE TAKING ANY TRANSITION (H-02c) ─────────────────────────
+    // `r` is a TOOL-OWNED object, so `r.ok` and `r.detail` are attacker-reachable reads: either can
+    // be an accessor or a Proxy trap that runs the tool's code and throws.
+    //
+    // The previous shape transitioned FIRST (`if (r.ok) { state = …TOOL_RETURNED }`) and read
+    // `r.detail` AFTERWARDS. A throwing `detail` getter therefore raised from a state the catch
+    // block's event does not model — `TOOL_THREW_AFTER_DISPATCH` has no transition out of
+    // SETTLED_UNRECORDED or SIDE_EFFECT_UNCONFIRMED — so `nextSideEffectState` threw
+    // `IllegalSideEffectTransition` from inside the catch, and that escaped `guard()` RAW: an
+    // ordinary Error with no `executionHappened`, for a tool that had already run. A caller's
+    // error handling reads that as a plain failure and RETRIES a side effect that happened.
+    //
+    // Reading everything first makes the catch block reachable ONLY while `state === "DISPATCHED"`,
+    // which is the one state that models `TOOL_THREW_AFTER_DISPATCH`. The fix is the ORDER, not a
+    // guard around one getter: it closes every present and future read of the tool's self-report,
+    // not the two that happen to exist today.
+    const ok = r.ok;
+    const detail = r.detail;
+    if (ok) {
       state = nextSideEffectState(state, "TOOL_RETURNED"); // → SETTLED_UNRECORDED (a side effect happened)
       reportResult = "DISPATCHED";
     } else {
@@ -236,10 +254,25 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
       state = nextSideEffectState(state, "TOOL_REPORTED_NO_DISPATCH"); // → SIDE_EFFECT_UNCONFIRMED
       reportResult = "UNKNOWN";
     }
-    execDetail = r.detail;
+    execDetail = detail;
   } catch (e) {
     // ANY throw after dispatch: genuinely unknown. There is no marked variant any more.
-    state = nextSideEffectState(state, "TOOL_THREW_AFTER_DISPATCH"); // → SIDE_EFFECT_UNCONFIRMED
+    //
+    // BELT AS WELL AS BRACES. The read-before-transition order above is what makes this reachable
+    // only from DISPATCHED. This block additionally refuses to let ANY residual throw leave
+    // `guard()` unmarked: a mechanism nobody has thought of yet must degrade to "it may have run",
+    // never to an ordinary error. `state` is passed by value from the pre-transition constant so
+    // the reducer call itself cannot be the thing that throws.
+    try {
+      state = nextSideEffectState("DISPATCHED", "TOOL_THREW_AFTER_DISPATCH"); // → SIDE_EFFECT_UNCONFIRMED
+    } catch (reducerFailure) {
+      throw new ToolOutcomeNotRecorded(input.action.canonical, {
+        outcome: "EXECUTED",
+        receipt: null,
+        cause: reducerFailure,
+        component: "noa-gate",
+      });
+    }
     reportResult = "UNKNOWN";
     execDetail = describeThrown(e);
   }

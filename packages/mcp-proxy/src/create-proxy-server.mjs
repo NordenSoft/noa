@@ -72,6 +72,10 @@ import {
   verifyApprovalReceipt,
   // BOUNDARY 2 — the ONE conversion from an arbitrary thrown value to a safe descriptor.
   describeThrown,
+  // H-02b — the post-dispatch outcome is the reducer's to decide, never this file's.
+  nextSideEffectState,
+  EVIDENCE_OUTCOME_FOR,
+  isSafeToRetry,
 } from "noa-mcp-adapter-core";
 import { buildOutcomeReceipt, buildOutcomeReceiptAsync } from "./outcome-receipt.mjs";
 
@@ -527,8 +531,38 @@ export async function createProxyServer({
       // downstream failure after ALLOW must still reach the host as a failure, never a silent
       // success. R2 (#4): emit the ERROR outcome receipt (best-effort) BEFORE surfacing the failure,
       // so the audit trail binds this decision to its real terminal outcome.
+      //
+      // ── H-02b: WHAT "error" DOES AND DOES NOT MEAN ───────────────────────────────────────────
+      // The call was FORWARDED before this throw, so the downstream tool may have run to completion
+      // and lost only its response. Routed through the reducer, that is
+      // `DISPATCHED --TOOL_THREW_AFTER_DISPATCH--> SIDE_EFFECT_UNCONFIRMED`, whose §13 evidence
+      // outcome is `UNKNOWN_AFTER_DISPATCH` — NOT a determinate failure.
+      //
+      // `outcome:"error"` stays, and stays honest, because of what it is a record OF: the PROXY's
+      // own observation that the forwarded call raised. It is not the downstream tool's self-report
+      // and it never claimed to be a statement about the side effect. `noa.mcp.outcome/0.1` is a
+      // published wire artifact, so its enum is NOT widened to add an "unconfirmed" member — that
+      // would be inventing a new wire outcome to say what the reducer already says.
+      //
+      // What WAS missing is the anti-retry discriminator on the path the host actually reads. A
+      // host seeing a bare InternalError retries, and a retry here duplicates a side effect that
+      // may already have happened. The reducer state travels with the error, in `data`, which is
+      // additive and breaks no consumer.
+      const dispatchState = nextSideEffectState(
+        nextSideEffectState("NOT_DISPATCHED", "DISPATCH_STARTED"), // → DISPATCHED
+        "TOOL_THREW_AFTER_DISPATCH",
+      ); // → SIDE_EFFECT_UNCONFIRMED
       await emitOutcome(receipt, request.params.name, "error", err);
-      throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: downstream call failed after ALLOW (${describeThrown(err)})`);
+      throw new McpError(
+        ErrorCode.InternalError,
+        `noa-mcp-proxy: downstream call failed after ALLOW and MAY ALREADY HAVE TAKEN EFFECT — do not blindly retry (${describeThrown(err)})`,
+        {
+          executionHappened: true,
+          sideEffectState: dispatchState,
+          evidenceOutcome: EVIDENCE_OUTCOME_FOR[dispatchState],
+          safeToRetry: isSafeToRetry(dispatchState),
+        },
+      );
     }
     // Flush all relayed progress notifications to the host BEFORE the result is sent (see the
     // pendingProgressRelays comment above) — prevents the result from overtaking queued progress.
