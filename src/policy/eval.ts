@@ -12,8 +12,8 @@
 
 import type { Policy, Condition, InputSnapshot, Verdict, Scalar } from "./dsl.js";
 import { DEFAULT_VERDICT } from "./dsl.js";
-import { validatePolicy } from "./validate.js";
-import { snapshotImmutable } from "../ingest.js";
+import { validatePolicyParsed } from "./validate.js";
+import { parseDocument } from "../bytes.js";
 
 export const REF_EVAL_VERSION = "noa-refeval/0.2" as const;
 
@@ -104,26 +104,27 @@ function match(c: Condition, inputs: InputSnapshot): boolean {
  * `then` is guaranteed ALLOW|DENY by the up-front validator, so a typo'd verdict can never
  * become a silent permit downstream (closes a default-DENY bypass).
  */
-export function evaluate(policy: Policy, inputs: InputSnapshot): EvalResult {
-  // THE INGEST BOUNDARY (review #6, C2). The policy is validated once and then WALKED again for the
-  // rule match; the inputs are read once per path reference. A flipping getter could therefore pass
-  // a restrictive policy to the validator and hand a permissive one to the matcher. Fail closed to
-  // DENY, never to a permit.
-  // The two arguments are snapshotted SEPARATELY so the existing `ruleFired` contract is preserved
-  // exactly: a hostile POLICY is `policy-invalid` and a hostile INPUT is `eval-error`, which is what
-  // both labels already meant when the throw happened mid-walk instead of at the boundary. The label
-  // is part of the cross-implementation determinism bar; a security fix must not move it.
-  try {
-    policy = snapshotImmutable<Policy>(policy);
-  } catch {
-    return { verdict: "DENY", ruleFired: "policy-invalid", engine: REF_EVAL_VERSION };
-  }
-  try {
-    inputs = snapshotImmutable<InputSnapshot>(inputs);
-  } catch {
-    return { verdict: "DENY", ruleFired: "eval-error", engine: REF_EVAL_VERSION };
-  }
-  const pv = validatePolicy(policy);
+export function evaluate(policy: Uint8Array | string, inputs: Uint8Array | string): EvalResult {
+  // THE TWO DOCUMENTS ARE PARSED SEPARATELY so the existing `ruleFired` contract is preserved
+  // EXACTLY: an unusable POLICY is `policy-invalid` and an unusable INPUT SNAPSHOT is `eval-error`.
+  // Those labels are part of the cross-implementation determinism bar — five verifiers agree on
+  // them — so a security change must not move one. What used to produce them was a hostile getter
+  // throwing mid-walk; what produces them now is a document that will not parse. Same label, same
+  // verdict, narrower cause.
+  const pParsed = parseDocument(policy, "policy");
+  if (!pParsed.ok) return { verdict: "DENY", ruleFired: "policy-invalid", engine: REF_EVAL_VERSION };
+  const iParsed = parseDocument(inputs, "inputs");
+  if (!iParsed.ok) return { verdict: "DENY", ruleFired: "eval-error", engine: REF_EVAL_VERSION };
+  return evaluateParsed(pParsed.value as Policy, iParsed.value as InputSnapshot);
+}
+
+/**
+ * The evaluator over PARSED data — kernel-internal, NOT re-exported from `src/index.ts`.
+ * `complianceCommit` (a producer, holding its own policy object) and `verifyReceiptCompliance`
+ * (holding a policy it already parsed) both call this rather than re-serializing.
+ */
+export function evaluateParsed(policy: Policy, inputs: InputSnapshot): EvalResult {
+  const pv = validatePolicyParsed(policy);
   if (!pv.ok) {
     return { verdict: "DENY", ruleFired: "policy-invalid", engine: REF_EVAL_VERSION };
   }

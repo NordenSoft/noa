@@ -8,7 +8,7 @@
 
 import { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, type CborValue } from "./cbor.js";
 import { signEd25519, verifyEd25519, type Keyring } from "../keys.js";
-import { snapshotImmutable } from "../ingest.js";
+import { parseDocument } from "../bytes.js";
 import { bufEquals, bufToString, bufferFrom, isArray } from "../intrinsics.js";
 
 /**
@@ -191,21 +191,23 @@ function validateProtectedAlg(protectedBytes: Buffer): ProtectedCheck {
 }
 
 /** Verify a COSE_Sign1: structure, Ed25519 alg, kid→keyring, signature. Never throws. */
-export function coseSign1Verify(coseBytes: Buffer, keyring: Keyring): CoseVerifyResult {
-  // Fail-closed on a non-object keyring: mirrors verifyChain's non-object-keyring guard, which had not
-  // originally propagated to the COSE path. A null keyring would throw a raw TypeError on
-  // `keyring[kid]` below (violating "never throws"); an array / non-object is an operator error, not an empty
-  // trust root. Reject cleanly as ok:false with the same "keyring must be an object" reason as verify.ts.
-  if (keyring === null || typeof keyring !== "object" || isArray(keyring)) {
+export function coseSign1Verify(coseBytes: Uint8Array, keyring: Uint8Array | string): CoseVerifyResult {
+  // BOTH arguments are bytes. The COSE message always was; the KEYRING — the trust root this
+  // signature is judged against — was a caller object, which is the asymmetry review #6 (C2) found
+  // and this migration removes rather than patches.
+  const kParsed = parseDocument(keyring, "keyring");
+  if (!kParsed.ok) return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: kParsed.reason };
+  if (kParsed.value === null || typeof kParsed.value !== "object" || isArray(kParsed.value)) {
     return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
   }
-  // THE INGEST BOUNDARY (review #6, C2). The COSE bytes are already inert; the KEYRING was not, and
-  // it is the trust root this signature is judged against.
-  try {
-    keyring = snapshotImmutable<Keyring>(keyring);
-  } catch {
-    return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: "keyring could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)" };
-  }
+  return coseSign1VerifyParsed(coseBytes, kParsed.value as Keyring);
+}
+
+/**
+ * COSE verification over an already-parsed keyring — kernel-internal, NOT re-exported.
+ * `receiptFromCose` holds a keyring it has already parsed and must not re-serialize it.
+ */
+export function coseSign1VerifyParsed(coseBytes: Uint8Array, keyring: Keyring): CoseVerifyResult {
   let v: CborValue;
   try {
     v = decode(coseBytes);

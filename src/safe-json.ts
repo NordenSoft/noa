@@ -15,11 +15,31 @@
  * no reviver callbacks.
  */
 
+/**
+ * Module-private brand registry. The bytes boundary needs to distinguish "the parser refused this
+ * document, and its reason is safe to surface" from "something else went wrong". `instanceof` is
+ * the obvious test and the wrong one: it consults `Symbol.hasInstance` and walks the operand's
+ * prototype chain, both attacker-invocable, and a revoked Proxy makes the walk THROW — from inside
+ * the handler whose job is to report a failure. A `WeakSet` membership test is an internal identity
+ * lookup: total for every input, trap-free, and unforgeable from outside this module.
+ */
+const SAFE_JSON_ERRORS = new WeakSet<object>();
+
 export class SafeJsonError extends Error {
   constructor(message: string, public readonly pos: number) {
     super(`${message} (at position ${pos})`);
     this.name = "SafeJsonError";
+    SAFE_JSON_ERRORS.add(this);
   }
+}
+
+/**
+ * Brand check for `SafeJsonError` that never touches the value's prototype chain. A `true` answer
+ * also certifies the message is safe to surface: it is built from this module's own literals plus a
+ * numeric position, so no caller string is interpolated and no caller `toString` is invoked.
+ */
+export function isSafeJsonError(value: unknown): boolean {
+  return SAFE_JSON_ERRORS.has(value as object);
 }
 
 export interface SafeJsonOptions {

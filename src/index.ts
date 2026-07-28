@@ -26,11 +26,27 @@ export type {
 
 export { canonicalize, JcsError } from "./jcs.js";
 export { safeParse, SafeJsonError } from "./safe-json.js";
-export { snapshotImmutable, deepFreeze, tryIngest, isIngestError, IngestError, MAX_INGEST_DEPTH } from "./ingest.js";
 /**
- * The inert-data primitives (review #6, C1/C3). Published so the sibling packages — which verify the
- * SAME bytes and are held to the SAME class properties — build their policy tables and resolve their
- * membership decisions through one implementation rather than five near-copies.
+ * ── THE INGEST BOUNDARY IS GONE, AND ITS ABSENCE IS THE HEADLINE OF THIS RELEASE ─────────────────
+ *
+ * `snapshotImmutable`, `tryIngest`, `isIngestError`, `IngestError` and `MAX_INGEST_DEPTH` were 260
+ * lines whose entire purpose was to make a caller-owned, LIVE JavaScript object safe enough to
+ * reason about: fire every getter exactly once, refuse sparse arrays, strip prototypes, re-root onto
+ * an inert array prototype, and recognise its own error class through a `WeakSet` brand because
+ * `instanceof` is attacker-invocable. Every line of it was correct and every line of it was
+ * answering a question the kernel no longer asks. Security changes that DELETE mechanism are the
+ * ones that hold up; this is the deletion the whole migration was for.
+ *
+ * `deepFreeze` survives — it moved to `./inert.js`, where it always belonged. It freezes the
+ * MODULE'S OWN constant tables and never touched caller input.
+ *
+ * The inert-data primitives below survive for the same reason and it is worth stating, because the
+ * ADR's own summary table listed them for deletion: they are NOT an input boundary. They construct
+ * THIS package's literal policy tables so those tables inherit from nothing an attacker can write to
+ * (ADR §5.6), and bytes-in explicitly does not close that class — "bytes-in removes the R7 delivery
+ * vehicle; it does not remove the flaw." Deleting them would have removed a control that nothing
+ * replaces. They are published because the sibling packages verify the SAME bytes under the SAME
+ * class properties, and one implementation is better than five near-copies.
  */
 export {
   INERT_ARRAY_PROTOTYPE,
@@ -40,6 +56,7 @@ export {
   isFrozenSet,
   frozenTable,
   inertViolations,
+  deepFreeze,
   MutablePolicyTableError,
   type FrozenSet,
 } from "./inert.js";

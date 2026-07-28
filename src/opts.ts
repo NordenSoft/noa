@@ -67,9 +67,14 @@ const _freeze = Object.freeze;
 /**
  * `boolean` — a flag. `count` — a non-negative safe integer with a mandatory ceiling.
  * `document` — bytes or text, decoded once (a signed/verified artifact supplied as configuration,
- * e.g. the keyring or the checkpoint).
+ * e.g. the keyring or the checkpoint). `nested` — a sub-object the CALLER then admits through its own
+ * `inertOptions` pass with its own schema. `nested` is deliberately NOT recursion inside this
+ * function: a schema that can nest itself is a schema whose depth is unbounded, and the whole point
+ * of an exact schema is that its shape is finite and readable. The outer pass still proves the member
+ * is not a Proxy, not an accessor, not a function and not exotically-prototyped before the inner pass
+ * sees it, so nothing is waved through.
  */
-export type OptionKind = "boolean" | "count" | "document";
+export type OptionKind = "boolean" | "count" | "document" | "nested";
 
 export interface OptionField {
   readonly kind: OptionKind;
@@ -82,7 +87,10 @@ export type OptionSchema = { readonly [key: string]: OptionField };
 export type OptionsResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: string };
 
 /** The inert record produced for a `document` field: decoded once, never re-read from the caller. */
-export type OptionRecord = { readonly [key: string]: string | number | boolean | undefined };
+export type OptionRecord = { readonly [key: string]: string | number | boolean | object | undefined };
+
+/** The shape the validator produces; callers name a narrower interface over the same members. */
+export type InertRecord = object;
 
 /**
  * Validate `input` against `schema` and convert it, exactly once, into an inert immutable record.
@@ -91,7 +99,7 @@ export type OptionRecord = { readonly [key: string]: string | number | boolean |
  * empty record. A default parameter fills only a MISSING argument, never an explicit `null`, which
  * is how `verifyChain(x, null)` used to reach a property read on `null`.
  */
-export function inertOptions<T extends OptionRecord>(schema: OptionSchema, input: unknown, what: string): OptionsResult<T> {
+export function inertOptions<T extends InertRecord>(schema: OptionSchema, input: unknown, what: string): OptionsResult<T> {
   if (input === undefined || input === null) {
     return { ok: true, value: _freeze(_create(null)) as T };
   }
@@ -122,7 +130,7 @@ export function inertOptions<T extends OptionRecord>(schema: OptionSchema, input
     };
   }
 
-  const out: Record<string, string | number | boolean> = _create(null);
+  const out: Record<string, string | number | boolean | object> = _create(null);
   // ALL own keys, not just enumerable ones: a non-enumerable own property is invisible to
   // `Object.keys` and would carry configuration past a validator that only looked at what enumerates.
   const keys = _ownKeys(input as object);
@@ -159,6 +167,16 @@ export function inertOptions<T extends OptionRecord>(schema: OptionSchema, input
       const max = field.max;
       if (max === undefined || raw > max) {
         return { ok: false, reason: `${what}: option "${key}" exceeds its permitted ceiling` };
+      }
+      out[key] = raw;
+      continue;
+    }
+    if (field.kind === "nested") {
+      // Proven here: not a Proxy (the whole input already passed `isProxy`, and a nested Proxy is
+      // caught by the inner pass's own first line), not an accessor, not a function, not a symbol.
+      // The inner `inertOptions` call the caller makes does the rest against its own schema.
+      if (typeof raw !== "object" || raw === null || _isArray(raw)) {
+        return { ok: false, reason: `${what}: option "${key}" must be a plain object` };
       }
       out[key] = raw;
       continue;

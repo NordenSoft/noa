@@ -13,7 +13,7 @@
 import type { Policy, Condition, Scalar } from "./dsl.js";
 import { POLICY_SPEC } from "./dsl.js";
 import { canonicalize, MAX_DEPTH } from "../jcs.js";
-import { snapshotImmutable } from "../ingest.js";
+import { parseDocument } from "../bytes.js";
 import { arrayPush } from "../intrinsics.js";
 
 const CMP_OPS = new Set(["eq", "ne", "lt", "le", "gt", "ge"]);
@@ -102,16 +102,27 @@ function validateCondition(c: unknown, path: string, errors: string[], depth: nu
   arrayPush(errors, `${path}: unknown op "${op}" (allowed: eq/ne/lt/le/gt/ge/in/exists/absent/and/or/not)`);
 }
 
-/** Validate a policy against the closed grammar. Pure, static, input-independent. */
-export function validatePolicy(p: unknown): PolicyValidation {
+/**
+ * Validate a policy against the closed grammar, from its BYTES. Pure, static, input-independent.
+ *
+ * A policy is a signed, hash-pinned trust artifact (`policyHash` is its published identity), so it
+ * is a document and not configuration. It used to need an ingest boundary because it is walked by
+ * the grammar check and then RE-READ by the canonicalization below, and the two had to see the same
+ * bytes; now they do so by construction.
+ */
+export function validatePolicy(policy: Uint8Array | string): PolicyValidation {
+  const parsed = parseDocument(policy, "policy");
+  if (!parsed.ok) return { ok: false, errors: [parsed.reason] };
+  return validatePolicyParsed(parsed.value);
+}
+
+/**
+ * The grammar validator over PARSED data — kernel-internal, and NOT re-exported from
+ * `src/index.ts`. `evaluate` and `complianceCommit` already hold a parsed policy and must not
+ * re-serialize it to re-enter the bytes boundary.
+ */
+export function validatePolicyParsed(p: unknown): PolicyValidation {
   const errors: string[] = [];
-  // THE INGEST BOUNDARY (review #6, C2). `p` is walked by the grammar check and then RE-READ by the
-  // canonicalization below; the two must see the same bytes.
-  try {
-    p = snapshotImmutable<unknown>(p);
-  } catch {
-    return { ok: false, errors: ["policy: could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)"] };
-  }
   if (typeof p !== "object" || p === null) return { ok: false, errors: ["policy: not an object"] };
   const pol = p as Record<string, unknown>;
   noExtraKeys(pol, ["spec", "id", "requiredPaths", "rules"], "policy", errors);
@@ -154,8 +165,20 @@ export function validatePolicy(p: unknown): PolicyValidation {
   return { ok: errors.length === 0, errors };
 }
 
-/** Narrowing assertion used by callers that want a typed Policy after validation. */
-export function assertValidPolicy(p: unknown): asserts p is Policy {
-  const v = validatePolicy(p);
+/**
+ * Parse and validate a policy from BYTES, returning the typed `Policy` or throwing.
+ *
+ * It was `asserts p is Policy` over a caller object. That signature cannot survive bytes-in — there
+ * is no caller object left to narrow — and the honest replacement RETURNS the parsed policy, which
+ * is strictly better: the value the caller goes on to use is the value that was validated, rather
+ * than a separate object the type system was persuaded to trust. Throwing is correct here and only
+ * here: this is an assertion helper for a caller who has already decided a bad policy is fatal.
+ * Every VERDICT-bearing entry point still returns rather than throws.
+ */
+export function assertValidPolicy(policy: Uint8Array | string): Policy {
+  const parsed = parseDocument(policy, "policy");
+  if (!parsed.ok) throw new Error(`invalid policy: ${parsed.reason}`);
+  const v = validatePolicyParsed(parsed.value);
   if (!v.ok) throw new Error(`invalid policy: ${v.errors.join("; ")}`);
+  return parsed.value as Policy;
 }

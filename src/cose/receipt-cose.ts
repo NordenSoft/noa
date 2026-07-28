@@ -8,11 +8,11 @@
  * the external non-equivocation anchor NOA's self-signed chain lacks.
  */
 
-import { coseSign1, coseSign1Verify, type CoseSigner } from "./cose-sign1.js";
+import { coseSign1, coseSign1VerifyParsed, type CoseSigner } from "./cose-sign1.js";
 import { canonicalize } from "../jcs.js";
 import { safeParse } from "../safe-json.js";
-import { validateReceiptShape } from "../schema.js";
-import { snapshotImmutable } from "../ingest.js";
+import { validateReceiptShapeParsed } from "../schema.js";
+import { parseDocument } from "../bytes.js";
 import type { Receipt } from "../types.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
 
@@ -40,18 +40,24 @@ export interface ReceiptCoseResult {
  * consumer that trusts `ok:true` + reads `receipt.agent.id`). With a manifest, an unauthorized
  * (agent.id, kid) pairing fails (ok:false) — mirroring the `UNTRUSTED` verdict.
  */
-export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityManifest?: IdentityManifest): ReceiptCoseResult {
-  // THE INGEST BOUNDARY (review #6, C2). The manifest had a hand-rolled read-once snapshot (a Map
-  // built with `Array.prototype.slice`) and the KEYRING had none. A hand-rolled boundary is the
-  // pattern this branch keeps finding defective — it protects the field its author was thinking about
-  // and nothing else, and `slice` itself dispatches through a poisonable prototype slot. Both
-  // arguments now go through the one boundary; the hand-rolled pass below is kept for its
-  // shape-validation errors, but it now walks inert data.
-  try {
-    keyring = snapshotImmutable<Keyring>(keyring);
-    if (identityManifest !== undefined) identityManifest = snapshotImmutable<IdentityManifest>(identityManifest);
-  } catch {
-    return { ok: false, kid: null, receipt: null, reason: "keyring/identityManifest could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)", warnings: [] };
+export function receiptFromCose(
+  coseBytes: Uint8Array,
+  keyringBytes: Uint8Array | string,
+  identityManifestBytes?: Uint8Array | string,
+): ReceiptCoseResult {
+  // THREE DOCUMENTS, THREE PARSES, ZERO CALLER OBJECTS. The manifest used to carry a hand-rolled
+  // read-once snapshot (a Map built with `Array.prototype.slice`) while the KEYRING carried none — a
+  // hand-rolled boundary protects the field its author was thinking about and nothing else, and
+  // `slice` itself dispatches through a poisonable prototype slot. The shape-validation pass below
+  // is kept for its error messages; what it walks is now parser output.
+  const kParsed = parseDocument(keyringBytes, "keyring");
+  if (!kParsed.ok) return { ok: false, kid: null, receipt: null, reason: kParsed.reason, warnings: [] };
+  const keyring = kParsed.value as Keyring;
+  let identityManifest: IdentityManifest | undefined;
+  if (identityManifestBytes !== undefined) {
+    const mParsed = parseDocument(identityManifestBytes, "identityManifest");
+    if (!mParsed.ok) return { ok: false, kid: null, receipt: null, reason: mParsed.reason, warnings: [] };
+    identityManifest = mParsed.value as IdentityManifest;
   }
   // Fail-closed on a non-object keyring: mirror verifyChain's non-object-keyring guard at the COSE
   // entry too, BEFORE any manifest work, so a null/array/non-object keyring is a clean ok:false here (not a
@@ -92,7 +98,7 @@ export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityMan
       return { ok: false, kid: null, receipt: null, reason: "identityManifest threw during validation (hostile accessor)", warnings: [] };
     }
   }
-  const r = coseSign1Verify(coseBytes, keyring);
+  const r = coseSign1VerifyParsed(coseBytes, keyring);
   if (!r.ok || !r.payload) return { ok: false, kid: r.kid, receipt: null, reason: r.reason, warnings: [] };
   let parsed: unknown;
   try {
@@ -116,7 +122,7 @@ export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityMan
   if (!recanon.equals(r.payload)) {
     return { ok: false, kid: r.kid, receipt: null, reason: "COSE payload is not canonical JCS: it does not re-canonicalize to the signed bytes (non-canonical encoding, or invalid/lossy UTF-8) — the returned receipt would not match the bytes the signature covers", warnings: [] };
   }
-  const v = validateReceiptShape(parsed);
+  const v = validateReceiptShapeParsed(parsed);
   if (!v.ok) return { ok: false, kid: r.kid, receipt: null, reason: `payload is not a NOA receipt: ${v.errors[0]}`, warnings: [] };
   const receipt = parsed as Receipt;
   // Identity binding (mirrors verifyChain 4c-bis). The COSE signature is authenticated (r.ok), so an

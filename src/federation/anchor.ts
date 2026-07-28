@@ -24,7 +24,7 @@
 
 import { signEd25519 } from "../keys.js";
 import { verifyChain } from "../verify.js";
-import { snapshotImmutable, isIngestError } from "../ingest.js";
+import { jsonStringify } from "../intrinsics.js";
 import { arrayLength, arrayPush, isSafeInteger, regexpTest } from "../intrinsics.js";
 import type { Receipt } from "../types.js";
 import type { Signer } from "../builder.js";
@@ -121,36 +121,38 @@ function anchorDraftErrors(a: Anchor): string[] {
  * (§5): a verifier pins witness keys, never the root.
  */
 export function buildAnchor(frontier: AnchorFrontier, signer: Signer): Anchor {
-  // THE INGEST BOUNDARY (review #6, C2 — the un-routed sibling). `anchorForChainHead` snapshotted its
-  // input; `buildAnchor`, which is what actually SIGNS, did not. It validated `frontier` and then
-  // RE-READ all four fields to build the signed surface, so a flipping getter could pass a valid
-  // frontier to the validator and hand a different one to the signature. Snapshot both arguments
-  // once, here, before a single field is validated: the bytes that are checked and the bytes that are
-  // signed are then provably the same bytes.
-  try {
-    frontier = snapshotImmutable<AnchorFrontier>(frontier);
-    signer = snapshotImmutable<Signer>(signer);
-  } catch (e) {
-    throw new AnchorError(
-      "buildAnchor: the frontier/signer could not be reduced to inert data before signing (a hostile getter, a proxy trap, or a non-plain object)",
-      isIngestError(e) ? [(e as Error).message] : [],
-    );
+  // CHECK-WHAT-YOU-SIGN, BY READING EACH FIELD EXACTLY ONCE.
+  //
+  // This is a PRODUCER over the signer's own frontier and key (ADR §3.3), so bytes-in does not apply
+  // — but the defect the old snapshot closed was real and is not about trust: `buildAnchor` validated
+  // `frontier` and then RE-READ all four fields to build the signed surface, so two reads could
+  // disagree and the validator would approve one frontier while the signature covered another
+  // (review #6, C2). A whole-object snapshot was one way to close that. Reading each field ONCE, into
+  // a local, and then validating AND signing THAT LOCAL is a stricter way: there is no second read to
+  // diverge, and the property is visible in five lines rather than inferred from a 260-line ingest
+  // module. `signer` is read the same way.
+  const surface: AnchorFrontier = {
+    chain: (frontier as AnchorFrontier | null)?.chain as string,
+    highestSeq: (frontier as AnchorFrontier | null)?.highestSeq as number,
+    headHash: (frontier as AnchorFrontier | null)?.headHash as string,
+    ts: (frontier as AnchorFrontier | null)?.ts as string,
+  };
+  const signerKid = (signer as Signer | null)?.kid as string;
+  const signerKey = (signer as Signer | null)?.privateKey as string;
+  if (typeof frontier !== "object" || frontier === null) {
+    throw new AnchorError("buildAnchor: invalid frontier/signer input: frontier must be an object { chain, highestSeq, headHash, ts }", ["frontier must be an object { chain, highestSeq, headHash, ts }"]);
   }
-  const inErrors = frontierInputErrors(frontier, signer);
+  const inErrors = frontierInputErrors(surface, { kid: signerKid, privateKey: signerKey } as Signer);
   if (inErrors.length > 0) {
     throw new AnchorError(`buildAnchor: invalid frontier/signer input: ${inErrors.join("; ")}`, inErrors);
   }
 
   // The signed surface is only primitives — copy the exact four fields (never the whole caller object, so a
   // smuggled extra field cannot ride into the anchor), then sign the shared acceptance preimage.
-  const surface: AnchorFrontier = {
-    chain: frontier.chain,
-    highestSeq: frontier.highestSeq,
-    headHash: frontier.headHash,
-    ts: frontier.ts,
-  };
-  const draft: Anchor = { ...surface, sig: { alg: "ed25519", kid: signer.kid, value: "" } };
-  draft.sig.value = signEd25519(signer.privateKey, anchorSigningInput(surface));
+  // `surface` is the SAME object the validator above just accepted — not a fresh copy of the caller's
+  // fields, which is what re-reading `frontier.chain` here would be.
+  const draft: Anchor = { ...surface, sig: { alg: "ed25519", kid: signerKid, value: "" } };
+  draft.sig.value = signEd25519(signerKey, anchorSigningInput(surface));
 
   const errors = anchorDraftErrors(draft);
   if (errors.length > 0) {
@@ -179,24 +181,28 @@ export function anchorForChainHead(receipts: readonly Receipt[], signer: Signer,
   }
   const ts = opts.ts; // read ONCE, before verify+reread — a flipping `opts.ts` getter cannot diverge here
 
-  // THE INGEST BOUNDARY — snapshot the receipts ONCE. `verifyChain` validates the chain and the head
-  // is then located BY REREADING the array; if those two reads see a LIVE object with flipping
-  // getters, verifyChain can validate an honest chain while `.find(...)` + the head reads
-  // (`head.scope.chain`, `head.chain.seq/.hash`) return an ATTACKER frontier — so the witness key
-  // signs a frontier that was never verified (the fifth review's C3). Firing every getter once here,
-  // into frozen data, makes the verified bytes and the signed bytes provably identical. An input that
-  // is not inert data is refused before anything is signed.
-  let snap: readonly Receipt[];
+  // THE VERIFIED BYTES AND THE SIGNED BYTES ARE NOW THE SAME BYTES, LITERALLY.
+  //
+  // This is a PRODUCER over the signer's own receipts (ADR §3.3), so its input is trusted — but it
+  // had a genuine defect that trust does not cover: `verifyChain` validated the chain and the head
+  // was then located by RE-READING the array, so two reads of one live object could disagree and the
+  // witness key would sign a frontier the verifier never saw (review #5, C3; review #6, C1). The old
+  // fix was to snapshot first and search with an indexed walk.
+  //
+  // Bytes-in gives a stronger version for free: the receipts are serialised ONCE and the chain
+  // verifier is handed exactly those bytes. Whatever `verifyChain` validated is, by construction, the
+  // same document the head is read from — not a copy believed to be identical. `JSON.stringify` is
+  // safe here for the reason it is NOT safe in a compat shim: this producer's input is its own data,
+  // never an attacker's, so there are no hostile getters for the serializer to run.
+  const snap: readonly Receipt[] = receipts;
+  let receiptsJson: string;
   try {
-    snap = snapshotImmutable<readonly Receipt[]>(receipts);
-  } catch (e) {
-    throw new AnchorError(
-      "anchorForChainHead: receipts could not be reduced to inert data before signing (a hostile getter, a proxy trap, or a non-plain object)",
-      isIngestError(e) ? [(e as Error).message] : [],
-    );
+    receiptsJson = jsonStringify(snap) as string;
+  } catch {
+    throw new AnchorError("anchorForChainHead: receipts are not serializable and cannot be anchored", []);
   }
 
-  const res = verifyChain(snap as unknown[]);
+  const res = verifyChain(receiptsJson);
   if (res.status !== "VALID" && res.status !== "UNVERIFIED") {
     throw new AnchorError(
       `anchorForChainHead: refusing to anchor a chain that does not verify (${res.status}: ${res.reason ?? "no reason"})`,

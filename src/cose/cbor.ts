@@ -167,7 +167,15 @@ function decodeAt(c: Cur, depth: number): CborValue {
   }
 }
 
-export function decode(buf: Buffer): CborValue {
+/**
+ * Decode CBOR from BYTES. The parameter was typed `Buffer` — which IS a `Uint8Array` at runtime, so
+ * this is a type-level correction rather than a behaviour change, and it is the honest one: the
+ * boundary rule is `string | Uint8Array`, and a signature that says `Buffer` narrows the contract to
+ * one runtime's subclass while claiming to be bytes-in. A plain `Uint8Array` from any source now
+ * satisfies the type it always satisfied in practice.
+ */
+export function decode(bytes: Uint8Array): CborValue {
+  const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const c: Cur = { buf, i: 0, maxDepth: 32 };
   const v = decodeAt(c, 0);
   if (c.i !== buf.length) throw new CborError("trailing bytes");

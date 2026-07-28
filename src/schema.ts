@@ -9,7 +9,7 @@
  */
 
 import { RECEIPT_SPEC } from "./types.js";
-import { snapshotImmutable } from "./ingest.js";
+import { parseDocument } from "./bytes.js";
 import { arrayPush } from "./intrinsics.js";
 
 const RISK_CLASSES = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL", "IRREVERSIBLE"]);
@@ -69,17 +69,29 @@ function str(v: unknown): v is string {
   return typeof v === "string" && v.isWellFormed();
 }
 
-export function validateReceiptShape(value: unknown): SchemaResult {
+/**
+ * Validate one receipt's structure from its BYTES.
+ *
+ * This is the structural rule `verifyChain` enforces, published for direct use. It walks the value
+ * many times — exact-key checks, per-field type checks, NFC checks — which is exactly why it used to
+ * need an ingest boundary of its own: a flipping getter could show one shape to the key check and
+ * another to the type check (review #6, C2). Over parsed bytes there is nothing to flip, so the
+ * multiple walks are just walks.
+ */
+export function validateReceiptShape(receipt: Uint8Array | string): SchemaResult {
+  const parsed = parseDocument(receipt, "receipt");
+  if (!parsed.ok) return { ok: false, errors: [parsed.reason] };
+  return validateReceiptShapeParsed(parsed.value);
+}
+
+/**
+ * The structural validator over PARSED data. Exported for the KERNEL's own use (`verifyChain` walks
+ * an already-parsed array and must not re-serialize each element to re-enter the bytes boundary),
+ * and deliberately NOT re-exported from `src/index.ts` — a caller who could reach this would have
+ * the old object API back under a new name.
+ */
+export function validateReceiptShapeParsed(value: unknown): SchemaResult {
   const errors: string[] = [];
-  // THE INGEST BOUNDARY (review #6, C2). This is the structural rule `verifyChain` enforces, and it
-  // is PUBLISHED for direct use — so it cannot assume a caller ingested first. It walks the object
-  // many times (exact-key checks, per-field type checks, NFC checks), and a flipping getter would
-  // otherwise show one shape to the key check and another to the type check.
-  try {
-    value = snapshotImmutable<unknown>(value);
-  } catch {
-    return { ok: false, errors: ["receipt: could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)"] };
-  }
   if (!isPlainObject(value)) {
     return { ok: false, errors: ["receipt: not an object"] };
   }

@@ -4,7 +4,7 @@ import { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
 import { signEd25519 } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
-import { validateReceiptShape } from "./schema.js";
+import { validateReceiptShapeParsed } from "./schema.js";
 import { nonNfcPaths, isNFC } from "./nfc.js";
 
 export interface Signer {
@@ -131,7 +131,7 @@ function buildDraft(input: BuildInput, prev: Receipt | null, kid: string): { dra
  *  guarantee this package's docstring (above `BuilderError`) documents: a caller must never
  *  receive a validly-SIGNED-but-structurally-malformed receipt. */
 function finalizeReceipt(draft: Receipt): Receipt {
-  const shape = validateReceiptShape(draft);
+  const shape = validateReceiptShapeParsed(draft);
   if (!shape.ok) {
     throw new BuilderError(
       `buildReceipt: refusing to return a signed receipt that fails its own verifier's structural check: ${shape.errors.join("; ")}`,

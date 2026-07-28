@@ -1,12 +1,12 @@
 import type { Receipt, Checkpoint } from "./types.js";
-import { validateReceiptShape } from "./schema.js";
+import { validateReceiptShapeParsed } from "./schema.js";
 import { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
 import { verifyEd25519, type Keyring, type IdentityManifest } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
-import { safeParse } from "./safe-json.js";
 import { nonNfcPaths, isNFC } from "./nfc.js";
-import { snapshotImmutable } from "./ingest.js";
+import { parseDocument } from "./bytes.js";
+import { inertOptions, type OptionSchema } from "./opts.js";
 import { arrayPush, dateParse } from "./intrinsics.js";
 
 export type VerifyStatus =
@@ -16,20 +16,38 @@ export type VerifyStatus =
   | "TAMPERED" // an integrity check failed (incl. an unknown signing key when a keyring IS supplied)
   | "MALFORMED"; // not a well-formed receipt chain
 
+/**
+ * ── OPTIONS ARE CONFIGURATION; DOCUMENTS ARE BYTES ───────────────────────────────────────────────
+ *
+ * `VerifyOptions` is still an object, because it is the CALLER's own configuration and
+ * `{ maxReceipts: 10 }` is the ergonomics this API is worth having. What changed is that every
+ * member which is a signed or verified DOCUMENT — the keyring, the identity manifest, the
+ * checkpoint — is now `Uint8Array | string`, and the object itself is admitted only through
+ * `inertOptions`, which rejects a Proxy (before any trap-firing reflection), an accessor, a
+ * function, a symbol, an exotic prototype, an unknown member and an unbounded number, then converts
+ * what survives ONCE into a frozen null-prototype record.
+ *
+ * That is what deletes the `structuredClone` machinery this file used to carry. The snapshot existed
+ * because the in-process object API read the same caller object more than once and a flipping
+ * accessor could show one value to authentication and another to enforcement. After this change
+ * there is no caller object to read twice: the receipts came from `safeParse` over bytes, and every
+ * option was read exactly once at the boundary. The defence is not improved — its reason to exist
+ * is gone.
+ */
 export interface VerifyOptions {
-  /** Trust root: kid -> base64 SPKI public key. Supply it to authenticate signatures. */
-  keyring?: Keyring;
-  /** Signed checkpoint asserting the expected head — enables tail-truncation detection. */
-  checkpoint?: Checkpoint;
+  /** Trust root as JSON bytes: `{ kid: base64-SPKI }`. Supply it to authenticate signatures. */
+  keyring?: Uint8Array | string;
+  /** Signed checkpoint as JSON bytes, asserting the expected head — enables tail-truncation detection. */
+  checkpoint?: Uint8Array | string;
   /** Hard cap on receipts processed (DoS bound). */
   maxReceipts?: number;
   /**
    * Optional `agent.id -> authorized kid(s)` binding (a trust input, like the keyring). When supplied,
    * a receipt whose `(agent.id, sig.kid)` pairing is not authorized is rejected as UNTRUSTED — this is
    * what makes a VALID result mean "THIS agent.id signed", not just "a keyring-trusted key signed".
-   * Omit it to keep kid-level attribution (the weaker, documented guarantee).
+   * Omit it to keep kid-level attribution (the weaker, documented guarantee). Supplied as JSON bytes.
    */
-  identityManifest?: IdentityManifest;
+  identityManifest?: Uint8Array | string;
   /**
    * Chain-wide `scope.tenant` consistency. **DEFAULT: `true` (fail-closed).**
    *
@@ -128,96 +146,109 @@ function describeTenant(t: string | undefined): string {
  *    `tenant-drift: seq A "x" -> seq B "y"` reason. Pass `requireTenantConsistency: false` for the
  *    previous warn-only behaviour.
  */
-export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): VerifyResult {
-  // SNAPSHOT THE ENTIRE opts ONCE (hostile-accessor class-killer). Every opts.* field (maxReceipts, keyring,
-  // checkpoint, identityManifest) is caller-supplied and was read directly off the LIVE `opts` at scattered
-  // points: a throwing/Proxy getter (e.g. `get maxReceipts(){throw}`) OR a non-cloneable / Symbol-typed value
-  // escaped as a RAW TypeError, violating the "never throws" public-API contract (and verifyChainText forwards
-  // opts, inheriting the throw). structuredClone deep-copies opts ONCE into plain, accessor-free data — firing
-  // every getter exactly once and throwing on a non-cloneable value (Symbol, function, etc.) → MALFORMED. A
-  // null/undefined opts normalizes to `{}` (a default-param only fills a MISSING arg, not an explicit null).
-  // EVERYTHING downstream reads ONLY from `o`, never the live `opts`, so no hostile accessor can split a
-  // validate-then-enforce window or leak a throw. (verifyChainText/CLI/Python consume parse output — no
-  // accessors — so are immune; this guards the in-process object API.)
-  let o: VerifyOptions;
-  try {
-    o = (opts === null || opts === undefined) ? {} : structuredClone(opts);
-  } catch {
-    return fail("MALFORMED", "options not structured-cloneable (hostile accessor / non-cloneable value)", null, 0);
-  }
+export function verifyChain(receipts: Uint8Array | string, opts: VerifyOptions = {}): VerifyResult {
+  // ── THE BOUNDARY, IN THREE LINES ───────────────────────────────────────────────────────────────
+  // Options first, because a malformed option is a caller error that should be reported before any
+  // work is done on the document. `inertOptions` rejects a Proxy (before any trap-firing reflection),
+  // an accessor, a function, a symbol, an exotic prototype, an unknown member and an unbounded
+  // number, and returns a frozen null-prototype record whose `document` members are already decoded.
+  const admitted = inertOptions<InertVerifyOptions>(VERIFY_OPTION_SCHEMA, opts, "options");
+  if (!admitted.ok) return fail("MALFORMED", admitted.reason, null, 0);
+  const o = admitted.value;
+
+  // The document. `parseDocument` bounds the BYTES, decodes UTF-8 fatally, and hands the text to
+  // `safeParse` — so what comes back is a null-prototype, accessor-free, duplicate-key-free,
+  // depth-bounded tree. There is no live caller object anywhere below this line, which is why the
+  // `structuredClone` snapshots this function used to carry are gone rather than merely tightened.
+  const parsed = parseDocument(receipts, "receipts");
+  if (!parsed.ok) return fail("MALFORMED", parsed.reason, null, 0);
+  return verifyParsedChain(parsed.value, o);
+}
+
+/** The option members that are DOCUMENTS arrive decoded to text; the rest are scalars. */
+interface InertVerifyOptions {
+  readonly keyring?: string;
+  readonly checkpoint?: string;
+  readonly identityManifest?: string;
+  readonly maxReceipts?: number;
+  readonly requireTenantConsistency?: boolean;
+  readonly requireNFC?: boolean;
+}
+
+/**
+ * `maxReceipts` is ceilinged at `DEFAULT_MAX_RECEIPTS` rather than left open. An option whose value
+ * is unbounded is a DoS knob, and raising the ceiling above the default is not a capability any
+ * caller needs: `MAX_INPUT_BYTES` already bounds a document to 16 MiB, which cannot hold anywhere
+ * near a million receipts. The bound is therefore unreachable in practice and fail-closed in
+ * principle.
+ */
+const VERIFY_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.create(null), {
+  keyring: { kind: "document" },
+  checkpoint: { kind: "document" },
+  identityManifest: { kind: "document" },
+  maxReceipts: { kind: "count", max: DEFAULT_MAX_RECEIPTS },
+  requireTenantConsistency: { kind: "boolean" },
+  requireNFC: { kind: "boolean" },
+})) as OptionSchema;
+
+/**
+ * The chain verifier over PARSED data. Module-private on purpose: it assumes its input came from
+ * `safeParse`, and that assumption is exactly what the public boundary above guarantees. Exporting
+ * it would re-open the object API under a different name — the "no hidden legacy path" rule — so it
+ * is reachable only through bytes.
+ */
+function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResult {
   const maxReceipts = o.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
 
   if (!Array.isArray(receipts)) return fail("MALFORMED", "input is not an array of receipts", null, 0);
-  // Read receipts.length ONCE behind a guard, BEFORE the structuredClone snapshot below. These
-  // early length/maxReceipts bounds run on the LIVE caller array, so an array-like with a hostile `length`
-  // getter (`get length(){ throw }`) would escape as a RAW Error here — violating the "never throws" public-API
-  // contract — before the snapshot could neutralize it. Capturing it in try/catch (and keeping the bounds reading
-  // this one captured value) preserves the "don't clone a >maxReceipts array" DoS optimization while staying
-  // fail-closed. (verifyChainText/CLI/Python consume parse output — no accessors — so are immune.)
-  let n: number;
-  try {
-    n = receipts.length;
-  } catch {
-    return fail("MALFORMED", "input array length is not readable (hostile accessor)", null, 0);
-  }
+  // No guard is needed around `receipts.length` any more, and the absence is the point: this array
+  // came out of `safeParse`, so `length` is an ordinary own data property. The old code read it
+  // inside a try/catch because a caller-supplied array-like could carry `get length(){ throw }`.
+  // That input class no longer reaches this function.
+  const n = receipts.length;
   if (n === 0) return fail("MALFORMED", "empty receipt array", null, 0);
   if (n > maxReceipts) return fail("MALFORMED", `too many receipts (>${maxReceipts})`, null, n);
 
-  // SNAPSHOT-ONCE the caller-supplied LIVE receipts array. The
-  // in-process JS API reads the same object multiple times — receipts in structural validation AND in the
-  // chain walk (4b/4c/4c-bis re-read r.agent.id / r.sig.kid → #9). A flipping accessor that returns one value
-  // to authentication and another to enforcement splits the two, e.g. authenticating the legit head but
-  // enforcing a truncated one → VALID+tailChecked over an erased tail. structuredClone deep-copies to plain,
-  // accessor-free data ONCE (here, AFTER the length check so we never clone a >maxReceipts array), and
-  // EVERYTHING downstream reads only the clone — closing every TOCTOU window at the root. structuredClone also
-  // throws on non-cloneable input (functions, etc.) → MALFORMED. (The checkpoint/keyring/identityManifest are
-  // ALREADY accessor-free here: `o` is a deep structuredClone of opts — so they need no separate
-  // clone. verifyChainText/CLI/Python are immune — they consume safeParse/JSON.parse output with no accessors.)
-  let receiptsSnap: unknown[];
-  try {
-    receiptsSnap = structuredClone(receipts);
-  } catch {
-    return fail("MALFORMED", "input is not structured-cloneable (live accessor/non-cloneable value)", null, n);
+  const receiptsSnap: unknown[] = receipts;
+  let checkpointSnap: unknown;
+  if (o.checkpoint !== undefined) {
+    const cpParsed = parseDocument(o.checkpoint, "checkpoint");
+    if (!cpParsed.ok) return fail("MALFORMED", cpParsed.reason, null, n);
+    checkpointSnap = cpParsed.value;
   }
-  const checkpointSnap: Checkpoint | undefined = o.checkpoint;
 
-  // Validate the optional identity manifest (a trust input) AND SNAPSHOT it. Fail-closed: a malformed
-  // manifest is an operator error, never silently ignored (that would re-open the very impersonation gap
-  // it closes).
+  // Validate the optional identity manifest (a trust input). Fail-closed: a malformed manifest is an
+  // operator error, never silently ignored (that would re-open the very impersonation gap it closes).
   //
-  // TOCTOU hardening: read once here (validation) and again at every enforcement point. (
-  // `o.identityManifest` is already an accessor-free deep clone of opts.identityManifest, so the live-flipping
-  // window is closed at the opts snapshot; the per-entry Map copy below is retained for defense-in-depth and so
-  // a re-implementer reproduces the invariant.) Read each entry EXACTLY ONCE into a plain Map, copying the
-  // array with Array.prototype.slice.call (capturing element VALUES at copy time), validate the COPY, then have
-  // ALL enforcement points read ONLY from this snapshot — never the live manifest. (CLI/Python are immune: they
-  // consume JSON.parse output, which has no accessors.)
+  // THE TOCTOU COMMENTARY THAT USED TO LIVE HERE IS GONE, AND ITS ABSENCE IS THE CHANGE. It explained
+  // why each manifest entry was read exactly once into a private Map, copied by value with
+  // `Array.prototype.slice.call`, and why every enforcement point read the copy rather than the live
+  // object: a flipping entry accessor could authorize one kid at validation and a different one at
+  // enforcement. The manifest now arrives as BYTES and is parsed by `safeParse`, so there are no
+  // accessors to flip and no second read to disagree with the first. The per-entry Map is retained
+  // because it is the natural shape for the lookup, not because it is defending anything.
   const haveManifest = o.identityManifest !== undefined;
   const manifest = new Map<string, string[]>();
-  // ROBUSTNESS: the manifest, the array elements, and receipt fields below are all
-  // caller-supplied LIVE objects. A throwing/side-effecting accessor must yield MALFORMED, never escape
-  // as a raw throw. (verifyChainText/CLI/Python are immune — parse output has no accessors.) The chain
-  // walk further down has its own guard; this one covers manifest validation + structural/partition/seq.
   let list!: Receipt[];
   let chainId!: string;
   let ordered!: Receipt[];
   const tenantDriftMessages: string[] = [];
   try {
     if (haveManifest) {
-      const live = o.identityManifest;
+      const mParsed = parseDocument(o.identityManifest, "identityManifest");
+      if (!mParsed.ok) return fail("MALFORMED", mParsed.reason, null, n);
+      const live = mParsed.value;
       if (typeof live !== "object" || live === null || Array.isArray(live)) {
         return fail("MALFORMED", "identityManifest must be an object (agent.id -> kid[])", null, 0);
       }
-      // Validate over the SAME own-property view the enforcement points read (own names — includes
-      // NON-ENUMERABLE own props). Object.entries() only sees enumerable own props, so a non-enumerable
-      // own entry would escape validation yet authorize a binding.
+      // Own names — `safeParse` emits null-prototype objects with enumerable own data properties
+      // only, so this and `Object.entries` would now agree; own-names is kept because it is the
+      // stricter of the two and costs nothing.
       for (const aid of Object.getOwnPropertyNames(live)) {
-        const kidsLive = (live as Record<string, unknown>)[aid]; // ONE read of the entry (fires an entry getter once)
+        const kidsLive = (live as Record<string, unknown>)[aid];
         if (!Array.isArray(kidsLive)) {
           return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
         }
-        // Copy by VALUE: slice materializes each element once. A later read of the live array (or its
-        // element getters) cannot change what we validated/enforce against.
         const kids = Array.prototype.slice.call(kidsLive) as unknown[];
         if (!kids.every((k) => typeof k === "string")) {
           return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
@@ -226,11 +257,9 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       }
     }
 
-    // 1. Structural validation of every element (runs BEFORE any hashing). Reads the SNAPSHOT, not the
-    // live array — downstream (walk/tail-match/§5b) reads the same snapshot, so what we validate is exactly
-    // what we enforce (closes the live-object TOCTOU at the root).
+    // 1. Structural validation of every element (runs BEFORE any hashing).
     for (let idx = 0; idx < receiptsSnap.length; idx++) {
-      const res = validateReceiptShape(receiptsSnap[idx]);
+      const res = validateReceiptShapeParsed(receiptsSnap[idx]);
       if (!res.ok) {
         return fail("MALFORMED", `receipt[${idx}]: ${res.errors.join("; ")}`, null, receiptsSnap.length, idx);
       }
@@ -323,11 +352,9 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       lastPresentSeq = curR.chain.seq;
     }
   } catch {
-    // Use the captured `n` (read once, guarded, above), never re-read `receipts.length` here: a
-    // flipping length-accessor that returns a valid number on the first read (past the bounds
-    // check above) and throws on a second read would otherwise escape this catch as a raw,
-    // uncaught throw — violating the "never throws" contract from inside the fail-closed path
-    // whose entire job is to prevent exactly that.
+    // Retained as a fail-closed backstop for OUR OWN code (a bug in a helper must still return
+    // MALFORMED rather than throw out of a public API), no longer as a defence against a hostile
+    // accessor: `receipts` is `safeParse` output and has none.
     return fail("MALFORMED", "input object threw during validation/ordering", null, n);
   }
 
@@ -337,25 +364,27 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
   // as `{}` would index `keyring[kid]` to undefined → an unknown-kid TAMPERED, diverging from the Python
   // verifier (which already returns MALFORMED on a non-dict keyring). Reject it as MALFORMED so
   // both impls agree on the SAME verdict class for the SAME malformed trust file.
-  if (haveKeyring && (typeof o.keyring !== "object" || o.keyring === null || Array.isArray(o.keyring))) {
-    return fail("MALFORMED", "keyring must be an object (kid -> base64 SPKI)", chainId, list.length);
+  let keyring: Keyring = {};
+  if (haveKeyring) {
+    const kParsed = parseDocument(o.keyring, "keyring");
+    if (!kParsed.ok) return fail("MALFORMED", kParsed.reason, chainId, list.length);
+    const kv = kParsed.value;
+    if (typeof kv !== "object" || kv === null || Array.isArray(kv)) {
+      return fail("MALFORMED", "keyring must be an object (kid -> base64 SPKI)", chainId, list.length);
+    }
+    // ONE parse, shared by BOTH authenticated surfaces — the chain walk (`keyring[r.sig.kid]`) and
+    // `verifyCheckpointParsed`. The old code needed a snapshot to guarantee that; parsed bytes
+    // guarantee it by construction, so a "real pubkey to the walk, attacker pubkey to the
+    // checkpoint" split has nothing to split.
+    keyring = kv as Keyring;
   }
-  // The keyring is read by TWO authenticated surfaces — the chain walk (`keyring[r.sig.kid]`) AND
-  // verifyCheckpoint(cp, keyring) — so both MUST see the SAME accessor-free bytes (a flipping
-  // `keyring[kid]` getter could give the REAL pubkey to the walk and an ATTACKER pubkey to the checkpoint check
-  // → VALID+tailChecked over an erased tail). `o.keyring` is already a deep structuredClone of opts,
-  // so it is accessor-free and shared by both surfaces — no separate clone needed; the non-object guard
-  // above runs first, so a non-cloneable keyring already failed at the opts snapshot → MALFORMED.
-  const keyring: Keyring = o.keyring === undefined ? {} : o.keyring;
   const warnings: string[] = [...tenantDriftMessages];
 
   // 4. Walk the chain: hash, key-pinning, signature, linkage, timestamp monotonicity.
   const pinnedKid = new Map<string, string>(); // agent.id -> kid (key continuity)
   let prev: Receipt | null = null;
 
-  // Robustness: a caller-supplied LIVE receipt object with a throwing/side-effecting accessor
-  // must yield MALFORMED, never escape as a raw throw. verifyChainText/CLI/Python are immune (they consume
-  // safeParse/JSON.parse output, which has no accessors); this guards the direct verifyChain(object) path.
+  // Fail-closed backstop for our own helpers, not a hostile-accessor guard (see above).
   try {
   for (const r of ordered) {
     const seq = r.chain.seq;
@@ -465,15 +494,14 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     if (typeof checkpointSnap !== "object" || checkpointSnap === null || Array.isArray(checkpointSnap)) {
       return fail("MALFORMED", "checkpoint must be an object", chainId, list.length);
     }
-    // Read the cloned checkpoint EVERYWHERE: verifyCheckpoint validates + reconstructs the
-    // sig-preimage from it, and the tail-match / §5b below re-read cp.chain/highestSeq/headHash/sig.kid. A
-    // flipping accessor on the live checkpoint could present the legit head to the signature check and the
-    // truncated head to the tail-match → VALID+tailChecked over an erased tail. The snapshot makes both reads
-    // see identical, accessor-free bytes.
-    const cp = checkpointSnap;
-    // Pass the SNAPSHOT keyring, NOT opts.keyring — both this checkpoint authentication and
-    // the receipt walk above read the SAME read-once trust root, so a flipping keyring cannot split them.
-    const cpVerify = verifyCheckpoint(cp, keyring);
+    // ONE parsed checkpoint, read by every surface: `verifyCheckpointParsed` validates it and
+    // reconstructs the signature pre-image from it, and the tail-match / §5b below re-read
+    // cp.chain / highestSeq / headHash / sig.kid. Those used to be reads of a live caller object, so
+    // a flipping accessor could present the legit head to the signature check and the truncated head
+    // to the tail-match — VALID + tailChecked over an erased tail. Parsed bytes cannot differ
+    // between two reads.
+    const cp = checkpointSnap as Checkpoint;
+    const cpVerify = verifyCheckpointParsed(cp, keyring);
     if (cpVerify === "bad spec" || cpVerify === "malformed checkpoint") {
       return fail("TAMPERED", `checkpoint invalid: ${cpVerify}`, chainId, list.length);
     }
@@ -571,13 +599,12 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
  * duplicate keys). Returns MALFORMED instead of throwing on bad input.
  */
 export function verifyChainText(text: string, opts: VerifyOptions = {}): VerifyResult {
-  let parsed: unknown;
-  try {
-    parsed = safeParse(text);
-  } catch (e) {
-    return { status: "MALFORMED", chain: null, count: 0, signaturesVerified: false, tailChecked: false, reason: (e as Error).message, warnings: [] };
-  }
-  return verifyChain(parsed, opts);
+  // Now a pure alias: `verifyChain` accepts `string` as well as `Uint8Array`, and both route through
+  // the same `parseDocument`. The two entry points can no longer disagree about what a valid
+  // document is, which is the property the ADR's §2.3 probes falsified for the old pair — where
+  // `verifyChainText` was documented as "the immune path" while forwarding into an object API that
+  // was not immune at all.
+  return verifyChain(text, opts);
 }
 
 type CheckpointVerdict = "ok" | "unverified" | "bad spec" | "malformed checkpoint" | "bad checkpoint signature";
@@ -587,21 +614,36 @@ const CP_HASH_RE = /^sha256:[0-9a-f]{64}$/;
 // RFC 3339 (lowercase t/z accepted), matching schema.ts RFC3339_RE.
 const CP_RFC3339_RE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
 
-export function verifyCheckpoint(cp: Checkpoint, keyring?: Keyring): CheckpointVerdict {
-  // SNAPSHOT-ONCE the caller-supplied LIVE checkpoint. This is a public export called
-  // directly too, so a throwing/flipping accessor on `cp` must yield "malformed checkpoint", never escape as
-  // a RAW Error (violating the "never throws / fail-closed" invariant) and never split validation from the
-  // sig-preimage read below (checkpointHashInput). structuredClone deep-copies to plain, accessor-free data
-  // ONCE; every read below uses the clone. (verifyChain already passes its own clone; this guards direct use.)
-  // Review #6, C2: the CHECKPOINT was cloned and the KEYRING was not — so the trust root this
-  // signature is judged against was a live read while the subject was inert. Both are now inert.
-  let snap: Record<string, unknown>;
-  try {
-    snap = snapshotImmutable<Record<string, unknown>>(cp);
-    if (keyring !== undefined) keyring = snapshotImmutable<Keyring>(keyring);
-  } catch {
-    return "malformed checkpoint";
+/**
+ * Verify a signed checkpoint from its BYTES, against a keyring supplied as BYTES.
+ *
+ * Both arguments are documents — a checkpoint is a signed trust statement and a keyring is a trust
+ * root — so neither has an object form at this boundary. Review #6's C2 was precisely an asymmetry
+ * here: the checkpoint was snapshotted and the keyring was not, so the trust root a signature was
+ * judged against was a live read while its subject was inert. Bytes make the asymmetry
+ * unrepresentable rather than merely fixed.
+ */
+export function verifyCheckpoint(cp: Uint8Array | string, keyring?: Uint8Array | string): CheckpointVerdict {
+  const cpParsed = parseDocument(cp, "checkpoint");
+  if (!cpParsed.ok) return "malformed checkpoint";
+  let ring: Keyring | undefined;
+  if (keyring !== undefined) {
+    const kParsed = parseDocument(keyring, "keyring");
+    if (!kParsed.ok) return "malformed checkpoint";
+    const kv = kParsed.value;
+    if (typeof kv !== "object" || kv === null || Array.isArray(kv)) return "malformed checkpoint";
+    ring = kv as Keyring;
   }
+  return verifyCheckpointParsed(cpParsed.value as Checkpoint, ring);
+}
+
+/**
+ * The checkpoint verifier over PARSED data. Module-private: it assumes `safeParse` output, which is
+ * what the bytes boundary above guarantees, and `verifyParsedChain` reuses it with the SAME parsed
+ * keyring it authenticates receipts against.
+ */
+function verifyCheckpointParsed(cp: Checkpoint, keyring?: Keyring): CheckpointVerdict {
+  const snap = cp as unknown as Record<string, unknown>;
   // STRICT, FAIL-CLOSED structural validation: a checkpoint is a SIGNED trust statement, so it
   // gets the same discipline as a receipt — null/non-object, unknown fields (additionalProperties:false,
   // threat-model T9 "no smuggled field at any level"), and bad-typed/format fields are MALFORMED. Never a
