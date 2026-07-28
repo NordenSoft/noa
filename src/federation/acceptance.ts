@@ -41,6 +41,7 @@ import {
   mapHas,
   mapSet,
   mapValuesToArray,
+  dateParse,
   regexpTest,
   setAdd,
   setHas,
@@ -203,7 +204,7 @@ function r(
  */
 function parseAnchorTsMs(ts: string): number | null {
   if (!regexpTest(ANCHOR_RFC3339_RE, ts)) return null;
-  const ms = Date.parse(ts);
+  const ms = dateParse(ts);
   return Number.isNaN(ms) ? null : ms;
 }
 

@@ -7,6 +7,7 @@ import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./sig
 import { safeParse } from "./safe-json.js";
 import { nonNfcPaths, isNFC } from "./nfc.js";
 import { snapshotImmutable } from "./ingest.js";
+import { arrayPush, dateParse } from "./intrinsics.js";
 
 export type VerifyStatus =
   | "VALID" // structure + hash-chain + signatures all verified against the supplied keyring
@@ -254,7 +255,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
     for (let s = 0; s < list.length; s++) {
       const r = bySeq.get(s);
       if (!r) return fail("TAMPERED", `seq gap: missing seq ${s}`, chainId, list.length, s);
-      ordered.push(r);
+      arrayPush(ordered, r);
     }
 
     // 3b. Chain-wide tenant-consistency scan (A1 hardening — THREAT-MODEL.md "namespace / context
@@ -303,7 +304,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       if (i > 0) {
         const prevR = ordered[i - 1]!;
         if (curT !== prevR.scope.tenant) {
-          tenantDriftMessages.push(
+          arrayPush(tenantDriftMessages, 
             `tenant-drift: seq ${prevR.chain.seq} ${describeTenant(prevR.scope.tenant)} -> seq ${curR.chain.seq} ${describeTenant(curT)}`,
           );
         }
@@ -316,7 +317,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
         }
         // opt-out: the drift is reported, never silently dropped. Named against the last PRESENT
         // value so the message identifies the actual splice, not the omission that hid it.
-        if (!tenantDriftMessages.includes(msg)) tenantDriftMessages.push(msg);
+        if (!tenantDriftMessages.includes(msg)) arrayPush(tenantDriftMessages, msg);
       }
       lastPresentTenant = curT;
       lastPresentSeq = curR.chain.seq;
@@ -395,7 +396,7 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       if (o.requireNFC) {
         return fail("MALFORMED", `non-NFC string(s) at seq ${seq}: ${nonNfc.join(", ")}`, chainId, list.length, seq);
       }
-      for (const p of nonNfc) warnings.push(`non-nfc: seq ${seq} field ${p}`);
+      for (const p of nonNfc) arrayPush(warnings, `non-nfc: seq ${seq} field ${p}`);
     }
 
     // 4b. Key continuity per agent.id (rejects mid-chain key swap).
@@ -436,10 +437,12 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
 
     // 4e. Timestamp monotonicity (soft — clocks are not a security primitive, but a regression is suspicious).
     if (prev) {
-      const a = Date.parse(prev.ts);
-      const b = Date.parse(r.ts);
+      // PRISTINE TIME (review #6, C1): a monotonicity comparison is a verdict input, so it must not
+      // dispatch through the globally-mutable `Date.parse`.
+      const a = dateParse(prev.ts);
+      const b = dateParse(r.ts);
       if (!Number.isNaN(a) && !Number.isNaN(b) && b < a) {
-        warnings.push(`non-monotonic timestamp at seq ${seq} (ts went backwards)`);
+        arrayPush(warnings, `non-monotonic timestamp at seq ${seq} (ts went backwards)`);
       }
     }
     prev = r;
@@ -514,14 +517,14 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       // opener could still have dropped a co-agent's tail (the residual that needs the v1.0 anchor).
       const distinctAgents = new Set(ordered.map((r) => r.agent.id));
       if (distinctAgents.size > 1) {
-        warnings.push("checkpoint completeness is opener-scoped: the chain has more than one agent.id, and a co-agent's tail is NOT separately certified by the opener's checkpoint (the opener dropping a co-agent's tail needs the v1.0 external anchor)");
+        arrayPush(warnings, "checkpoint completeness is opener-scoped: the chain has more than one agent.id, and a co-agent's tail is NOT separately certified by the opener's checkpoint (the opener dropping a co-agent's tail needs the v1.0 external anchor)");
       }
     }
     // tailChecked is true ONLY for an authenticated checkpoint — an unauthenticated head match
     // is not a tail check and must not be reported as one.
     tailChecked = cpVerify === "ok";
     if (cpVerify !== "ok") {
-      warnings.push("checkpoint present but not authenticated (no keyring) — tail NOT verified");
+      arrayPush(warnings, "checkpoint present but not authenticated (no keyring) — tail NOT verified");
     } else if (!haveManifest) {
       // SCOPE OF `tailChecked` WITHOUT A MANIFEST (THREAT-MODEL.md T-tail-reheading). The §5b
       // genesis binding above is the control that ties checkpoint authority to the chain OPENER,
@@ -536,24 +539,24 @@ export function verifyChain(receipts: unknown, opts: VerifyOptions = {}): Verify
       // (which agent.id signed); this states the TRUNCATION consequence, which is the sharper
       // one and was previously unstated at runtime. Additive: no verdict, no tailChecked value,
       // and no existing warning changes.
-      warnings.push(
+      arrayPush(warnings, 
         "checkpoint authenticated but no identityManifest supplied: the tail check is KID-LEVEL — any keyring-trusted key can mint a checkpoint over any head, so a co-trusted key holder can truncate the tail and still produce tailChecked:true (supply an identityManifest to bind checkpoint authority to the chain opener)",
       );
     }
   } else {
-    warnings.push("no checkpoint supplied: tail-truncation (deleting most-recent receipts) cannot be detected offline");
+    arrayPush(warnings, "no checkpoint supplied: tail-truncation (deleting most-recent receipts) cannot be detected offline");
   }
 
   // 6. Equivocation/fork is fundamentally undetectable offline from a single branch.
-  warnings.push("fork/equivocation is not detectable offline: this verifies the branch you were given, not that the signer signed no other history at the same seq (needs an external witness — v1.0)");
+  arrayPush(warnings, "fork/equivocation is not detectable offline: this verifies the branch you were given, not that the signer signed no other history at the same seq (needs an external witness — v1.0)");
 
   if (!haveKeyring) {
-    warnings.push("no keyring supplied: signatures were NOT authenticated (status UNVERIFIED, not VALID)");
+    arrayPush(warnings, "no keyring supplied: signatures were NOT authenticated (status UNVERIFIED, not VALID)");
   }
   if (!haveManifest) {
-    warnings.push("no identityManifest supplied: attribution is kid-level — a VALID result proves a keyring-trusted key signed, NOT which agent.id (cross-agent impersonation undefended in a multi-key keyring)");
+    arrayPush(warnings, "no identityManifest supplied: attribution is kid-level — a VALID result proves a keyring-trusted key signed, NOT which agent.id (cross-agent impersonation undefended in a multi-key keyring)");
   } else if (!haveKeyring) {
-    warnings.push("identityManifest supplied but no keyring: identity NOT bound — signatures are unauthenticated, so the (agent.id, kid) pairing was not enforced (status stays UNVERIFIED, never UNTRUSTED)");
+    arrayPush(warnings, "identityManifest supplied but no keyring: identity NOT bound — signatures are unauthenticated, so the (agent.id, kid) pairing was not enforced (status stays UNVERIFIED, never UNTRUSTED)");
   }
 
   const status: VerifyStatus = haveKeyring ? "VALID" : "UNVERIFIED";

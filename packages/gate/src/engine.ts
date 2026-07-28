@@ -30,6 +30,9 @@ import { buildHoldEnvelope } from "./envelope.js";
 import { issueGrant, buildConsumption, buildUncertainty } from "./grants.js";
 import { buildHoldResolution } from "./resolution.js";
 import { getProjection } from "./projections.js";
+// PRISTINE TIME (review #6, C1): a grant-expiry comparison is an authorization decision, so it must
+// not dispatch through the globally-mutable `Date.parse`.
+const gateDateParse = Date.parse;
 import type {
   AgentRecord,
   EncryptedDisplay,
@@ -588,7 +591,7 @@ export class GateEngine {
     // F29-authz — ownership BEFORE the CAS, so a foreign call can never burn the single use.
     if (!this.ownsHold(hold, agent, "reserve")) return err(404, "UNKNOWN_GRANT");
     if (hold && hold.status !== "APPROVED") return err(409, "HOLD_NOT_APPROVED", { status: hold.status });
-    if (this.now() >= Date.parse(rec.grant.expiresAt)) return err(410, "GRANT_EXPIRED");
+    if (this.now() >= gateDateParse(rec.grant.expiresAt)) return err(410, "GRANT_EXPIRED");
     // F8a — ATOMIC CAS UNUSED→RESERVED (single-process => the map write IS the atomic step). The
     // race LOSER (already RESERVED/REPORTED) gets 409, never a second execution.
     if (rec.status !== "UNUSED") return err(409, "GRANT_ALREADY_RESERVED", { status: rec.status });

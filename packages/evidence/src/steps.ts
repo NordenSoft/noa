@@ -18,6 +18,7 @@ import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type Keyring, typ
 // PRISTINE DECISIONS (review #6, C1). Every membership/search below is a verdict input; none of them
 // may dispatch through a globally-mutable prototype slot an ingested getter can rewrite.
 const { arrayIncludes, arrayJoin, arrayMap, arraySlice, arraySort, setAdd, setHas, setToArray } = intrinsics;
+const pristineDateParse = intrinsics.dateParse;
 
 /** The empty permitted-artifact set for an outcome the union table does not name (inert, shared). */
 const EMPTY_FIELD_SET = frozenSet<string>([]);
@@ -92,7 +93,11 @@ function getPath(o: unknown, p: string): unknown {
   return cur;
 }
 function parseTime(v: unknown): number {
-  return typeof v === "string" ? Date.parse(v) : NaN;
+  // PRISTINE TIME (review #6, C1). `Date.parse` is a mutable property of a mutable global: poisoned
+  // to return 0, every time comparison collapses to equality and
+  // `reject/step11-grant-expired-before-consumption.json` goes INVALID/E_EXECUTION_FAILED ->
+  // VALID_FULL_CHAIN. Found by the poison sweep, not by a reviewer.
+  return typeof v === "string" ? pristineDateParse(v) : NaN;
 }
 function ok(step: StepName): StepResult {
   return { step, ok: true };

@@ -14,6 +14,7 @@ import type { Policy, Condition, Scalar } from "./dsl.js";
 import { POLICY_SPEC } from "./dsl.js";
 import { canonicalize, MAX_DEPTH } from "../jcs.js";
 import { snapshotImmutable } from "../ingest.js";
+import { arrayPush } from "../intrinsics.js";
 
 const CMP_OPS = new Set(["eq", "ne", "lt", "le", "gt", "ge"]);
 
@@ -36,29 +37,29 @@ function scalarType(v: Scalar): string {
 /** additionalProperties:false — reject any key outside the closed grammar for this node. */
 function noExtraKeys(obj: Record<string, unknown>, allowed: string[], path: string, errors: string[]): void {
   for (const k of Object.keys(obj)) {
-    if (!allowed.includes(k)) errors.push(`${path}: unknown key "${k}" (closed grammar)`);
+    if (!allowed.includes(k)) arrayPush(errors, `${path}: unknown key "${k}" (closed grammar)`);
   }
 }
 
 function validateCondition(c: unknown, path: string, errors: string[], depth: number): void {
   if (depth > MAX_DEPTH) {
-    errors.push(`${path}: condition nesting too deep`);
+    arrayPush(errors, `${path}: condition nesting too deep`);
     return;
   }
   if (typeof c !== "object" || c === null) {
-    errors.push(`${path}: condition must be an object`);
+    arrayPush(errors, `${path}: condition must be an object`);
     return;
   }
   const op = (c as { op?: unknown }).op;
   if (typeof op !== "string") {
-    errors.push(`${path}: condition.op must be a string`);
+    arrayPush(errors, `${path}: condition.op must be a string`);
     return;
   }
   const cond = c as Record<string, unknown>;
   if (op === "and" || op === "or") {
     noExtraKeys(cond, ["op", "clauses"], `${path}.${op}`, errors);
     const cl = cond.clauses;
-    if (!Array.isArray(cl) || cl.length === 0) errors.push(`${path}.${op}: clauses must be a non-empty array`);
+    if (!Array.isArray(cl) || cl.length === 0) arrayPush(errors, `${path}.${op}: clauses must be a non-empty array`);
     else cl.forEach((x, i) => validateCondition(x, `${path}.${op}[${i}]`, errors, depth + 1));
     return;
   }
@@ -69,36 +70,36 @@ function validateCondition(c: unknown, path: string, errors: string[], depth: nu
   }
   if (op === "exists" || op === "absent") {
     noExtraKeys(cond, ["op", "path"], `${path}.${op}`, errors);
-    if (typeof cond.path !== "string" || cond.path.length === 0) errors.push(`${path}.${op}: path must be a non-empty string`);
+    if (typeof cond.path !== "string" || cond.path.length === 0) arrayPush(errors, `${path}.${op}: path must be a non-empty string`);
     return;
   }
   if (op === "in") {
     noExtraKeys(cond, ["op", "path", "values"], `${path}.in`, errors);
-    if (typeof cond.path !== "string" || cond.path.length === 0) errors.push(`${path}.in: path must be a non-empty string`);
+    if (typeof cond.path !== "string" || cond.path.length === 0) arrayPush(errors, `${path}.in: path must be a non-empty string`);
     const vals = cond.values;
     if (!Array.isArray(vals) || vals.length === 0) {
-      errors.push(`${path}.in: values must be a non-empty array`);
+      arrayPush(errors, `${path}.in: values must be a non-empty array`);
     } else {
       let firstType: string | null = null;
       for (let i = 0; i < vals.length; i++) {
         if (!isScalar(vals[i])) {
-          errors.push(`${path}.in.values[${i}]: not an allowed scalar (string|boolean|safe-int)`);
+          arrayPush(errors, `${path}.in.values[${i}]: not an allowed scalar (string|boolean|safe-int)`);
           continue;
         }
         const tt = scalarType(vals[i] as Scalar);
         if (firstType === null) firstType = tt;
-        else if (tt !== firstType) errors.push(`${path}.in.values: mixed scalar types (${firstType} vs ${tt}) — comparison is undefined`);
+        else if (tt !== firstType) arrayPush(errors, `${path}.in.values: mixed scalar types (${firstType} vs ${tt}) — comparison is undefined`);
       }
     }
     return;
   }
   if (CMP_OPS.has(op)) {
     noExtraKeys(cond, ["op", "path", "value"], `${path}.${op}`, errors);
-    if (typeof cond.path !== "string" || cond.path.length === 0) errors.push(`${path}.${op}: path must be a non-empty string`);
-    if (!isScalar(cond.value)) errors.push(`${path}.${op}.value: not an allowed scalar (string|boolean|safe-int)`);
+    if (typeof cond.path !== "string" || cond.path.length === 0) arrayPush(errors, `${path}.${op}: path must be a non-empty string`);
+    if (!isScalar(cond.value)) arrayPush(errors, `${path}.${op}.value: not an allowed scalar (string|boolean|safe-int)`);
     return;
   }
-  errors.push(`${path}: unknown op "${op}" (allowed: eq/ne/lt/le/gt/ge/in/exists/absent/and/or/not)`);
+  arrayPush(errors, `${path}: unknown op "${op}" (allowed: eq/ne/lt/le/gt/ge/in/exists/absent/and/or/not)`);
 }
 
 /** Validate a policy against the closed grammar. Pure, static, input-independent. */
@@ -114,26 +115,26 @@ export function validatePolicy(p: unknown): PolicyValidation {
   if (typeof p !== "object" || p === null) return { ok: false, errors: ["policy: not an object"] };
   const pol = p as Record<string, unknown>;
   noExtraKeys(pol, ["spec", "id", "requiredPaths", "rules"], "policy", errors);
-  if (pol.spec !== POLICY_SPEC) errors.push(`policy.spec: must be "${POLICY_SPEC}"`);
-  if (typeof pol.id !== "string" || pol.id.length === 0) errors.push("policy.id: non-empty string");
+  if (pol.spec !== POLICY_SPEC) arrayPush(errors, `policy.spec: must be "${POLICY_SPEC}"`);
+  if (typeof pol.id !== "string" || pol.id.length === 0) arrayPush(errors, "policy.id: non-empty string");
   if (!Array.isArray(pol.requiredPaths) || !pol.requiredPaths.every((x) => typeof x === "string" && x.length > 0)) {
-    errors.push("policy.requiredPaths: array of non-empty strings");
+    arrayPush(errors, "policy.requiredPaths: array of non-empty strings");
   }
   if (!Array.isArray(pol.rules)) {
-    errors.push("policy.rules: must be an array");
+    arrayPush(errors, "policy.rules: must be an array");
   } else {
     const seenIds = new Set<string>();
     pol.rules.forEach((r, i) => {
       if (typeof r !== "object" || r === null) {
-        errors.push(`policy.rules[${i}]: must be an object`);
+        arrayPush(errors, `policy.rules[${i}]: must be an object`);
         return;
       }
       const rule = r as Record<string, unknown>;
       noExtraKeys(rule, ["id", "when", "then"], `policy.rules[${i}]`, errors);
-      if (typeof rule.id !== "string" || rule.id.length === 0) errors.push(`policy.rules[${i}].id: non-empty string`);
-      else if (seenIds.has(rule.id)) errors.push(`policy.rules[${i}].id: duplicate rule id "${rule.id}"`);
+      if (typeof rule.id !== "string" || rule.id.length === 0) arrayPush(errors, `policy.rules[${i}].id: non-empty string`);
+      else if (seenIds.has(rule.id)) arrayPush(errors, `policy.rules[${i}].id: duplicate rule id "${rule.id}"`);
       else seenIds.add(rule.id);
-      if (rule.then !== "ALLOW" && rule.then !== "DENY") errors.push(`policy.rules[${i}].then: must be exactly "ALLOW" or "DENY"`);
+      if (rule.then !== "ALLOW" && rule.then !== "DENY") arrayPush(errors, `policy.rules[${i}].then: must be exactly "ALLOW" or "DENY"`);
       validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);
     });
   }
@@ -147,7 +148,7 @@ export function validatePolicy(p: unknown): PolicyValidation {
     try {
       canonicalize(p);
     } catch {
-      errors.push(`policy: not canonicalizable (exceeds the depth-${MAX_DEPTH} identity-hash limit)`);
+      arrayPush(errors, `policy: not canonicalizable (exceeds the depth-${MAX_DEPTH} identity-hash limit)`);
     }
   }
   return { ok: errors.length === 0, errors };

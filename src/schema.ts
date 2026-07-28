@@ -10,6 +10,7 @@
 
 import { RECEIPT_SPEC } from "./types.js";
 import { snapshotImmutable } from "./ingest.js";
+import { arrayPush } from "./intrinsics.js";
 
 const RISK_CLASSES = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL", "IRREVERSIBLE"]);
 const PRINCIPALS = new Set(["HUMAN", "SERVICE", "POLICY", "SANDBOX_SIM"]);
@@ -54,10 +55,10 @@ function checkExactKeys(
 ): void {
   const allowed = new Set([...required, ...optional]);
   for (const k of Object.keys(obj)) {
-    if (!allowed.has(k)) errors.push(`${path}: unknown field "${k}"`);
+    if (!allowed.has(k)) arrayPush(errors, `${path}: unknown field "${k}"`);
   }
   for (const k of required) {
-    if (!has(obj, k)) errors.push(`${path}: missing required field "${k}"`);
+    if (!has(obj, k)) arrayPush(errors, `${path}: missing required field "${k}"`);
   }
 }
 
@@ -95,31 +96,31 @@ export function validateReceiptShape(value: unknown): SchemaResult {
     errors,
   );
 
-  if (r.spec !== RECEIPT_SPEC) errors.push(`receipt.spec: must be "${RECEIPT_SPEC}"`);
+  if (r.spec !== RECEIPT_SPEC) arrayPush(errors, `receipt.spec: must be "${RECEIPT_SPEC}"`);
   // id length is bounded in CODE POINTS, not UTF-16 code units. `r.id.length` counts code UNITS, so an id of
   // astral characters (each 2 units) would be falsely rejected here while the Python verifier (len() = code
   // points) and the normative schema (maxLength on RFC-8259/JSON characters = code points) accept it — a
   // cross-impl consensus split on identical signed bytes (an astral id of 65 emoji = 65 code points = 130
   // units → TS MALFORMED, Python VALID). [...r.id].length iterates by code point, matching both. (Only true
   // char-count CAPS need this; non-empty `length===0` checks elsewhere are unit-vs-point-agnostic.)
-  if (!str(r.id) || r.id.length === 0 || [...r.id].length > 128) errors.push("receipt.id: non-empty string ≤128 chars");
-  if (!str(r.ts) || !RFC3339_RE.test(r.ts)) errors.push("receipt.ts: must be RFC 3339 UTC timestamp");
+  if (!str(r.id) || r.id.length === 0 || [...r.id].length > 128) arrayPush(errors, "receipt.id: non-empty string ≤128 chars");
+  if (!str(r.ts) || !RFC3339_RE.test(r.ts)) arrayPush(errors, "receipt.ts: must be RFC 3339 UTC timestamp");
 
   // scope
   if (isPlainObject(r.scope)) {
     checkExactKeys(r.scope, ["chain"], ["tenant"], "receipt.scope", errors);
-    if (!str(r.scope.chain) || r.scope.chain.length === 0) errors.push("receipt.scope.chain: non-empty string");
-    if (has(r.scope, "tenant") && !str(r.scope.tenant)) errors.push("receipt.scope.tenant: string");
-  } else errors.push("receipt.scope: object required");
+    if (!str(r.scope.chain) || r.scope.chain.length === 0) arrayPush(errors, "receipt.scope.chain: non-empty string");
+    if (has(r.scope, "tenant") && !str(r.scope.tenant)) arrayPush(errors, "receipt.scope.tenant: string");
+  } else arrayPush(errors, "receipt.scope: object required");
 
   // agent
   if (isPlainObject(r.agent)) {
     checkExactKeys(r.agent, ["id", "principal"], ["model"], "receipt.agent", errors);
-    if (!str(r.agent.id) || r.agent.id.length === 0) errors.push("receipt.agent.id: non-empty string");
-    if (!PRINCIPALS.has(r.agent.principal as string)) errors.push("receipt.agent.principal: invalid enum");
+    if (!str(r.agent.id) || r.agent.id.length === 0) arrayPush(errors, "receipt.agent.id: non-empty string");
+    if (!PRINCIPALS.has(r.agent.principal as string)) arrayPush(errors, "receipt.agent.principal: invalid enum");
     if (has(r.agent, "model") && r.agent.model !== null && !str(r.agent.model))
-      errors.push("receipt.agent.model: string or null");
-  } else errors.push("receipt.agent: object required");
+      arrayPush(errors, "receipt.agent.model: string or null");
+  } else arrayPush(errors, "receipt.agent: object required");
 
   // action
   if (isPlainObject(r.action)) {
@@ -130,16 +131,16 @@ export function validateReceiptShape(value: unknown): SchemaResult {
       "receipt.action",
       errors,
     );
-    if (!str(r.action.id) || r.action.id.length === 0) errors.push("receipt.action.id: non-empty string");
+    if (!str(r.action.id) || r.action.id.length === 0) arrayPush(errors, "receipt.action.id: non-empty string");
     if (!str(r.action.canonical) || r.action.canonical.length === 0)
-      errors.push("receipt.action.canonical: non-empty string");
-    if (!RISK_CLASSES.has(r.action.riskClass as string)) errors.push("receipt.action.riskClass: invalid enum");
+      arrayPush(errors, "receipt.action.canonical: non-empty string");
+    if (!RISK_CLASSES.has(r.action.riskClass as string)) arrayPush(errors, "receipt.action.riskClass: invalid enum");
     if (!str(r.action.paramsHash) || !PARAMS_HASH_RE.test(r.action.paramsHash))
-      errors.push("receipt.action.paramsHash: must match (sha256|hmac-sha256):<64 hex>");
-    if (typeof r.action.reversible !== "boolean") errors.push("receipt.action.reversible: boolean");
+      arrayPush(errors, "receipt.action.paramsHash: must match (sha256|hmac-sha256):<64 hex>");
+    if (typeof r.action.reversible !== "boolean") arrayPush(errors, "receipt.action.reversible: boolean");
     if (has(r.action, "rollbackRef") && r.action.rollbackRef !== null && !str(r.action.rollbackRef))
-      errors.push("receipt.action.rollbackRef: string or null");
-  } else errors.push("receipt.action: object required");
+      arrayPush(errors, "receipt.action.rollbackRef: string or null");
+  } else arrayPush(errors, "receipt.action: object required");
 
   // governance
   if (isPlainObject(r.governance)) {
@@ -150,51 +151,51 @@ export function validateReceiptShape(value: unknown): SchemaResult {
       "receipt.governance",
       errors,
     );
-    if (!MODES.has(r.governance.mode as string)) errors.push("receipt.governance.mode: invalid enum");
-    if (!VERDICTS.has(r.governance.verdict as string)) errors.push("receipt.governance.verdict: invalid enum");
-    if (typeof r.governance.sandboxed !== "boolean") errors.push("receipt.governance.sandboxed: boolean");
+    if (!MODES.has(r.governance.mode as string)) arrayPush(errors, "receipt.governance.mode: invalid enum");
+    if (!VERDICTS.has(r.governance.verdict as string)) arrayPush(errors, "receipt.governance.verdict: invalid enum");
+    if (typeof r.governance.sandboxed !== "boolean") arrayPush(errors, "receipt.governance.sandboxed: boolean");
     if (has(r.governance, "ruleId") && r.governance.ruleId !== null && !str(r.governance.ruleId))
-      errors.push("receipt.governance.ruleId: string or null");
+      arrayPush(errors, "receipt.governance.ruleId: string or null");
     if (has(r.governance, "approval") && r.governance.approval !== null) {
       if (isPlainObject(r.governance.approval)) {
         checkExactKeys(r.governance.approval, ["by", "at"], [], "receipt.governance.approval", errors);
-        if (!str(r.governance.approval.by)) errors.push("receipt.governance.approval.by: string");
+        if (!str(r.governance.approval.by)) arrayPush(errors, "receipt.governance.approval.by: string");
         if (!str(r.governance.approval.at) || !RFC3339_RE.test(r.governance.approval.at as string))
-          errors.push("receipt.governance.approval.at: RFC 3339 UTC");
-      } else errors.push("receipt.governance.approval: object or null");
+          arrayPush(errors, "receipt.governance.approval.at: RFC 3339 UTC");
+      } else arrayPush(errors, "receipt.governance.approval: object or null");
     }
     if (has(r.governance, "compliance") && r.governance.compliance !== null) {
       const c = r.governance.compliance;
       if (isPlainObject(c)) {
         checkExactKeys(c, ["policyHash", "readSetHash", "inputsHash"], ["verdict"], "receipt.governance.compliance", errors);
         for (const k of ["policyHash", "readSetHash", "inputsHash"] as const) {
-          if (!str(c[k]) || !HASH_RE.test(c[k] as string)) errors.push(`receipt.governance.compliance.${k}: sha256:<64 hex>`);
+          if (!str(c[k]) || !HASH_RE.test(c[k] as string)) arrayPush(errors, `receipt.governance.compliance.${k}: sha256:<64 hex>`);
         }
         // Optional + additive: the recorded policy decision. When present it MUST be ALLOW|DENY so
         // verifyReceiptCompliance can reconcile a re-run verdict against it (spec §9).
         if (has(c, "verdict") && c.verdict !== "ALLOW" && c.verdict !== "DENY")
-          errors.push('receipt.governance.compliance.verdict: must be "ALLOW" or "DENY"');
-      } else errors.push("receipt.governance.compliance: object or null");
+          arrayPush(errors, 'receipt.governance.compliance.verdict: must be "ALLOW" or "DENY"');
+      } else arrayPush(errors, "receipt.governance.compliance: object or null");
     }
-  } else errors.push("receipt.governance: object required");
+  } else arrayPush(errors, "receipt.governance: object required");
 
   // chain
   if (isPlainObject(r.chain)) {
     checkExactKeys(r.chain, ["seq", "prevHash", "hash"], [], "receipt.chain", errors);
     if (typeof r.chain.seq !== "number" || !Number.isSafeInteger(r.chain.seq) || r.chain.seq < 0)
-      errors.push("receipt.chain.seq: non-negative safe integer");
+      arrayPush(errors, "receipt.chain.seq: non-negative safe integer");
     if (r.chain.prevHash !== null && (!str(r.chain.prevHash) || !HASH_RE.test(r.chain.prevHash)))
-      errors.push("receipt.chain.prevHash: sha256:<64 hex> or null");
-    if (!str(r.chain.hash) || !HASH_RE.test(r.chain.hash)) errors.push("receipt.chain.hash: sha256:<64 hex>");
-  } else errors.push("receipt.chain: object required");
+      arrayPush(errors, "receipt.chain.prevHash: sha256:<64 hex> or null");
+    if (!str(r.chain.hash) || !HASH_RE.test(r.chain.hash)) arrayPush(errors, "receipt.chain.hash: sha256:<64 hex>");
+  } else arrayPush(errors, "receipt.chain: object required");
 
   // sig (mandatory)
   if (isPlainObject(r.sig)) {
     checkExactKeys(r.sig, ["alg", "kid", "value"], [], "receipt.sig", errors);
-    if (r.sig.alg !== "ed25519") errors.push('receipt.sig.alg: must be "ed25519"');
-    if (!str(r.sig.kid) || r.sig.kid.length === 0) errors.push("receipt.sig.kid: non-empty string");
-    if (!str(r.sig.value) || r.sig.value.length === 0) errors.push("receipt.sig.value: non-empty string");
-  } else errors.push("receipt.sig: object required (signatures are mandatory in v0.1)");
+    if (r.sig.alg !== "ed25519") arrayPush(errors, 'receipt.sig.alg: must be "ed25519"');
+    if (!str(r.sig.kid) || r.sig.kid.length === 0) arrayPush(errors, "receipt.sig.kid: non-empty string");
+    if (!str(r.sig.value) || r.sig.value.length === 0) arrayPush(errors, "receipt.sig.value: non-empty string");
+  } else arrayPush(errors, "receipt.sig: object required (signatures are mandatory in v0.1)");
   } catch (e) {
     return { ok: false, errors: [`receipt: structural-validation error: ${(e as Error).message}`] };
   }

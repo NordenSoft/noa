@@ -25,7 +25,7 @@
 import { signEd25519 } from "../keys.js";
 import { verifyChain } from "../verify.js";
 import { snapshotImmutable, isIngestError } from "../ingest.js";
-import { arrayLength, isSafeInteger, regexpTest } from "../intrinsics.js";
+import { arrayLength, arrayPush, isSafeInteger, regexpTest } from "../intrinsics.js";
 import type { Receipt } from "../types.js";
 import type { Signer } from "../builder.js";
 import { anchorSigningInput, type Anchor } from "./acceptance.js";
@@ -71,23 +71,23 @@ function frontierInputErrors(frontier: AnchorFrontier, signer: Signer): string[]
     return ["frontier must be an object { chain, highestSeq, headHash, ts }"];
   }
   if (typeof frontier.chain !== "string" || frontier.chain.length === 0) {
-    errors.push("frontier.chain must be a non-empty string");
+    arrayPush(errors, "frontier.chain must be a non-empty string");
   }
   if (typeof frontier.highestSeq !== "number" || !isSafeInteger(frontier.highestSeq) || frontier.highestSeq < 0) {
-    errors.push("frontier.highestSeq must be a non-negative safe integer");
+    arrayPush(errors, "frontier.highestSeq must be a non-negative safe integer");
   }
   if (typeof frontier.headHash !== "string" || !regexpTest(ANCHOR_HASH_RE, frontier.headHash)) {
-    errors.push("frontier.headHash must be sha256:<64 hex>");
+    arrayPush(errors, "frontier.headHash must be sha256:<64 hex>");
   }
   if (typeof frontier.ts !== "string" || !regexpTest(ANCHOR_RFC3339_RE, frontier.ts)) {
-    errors.push("frontier.ts must be an RFC 3339 UTC timestamp");
+    arrayPush(errors, "frontier.ts must be an RFC 3339 UTC timestamp");
   }
   if (typeof signer !== "object" || signer === null) {
-    errors.push("signer must be an object { kid, privateKey }");
+    arrayPush(errors, "signer must be an object { kid, privateKey }");
   } else {
-    if (typeof signer.kid !== "string" || signer.kid.length === 0) errors.push("signer.kid must be a non-empty string");
+    if (typeof signer.kid !== "string" || signer.kid.length === 0) arrayPush(errors, "signer.kid must be a non-empty string");
     if (typeof signer.privateKey !== "string" || signer.privateKey.length === 0) {
-      errors.push("signer.privateKey must be a non-empty base64 PKCS8 string");
+      arrayPush(errors, "signer.privateKey must be a non-empty base64 PKCS8 string");
     }
   }
   return errors;
@@ -96,15 +96,15 @@ function frontierInputErrors(frontier: AnchorFrontier, signer: Signer): string[]
 /** Structural check of the fully-built anchor, mirroring acceptance.ts's per-anchor validation exactly. */
 function anchorDraftErrors(a: Anchor): string[] {
   const errors: string[] = [];
-  if (typeof a.chain !== "string" || a.chain.length === 0) errors.push("anchor.chain must be a non-empty string");
+  if (typeof a.chain !== "string" || a.chain.length === 0) arrayPush(errors, "anchor.chain must be a non-empty string");
   if (typeof a.highestSeq !== "number" || !isSafeInteger(a.highestSeq) || a.highestSeq < 0) {
-    errors.push("anchor.highestSeq must be a non-negative safe integer");
+    arrayPush(errors, "anchor.highestSeq must be a non-negative safe integer");
   }
-  if (typeof a.headHash !== "string" || !regexpTest(ANCHOR_HASH_RE, a.headHash)) errors.push("anchor.headHash must be sha256:<64 hex>");
-  if (typeof a.ts !== "string" || !regexpTest(ANCHOR_RFC3339_RE, a.ts)) errors.push("anchor.ts must be an RFC 3339 UTC timestamp");
-  if (a.sig.alg !== "ed25519") errors.push('anchor.sig.alg must be "ed25519"');
-  if (typeof a.sig.kid !== "string" || a.sig.kid.length === 0) errors.push("anchor.sig.kid must be a non-empty string");
-  if (typeof a.sig.value !== "string" || a.sig.value.length === 0) errors.push("anchor.sig.value must be a non-empty string");
+  if (typeof a.headHash !== "string" || !regexpTest(ANCHOR_HASH_RE, a.headHash)) arrayPush(errors, "anchor.headHash must be sha256:<64 hex>");
+  if (typeof a.ts !== "string" || !regexpTest(ANCHOR_RFC3339_RE, a.ts)) arrayPush(errors, "anchor.ts must be an RFC 3339 UTC timestamp");
+  if (a.sig.alg !== "ed25519") arrayPush(errors, 'anchor.sig.alg must be "ed25519"');
+  if (typeof a.sig.kid !== "string" || a.sig.kid.length === 0) arrayPush(errors, "anchor.sig.kid must be a non-empty string");
+  if (typeof a.sig.value !== "string" || a.sig.value.length === 0) arrayPush(errors, "anchor.sig.value must be a non-empty string");
   return errors;
 }
 

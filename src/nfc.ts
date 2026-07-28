@@ -27,6 +27,7 @@
  * difference per string. It is O(total string bytes), once, on a surface that is already being
  * hashed.
  */
+import { arrayPush } from "./intrinsics.js";
 
 /** True iff `s` is already in Unicode Normalization Form C. */
 export function isNFC(s: string): boolean {
@@ -51,7 +52,7 @@ export function nonNfcPaths(value: unknown, limit = 16): string[] {
   const walk = (v: unknown, path: string): void => {
     if (out.length >= limit) return;
     if (typeof v === "string") {
-      if (!isNFC(v)) out.push(path);
+      if (!isNFC(v)) arrayPush(out, path);
       return;
     }
     if (Array.isArray(v)) {
@@ -62,7 +63,7 @@ export function nonNfcPaths(value: unknown, limit = 16): string[] {
       for (const k of Object.keys(v as Record<string, unknown>)) {
         if (out.length >= limit) return;
         const child = path === "" ? k : `${path}.${k}`;
-        if (!isNFC(k)) out.push(`${child} (member name)`);
+        if (!isNFC(k)) arrayPush(out, `${child} (member name)`);
         walk((v as Record<string, unknown>)[k], child);
       }
     }

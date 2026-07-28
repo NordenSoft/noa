@@ -12,7 +12,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACTS, evalSchema, type KeyEntry } from "noa-approval-artifacts";
-import { snapshotImmutable, isIngestError, type Keyring } from "noa-receipt";
+import { snapshotImmutable, isIngestError, intrinsics, type Keyring } from "noa-receipt";
 import {
   EVIDENCE_SPEC,
   POSITIVE_OUTCOMES,
@@ -237,7 +237,7 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
   }
 
   // precompute the shared context.
-  const now = opts.now ?? new Date().toISOString();
+  const now = opts.now ?? new Date(intrinsics.dateNow()).toISOString();
   const hr = asObj(bundle.holdResolution);
   const deferred = asObj(bundle.deferredReceipt);
   const receivedAtRaw = hr && typeof hr.receivedAt === "string" ? hr.receivedAt : undefined;

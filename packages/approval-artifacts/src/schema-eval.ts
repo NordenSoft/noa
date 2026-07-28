@@ -14,6 +14,7 @@
  *   minItems, oneOf. `additionalProperties` defaults to PERMISSIVE only if omitted — every artifact
  *   schema sets it to `false` explicitly (§6: additionalProperties:false at every level).
  */
+import { arrayPush } from "./inert-core/intrinsics.js";
 
 export interface SchemaEvalResult {
   ok: boolean;
@@ -79,7 +80,7 @@ function evalNode(schema: SchemaNode, value: Json, root: SchemaNode, path: strin
       else lastErrs = subErrs;
     }
     if (matched !== 1) {
-      errors.push(`${path}: matched ${matched} oneOf branches (expected exactly 1)${matched === 0 && lastErrs.length ? " — e.g. " + lastErrs[0] : ""}`);
+      arrayPush(errors, `${path}: matched ${matched} oneOf branches (expected exactly 1)${matched === 0 && lastErrs.length ? " — e.g. " + lastErrs[0] : ""}`);
     }
     return;
   }
@@ -88,38 +89,38 @@ function evalNode(schema: SchemaNode, value: Json, root: SchemaNode, path: strin
   if (schema.type !== undefined) {
     const types = Array.isArray(schema.type) ? (schema.type as string[]) : [schema.type as string];
     if (!types.some((t) => matchesType(value, t))) {
-      errors.push(`${path}: expected type ${types.join("|")}, got ${typeName(value)}`);
+      arrayPush(errors, `${path}: expected type ${types.join("|")}, got ${typeName(value)}`);
       return; // further keyword checks are meaningless on a type mismatch
     }
   }
 
   // const
   if ("const" in schema && value !== schema.const) {
-    errors.push(`${path}: must equal ${JSON.stringify(schema.const)}`);
+    arrayPush(errors, `${path}: must equal ${JSON.stringify(schema.const)}`);
   }
 
   // enum
   if (Array.isArray(schema.enum) && !(schema.enum as Json[]).some((e) => e === value)) {
-    errors.push(`${path}: must be one of ${JSON.stringify(schema.enum)}`);
+    arrayPush(errors, `${path}: must be one of ${JSON.stringify(schema.enum)}`);
   }
 
   // string pattern
   if (typeof schema.pattern === "string" && typeof value === "string") {
     if (!new RegExp(schema.pattern as string).test(value)) {
-      errors.push(`${path}: does not match /${schema.pattern}/`);
+      arrayPush(errors, `${path}: does not match /${schema.pattern}/`);
     }
   }
 
   // number bounds
   if (typeof value === "number") {
-    if (typeof schema.minimum === "number" && value < schema.minimum) errors.push(`${path}: < minimum ${schema.minimum}`);
-    if (typeof schema.maximum === "number" && value > schema.maximum) errors.push(`${path}: > maximum ${schema.maximum}`);
+    if (typeof schema.minimum === "number" && value < schema.minimum) arrayPush(errors, `${path}: < minimum ${schema.minimum}`);
+    if (typeof schema.maximum === "number" && value > schema.maximum) arrayPush(errors, `${path}: > maximum ${schema.maximum}`);
   }
 
   // arrays
   if (Array.isArray(value)) {
     if (typeof schema.minItems === "number" && value.length < schema.minItems) {
-      errors.push(`${path}: needs ≥${schema.minItems} items, got ${value.length}`);
+      arrayPush(errors, `${path}: needs ≥${schema.minItems} items, got ${value.length}`);
     }
     if (schema.items && typeof schema.items === "object") {
       value.forEach((item, i) => evalNode(schema.items as SchemaNode, item, root, `${path}[${i}]`, errors));
@@ -132,13 +133,13 @@ function evalNode(schema: SchemaNode, value: Json, root: SchemaNode, path: strin
     const props = (schema.properties as Record<string, SchemaNode> | undefined) ?? {};
     const required = (schema.required as string[] | undefined) ?? [];
     for (const r of required) {
-      if (!Object.prototype.hasOwnProperty.call(obj, r)) errors.push(`${path}: missing required "${r}"`);
+      if (!Object.prototype.hasOwnProperty.call(obj, r)) arrayPush(errors, `${path}: missing required "${r}"`);
     }
     for (const k of Object.keys(obj)) {
       if (Object.prototype.hasOwnProperty.call(props, k)) {
         evalNode(props[k]!, obj[k], root, `${path}.${k}`, errors);
       } else if (schema.additionalProperties === false) {
-        errors.push(`${path}: unknown property "${k}"`);
+        arrayPush(errors, `${path}: unknown property "${k}"`);
       } else if (schema.additionalProperties && typeof schema.additionalProperties === "object") {
         evalNode(schema.additionalProperties as SchemaNode, obj[k], root, `${path}.${k}`, errors);
       }

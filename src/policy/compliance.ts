@@ -32,6 +32,7 @@ import type { Receipt } from "../types.js";
 import type { Policy, InputSnapshot } from "./dsl.js";
 import { policyHash, readSetHash } from "./dsl.js";
 import { evaluate } from "./eval.js";
+import { snapshotImmutable } from "../ingest.js";
 import { canonicalize } from "../jcs.js";
 import { sha256Prefixed, sha256Hex } from "../hash.js";
 import { validateReceiptShape } from "../schema.js";
@@ -144,7 +145,7 @@ export function verifyReceiptCompliance(
     // producing accessor-free data; ALL reads below (carrier auth AND the L2 compare) use this ONE snapshot.
     // (Mirrors the identityManifest read-once snapshot + accessor hardening elsewhere in this module.) Reading
     // INSIDE the try also honors the "never throws" contract for null / throwing-accessor receipts (#3/#7).
-    const snap = structuredClone(receipt) as Receipt;
+    const snap = snapshotImmutable<Receipt>(receipt);
     const c = snap.governance?.compliance;
     if (!c) return { ok: false, reason: "receipt carries no governance.compliance commitment" };
     // SNAPSHOT THE POLICY + INPUTS ONCE (TOCTOU hardening). Both arguments are caller-supplied LIVE
@@ -155,8 +156,8 @@ export function verifyReceiptCompliance(
     // structuredClone fires every accessor EXACTLY ONCE into plain, accessor-free data; ALL reads below
     // (hash checks AND evaluate) use these snapshots, never the live args. Inside the try ⇒ a throwing accessor
     // / non-cloneable arg fails closed (ok:false), honoring the "never throws" contract.
-    const policySnap = structuredClone(policy) as Policy;
-    const inputsSnap = structuredClone(inputs) as InputSnapshot;
+    const policySnap = snapshotImmutable<Policy>(policy);
+    const inputsSnap = snapshotImmutable<InputSnapshot>(inputs);
     // SNAPSHOT opts ONCE (hostile-accessor parity with verify.ts:95). `opts.keyring` and
     // `opts.identityManifest` are caller-supplied and read MORE THAN ONCE below (the presence gate, then the
     // value that carrier-auth / identity-binding actually use). A flipping accessor — `get keyring(){ return
@@ -168,7 +169,7 @@ export function verifyReceiptCompliance(
     // an explicit null). EVERY opts read below is from `o`, never the live `opts`. (verifyChainText/CLI/Python
     // consume parse output — no accessors — so are immune; this guards the in-process object API.)
     const o: VerifyComplianceOptions =
-      (opts === null || opts === undefined) ? {} : (structuredClone(opts) as VerifyComplianceOptions);
+      (opts === null || opts === undefined) ? {} : snapshotImmutable<VerifyComplianceOptions>(opts);
     // CARRIER AUTHENTICATION: when a keyring is supplied, prove the receipt itself is
     // genuine BEFORE trusting its compliance block — otherwise a forged/tampered receipt (verifyChain ⇒
     // TAMPERED) would still get a green "compliant" signal off its attacker-mutable governance.compliance.
@@ -265,7 +266,12 @@ export function verifyReceiptCompliance(
       return { ok: false, reason: `verdict mismatch — recorded decision does not reproduce (recorded ${c.verdict}, re-run ${ev.verdict})`, policyVerdict: ev.verdict, ruleFired: ev.ruleFired };
     }
     return { ok: true, policyVerdict: ev.verdict, ruleFired: ev.ruleFired, attribution };
-  } catch (e) {
-    return { ok: false, reason: `compliance check error: ${(e as Error).message}` };
+  } catch {
+    // BOUNDARY 2, recurring (found by the C2 entry-point probe, not by a reviewer): this used to
+    // interpolate `(e as Error).message`, so a hostile value — a revoked Proxy, an object with a
+    // throwing `message` getter — threw AGAIN inside the catch and escaped raw, defeating the
+    // "never throws / fail-closed" contract on the exact input class the contract exists for. The
+    // thrown value is not read at all; there is nothing left to weaponize.
+    return { ok: false, reason: "compliance check failed closed: an input could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)" };
   }
 }

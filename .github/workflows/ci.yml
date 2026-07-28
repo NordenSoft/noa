@@ -52,6 +52,13 @@ jobs:
         run: npm ci && npm run build
       - name: BOUNDARY 2 — thrown-value handling gate (no caught value read outside the boundary)
         run: npm run lint:thrown
+      - name: INERT CORE — the vendored ingest boundary is byte-identical to its source
+        # `noa-approval-artifacts` is zero-runtime-dependency by design, so src/intrinsics.ts,
+        # src/inert.ts and src/ingest.ts are GENERATED into it rather than imported. Same
+        # "regenerate + git-diff" discipline as the conformance vectors: a drifted copy means one
+        # package's verifier is held to a different rule than the others, which is exactly how "a
+        # rule enforced in some implementations" stops being an invariant.
+        run: npm run check:inert-core
       - name: approval-artifacts tests
         run: cd packages/approval-artifacts && npm ci && npm test
       - name: evidence tests
@@ -237,6 +244,8 @@ jobs:
         # and use vitest (resolved via a pinned npx, NOT a project dependency — the lib stays zero-dep).
         # `npm test` (node:test) deliberately excludes them; this gates their runtime behaviour.
         run: npm run test:dogfood
+      - name: INERT CORE — the vendored ingest boundary is byte-identical to its source
+        run: npm run check:inert-core
       - name: adapter-core unit tests (packages/adapter-core)
         # package-lock.json is committed here — adapter-core now depends on the published
         # noa-receipt registry package instead of importing the repo's built dist/ directly, so
