@@ -13,6 +13,11 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { policyHash, readSetHash, type Policy } from "../src/policy/dsl.js";
 import { evaluate } from "../src/policy/eval.js";
+// `b` is aliased here because the UTF-16 block below binds `b` as its map parameter. The helper is
+// imported rather than re-declared so this generator and the suite that re-checks its output agree,
+// byte for byte, on what a document is. (`dist/test` and `dist/scripts` are both outside the
+// published `files` list, so this is a dev-tooling edge only.)
+import { b as bytes } from "../test/helpers/bytes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT = join(__dirname, "..", "..", "conformance", "l2");
@@ -61,7 +66,7 @@ const vectors = {
       policyHash: policyHash(REFUND_GUARD),
       readSetHash: readSetHash(REFUND_GUARD),
       cases: CASES.map((c) => {
-        const r = evaluate(REFUND_GUARD, c.inputs as never);
+        const r = evaluate(bytes(REFUND_GUARD), bytes(c.inputs));
         return { name: c.name, inputs: c.inputs, verdict: r.verdict, ruleFired: r.ruleFired };
       }),
     },
@@ -343,7 +348,7 @@ const utf16Vectors = {
       policyHash: tryHash(policyHash),
       readSetHash: tryHash(readSetHash),
       cases: b.cases.map((c) => {
-        const r = evaluate(b.policy, c.inputs as never);
+        const r = evaluate(bytes(b.policy), bytes(c.inputs));
         return { name: c.name, inputs: c.inputs, verdict: r.verdict, ruleFired: r.ruleFired, ...(c.note ? { note: c.note } : {}) };
       }),
     };

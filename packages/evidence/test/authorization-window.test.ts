@@ -20,6 +20,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
+import { b } from "./helpers/bytes.js";
 import { VERIFIER_POLICY_VERSION } from "../src/types.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -50,9 +51,9 @@ const fx = JSON.parse(readFileSync(join(CONF, "valid", "denied.json"), "utf8")) 
  * dedicated fixtures (`reject/step16-*`), and this file's subject is the authority window.
  */
 function run(purpose: "audit" | "authorize" | undefined, now: string, maxAgeMs = fx.maxAgeHours * 60 * 60 * 1000) {
-  return verifyEvidence(fx.bundle, {
-    tenantRoot: fx.tenantRoot as never,
-    checkpointKeyring: fx.checkpointKeyring as never,
+  return verifyEvidence(b(fx.bundle), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
     now,
     maxAgeMs,
     schemas,
@@ -128,9 +129,9 @@ test("a verdict is bound to the rule-set that produced it", () => {
 test("integrity is never claimed INTACT for a bundle that failed before it was proven", () => {
   const broken = structuredClone(fx.bundle) as unknown as Record<string, unknown>;
   (broken as { outcome: string }).outcome = "EXECUTED"; // artifacts no longer match the outcome's union
-  const r = verifyEvidence(broken, {
-    tenantRoot: fx.tenantRoot as never,
-    checkpointKeyring: fx.checkpointKeyring as never,
+  const r = verifyEvidence(b(broken), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
     now: fx.now,
     maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
     schemas,

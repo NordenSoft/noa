@@ -19,6 +19,7 @@ import { readFileSync, readdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { coseSign1, coseSign1Verify, generateKeyPair, signEd25519, encInt, encBstr, encMap, encArray, encTag } from "../../src/index.js";
+import { b } from "../helpers/bytes.js";
 
 const kp = generateKeyPair("gate-1");
 
@@ -39,7 +40,7 @@ test("H1: a SIGNED kid whose bytes are not valid UTF-8 is REFUSED, not silently 
   assert.equal(Buffer.from(lossy, "utf8").toString("hex"), "efbfbd", "the lossy decode this closes");
   const cose = coseWithRawKid(rawKid, Buffer.from("payload"));
   // The keyring is keyed by the LOSSY string — the exact shape that verified ok:true before.
-  const res = coseSign1Verify(cose, { [lossy]: kp.publicKey });
+  const res = coseSign1Verify(cose, b({ [lossy]: kp.publicKey }));
   assert.equal(res.ok, false, "a kid that does not re-encode to the signed bytes is not that kid");
   assert.match(res.reason ?? "", /not valid UTF-8/);
 });
@@ -51,14 +52,14 @@ test("H1: two DIFFERENT invalid-UTF-8 kids no longer collapse onto one keyring e
   for (const bytes of collapsing) {
     assert.equal(bytes.toString("utf8"), lossy, "…all of which DO collapse under a lossy decode");
     assert.equal(
-      coseSign1Verify(coseWithRawKid(bytes, Buffer.from("p")), { [lossy]: kp.publicKey }).ok,
+      coseSign1Verify(coseWithRawKid(bytes, Buffer.from("p")), b({ [lossy]: kp.publicKey })).ok,
       false,
       "distinct signed kid byte strings must not share one keyring entry",
     );
   }
   // Multi-byte invalid sequences collapse onto their own shared string; same rule, same refusal.
   for (const bytes of [Buffer.from([0xc0, 0x80]), Buffer.from([0xed, 0xa0, 0x80])]) {
-    assert.equal(coseSign1Verify(coseWithRawKid(bytes, Buffer.from("p")), { [bytes.toString("utf8")]: kp.publicKey }).ok, false);
+    assert.equal(coseSign1Verify(coseWithRawKid(bytes, Buffer.from("p")), b({ [bytes.toString("utf8")]: kp.publicKey })).ok, false);
   }
 });
 
@@ -72,7 +73,7 @@ test("H1: the same rule applies to the UNPROTECTED kid (unauthenticated, but sti
   ]);
   const sig = Buffer.from(signEd25519(kp.privateKey, sigStruct), "base64");
   const cose = encTag(18, encArray([encBstr(prot), encMap([[encInt(4), encBstr(rawKid)]]), encBstr(payload), encBstr(sig)]));
-  const res = coseSign1Verify(cose, { [rawKid.toString("utf8")]: kp.publicKey });
+  const res = coseSign1Verify(cose, b({ [rawKid.toString("utf8")]: kp.publicKey }));
   assert.equal(res.ok, false);
   assert.match(res.reason ?? "", /not valid UTF-8/);
 });
@@ -86,14 +87,14 @@ test("H1 producer: a kid that does not round-trip through UTF-8 is refused befor
 
 test("H1: no false negative — an ordinary kid still verifies, authenticated", () => {
   const cose = coseSign1(Buffer.from("p"), { kid: "gate-1", privateKey: kp.privateKey });
-  const res = coseSign1Verify(cose, { "gate-1": kp.publicKey });
+  const res = coseSign1Verify(cose, b({ "gate-1": kp.publicKey }));
   assert.equal(res.ok, true, res.reason);
   assert.equal(res.kid, "gate-1");
   assert.equal(res.kidAuthenticated, true);
   // …including non-ASCII kids that ARE valid UTF-8: this refuses lossiness, not internationalisation.
   const utf8Kid = "gate-Ω-日本-🔑";
   const c2 = coseSign1(Buffer.from("p"), { kid: utf8Kid, privateKey: kp.privateKey });
-  assert.equal(coseSign1Verify(c2, { [utf8Kid]: kp.publicKey }).ok, true);
+  assert.equal(coseSign1Verify(c2, b({ [utf8Kid]: kp.publicKey })).ok, true);
 });
 
 test("H1 (class): no byte→string lift in src/cose/ bypasses the round-trip helper", () => {

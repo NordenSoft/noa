@@ -13,6 +13,7 @@ import { InMemoryStore } from "../src/store.js";
 import { hashSecret } from "../src/auth.js";
 import { loadSchemas } from "../src/schemas.js";
 import type { AgentRecord, HoldEnvelope } from "../src/types.js";
+import { b } from "./helpers/bytes.js";
 
 /** A mutable clock so timeout + uncertainty-sweep windows are deterministically testable. */
 export interface Clock {
@@ -104,7 +105,7 @@ export function signPhoneDecision(args: {
   );
 
   const decisionArtifact = signArtifact(
-    {
+    b({
       spec: "noa.decision/0.1",
       holdEnvelopeHash: refHash(holdEnvelope),
       decision: args.decision,
@@ -112,7 +113,7 @@ export function signPhoneDecision(args: {
       reasonEncryption: null,
       decidedAt: at,
       approverKid: trust.approver.kid,
-    },
+    }),
     "NOA-Decision-v0.1-sig",
     { kid: trust.approver.kid, privateKey: trust.approver.privateKey },
   ) as unknown as Record<string, unknown>;

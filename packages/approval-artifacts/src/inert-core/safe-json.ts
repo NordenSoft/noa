@@ -34,7 +34,7 @@
  */
 const SAFE_JSON_ERRORS = new WeakSet<object>();
 
-import { weakSetHas, weakSetAdd, setHas, setAdd, strSlice } from "./intrinsics.js";
+import { weakSetHas, weakSetAdd, setHas, setAdd, strSlice, arrayPush } from "./intrinsics.js";
 import { isHex4 } from "./scan.js";
 
 export class SafeJsonError extends Error {
@@ -159,7 +159,15 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
       return arr;
     }
     for (;;) {
-      arr.push(parseValue(depth + 1));
+      // `arrayPush`, NOT `arr.push`. `Array.prototype.push` is a writable property of a mutable
+      // global, and this is the parser every other guarantee in the kernel is derived from: with
+      // `Array.prototype.push = () => 0`, `safeParse("[1,2,3]")` returned `[]`. Every JSON array in
+      // every document — a policy's `rules`, an identity manifest's kid list, a witness anchor list —
+      // silently became empty, and an empty rule list is a PERMISSIVE policy that validates fine.
+      // Found by `test/security/intrinsic-poisoning.test.ts` (Array.prototype.push -> no-op) after
+      // the C-02 sweep had already been through this file for `Set.prototype.has`; the sweep looked
+      // for DECISIONS and missed a CONSTRUCTION, which is the same class one verb over.
+      arrayPush(arr, parseValue(depth + 1));
       skipWs();
       const ch = text[i];
       if (ch === ",") {

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, verifyChain, REFUND_GUARD_POLICY } from "noa-mcp-adapter-core";
+import { b } from "./helpers/bytes.mjs";
 import { createToolGuard, GuardedToolDenied } from "../src/wrap-tool.mjs";
 import { wrapOpenAITool } from "../src/openai.mjs";
 
@@ -42,7 +43,7 @@ test("wrapOpenAITool: ALLOW calls execute and returns its result unchanged, rece
   assert.equal(guard.receipts.length, 2);
   assert.equal(guard.receipts[0].governance.verdict, "ALLOWED");
   assert.equal(guard.receipts[1].governance.verdict, "EXECUTED");
-  const v = verifyChain(guard.receipts, { keyring });
+  const v = verifyChain(b(guard.receipts), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
 });
 
@@ -100,7 +101,7 @@ test("wrapOpenAITool: N calls -> N receipts, offline-verifiable", async () => {
     assert.equal(outcome.id, `${guard.receipts[i].id}#outcome`, "the outcome must identify WHICH decision it settles");
     assert.equal(outcome.action.paramsHash, guard.receipts[i].action.paramsHash);
   }
-  const v = verifyChain(guard.receipts, { keyring });
+  const v = verifyChain(b(guard.receipts), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
   assert.equal(v.count, EXPECTED_VERDICTS.length);
 });

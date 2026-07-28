@@ -40,6 +40,7 @@ import { receiptHashInput } from "../../src/canonicalize.js";
 import { validateReceiptShape } from "../../src/schema.js";
 import type { Receipt } from "../../src/types.js";
 import type { InputSnapshot } from "../../src/policy/dsl.js";
+import { b } from "../helpers/bytes.js";
 
 /**
  * Domain-separation tag for the co-attestation signature preimage (mirrors the receipt/checkpoint
@@ -239,7 +240,7 @@ export function verifyCoAttestation(
     // early on ANY failure, so reaching past it with receiptKeyring supplied ⇒ the carrier authenticated.
     const carrierAuthenticated = receiptKeyring !== undefined;
     if (receiptKeyring !== undefined) {
-      const shape = validateReceiptShape(receipt);
+      const shape = validateReceiptShape(b(receipt));
       if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
       if (receiptHash !== receipt.chain.hash) return { ok: false, reason: "carrier receipt hash mismatch — not authentic" };
       const carrierPub = receiptKeyring[receipt.sig.kid];

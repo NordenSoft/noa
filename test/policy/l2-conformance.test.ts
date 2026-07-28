@@ -5,6 +5,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { evaluate } from "../../src/policy/eval.js";
 import { policyHash, readSetHash, type Policy } from "../../src/policy/dsl.js";
+import { b } from "../helpers/bytes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const L2_DIR = join(__dirname, "..", "..", "..", "conformance", "l2");
@@ -43,7 +44,7 @@ test("L2 conformance: re-evaluating every committed vector reproduces verdict + 
       assert.equal(tryHash(policyHash, block.policy), block.policyHash, `${file}: policyHash mismatch (${block.policy.id})`);
       assert.equal(tryHash(readSetHash, block.policy), block.readSetHash, `${file}: readSetHash mismatch (${block.policy.id})`);
       for (const c of block.cases) {
-        const r = evaluate(block.policy, c.inputs as never);
+        const r = evaluate(b(block.policy), b(c.inputs as never));
         assert.equal(r.verdict, c.verdict, `${file}: verdict mismatch for case "${c.name}"`);
         assert.equal(r.ruleFired, c.ruleFired, `${file}: ruleFired mismatch for case "${c.name}"`);
       }

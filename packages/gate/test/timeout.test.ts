@@ -10,6 +10,7 @@ import { verifyChain } from "noa-receipt";
 import { verifyArtifact } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
 import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
 
@@ -43,13 +44,13 @@ test("expired hold → BLOCKED timeout receipt (POLICY signer, ruleId approval-t
 
   // The timeout receipt chains onto the DEFERRED and verifies VALID (gate keyring).
   const deferred = fx.store.getHold(holdId)!.deferredReceipt;
-  const vc = verifyChain([deferred, timeout], { keyring: fx.trust.receiptKeyring, requireTenantConsistency: true });
+  const vc = verifyChain(b([deferred, timeout]), { keyring: b(fx.trust.receiptKeyring), requireTenantConsistency: true });
   assert.equal(vc.status, "VALID", vc.reason);
 
   // F10 Hold Resolution — status EXPIRED, gate-signed, verifyArtifact passes.
   const resolution = body.holdResolution;
   assert.equal(resolution["status"], "EXPIRED");
-  const rc = verifyArtifact(resolution, {
+  const rc = verifyArtifact(b(resolution), b({
     schemas,
     keyring: fx.trust.keyring,
     now: new Date(fx.trust.now()).toISOString(),
@@ -57,7 +58,7 @@ test("expired hold → BLOCKED timeout receipt (POLICY signer, ruleId approval-t
       { path: "holdEnvelopeHash", rule: "side", artifact: fx.store.getHold(holdId)!.holdEnvelope },
       { path: "verdictReceiptHash", rule: "receipt", artifact: timeout },
     ],
-  });
+  }));
   assert.ok(rc.ok, `holdResolution: ${rc.reason}`);
 });
 

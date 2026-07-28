@@ -20,6 +20,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createToolGuard, GuardedToolDenied, ToolOutcomeNotRecorded } from "../src/wrap-tool.mjs";
 import { generateKeyPair, verifyChain, REFUND_GUARD_POLICY } from "noa-mcp-adapter-core";
+import { b } from "./helpers/bytes.mjs";
 
 function guardWith(kid) {
   const kp = generateKeyPair(kid);
@@ -72,7 +73,7 @@ test("a tool that throws is attested neither EXECUTED nor FAILED — the outcome
     false,
     "ITS MIRROR (H-02a): nothing may claim FAILED either — the tool's throw is not evidence of non-execution",
   );
-  assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
+  assert.equal(verifyChain(b(guard.receipts), { keyring: b(keyring) }).status, "VALID");
 });
 
 test("a tool that SUCCEEDS is attested EXECUTED — but only after it returned", async () => {
@@ -87,7 +88,7 @@ test("a tool that SUCCEEDS is attested EXECUTED — but only after it returned",
   assert.equal(await refund({ action: "payment.refund", amountMinor: 4_200 }), "refunded");
   assert.deepEqual(order, ["receipts-at-call-time=1"], "the terminal receipt must not exist until the call settles");
   assert.deepEqual(guard.receipts.map((r) => r.governance.verdict), ["ALLOWED", "EXECUTED"]);
-  assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
+  assert.equal(verifyChain(b(guard.receipts), { keyring: b(keyring) }).status, "VALID");
 });
 
 test("a DENY still produces exactly ONE receipt and never calls fn (no outcome to attest)", async () => {
@@ -101,7 +102,7 @@ test("a DENY still produces exactly ONE receipt and never calls fn (no outcome t
   await assert.rejects(() => wire({ action: "payment.refund", amountMinor: 100_000_000 }), GuardedToolDenied);
   assert.equal(calls, 0, "fail-closed: fn is never invoked on DENY");
   assert.deepEqual(guard.receipts.map((r) => r.governance.verdict), ["BLOCKED"]);
-  assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
+  assert.equal(verifyChain(b(guard.receipts), { keyring: b(keyring) }).status, "VALID");
 });
 
 /**
@@ -161,7 +162,7 @@ for (const [label, thrown] of FALSY_THROWS) {
       ["ALLOWED"],
       "THE ASSERTION THIS BLOCK EXISTS FOR: a falsy throw is still a throw — never EXECUTED; and (H-02a) never FAILED either",
     );
-    assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
+    assert.equal(verifyChain(b(guard.receipts), { keyring: b(keyring) }).status, "VALID");
   });
 }
 

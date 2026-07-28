@@ -18,6 +18,7 @@
 
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from "noa-approval-artifacts";
+import { encodeDocument } from "./bytes.js";
 
 export interface GateKeyPair {
   kid: string;
@@ -104,7 +105,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
 
   // root-signed delegation (root → tenant-authority as the manifest signer), F11/F21.
   const keyDelegation = signArtifact(
-    {
+    encodeDocument({
       spec: "noa.key-delegation/0.1",
       tenant,
       delegatedKid: authority.kid,
@@ -112,14 +113,14 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
       permissions: ["key-manifest-sign"],
       validFrom,
       expiresAt,
-    },
+    }),
     "NOA-KeyDelegation-v0.1-sig",
     { kid: root.kid, privateKey: root.privateKey },
   );
 
   // tenant-authority-signed manifest (F21 direct signature; the GATE never signs it — Red Line 16).
   const keyManifest = signArtifact(
-    {
+    encodeDocument({
       spec: "noa.key-manifest/0.1",
       tenant,
       version: 1,
@@ -153,7 +154,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
           revokedAt: null,
         },
       ],
-    },
+    }),
     "NOA-KeyManifest-v0.1-sig",
     { kid: authority.kid, privateKey: authority.privateKey },
   );

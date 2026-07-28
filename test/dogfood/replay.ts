@@ -19,6 +19,7 @@ import {
 } from "../../src/policy/compliance.js";
 import type { Receipt } from "../../src/types.js";
 import type { Policy, InputSnapshot } from "../../src/policy/dsl.js";
+import { b } from "../helpers/bytes.js";
 
 /** A policy decision is exactly the two verdicts the reference evaluator can produce. */
 export type PolicyDecision = "ALLOW" | "DENY";
@@ -55,11 +56,11 @@ export function replay(
   opts: VerifyComplianceOptions = {},
 ): ReplayResult {
   const recordedVerdict = receipt.governance?.compliance?.verdict;
-  const ev = evaluate(policy, inputs);
+  const ev = evaluate(b(policy), b(inputs));
   const reproducedVerdict: PolicyDecision = ev.verdict;
   const reproducedByteForByte =
     recordedVerdict !== undefined && recordedVerdict === reproducedVerdict;
-  const cr = verifyReceiptCompliance(receipt, policy, inputs, opts);
+  const cr = verifyReceiptCompliance(b(receipt), b(policy), b(inputs), opts);
   return {
     recordedVerdict,
     reproducedVerdict,

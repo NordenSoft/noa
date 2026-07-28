@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, verifyChain, buildReceipt } from "noa-receipt";
+import { b } from "./helpers/bytes.mjs";
 import { preCheck } from "../src/pre-check.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
 import { buildApprovalReceipt, buildDenialReceipt, verifyApprovalReceipt } from "../src/approval-decision.mjs";
@@ -35,7 +36,7 @@ test("buildApprovalReceipt: verdict ALLOWED, governance.approval filled, chained
   assert.equal(allowed.chain.prevHash, deferred.chain.hash);
   assert.ok(ticket.length > 0);
   assert.ok(Date.parse(ticketExpiresAt) > Date.parse("2026-07-11T10:05:00.000Z"));
-  assert.equal(verifyChain([deferred, allowed], { keyring }).status, "VALID");
+  assert.equal(verifyChain(b([deferred, allowed]), { keyring: b(keyring) }).status, "VALID");
 });
 
 test("buildDenialReceipt: verdict BLOCKED, ruleId is the FIXED code 'human-denied' (D8: free-text reason NEVER folded into signed ruleId), approval filled, chained onto DEFERRED", () => {
@@ -51,7 +52,7 @@ test("buildDenialReceipt: verdict BLOCKED, ruleId is the FIXED code 'human-denie
   assert.equal(denied.governance.ruleId, "human-denied");
   assert.ok(!JSON.stringify(denied).includes("looks-fraudulent"), "free-text reason must never appear in the signed denial receipt");
   assert.deepEqual(denied.governance.approval, { by: "HUMAN:hmac-sha256:" + "a".repeat(64), at: "2026-07-11T10:05:00.000Z" });
-  assert.equal(verifyChain([deferred, denied], { keyring }).status, "VALID");
+  assert.equal(verifyChain(b([deferred, denied]), { keyring: b(keyring) }).status, "VALID");
 });
 
 test("THE MONEY TEST: DEFERRED -> ALLOWED -> EXECUTED, three receipts, ONE scope.chain, verifyChain VALID end-to-end", () => {
@@ -90,7 +91,7 @@ test("THE MONEY TEST: DEFERRED -> ALLOWED -> EXECUTED, three receipts, ONE scope
     "mcp-agent": [agentSigner.kid],
     "human-approval-cli": [approverSigner.kid],
   };
-  const v = verifyChain(chain, { keyring, identityManifest });
+  const v = verifyChain(b(chain), { keyring: b(keyring), identityManifest: b(identityManifest) });
   assert.equal(v.status, "VALID");
   assert.equal(v.count, 3);
   assert.deepEqual(chain.map((r) => r.governance.verdict), ["DEFERRED", "ALLOWED", "EXECUTED"]);
@@ -103,7 +104,7 @@ test("THE MONEY TEST: DEFERRED -> ALLOWED -> EXECUTED, three receipts, ONE scope
     "human-approval-cli": [agentSigner.kid],
   };
   assert.equal(
-    verifyChain(chain, { keyring, identityManifest: forgedManifest }).status,
+    verifyChain(b(chain), { keyring: b(keyring), identityManifest: b(forgedManifest) }).status,
     "UNTRUSTED",
     "the ALLOWED receipt's (agent.id, kid) pairing must be enforced — an unauthorized pairing can never verify VALID",
   );

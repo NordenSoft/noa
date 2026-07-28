@@ -16,6 +16,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
+import { b } from "./helpers/bytes.js";
 import type { EvidenceOutcome, StepName } from "../src/types.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -50,9 +51,9 @@ for (const slug of readdirSync(CONF)) {
 }
 
 function run(fx: Fixture) {
-  return verifyEvidence(fx.bundle, {
-    tenantRoot: fx.tenantRoot as never,
-    checkpointKeyring: fx.checkpointKeyring as never,
+  return verifyEvidence(b(fx.bundle), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
     now: fx.now,
     maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
     schemas,

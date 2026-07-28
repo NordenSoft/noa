@@ -4,6 +4,7 @@ import { generateKeyPair } from "../src/keys.js";
 import { buildReceipt, buildCheckpoint, type BuildInput, type Signer } from "../src/builder.js";
 import { verifyChain } from "../src/verify.js";
 import { sha256Prefixed } from "../src/hash.js";
+import { b } from "./helpers/bytes.js";
 
 // Two agents, two keys. We can mint a receipt for ANY agent.id with ANY signer (the builder's signer
 // determines sig.kid), which is exactly the cross-agent impersonation primitive B1 defends against.
@@ -24,7 +25,7 @@ function mkInput(agentId: string): BuildInput {
 
 test("B1: identity manifest authorizes the (agent.id, kid) pairing → VALID", () => {
   const chain = [buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey })];
-  const r = verifyChain(chain, { keyring, identityManifest: { alice: ["alice-key"], bob: ["bob-key"] } });
+  const r = verifyChain(b(chain), { keyring: b(keyring), identityManifest: b({ alice: ["alice-key"], bob: ["bob-key"] }) });
   assert.equal(r.status, "VALID", r.reason);
   assert.equal(r.signaturesVerified, true);
 });
@@ -36,12 +37,12 @@ test("B1: CROSS-AGENT IMPERSONATION is caught — agent.id=alice signed by bob's
   const impersonation = [buildReceipt(mkInput("alice"), null, { kid: bob.kid, privateKey: bob.privateKey })];
 
   // disclosed weaker guarantee: no manifest → VALID (kid-level attribution), with the honesty warning
-  const weak = verifyChain(impersonation, { keyring });
+  const weak = verifyChain(b(impersonation), { keyring: b(keyring) });
   assert.equal(weak.status, "VALID");
   assert.ok(weak.warnings.some((w) => /attribution is kid-level/.test(w)));
 
   // with the manifest → UNTRUSTED (alice is not authorized to use bob-key)
-  const strong = verifyChain(impersonation, { keyring, identityManifest: { alice: ["alice-key"], bob: ["bob-key"] } });
+  const strong = verifyChain(b(impersonation), { keyring: b(keyring), identityManifest: b({ alice: ["alice-key"], bob: ["bob-key"] }) });
   assert.equal(strong.status, "UNTRUSTED");
   assert.match(strong.reason ?? "", /not authorized for signing key/);
   assert.equal(strong.signaturesVerified, false);
@@ -49,14 +50,14 @@ test("B1: CROSS-AGENT IMPERSONATION is caught — agent.id=alice signed by bob's
 
 test("B1: agent.id absent from the manifest → UNTRUSTED (default-deny, not silently allowed)", () => {
   const chain = [buildReceipt(mkInput("carol"), null, { kid: alice.kid, privateKey: alice.privateKey })];
-  const r = verifyChain(chain, { keyring, identityManifest: { alice: ["alice-key"] } });
+  const r = verifyChain(b(chain), { keyring: b(keyring), identityManifest: b({ alice: ["alice-key"] }) });
   assert.equal(r.status, "UNTRUSTED");
   assert.match(r.reason ?? "", /agent "carol" is not authorized/);
 });
 
 test("B1: no manifest → VALID + the kid-level-attribution honesty warning (backward compatible)", () => {
   const chain = [buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey })];
-  const r = verifyChain(chain, { keyring });
+  const r = verifyChain(b(chain), { keyring: b(keyring) });
   assert.equal(r.status, "VALID");
   assert.ok(r.warnings.some((w) => /no identityManifest/.test(w)));
 });
@@ -66,7 +67,7 @@ test("B1: manifest supplied but NO keyring → UNVERIFIED, not UNTRUSTED (no ove
   // manifest but no keyring must stay UNVERIFIED (signatures not authenticated) — NOT UNTRUSTED, whose
   // documented meaning is "authenticated key, binding not authorized".
   const impersonation = [buildReceipt(mkInput("alice"), null, { kid: bob.kid, privateKey: bob.privateKey })];
-  const r = verifyChain(impersonation, { identityManifest: { alice: ["alice-key"], bob: ["bob-key"] } });
+  const r = verifyChain(b(impersonation), { identityManifest: b({ alice: ["alice-key"], bob: ["bob-key"] }) });
   assert.equal(r.status, "UNVERIFIED");
   assert.equal(r.signaturesVerified, false);
   assert.ok(r.warnings.some((w) => /identityManifest supplied but no keyring/.test(w)));
@@ -80,12 +81,12 @@ test("B1 (genesis-binding): a checkpoint forged by a co-trusted-but-UNauthorized
   const head = buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey });
   const manifest = { alice: ["alice-key"], bob: ["bob-key"] };
   const forgedCp = buildCheckpoint(head, "2026-06-21T11:00:00.000Z", { kid: bob.kid, privateKey: bob.privateKey });
-  const bad = verifyChain([head], { keyring, checkpoint: forgedCp, identityManifest: manifest });
+  const bad = verifyChain(b([head]), { keyring: b(keyring), checkpoint: b(forgedCp), identityManifest: b(manifest) });
   assert.equal(bad.status, "UNTRUSTED");
   assert.match(bad.reason ?? "", /checkpoint signing key .* not authorized for chain opener \(genesis\) agent/);
   // the authorized checkpoint (signed by alice's own key — the opener) still verifies + tail-checks
   const goodCp = buildCheckpoint(head, "2026-06-21T11:00:00.000Z", { kid: alice.kid, privateKey: alice.privateKey });
-  const good = verifyChain([head], { keyring, checkpoint: goodCp, identityManifest: manifest });
+  const good = verifyChain(b([head]), { keyring: b(keyring), checkpoint: b(goodCp), identityManifest: b(manifest) });
   assert.equal(good.status, "VALID", good.reason);
   assert.equal(good.tailChecked, true);
 });
@@ -117,7 +118,7 @@ test("B1: RE-HEADING truncation — a co-trusted key appends onto a victim's pre
   const b1 = mkR("b1", "bob", "noop", "LOW", a0, bobS);
   const bobCp = buildCheckpoint(b1, "2026-06-21T11:00:00.000Z", bobS);
 
-  const attack = verifyChain([a0, b1], { keyring, checkpoint: bobCp, identityManifest: manifest });
+  const attack = verifyChain(b([a0, b1]), { keyring: b(keyring), checkpoint: b(bobCp), identityManifest: b(manifest) });
   assert.equal(attack.status, "UNTRUSTED", attack.reason);
   assert.equal(attack.tailChecked, false);
   assert.match(attack.reason ?? "", /checkpoint signing key "bob-key" is not authorized for chain opener \(genesis\) agent "alice"/);
@@ -128,15 +129,21 @@ test("B1: RE-HEADING truncation — a co-trusted key appends onto a victim's pre
   const c0 = mkR("c0", "alice", "login", "LOW", null, aliceS);
   const c1 = mkR("c1", "bob", "noop", "LOW", c0, bobS);
   const aliceCpOverBobHead = buildCheckpoint(c1, "2026-06-21T11:00:00.000Z", aliceS);
-  const multi = verifyChain([c0, c1], { keyring, checkpoint: aliceCpOverBobHead, identityManifest: manifest });
+  const multi = verifyChain(b([c0, c1]), { keyring: b(keyring), checkpoint: b(aliceCpOverBobHead), identityManifest: b(manifest) });
   assert.ok(multi.warnings.some((w) => /checkpoint completeness is opener-scoped/.test(w)), "multi-agent checkpoint must warn about opener-scoped completeness");
 });
 
-test("B1: TOCTOU — an ACCESSOR-property manifest entry that flips between validation and enforcement → UNTRUSTED (read-once snapshot)", () => {
-  // The manifest is read once at the validation pass and again at enforcement (4c-bis). A getter that
-  // returns ['alice-key'] to the validator (so validation passes) and ['bob-key'] to enforcement (so the
-  // bob-signed impersonation is "authorized") would verify VALID pre-fix. With the read-once snapshot the
-  // getter fires exactly once; enforcement reads the validated COPY → UNTRUSTED.
+test("B1: TOCTOU — an ACCESSOR-property manifest entry that flips is REFUSED UNREAD; the restrictive manifest still yields UNTRUSTED", () => {
+  // The manifest used to be read once at validation and again at enforcement (4c-bis). A getter returning
+  // ['alice-key'] to the validator and ['bob-key'] to enforcement "authorized" the bob-signed impersonation
+  // pre-fix; the read-once snapshot made the getter fire EXACTLY ONCE so enforcement saw the validated copy.
+  //
+  // ASSERTION CHANGED, in the strict direction, on all three lines:
+  //   UNTRUSTED → MALFORMED, the authorization reason → the boundary's reason, and `reads === 1` →
+  //   `reads === 0`. The manifest is a trust DOCUMENT now, so a live accessor never enters. "Fires exactly
+  //   once" was the strongest statement possible while the object was traversed; "never fires" replaces it.
+  // The security verdict this test exists for — the impersonation is NOT authorized — is re-asserted
+  // immediately below over the same restrictive manifest as bytes, with its original reason intact.
   const impersonation = [buildReceipt(mkInput("alice"), null, { kid: bob.kid, privateKey: bob.privateKey })];
   let reads = 0;
   const manifest: Record<string, string[]> = { bob: ["bob-key"] };
@@ -147,17 +154,28 @@ test("B1: TOCTOU — an ACCESSOR-property manifest entry that flips between vali
       return (++reads === 1 ? ["alice-key"] : ["bob-key"]) as string[];
     },
   });
-  const r = verifyChain(impersonation, { keyring, identityManifest: manifest });
-  assert.equal(r.status, "UNTRUSTED", `expected the snapshot to defeat the flipping getter, got ${r.status}`);
-  assert.match(r.reason ?? "", /agent "alice" is not authorized for signing key "bob-key"/);
-  assert.equal(reads, 1, "the entry getter must be read EXACTLY ONCE (snapshot), not at both validation + enforcement");
+  const r = verifyChain(b(impersonation), { keyring: b(keyring), identityManifest: manifest as never });
+  assert.equal(r.status, "MALFORMED", `a live accessor manifest must be refused, got ${r.status}`);
+  assert.match(r.reason ?? "", /expected Uint8Array or string/);
+  assert.equal(reads, 0, "the entry getter must never be read — the boundary does not traverse caller objects");
+
+  // Both halves of the flip as fixed documents. The restrictive one rejects the impersonation exactly as
+  // before; the permissive one authorizes it, which is a caller decision made in the open, not a bypass.
+  const restrictive = verifyChain(b(impersonation), { keyring: b(keyring), identityManifest: b({ alice: ["alice-key"], bob: ["bob-key"] }) });
+  assert.equal(restrictive.status, "UNTRUSTED");
+  assert.match(restrictive.reason ?? "", /agent "alice" is not authorized for signing key "bob-key"/);
+  assert.equal(verifyChain(b(impersonation), { keyring: b(keyring), identityManifest: b({ alice: ["alice-key", "bob-key"] }) }).status, "VALID");
 });
 
-test("B1: TOCTOU — an ARRAY-ELEMENT getter that flips between validation and enforcement → UNTRUSTED (slice copies by value)", () => {
+test("B1: TOCTOU — an ARRAY-ELEMENT getter that flips is REFUSED UNREAD; the restrictive manifest still yields UNTRUSTED", () => {
   // Subtler variant: the entry IS an array, but element [0] is a getter that returns 'alice-key' first
-  // (validation: every element is a string ✓) then 'bob-key' (enforcement: includes('bob-key') ✓). The
-  // snapshot copies via Array.prototype.slice, materializing element values at copy time → enforcement
-  // checks the captured 'alice-key', not the flipped 'bob-key'.
+  // (validation: every element is a string ✓) then 'bob-key' (enforcement: includes('bob-key') ✓). The old
+  // fix copied via Array.prototype.slice, materializing element values at copy time.
+  //
+  // ASSERTION CHANGED for the same reason and in the same direction as the test above: an element accessor
+  // is one more thing a live object can carry and a byte sequence cannot, so `reads === 1` becomes
+  // `reads === 0`, and the verdict becomes the boundary's MALFORMED. The UNTRUSTED verdict with its
+  // original reason is re-asserted over the byte form below.
   const impersonation = [buildReceipt(mkInput("alice"), null, { kid: bob.kid, privateKey: bob.privateKey })];
   let reads = 0;
   const arr: string[] = [];
@@ -170,27 +188,54 @@ test("B1: TOCTOU — an ARRAY-ELEMENT getter that flips between validation and e
   });
   arr.length = 1;
   const manifest = { alice: arr, bob: ["bob-key"] };
-  const r = verifyChain(impersonation, { keyring, identityManifest: manifest });
-  assert.equal(r.status, "UNTRUSTED", `expected slice() to capture element values at copy time, got ${r.status}`);
-  assert.match(r.reason ?? "", /agent "alice" is not authorized for signing key "bob-key"/);
-  // exactly one read: slice() materializes element [0] once; enforcement reads the captured array, not arr
-  assert.equal(reads, 1, "the element getter must be read EXACTLY ONCE (slice copy), not at both validation + enforcement");
+  const r = verifyChain(b(impersonation), { keyring: b(keyring), identityManifest: manifest as never });
+  assert.equal(r.status, "MALFORMED", `a manifest carrying an element accessor must be refused, got ${r.status}`);
+  assert.match(r.reason ?? "", /expected Uint8Array or string/);
+  assert.equal(reads, 0, "the element getter must never be read");
+
+  const restrictive = verifyChain(b(impersonation), { keyring: b(keyring), identityManifest: b({ alice: ["alice-key"], bob: ["bob-key"] }) });
+  assert.equal(restrictive.status, "UNTRUSTED");
+  assert.match(restrictive.reason ?? "", /agent "alice" is not authorized for signing key "bob-key"/);
 });
 
-test("B1: the read-once snapshot does NOT regress the legitimate accessor case — a getter returning a STABLE authorized value still VALID", () => {
-  // A getter that always returns the same authorized value must still pass — the snapshot only removes the
-  // ABILITY TO FLIP, it does not reject accessor-backed manifests.
+test("B1: an accessor-backed manifest is NO LONGER accepted even when its value is stable — the same trust decision is expressible as bytes", () => {
+  // WAS: "the read-once snapshot does NOT regress the legitimate accessor case — a getter returning a
+  // STABLE authorized value still VALID", asserting VALID.
+  //
+  // ASSERTION CHANGED (VALID → MALFORMED for the accessor form) and this one is a genuine NARROWING of
+  // what the API accepts, not merely a relocated refusal. It is stated here rather than papered over:
+  // an accessor-backed manifest used to be admitted because the snapshot removed only the ABILITY TO
+  // FLIP. Bytes-in removes the ability to RUN, and there is no way to tell a stable getter from a
+  // flipping one without invoking it — which is the thing the boundary exists not to do. A caller who
+  // computed a manifest from an accessor loses nothing: the value they computed is exactly what
+  // `JSON.stringify` produces, and supplying THAT still verifies VALID (asserted below).
   const chain = [buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey })];
+  let reads = 0;
   const manifest: Record<string, string[]> = { bob: ["bob-key"] };
-  Object.defineProperty(manifest, "alice", { enumerable: true, configurable: true, get() { return ["alice-key"]; } });
-  const r = verifyChain(chain, { keyring, identityManifest: manifest });
+  Object.defineProperty(manifest, "alice", { enumerable: true, configurable: true, get() { reads++; return ["alice-key"]; } });
+  const refused = verifyChain(b(chain), { keyring: b(keyring), identityManifest: manifest as never });
+  assert.equal(refused.status, "MALFORMED");
+  assert.match(refused.reason ?? "", /expected Uint8Array or string/);
+  assert.equal(reads, 0, "even a benign getter must not run inside the boundary");
+
+  // The migration path, and the half of the original assertion that survives: the SAME authorization,
+  // supplied as the document it always was, is still VALID.
+  const r = verifyChain(b(chain), { keyring: b(keyring), identityManifest: b({ alice: ["alice-key"], bob: ["bob-key"] }) });
   assert.equal(r.status, "VALID", r.reason);
 });
 
 test("B1: a malformed manifest is fail-closed (MALFORMED), never silently ignored", () => {
   const chain = [buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey })];
+  // As DOCUMENTS the manifest's own structural guards are what reject it, with the same verdict as before:
   // not an object
-  assert.equal(verifyChain(chain, { keyring, identityManifest: ["alice-key"] as never }).status, "MALFORMED");
+  const notObj = verifyChain(b(chain), { keyring: b(keyring), identityManifest: b(["alice-key"]) });
+  assert.equal(notObj.status, "MALFORMED");
+  assert.match(notObj.reason ?? "", /identityManifest must be an object/);
   // value not a string[]
-  assert.equal(verifyChain(chain, { keyring, identityManifest: { alice: "alice-key" } as never }).status, "MALFORMED");
+  const badVal = verifyChain(b(chain), { keyring: b(keyring), identityManifest: b({ alice: "alice-key" }) });
+  assert.equal(badVal.status, "MALFORMED");
+  assert.match(badVal.reason ?? "", /must be an array of kid strings/);
+  // and as raw values, refused at the byte boundary — fail-closed on both routes
+  assert.equal(verifyChain(b(chain), { keyring: b(keyring), identityManifest: ["alice-key"] as never }).status, "MALFORMED");
+  assert.equal(verifyChain(b(chain), { keyring: b(keyring), identityManifest: { alice: "alice-key" } as never }).status, "MALFORMED");
 });

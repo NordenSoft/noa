@@ -27,6 +27,24 @@ export type {
 export { canonicalize, JcsError } from "./jcs.js";
 export { safeParse, SafeJsonError } from "./safe-json.js";
 /**
+ * THE BYTE BOUNDARY, PUBLISHED — because a sibling package had to re-create it, which is the exact
+ * drift hazard this file argues against thirty lines below for the inert primitives.
+ *
+ * `safeParse` was already exported and `decodeDocument`/`parseDocument` were not, so
+ * `packages/evidence` — which verifies the same documents under the same rules — reimplemented the
+ * byte-ceiling-before-decode and the `fatal:true, ignoreBOM:true` decode itself. Both halves are
+ * security mechanism: the ceiling is what stops bytes-in from REGRESSING DoS posture relative to the
+ * object API (ADR §3.4's one new normative rule), and the fatal decode is what stops two different
+ * byte strings from hashing the same after U+FFFD substitution. A near-copy of either will drift from
+ * this one the first time either changes, and then two packages will disagree about what a valid
+ * document is while both believe they agree.
+ *
+ * Exported as UTILITY rather than SECURITY_SENSITIVE for the same reason `safeParse` is: this IS the
+ * boundary. Its first parameter is `unknown` BY DESIGN — deciding whether an arbitrary value is a
+ * document is the whole job — so demanding it take `Uint8Array | string` would be circular.
+ */
+export { decodeDocument, parseDocument, isUint8Array, MAX_INPUT_BYTES, type DecodeResult, type ParseResult } from "./bytes.js";
+/**
  * ── THE INGEST BOUNDARY IS GONE, AND ITS ABSENCE IS THE HEADLINE OF THIS RELEASE ─────────────────
  *
  * `snapshotImmutable`, `tryIngest`, `isIngestError`, `IngestError` and `MAX_INGEST_DEPTH` were 260

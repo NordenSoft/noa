@@ -4,6 +4,7 @@ import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { generateKeyPair, verifyChain } from "noa-receipt";
+import { b } from "./helpers/bytes.mjs";
 import { preCheck } from "../src/pre-check.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
 import { recordDeferred, loadPendingIndex } from "../src/pending-store.mjs";
@@ -41,7 +42,7 @@ test("runApproveCli approve: mints an ALLOWED receipt, records it, exits 0, chai
   assert.ok(!rec.allowedReceipt.governance.approval.by.includes("@"), "raw email must never reach the signed receipt");
 
   const approverKeyRecord = JSON.parse(readFileSync(keyFile, "utf8"));
-  const v = verifyChain([deferred, rec.allowedReceipt], { keyring: { [agentKp.kid]: agentKp.publicKey, [approverKeyRecord.kid]: approverKeyRecord.publicKey } });
+  const v = verifyChain(b([deferred, rec.allowedReceipt]), { keyring: b({ [agentKp.kid]: agentKp.publicKey, [approverKeyRecord.kid]: approverKeyRecord.publicKey }) });
   assert.equal(v.status, "VALID");
 });
 
@@ -105,9 +106,9 @@ test("D8 PII contract: the SIGNED approve+deny receipts contain NO raw email and
   assert.ok(recA.allowedReceipt.governance.approval.by.startsWith("HUMAN:hmac-sha256:"));
   assert.ok(recD.deniedReceipt.governance.approval.by.startsWith("HUMAN:hmac-sha256:"));
   assert.equal(recD.deniedReceipt.governance.ruleId, "human-denied");
-  assert.equal(verifyChain([deferredA, recA.allowedReceipt], { keyring: { [agentA.kid]: agentA.publicKey, [approverA.kid]: approverA.publicKey } }).status, "VALID");
+  assert.equal(verifyChain(b([deferredA, recA.allowedReceipt]), { keyring: b({ [agentA.kid]: agentA.publicKey, [approverA.kid]: approverA.publicKey }) }).status, "VALID");
   const approverD = JSON.parse(readFileSync(keyD, "utf8"));
-  assert.equal(verifyChain([deferredD, recD.deniedReceipt], { keyring: { [agentD.kid]: agentD.publicKey, [approverD.kid]: approverD.publicKey } }).status, "VALID");
+  assert.equal(verifyChain(b([deferredD, recD.deniedReceipt]), { keyring: b({ [agentD.kid]: agentD.publicKey, [approverD.kid]: approverD.publicKey }) }).status, "VALID");
 });
 
 test("runApproveCli: usage errors (missing --id, unknown --id) exit non-zero, never throw; --receipt-log appends a JSON line when supplied", () => {

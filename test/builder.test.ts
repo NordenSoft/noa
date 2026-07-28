@@ -5,6 +5,7 @@ import { buildReceipt, buildCheckpoint, BuilderError, type BuildInput, type Sign
 import { verifyChain, verifyCheckpoint } from "../src/verify.js";
 import { sha256Prefixed } from "../src/hash.js";
 import type { Receipt } from "../src/index.js";
+import { b } from "./helpers/bytes.js";
 
 function mkInput(seqId: string, ts: string): BuildInput {
   return {
@@ -37,7 +38,7 @@ test("A3 happy path: valid input -> buildReceipt -> verifyChain is VALID", () =>
   const keyring = { [pair.kid]: pair.publicKey };
 
   const r = buildReceipt(mkInput("0", "2026-06-20T00:00:00.000Z"), null, signer);
-  const res = verifyChain([r], { keyring });
+  const res = verifyChain(b([r]), { keyring: b(keyring) });
   assert.equal(res.status, "VALID", res.reason);
 });
 
@@ -96,7 +97,7 @@ test("A3 mutation-safety: mutating the caller's input object after build does NO
   assert.equal(r.action.riskClass, "CRITICAL", "receipt must not alias caller's action object");
   assert.equal(r.governance.verdict, "EXECUTED", "receipt must not alias caller's governance object");
 
-  const res = verifyChain([r], { keyring });
+  const res = verifyChain(b([r]), { keyring: b(keyring) });
   assert.equal(res.status, "VALID", res.reason);
 });
 
@@ -109,7 +110,7 @@ test("A3 checkpoint happy path: valid head -> buildCheckpoint -> verifyCheckpoin
 
   const head = buildReceipt(mkInput("0", "2026-06-20T00:00:00.000Z"), null, signer);
   const cp = buildCheckpoint(head, "2026-06-20T06:00:00.000Z", signer);
-  assert.equal(verifyCheckpoint(cp, keyring), "ok");
+  assert.equal(verifyCheckpoint(b(cp), b(keyring)), "ok");
 });
 
 test("A3 checkpoint PoC: malformed ts throws BuilderError (never returns a signed checkpoint)", () => {
@@ -151,5 +152,5 @@ test("A3 checkpoint mutation-safety: mutating `head` after buildCheckpoint does 
   assert.equal(cp.chain, "c1", "checkpoint must not alias caller's head.scope object");
   assert.equal(cp.highestSeq, 0, "checkpoint must not alias caller's head.chain object");
   assert.notEqual(cp.headHash, "sha256:" + "0".repeat(64));
-  assert.equal(verifyCheckpoint(cp, keyring), "ok");
+  assert.equal(verifyCheckpoint(b(cp), b(keyring)), "ok");
 });

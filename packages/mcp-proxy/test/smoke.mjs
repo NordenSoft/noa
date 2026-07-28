@@ -28,6 +28,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ListToolsRequestSchema, CallToolRequestSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalReceipt, recordApproved, signEd25519 } from "noa-mcp-adapter-core";
+import { b } from "./helpers/bytes.mjs";
 import { createProxyServer } from "../src/create-proxy-server.mjs";
 import { startHttpProxy } from "../src/http-server.mjs";
 import { verifyOutcomeReceipt, OUTCOME_RECEIPT_SPEC } from "../src/outcome-receipt.mjs";
@@ -263,7 +264,7 @@ async function main() {
       // post-execution fact lives in the separate R2 OUTCOME receipt (scenario U below).
       JSON.stringify(["ALLOWED", "ALLOWED", "ALLOWED", "BLOCKED", "BLOCKED"]),
   );
-  const vA = verifyChain(sessA.receipts, { keyring: sessA.keyring });
+  const vA = verifyChain(b(sessA.receipts), { keyring: b(sessA.keyring) });
   ok(`(a) verifyChain(5 receipts) → VALID, offline, count=${vA.count}`, vA.status === "VALID" && vA.count === 5);
 
   const countsAfterA = readCounts(countsA);
@@ -335,8 +336,8 @@ async function main() {
     "(e) E1 and E2 use distinct scope.chain identifiers (no shared chain id)",
     sessE1.receipts[0].scope.chain !== sessE2.receipts[0].scope.chain,
   );
-  const vE1 = verifyChain(sessE1.receipts, { keyring: sessE1.keyring });
-  const vE2 = verifyChain(sessE2.receipts, { keyring: sessE2.keyring });
+  const vE1 = verifyChain(b(sessE1.receipts), { keyring: b(sessE1.keyring) });
+  const vE2 = verifyChain(b(sessE2.receipts), { keyring: b(sessE2.keyring) });
   ok("(e) session E1 chain independently verifies VALID", vE1.status === "VALID");
   ok("(e) session E2 chain independently verifies VALID", vE2.status === "VALID");
   ok("(e) shared store tracked exactly 2 sessions", storeE.size === 2);
@@ -382,7 +383,7 @@ async function main() {
     "(h) call 2: reuses seq 0 — the seq call 1 would have consumed — no gap left behind",
     sessH.receipts.length === 1 && sessH.receipts[0].chain.seq === 0,
   );
-  const vH = verifyChain(sessH.receipts, { keyring: sessH.keyring });
+  const vH = verifyChain(b(sessH.receipts), { keyring: b(sessH.keyring) });
   ok(`(h) verifyChain(persisted receipts) -> VALID, the chain never saw the lost attempt (status=${vH.status})`, vH.status === "VALID");
 
   await sessH.close();
@@ -430,7 +431,7 @@ async function main() {
     JSON.stringify(seqsJ) === JSON.stringify(Array.from({ length: 25 }, (_, i) => i)),
   );
   const orderedJ = [...sessJ.receipts].sort((a, b) => a.chain.seq - b.chain.seq);
-  const vJ = verifyChain(orderedJ, { keyring: sessJ.keyring });
+  const vJ = verifyChain(b(orderedJ), { keyring: b(sessJ.keyring) });
   ok(`(j) verifyChain(25 receipts, seq order) -> VALID, count=${vJ.count}`, vJ.status === "VALID" && vJ.count === 25);
 
   await sessJ.close();
@@ -505,7 +506,7 @@ async function main() {
     JSON.stringify(seqsM) === JSON.stringify(Array.from({ length: 25 }, (_, i) => i)),
   );
   const orderedM = [...sessM.receipts].sort((a, b) => a.chain.seq - b.chain.seq);
-  const vM = verifyChain(orderedM, { keyring: sessM.keyring });
+  const vM = verifyChain(b(orderedM), { keyring: b(sessM.keyring) });
   ok(`(m) verifyChain(25 receipts, seq order) -> VALID, count=${vM.count}`, vM.status === "VALID" && vM.count === 25);
 
   await sessM.close();
@@ -573,8 +574,8 @@ async function main() {
     call2ReceiptP.scope.chain !== call1ReceiptP.scope.chain,
   );
 
-  const vCall1SegmentP = verifyChain([call1ReceiptP], { keyring: sessP.keyring });
-  const vCall2SegmentP = verifyChain([call2ReceiptP], { keyring: sessP.keyring });
+  const vCall1SegmentP = verifyChain(b([call1ReceiptP]), { keyring: b(sessP.keyring) });
+  const vCall2SegmentP = verifyChain(b([call2ReceiptP]), { keyring: b(sessP.keyring) });
   ok(`(p) call 1's own segment independently verifies VALID — status=${vCall1SegmentP.status}`, vCall1SegmentP.status === "VALID");
   ok(
     `(p) call 2's segment independently verifies VALID (no fabricated TAMPERED seq-gap) — status=${vCall2SegmentP.status}`,
@@ -648,8 +649,8 @@ async function main() {
     "(q) call 2's segment is a DISTINCT scope.chain from call 1's dropped segment",
     sessQ.receipts[1].scope.chain !== sessQ.receipts[0].scope.chain,
   );
-  const vQCall1 = verifyChain([sessQ.receipts[0]], { keyring: sessQ.keyring });
-  const vQCall2 = verifyChain([sessQ.receipts[1]], { keyring: sessQ.keyring });
+  const vQCall1 = verifyChain(b([sessQ.receipts[0]]), { keyring: b(sessQ.keyring) });
+  const vQCall2 = verifyChain(b([sessQ.receipts[1]]), { keyring: b(sessQ.keyring) });
   ok(`(q) call 1's dropped-but-persisted segment still independently verifies VALID on its own — status=${vQCall1.status}`, vQCall1.status === "VALID");
   ok(`(q) call 2's fresh segment independently verifies VALID — status=${vQCall2.status}`, vQCall2.status === "VALID");
 
@@ -752,14 +753,14 @@ async function main() {
   // (agentId defaults to sessionId here) and the approver's kid to "human-approval-cli", so a
   // co-trusted key can never impersonate the human approval seat.
   const proxyKidR = Object.keys(sessR.keyring)[0];
-  const vR = verifyChain(sessR.receipts, {
-    keyring: { ...sessR.keyring, [approverKp.kid]: approverKp.publicKey },
-    identityManifest: { "session-R": [proxyKidR], "human-approval-cli": [approverKp.kid] },
+  const vR = verifyChain(b(sessR.receipts), {
+    keyring: b({ ...sessR.keyring, [approverKp.kid]: approverKp.publicKey }),
+    identityManifest: b({ "session-R": [proxyKidR], "human-approval-cli": [approverKp.kid] }),
   });
   ok(`(r) the full 3-receipt chain (2 different signing agents) verifies VALID with agent-level identity binding — status=${vR.status}`, vR.status === "VALID" && vR.count === 3);
-  const vRForged = verifyChain(sessR.receipts, {
-    keyring: { ...sessR.keyring, [approverKp.kid]: approverKp.publicKey },
-    identityManifest: { "session-R": [proxyKidR], "human-approval-cli": [proxyKidR] },
+  const vRForged = verifyChain(b(sessR.receipts), {
+    keyring: b({ ...sessR.keyring, [approverKp.kid]: approverKp.publicKey }),
+    identityManifest: b({ "session-R": [proxyKidR], "human-approval-cli": [proxyKidR] }),
   });
   ok(`(r) a manifest authorizing the AGENT's own kid for the human-approval seat is rejected UNTRUSTED — status=${vRForged.status}`, vRForged.status === "UNTRUSTED");
 
@@ -807,7 +808,7 @@ async function main() {
     .filter(Boolean)
     .map((line) => JSON.parse(line));
   ok("(F) CLI persisted 2 receipts to --receipt-log", cliReceipts.length === 2);
-  const vCli = verifyChain(cliReceipts, { keyring: cliKeyring });
+  const vCli = verifyChain(b(cliReceipts), { keyring: b(cliKeyring) });
   ok("(F) CLI receipt log independently verifies VALID against the CLI's --keyring-file", vCli.status === "VALID");
 
   // ---------------------------------------------------------------------------------------
@@ -859,8 +860,8 @@ async function main() {
   const receiptsRun1 = fs.readFileSync(receiptLogRun1, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
   const receiptsRun2 = fs.readFileSync(receiptLogRun2, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
   const persistedKeyring = { [keyAfterRun1.kid]: keyAfterRun1.publicKey };
-  const vRun1 = verifyChain(receiptsRun1, { keyring: persistedKeyring });
-  const vRun2 = verifyChain(receiptsRun2, { keyring: persistedKeyring });
+  const vRun1 = verifyChain(b(receiptsRun1), { keyring: b(persistedKeyring) });
+  const vRun2 = verifyChain(b(receiptsRun2), { keyring: b(persistedKeyring) });
   ok(`(n) run 1's receipt verifies VALID under the persisted key (status=${vRun1.status})`, vRun1.status === "VALID");
   ok(`(n) run 2's receipt (after restart) ALSO verifies VALID under the SAME persisted key (status=${vRun2.status})`, vRun2.status === "VALID");
 
@@ -919,7 +920,7 @@ async function main() {
   ok(`(r) seq is continuous 0..3 across the restart — got [${rSeqs.join(",")}]`, JSON.stringify(rSeqs) === JSON.stringify([0, 1, 2, 3]));
 
   const rKeyring = { [rKey.kid]: rKey.publicKey };
-  const vCombined = verifyChain(rCombined, { keyring: rKeyring });
+  const vCombined = verifyChain(b(rCombined), { keyring: b(rKeyring) });
   ok(`(r) the COMBINED 4-receipt log (both runs) verifies as ONE VALID chain — status=${vCombined.status}`, vCombined.status === "VALID");
   ok("(r) verifyChain sees all 4 receipts, not 2 disjoint segments", vCombined.count === 4);
 
@@ -1074,7 +1075,7 @@ async function main() {
   const keyringS = JSON.parse(fs.readFileSync(keyringFileS, "utf8"));
   const receiptsS = fs.readFileSync(receiptLogS, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
   ok("(S) exactly 1 receipt persisted", receiptsS.length === 1);
-  const vS = verifyChain(receiptsS, { keyring: keyringS });
+  const vS = verifyChain(b(receiptsS), { keyring: b(keyringS) });
   ok(`(S) the receipt verifies VALID under the SIDECAR's own keyring-file (status=${vS.status})`, vS.status === "VALID");
 
   const sidecarIdentityS = JSON.parse(fs.readFileSync(sidecarKeyFileS, "utf8"));
@@ -1141,7 +1142,7 @@ async function main() {
   const decU = sessU.receipts.filter((r) => r.governance.verdict === "ALLOWED");
   ok("(u) outcome[0] verifies offline + is bound to the echo decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[0], { keyring: sessU.keyring, expectedDecisionReceipt: decU[0] }).ok === true);
   ok("(u) outcome[1] verifies offline + is bound to the transfer decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[1], { keyring: sessU.keyring, expectedDecisionReceipt: decU[1] }).ok === true);
-  const vU = verifyChain(sessU.receipts, { keyring: sessU.keyring });
+  const vU = verifyChain(b(sessU.receipts), { keyring: b(sessU.keyring) });
   ok(`(u) the DECISION chain still verifies VALID (outcomes are NOT chained in) — count=${vU.count}`, vU.status === "VALID" && vU.count === 3);
   ok("(u) an outcome checked against the WRONG decision is rejected (binding enforced)", verifyOutcomeReceipt(sessU.outcomes[0], { keyring: sessU.keyring, expectedDecisionReceipt: decU[1] }).ok === false);
   const tamperedU = JSON.parse(JSON.stringify(sessU.outcomes[0]));
@@ -1207,7 +1208,7 @@ async function main() {
   ok("(v) an ERROR outcome receipt was emitted for the failed tool, naming it", Boolean(errOutcomeV) && errOutcomeV.action.id === "boom");
   ok("(v) the error outcome captured the downstream error message", /boom/.test(errOutcomeV?.outcome.error ?? ""));
   ok("(v) every outcome receipt (success + error) verifies offline", outcomesV.length >= 1 && outcomesV.every((o) => verifyOutcomeReceipt(o, { keyring: keyringV }).ok === true));
-  const vV = verifyChain(receiptsV, { keyring: keyringV });
+  const vV = verifyChain(b(receiptsV), { keyring: b(keyringV) });
   ok(`(v) the decision chain (slow_task, add_tool, boom — all ALLOW) verifies VALID — status=${vV.status}, count=${vV.count}`, vV.status === "VALID" && vV.count === 3);
   await clientV.close();
 
@@ -1247,7 +1248,7 @@ async function main() {
   ok("(w) the HTTP DENY never reached the downstream handler (transfer count 0)", readCounts(countsW).transfer_funds === 0);
   ok("(w) 2 decision receipts over HTTP (echo ALLOW + transfer DENY)", receiptsW.length === 2);
   ok("(w) HTTP decision verdicts [ALLOWED, BLOCKED]", JSON.stringify(receiptsW.map((r) => r.governance.verdict)) === JSON.stringify(["ALLOWED", "BLOCKED"]));
-  const vW = verifyChain(receiptsW, { keyring: keyringW });
+  const vW = verifyChain(b(receiptsW), { keyring: b(keyringW) });
   ok(`(w) the HTTP session's decision chain verifies VALID offline — count=${vW.count}`, vW.status === "VALID" && vW.count === 2);
   ok(
     "(w) exactly 1 outcome receipt over HTTP (only the executed echo, not the DENY) + it verifies & binds",
@@ -1286,13 +1287,13 @@ async function main() {
   ok("(x) segment A (2 receipts) all signed by the OLD kid", segX_A.length === 2 && segX_A.every((r) => r.sig.kid === kpXa.kid));
   ok("(x) segment B (2 receipts) all signed by the NEW kid — the new key is genuinely in use", segX_B.length === 2 && segX_B.every((r) => r.sig.kid === kpXb.kid));
   ok("(x) rotatable keyring carries BOTH the retired + current kid", rotX.keyring()[kpXa.kid] === kpXa.publicKey && rotX.keyring()[kpXb.kid] === kpXb.publicKey && rotX.retiredKids().join() === kpXa.kid);
-  ok("(x) historical segment A still verifies under the OLD kid ALONE", verifyChain(segX_A, { keyring: { [kpXa.kid]: kpXa.publicKey } }).status === "VALID");
-  ok("(x) segment B verifies under the NEW kid alone", verifyChain(segX_B, { keyring: { [kpXb.kid]: kpXb.publicKey } }).status === "VALID");
+  ok("(x) historical segment A still verifies under the OLD kid ALONE", verifyChain(b(segX_A), { keyring: b({ [kpXa.kid]: kpXa.publicKey }) }).status === "VALID");
+  ok("(x) segment B verifies under the NEW kid alone", verifyChain(b(segX_B), { keyring: b({ [kpXb.kid]: kpXb.publicKey }) }).status === "VALID");
   ok(
     "(x) the combined keyring verifies BOTH segments",
-    verifyChain(segX_A, { keyring: rotX.keyring() }).status === "VALID" && verifyChain(segX_B, { keyring: rotX.keyring() }).status === "VALID",
+    verifyChain(b(segX_A), { keyring: b(rotX.keyring()) }).status === "VALID" && verifyChain(b(segX_B), { keyring: b(rotX.keyring()) }).status === "VALID",
   );
-  const segBOldOnlyX = verifyChain(segX_B, { keyring: { [kpXa.kid]: kpXa.publicKey } });
+  const segBOldOnlyX = verifyChain(b(segX_B), { keyring: b({ [kpXa.kid]: kpXa.publicKey }) });
   ok(
     `(x) segment B does NOT verify under the OLD-kid-only keyring (new kid unknown there) — proves the swap is real, not cosmetic (status=${segBOldOnlyX.status})`,
     segBOldOnlyX.status !== "VALID" && segBOldOnlyX.signaturesVerified === false && /kidB|not in keyring/i.test(segBOldOnlyX.reason ?? ""),

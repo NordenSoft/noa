@@ -8,6 +8,7 @@ import { coseSign1, coseSign1Verify } from "../../src/cose/cose-sign1.js";
 import { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, CborError } from "../../src/cose/cbor.js";
 import { sha256Prefixed } from "../../src/hash.js";
 import { canonicalize } from "../../src/jcs.js";
+import { b } from "../helpers/bytes.js";
 
 function mkReceipt(signer: Signer) {
   const input: BuildInput = {
@@ -45,7 +46,7 @@ test("receipt → COSE_Sign1 → verify round-trips, returns the receipt", () =>
   assert.ok(Buffer.isBuffer(cose) && cose.length > 0);
   assert.equal(cose[0], 0xd2); // CBOR tag 18 (0xc0|18=0xd2) — a real COSE_Sign1 tag
 
-  const r = receiptFromCose(cose, keyring);
+  const r = receiptFromCose(cose, b(keyring));
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.kid, "noa-key-1");
   // canonical-equivalence (safeParse yields null-prototype objects; bytes are what matter)
@@ -56,25 +57,25 @@ test("COSE_Sign1: tampered payload fails verification", () => {
   const kp = generateKeyPair("k");
   const keyring = { k: kp.publicKey };
   const cose = coseSign1(Buffer.from("hello", "utf8"), { kid: "k", privateKey: kp.privateKey });
-  assert.equal(coseSign1Verify(cose, keyring).ok, true);
+  assert.equal(coseSign1Verify(cose, b(keyring)).ok, true);
   const tampered = Buffer.from(cose);
   // flip a byte inside the payload region (find 'hello')
   const idx = tampered.indexOf(Buffer.from("hello"));
   tampered[idx] = tampered[idx]! ^ 0x01;
-  assert.equal(coseSign1Verify(tampered, keyring).ok, false);
+  assert.equal(coseSign1Verify(tampered, b(keyring)).ok, false);
 });
 
 test("COSE_Sign1: unknown kid / no keyring entry ⇒ not verified (never throws)", () => {
   const kp = generateKeyPair("k");
   const cose = coseSign1(Buffer.from("x"), { kid: "k", privateKey: kp.privateKey });
-  const r = coseSign1Verify(cose, {}); // empty keyring
+  const r = coseSign1Verify(cose, b({})); // empty keyring
   assert.equal(r.ok, false);
   assert.match(r.reason ?? "", /unknown kid/);
 });
 
 test("COSE_Sign1: malformed CBOR ⇒ ok:false, no throw", () => {
-  assert.equal(coseSign1Verify(Buffer.from([0xff, 0x00, 0x13]), { k: "x" }).ok, false);
-  assert.equal(coseSign1Verify(Buffer.from([0x80]), { k: "x" }).ok, false); // empty array, not tag 18
+  assert.equal(coseSign1Verify(Buffer.from([0xff, 0x00, 0x13]), b({ k: "x" })).ok, false);
+  assert.equal(coseSign1Verify(Buffer.from([0x80]), b({ k: "x" })).ok, false); // empty array, not tag 18
 });
 
 test("decoder REJECTS non-canonical CBOR (shortest-form + sorted/unique map keys)", () => {
@@ -99,7 +100,7 @@ test("alg-confusion: a COSE_Sign1 whose protected header isn't {alg:Ed25519} is 
     const badProtected = encMap([[encInt(1), encInt(badAlg)]]);
     const body = encArray([encBstr(badProtected), encMap([[encInt(4), encBstr(Buffer.from("k"))]]), encBstr(Buffer.from("x")), encBstr(Buffer.alloc(64))]);
     const cose = Buffer.concat([Buffer.from([0xd2]), body]);
-    const r = coseSign1Verify(cose, { k: kp.publicKey });
+    const r = coseSign1Verify(cose, b({ k: kp.publicKey }));
     assert.equal(r.ok, false, `alg ${badAlg} must be rejected`);
     assert.match(r.reason ?? "", /Ed25519/);
   }
@@ -125,7 +126,7 @@ test("curve-pin: an Ed448 key + {1:-19} protected + genuine Ed448 signature is R
   const body = encArray([encBstr(prot), unprotected, encBstr(payload), encBstr(sig)]);
   const cose = encTag(18, body);
 
-  const r = coseSign1Verify(cose, { [kid]: pubB64 });
+  const r = coseSign1Verify(cose, b({ [kid]: pubB64 }));
   assert.equal(r.ok, false, "an Ed448 key/sig must be rejected even when the protected header says Ed25519 (curve pin)");
   assert.match(r.reason ?? "", /bad signature/); // reaches the verify step; rejected by the curve-type pin
 });
@@ -156,16 +157,16 @@ test("receiptFromCose identity binding — impersonation on the COSE path is cau
   const imp = buildReceipt(input, null, { kid: bob.kid, privateKey: bob.privateKey });
   const cose = receiptToCose(imp, { kid: bob.kid, privateKey: bob.privateKey });
   // no manifest → ok:true (COSE sig valid) BUT an explicit kid-level-attribution warning (no longer silent)
-  const weak = receiptFromCose(cose, keyring);
+  const weak = receiptFromCose(cose, b(keyring));
   assert.equal(weak.ok, true);
   assert.ok(weak.warnings.some((w) => /attribution is kid-level/.test(w)));
   // with manifest → impersonation rejected (alice not authorized for bob-key)
-  const strong = receiptFromCose(cose, keyring, manifest);
+  const strong = receiptFromCose(cose, b(keyring), b(manifest));
   assert.equal(strong.ok, false);
   assert.match(strong.reason ?? "", /not authorized for signing key/);
 });
 
-test("receiptFromCose identity binding is TOCTOU-safe — a flipping accessor manifest entry → ok:false (read-once snapshot)", () => {
+test("receiptFromCose identity binding is TOCTOU-safe — a flipping accessor manifest entry → ok:false, read ZERO times", () => {
   const alice = generateKeyPair("alice-key");
   const bob = generateKeyPair("bob-key");
   const keyring = { [alice.kid]: alice.publicKey, [bob.kid]: bob.publicKey };
@@ -180,44 +181,69 @@ test("receiptFromCose identity binding is TOCTOU-safe — a flipping accessor ma
   const cose = receiptToCose(imp, { kid: bob.kid, privateKey: bob.privateKey });
 
   // a getter that returns ['alice-key'] to validation then ['bob-key'] to enforcement would, pre-fix,
-  // "authorize" alice→bob-key (ok:true). The COSE-path snapshot reads the entry exactly once → ok:false.
+  // "authorize" alice→bob-key (ok:true). The old fix read the entry EXACTLY ONCE into a private Map.
   let reads = 0;
   const manifest: Record<string, string[]> = { bob: ["bob-key"] };
   Object.defineProperty(manifest, "alice", {
     enumerable: true, configurable: true,
     get() { return (++reads === 1 ? ["alice-key"] : ["bob-key"]) as string[]; },
   });
-  const r = receiptFromCose(cose, keyring, manifest);
+  // ASSERTION CHANGED on two lines, both in the strict direction:
+  //   • `reads === 1` → `reads === 0`. The manifest is a DOCUMENT now, so a live object is refused at
+  //     the boundary rather than being read once into a snapshot. "Read once" was the best available
+  //     guarantee while the object was traversed; "never read" is what replaces it.
+  //   • the reason regex moves from the authorization failure to the boundary's own refusal, because
+  //     the refusal happens before any (agent.id, kid) lookup. ok:false is unchanged, and the
+  //     authorization path is re-asserted immediately below over the same manifest as BYTES.
+  const r = receiptFromCose(cose, b(keyring), manifest as never);
   assert.equal(r.ok, false, "the flipping accessor must not authorize the impersonation");
-  assert.match(r.reason ?? "", /not authorized for signing key/);
-  assert.equal(reads, 1, "the COSE-path manifest entry must be read EXACTLY ONCE (snapshot)");
+  assert.match(r.reason ?? "", /expected Uint8Array or string/);
+  assert.equal(reads, 0, "the COSE-path manifest entry must never be read from a caller object");
+
+  // BOTH halves of the split as fixed documents — the only forms an attacker has left. The restrictive
+  // manifest rejects the impersonation; the permissive one is what the flip was trying to smuggle in,
+  // and supplying it openly is a caller decision, not a bypass.
+  const restrictive = receiptFromCose(cose, b(keyring), b({ alice: ["alice-key"], bob: ["bob-key"] }));
+  assert.equal(restrictive.ok, false);
+  assert.match(restrictive.reason ?? "", /not authorized for signing key/);
+  assert.equal(receiptFromCose(cose, b(keyring), b({ alice: ["alice-key", "bob-key"], bob: ["bob-key"] })).ok, true);
 });
 
 test("a non-object keyring (null / array / non-object) ⇒ clean ok:false, never throws (COSE path)", () => {
   const kp = generateKeyPair("k");
   const cose = coseSign1(Buffer.from("x"), { kid: "k", privateKey: kp.privateKey });
 
-  // coseSign1Verify: null / array / non-object keyring → clean ok:false, doesNotThrow (parity with verifyChain)
-  for (const bad of [null, [], "x", 5]) {
-    let r!: ReturnType<typeof coseSign1Verify>;
-    assert.doesNotThrow(() => { r = coseSign1Verify(cose, bad as never); });
-    assert.equal(r.ok, false, `coseSign1Verify must fail-closed on keyring=${JSON.stringify(bad)}`);
-    assert.match(r.reason ?? "", /keyring must be an object/);
-  }
-
-  // receiptFromCose: same guard at its own entry, before any manifest work
+  // coseSign1Verify: a trust-root DOCUMENT that parses to null / array / non-object → clean ok:false,
+  // doesNotThrow, same reason as before (parity with verifyChain).
   const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
   const wrapped = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
-  for (const bad of [null, [], "x"]) {
-    let r!: ReturnType<typeof receiptFromCose>;
-    assert.doesNotThrow(() => { r = receiptFromCose(wrapped, bad as never); });
-    assert.equal(r.ok, false, `receiptFromCose must fail-closed on keyring=${JSON.stringify(bad)}`);
+  for (const bad of [null, [], "x", 5]) {
+    let r!: ReturnType<typeof coseSign1Verify>;
+    assert.doesNotThrow(() => { r = coseSign1Verify(cose, b(bad as never)); });
+    assert.equal(r.ok, false, `coseSign1Verify must fail-closed on keyring=${JSON.stringify(bad)}`);
     assert.match(r.reason ?? "", /keyring must be an object/);
+    // receiptFromCose: same guard at its own entry, before any manifest work
+    let r2!: ReturnType<typeof receiptFromCose>;
+    assert.doesNotThrow(() => { r2 = receiptFromCose(wrapped, b(bad as never)); });
+    assert.equal(r2.ok, false, `receiptFromCose must fail-closed on keyring=${JSON.stringify(bad)}`);
+    assert.match(r2.reason ?? "", /keyring must be an object/);
+  }
+
+  // …and the same values as raw JavaScript, refused at the byte boundary. Fail-closed on both routes.
+  for (const bad of [null, [], 5, {}]) {
+    let r!: ReturnType<typeof coseSign1Verify>;
+    assert.doesNotThrow(() => { r = coseSign1Verify(cose, bad as never); });
+    assert.equal(r.ok, false, `coseSign1Verify must fail-closed on raw keyring=${JSON.stringify(bad)}`);
+    assert.match(r.reason ?? "", /expected Uint8Array or string/);
+    let r2!: ReturnType<typeof receiptFromCose>;
+    assert.doesNotThrow(() => { r2 = receiptFromCose(wrapped, bad as never); });
+    assert.equal(r2.ok, false, `receiptFromCose must fail-closed on raw keyring=${JSON.stringify(bad)}`);
+    assert.match(r2.reason ?? "", /expected Uint8Array or string/);
   }
 
   // sanity: a genuine keyring still verifies (no happy-path regression)
-  assert.equal(coseSign1Verify(cose, { k: kp.publicKey }).ok, true);
-  assert.equal(receiptFromCose(wrapped, { [kp.kid]: kp.publicKey }).ok, true);
+  assert.equal(coseSign1Verify(cose, b({ k: kp.publicKey })).ok, true);
+  assert.equal(receiptFromCose(wrapped, b({ [kp.kid]: kp.publicKey })).ok, true);
 });
 
 // ── FORWARD-COMPAT relaxation (verifier accepts draft-conformant peers; alg-pin preserved) ──────────
@@ -234,7 +260,7 @@ test("FWD-COMPAT (a): kid in the PROTECTED header {1:-19, 4:kid} is accepted AND
   // protected = {1:-19, 4:"k-prot"} (kid signed-in); unprotected = {} (empty)
   const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encBstr(Buffer.from("k-prot", "utf8"))]]);
   const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
-  const r = coseSign1Verify(cose, { "k-prot": kp.publicKey });
+  const r = coseSign1Verify(cose, b({ "k-prot": kp.publicKey }));
   assert.equal(r.ok, true, r.reason); // former exact-{1:-19} gate REJECTED this; now accepted
   assert.equal(r.kid, "k-prot"); // resolved from the protected (signed) bucket
   assert.equal(r.payload?.toString("utf8"), "kid-in-protected-payload");
@@ -247,7 +273,7 @@ test("FWD-COMPAT (a'): protected kid is preferred over a DIFFERENT unprotected k
   // unprotected carries a DECOY kid; the protected (signed) one must win → keyring lookup uses signer-key
   const unprot = encMap([[encInt(4), encBstr(Buffer.from("attacker-decoy-kid", "utf8"))]]);
   const cose = buildCose(prot, unprot, payload, kp.privateKey);
-  const r = coseSign1Verify(cose, { "signer-key": kp.publicKey });
+  const r = coseSign1Verify(cose, b({ "signer-key": kp.publicKey }));
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.kid, "signer-key");
 });
@@ -260,7 +286,7 @@ test("FWD-COMPAT (a''): a protected kid (label 4) that is NOT a bstr fails CLOSE
   const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encInt(42)]]);
   const unprot = encMap([[encInt(4), encBstr(Buffer.from("real-key", "utf8"))]]);
   const cose = buildCose(prot, unprot, payload, kp.privateKey);
-  const r = coseSign1Verify(cose, { "real-key": kp.publicKey });
+  const r = coseSign1Verify(cose, b({ "real-key": kp.publicKey }));
   assert.equal(r.ok, false, "a non-bstr protected kid must fail closed, not downgrade to the unsigned bucket");
   assert.match(r.reason ?? "", /protected kid .*must be a bstr/i);
 });
@@ -277,7 +303,7 @@ test("FWD-COMPAT (b): an UNKNOWN critical header (crit lists a label we don't pr
     [encInt(4), encBstr(Buffer.from("k-crit", "utf8"))],
   ]);
   const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
-  const r = coseSign1Verify(cose, { "k-crit": kp.publicKey });
+  const r = coseSign1Verify(cose, b({ "k-crit": kp.publicKey }));
   assert.equal(r.ok, false, "a crit label the verifier cannot process must fail-closed");
   assert.match(r.reason ?? "", /critical/);
 });
@@ -293,7 +319,7 @@ test("FWD-COMPAT (b''): a crit listing the kid label {2:[4]} is accepted — we 
     [encInt(4), encBstr(Buffer.from("k-crit-kid", "utf8"))],
   ]);
   const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
-  const r = coseSign1Verify(cose, { "k-crit-kid": kp.publicKey });
+  const r = coseSign1Verify(cose, b({ "k-crit-kid": kp.publicKey }));
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.kid, "k-crit-kid");
 });
@@ -303,7 +329,7 @@ test("FWD-COMPAT (b'): a crit listing ONLY the alg label {2:[1]} is accepted (we
   const payload = Buffer.from("p", "utf8");
   const prot = encMap([[encInt(1), encInt(-19)], [encInt(2), encArray([encInt(1)])]]);
   const cose = buildCose(prot, encMap([[encInt(4), encBstr(Buffer.from("k-crit-ok", "utf8"))]]), payload, kp.privateKey);
-  const r = coseSign1Verify(cose, { "k-crit-ok": kp.publicKey });
+  const r = coseSign1Verify(cose, b({ "k-crit-ok": kp.publicKey }));
   assert.equal(r.ok, true, r.reason);
 });
 
@@ -313,7 +339,7 @@ test("FWD-COMPAT (c): alg-confusion STILL closed — {1:-8} (deprecated EdDSA) i
   // even with a GENUINE Ed25519 signature, alg=-8 in the protected header must be rejected (alg pin).
   const prot = encMap([[encInt(1), encInt(-8)], [encInt(4), encBstr(Buffer.from("k8", "utf8"))]]);
   const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
-  const r = coseSign1Verify(cose, { k8: kp.publicKey });
+  const r = coseSign1Verify(cose, b({ k8: kp.publicKey }));
   assert.equal(r.ok, false, "alg -8 must remain rejected after the forward-compat relaxation");
   assert.match(r.reason ?? "", /Ed25519/);
 });
@@ -329,7 +355,7 @@ test("FWD-COMPAT (c'): an extra UNKNOWN non-critical protected label is IGNORED,
     [encInt(99), encBstr(Buffer.from("future", "utf8"))],
   ]);
   const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
-  const r = coseSign1Verify(cose, { "k-extra": kp.publicKey });
+  const r = coseSign1Verify(cose, b({ "k-extra": kp.publicKey }));
   assert.equal(r.ok, true, r.reason); // unknown non-critical labels ignored, not rejected (forward-compat)
   assert.equal(r.kid, "k-extra");
 });
@@ -343,7 +369,7 @@ test("FWD-COMPAT (d): a legacy kid-in-UNPROTECTED envelope STILL verifies, but i
   const payload = Buffer.from("legacy", "utf8");
   const prot = encMap([[encInt(1), encInt(-19)]]); // {1:-19} — alg only, NO kid in the signed header
   const cose = buildCose(prot, encMap([[encInt(4), encBstr(Buffer.from("k-legacy", "utf8"))]]), payload, kp.privateKey);
-  const r = coseSign1Verify(cose, { "k-legacy": kp.publicKey });
+  const r = coseSign1Verify(cose, b({ "k-legacy": kp.publicKey }));
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.kid, "k-legacy");
   assert.equal(r.kidAuthenticated, false, "an unprotected-header kid is not covered by the signature — not authenticated");
@@ -356,23 +382,33 @@ test("receiptFromCose with a throwing-accessor identityManifest → clean ok:fal
   const keyring = { [kp.kid]: kp.publicKey };
 
   // a manifest whose ENTRY getter throws — pre-fix the COSE path had no try/catch, so it escaped as a raw
-  // throw (unlike verifyChain). The guard makes it a clean ok:false.
+  // throw (unlike verifyChain). ok:false is unchanged; the added counters prove the getters never ran.
+  let entryFired = 0;
   const evilEntry: Record<string, unknown> = {};
-  Object.defineProperty(evilEntry, "a1", { enumerable: true, configurable: true, get() { throw new Error("boom"); } });
+  Object.defineProperty(evilEntry, "a1", { enumerable: true, configurable: true, get() { entryFired++; throw new Error("boom"); } });
   let r1!: ReturnType<typeof receiptFromCose>;
-  assert.doesNotThrow(() => { r1 = receiptFromCose(wrapped, keyring, evilEntry as never); });
+  assert.doesNotThrow(() => { r1 = receiptFromCose(wrapped, b(keyring), evilEntry as never); });
   assert.equal(r1.ok, false);
+  assert.equal(entryFired, 0, "the manifest entry getter fired inside the boundary");
 
   // a manifest entry that IS an array but whose element getter throws — same fail-closed contract.
+  let elemFired = 0;
   const arr: string[] = [];
-  Object.defineProperty(arr, "0", { enumerable: true, configurable: true, get() { throw new Error("boom"); } });
+  Object.defineProperty(arr, "0", { enumerable: true, configurable: true, get() { elemFired++; throw new Error("boom"); } });
   arr.length = 1;
   let r2!: ReturnType<typeof receiptFromCose>;
-  assert.doesNotThrow(() => { r2 = receiptFromCose(wrapped, keyring, { a1: arr } as never); });
+  assert.doesNotThrow(() => { r2 = receiptFromCose(wrapped, b(keyring), { a1: arr } as never); });
   assert.equal(r2.ok, false);
+  assert.equal(elemFired, 0, "the manifest element getter fired inside the boundary");
+
+  // A manifest that IS a document but carries a non-string kid — the shape guard the getters used to
+  // reach. It must still fail closed, or the checks above would be the only thing keeping it out.
+  const nonString = receiptFromCose(wrapped, b(keyring), b({ a1: [1, 2] }));
+  assert.equal(nonString.ok, false);
+  assert.match(nonString.reason ?? "", /must be an array of kid strings/);
 
   // sanity: a genuine manifest still binds (no regression) — a1 authorized for k.
-  assert.equal(receiptFromCose(wrapped, keyring, { a1: ["k"] }).ok, true);
+  assert.equal(receiptFromCose(wrapped, b(keyring), b({ a1: ["k"] })).ok, true);
 });
 
 // ── H4 — the kid used for attribution MUST be signed (protected header) ────────────────────────────
@@ -380,7 +416,7 @@ test("H4: NOA's producer now puts the kid in the PROTECTED (signed) header — a
   const kp = generateKeyPair("prod-kid");
   const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
   const cose = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
-  const r = coseSign1Verify(cose, { [kp.kid]: kp.publicKey });
+  const r = coseSign1Verify(cose, b({ [kp.kid]: kp.publicKey }));
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.kid, kp.kid);
   assert.equal(r.kidAuthenticated, true, "the producer's kid is in the signed header");
@@ -397,18 +433,18 @@ test("H4: an UNPROTECTED-only kid cannot bind an agent (manifest mode) — but s
   const keyring = { [kp.kid]: kp.publicKey };
 
   // no manifest → ok:true (a keyring-trusted key signed) + the existing kid-level-attribution warning.
-  const weak = receiptFromCose(cose, keyring);
+  const weak = receiptFromCose(cose, b(keyring));
   assert.equal(weak.ok, true, weak.reason);
   assert.ok(weak.warnings.some((w) => /attribution is kid-level/.test(w)));
 
   // with a manifest → REJECTED: the kid is not signed, so it is swappable and cannot bind an agent.
-  const strong = receiptFromCose(cose, keyring, { a1: [kp.kid] });
+  const strong = receiptFromCose(cose, b(keyring), b({ a1: [kp.kid] }));
   assert.equal(strong.ok, false, "an unauthenticated (unprotected) kid must not bind an agent");
   assert.match(strong.reason ?? "", /protected|authenticated/i);
 
   // contrast: the SAME receipt produced with a protected kid DOES bind (no over-correction).
   const good = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
-  assert.equal(receiptFromCose(good, keyring, { a1: [kp.kid] }).ok, true);
+  assert.equal(receiptFromCose(good, b(keyring), b({ a1: [kp.kid] })).ok, true);
 });
 
 test("H4: swapping the unprotected kid on a protected-kid envelope does NOT change attribution", () => {
@@ -420,7 +456,7 @@ test("H4: swapping the unprotected kid on a protected-kid envelope does NOT chan
   const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encBstr(Buffer.from(signer.kid, "utf8"))]]);
   const unprot = encMap([[encInt(4), encBstr(Buffer.from(victim.kid, "utf8"))]]);
   const cose = buildCose(prot, unprot, payload, signer.privateKey);
-  const r = coseSign1Verify(cose, { [signer.kid]: signer.publicKey, [victim.kid]: victim.publicKey });
+  const r = coseSign1Verify(cose, b({ [signer.kid]: signer.publicKey, [victim.kid]: victim.publicKey }));
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.kid, signer.kid, "the SIGNED protected kid wins — the unprotected decoy is ignored");
   assert.equal(r.kidAuthenticated, true);
@@ -444,7 +480,7 @@ test("H5: an invalid-UTF-8 / non-canonical payload with a VALID outer signature 
   // Sign over the CORRUPTED bytes, so the OUTER signature is valid over the non-canonical payload.
   const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encBstr(Buffer.from(kp.kid, "utf8"))]]);
   const cose = buildCose(prot, encMap([]), corrupted, kp.privateKey);
-  const r = receiptFromCose(cose, { [kp.kid]: kp.publicKey });
+  const r = receiptFromCose(cose, b({ [kp.kid]: kp.publicKey }));
   assert.equal(r.ok, false, "a receipt that does not re-canonicalize to the signed bytes must be rejected");
   assert.match(r.reason ?? "", /canonical|re-canonicalize/i);
 });
@@ -453,7 +489,7 @@ test("H5: a genuine receipt round-trips (the canonical check does not over-rejec
   const kp = generateKeyPair("h5-ok");
   const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
   const cose = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
-  const r = receiptFromCose(cose, { [kp.kid]: kp.publicKey });
+  const r = receiptFromCose(cose, b({ [kp.kid]: kp.publicKey }));
   assert.equal(r.ok, true, r.reason);
   assert.equal(canonicalize(r.receipt), canonicalize(receipt));
 });

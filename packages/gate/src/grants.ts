@@ -11,6 +11,7 @@
 
 import { signArtifact, refHash, receiptRefHash } from "noa-approval-artifacts";
 import type { GateKeyPair } from "./trust.js";
+import { encodeDocument } from "./bytes.js";
 import type {
   ExecutionConsumption,
   ExecutionGrant,
@@ -46,7 +47,7 @@ export function issueGrant(args: {
     maxUses: 1 as const,
     nonce: args.nonce,
   };
-  return signArtifact(doc, "NOA-ExecGrant-v0.1-sig", execSigner(args.gate)) as ExecutionGrant;
+  return signArtifact<typeof doc>(encodeDocument(doc), "NOA-ExecGrant-v0.1-sig", execSigner(args.gate)) as ExecutionGrant;
 }
 
 export function buildConsumption(args: {
@@ -63,7 +64,7 @@ export function buildConsumption(args: {
     attemptReceiptHash: receiptRefHash(args.attemptReceipt as unknown as Record<string, unknown>),
     result: args.result,
   };
-  return signArtifact(doc, "NOA-ExecConsume-v0.1-sig", execSigner(args.gate)) as ExecutionConsumption;
+  return signArtifact<typeof doc>(encodeDocument(doc), "NOA-ExecConsume-v0.1-sig", execSigner(args.gate)) as ExecutionConsumption;
 }
 
 export function buildUncertainty(args: {
@@ -82,5 +83,5 @@ export function buildUncertainty(args: {
     bootId: args.bootId,
     uptimeResetAt: args.uptimeResetAt,
   };
-  return signArtifact(doc, "NOA-ExecUncertainty-v0.1-sig", execSigner(args.gate)) as ExecutionUncertainty;
+  return signArtifact<typeof doc>(encodeDocument(doc), "NOA-ExecUncertainty-v0.1-sig", execSigner(args.gate)) as ExecutionUncertainty;
 }

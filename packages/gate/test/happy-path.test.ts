@@ -11,6 +11,7 @@ import { verifyChain } from "noa-receipt";
 import { verifyArtifact, refHash, receiptRefHash, virtualHash } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
 import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
 
@@ -60,7 +61,7 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
 
   // 4. The full DEFERRED→ALLOWED→EXECUTED chain verifies VALID against the gate + approver keyring.
   const chain = [deferred, allowed, executed];
-  const vc = verifyChain(chain, { keyring: trust.receiptKeyring, requireTenantConsistency: true });
+  const vc = verifyChain(b(chain), { keyring: b(trust.receiptKeyring), requireTenantConsistency: true });
   assert.equal(vc.status, "VALID", `verifyChain: ${vc.status} ${vc.reason ?? ""}`);
   assert.equal(vc.count, 3);
 
@@ -69,10 +70,10 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
   const now = new Date(trust.now()).toISOString();
   const keyring = trust.keyring;
 
-  const envCheck = verifyArtifact(holdEnvelope, { schemas, keyring, now });
+  const envCheck = verifyArtifact(b(holdEnvelope), b({ schemas, keyring, now }));
   assert.ok(envCheck.ok, `holdEnvelope: ${envCheck.reason}`);
 
-  const grantCheck = verifyArtifact(grant, {
+  const grantCheck = verifyArtifact(b(grant), b({
     schemas,
     keyring,
     now,
@@ -80,10 +81,10 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
       { path: "holdEnvelopeHash", rule: "side", artifact: holdEnvelope },
       { path: "approvalReceiptHash", rule: "receipt", artifact: allowed },
     ],
-  });
+  }));
   assert.ok(grantCheck.ok, `grant: ${grantCheck.reason}`);
 
-  const consCheck = verifyArtifact(consumption, {
+  const consCheck = verifyArtifact(b(consumption), b({
     schemas,
     keyring,
     now,
@@ -91,11 +92,11 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
       { path: "grantHash", rule: "side", artifact: grant },
       { path: "attemptReceiptHash", rule: "receipt", artifact: executed },
     ],
-  });
+  }));
   assert.ok(consCheck.ok, `consumption: ${consCheck.reason}`);
 
   const resolution = hold.holdResolution!;
-  const resCheck = verifyArtifact(resolution as unknown as Record<string, unknown>, {
+  const resCheck = verifyArtifact(b(resolution as unknown as Record<string, unknown>), b({
     schemas,
     keyring,
     now,
@@ -104,7 +105,7 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
       { path: "verdictReceiptHash", rule: "receipt", artifact: allowed },
       { path: "decisionArtifactHash", rule: "side", artifact: decisionArtifact },
     ],
-  });
+  }));
   assert.ok(resCheck.ok, `holdResolution: ${resCheck.reason}`);
   // F10 — the resolution carries the gate's trusted receivedAt, and status maps 1:1 to APPROVED.
   assert.equal(resolution.status, "APPROVED");

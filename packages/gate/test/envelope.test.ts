@@ -9,6 +9,7 @@ import assert from "node:assert/strict";
 import { verifyArtifact, virtualHash } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
 import { setupGate, sampleCommandParams } from "./helpers.js";
+import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
 
@@ -26,14 +27,14 @@ test("F2: displayCiphertextHash covers the WHOLE encrypted-display; a relay-adde
 
   // The original sealed display matches the gate-signed hash.
   assert.equal(boundHash, virtualHash(hold.encryptedDisplay));
-  const original = verifyArtifact(hold.encryptedDisplay as unknown as Record<string, unknown>, { schemas, expectVirtualHash: boundHash });
+  const original = verifyArtifact(b(hold.encryptedDisplay as unknown as Record<string, unknown>), b({ schemas, expectVirtualHash: boundHash }));
   assert.ok(original.ok, `original display: ${original.reason}`);
 
   // A relay splices in an extra recipient → the whole-object hash no longer matches the envelope.
   const tampered = structuredClone(hold.encryptedDisplay) as unknown as { recipients: Array<Record<string, string>> };
   tampered.recipients.push({ kid: "attacker-device", enc: "ZXZpbA", wrappedCek: "c3RvbGVu" });
   assert.notEqual(virtualHash(tampered), boundHash);
-  const swapped = verifyArtifact(tampered as unknown as Record<string, unknown>, { schemas, expectVirtualHash: boundHash });
+  const swapped = verifyArtifact(b(tampered as unknown as Record<string, unknown>), b({ schemas, expectVirtualHash: boundHash }));
   assert.equal(swapped.ok, false, "a recipients-swapped display MUST fail the bound displayCiphertextHash (F2)");
 });
 
@@ -46,6 +47,6 @@ test("the Hold Envelope itself verifies as GATE + hold-signer (F15)", () => {
     chain: "chain-env",
   });
   const env = (created.body as { holdEnvelope: Record<string, unknown> }).holdEnvelope;
-  const check = verifyArtifact(env, { schemas, keyring: fx.trust.keyring, now: new Date(fx.trust.now()).toISOString() });
+  const check = verifyArtifact(b(env), b({ schemas, keyring: fx.trust.keyring, now: new Date(fx.trust.now()).toISOString() }));
   assert.ok(check.ok, check.reason);
 });

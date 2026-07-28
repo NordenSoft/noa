@@ -56,6 +56,13 @@ const EXEMPT = {
   // Utilities — pure functions with no verdict, or the parse boundary itself.
   canonicalize: ["UTILITY", "pure JCS canonicalization; no verdict"],
   safeParse: ["UTILITY", "IS the strict parse boundary (src/safe-json.ts); already bytes/text-in"],
+  // The byte boundary itself. `unknown` is BY DESIGN — deciding whether an arbitrary value is a
+  // document is the job — so requiring `Uint8Array | string` here would be circular, exactly as it
+  // would be for `safeParse` above. Published so sibling packages stop re-creating it.
+  decodeDocument: ["UTILITY", "IS the byte boundary (src/bytes.ts); decides whether a value is a document at all"],
+  parseDocument: ["UTILITY", "IS the byte boundary (src/bytes.ts); decode-then-strict-parse, the route every document takes"],
+  isUint8Array: ["UTILITY", "pure predicate over an internal slot"],
+  MAX_INPUT_BYTES: ["CONSTANT", ""],
   deepFreeze: ["UTILITY", "pure structural helper"],
   sha256Hex: ["UTILITY", "pure hash"],
   sha256Prefixed: ["UTILITY", "pure hash"],

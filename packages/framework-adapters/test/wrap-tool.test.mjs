@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, signEd25519, verifyChain, REFUND_GUARD_POLICY } from "noa-mcp-adapter-core";
+import { b } from "./helpers/bytes.mjs";
 import { createToolGuard, GuardedToolDenied } from "../src/wrap-tool.mjs";
 
 function signerAndKeyring(kid) {
@@ -34,7 +35,7 @@ test("createToolGuard: ALLOW calls fn and returns its result unchanged", async (
   assert.equal(guard.receipts.length, 2);
   assert.equal(guard.receipts[0].governance.verdict, "ALLOWED");
   assert.equal(guard.receipts[1].governance.verdict, "EXECUTED");
-  const v = verifyChain(guard.receipts, { keyring });
+  const v = verifyChain(b(guard.receipts), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
 });
 
@@ -79,7 +80,7 @@ test("createToolGuard: N calls (mixed ALLOW/DENY) -> N receipts, offline-verifia
     guard.receipts.map((r) => r.governance.verdict),
     ["ALLOWED", "EXECUTED", "BLOCKED", "ALLOWED", "EXECUTED", "BLOCKED"],
   );
-  const v = verifyChain(guard.receipts, { keyring });
+  const v = verifyChain(b(guard.receipts), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
   assert.equal(v.count, expected);
 });
@@ -142,7 +143,7 @@ test("createToolGuard: CONCURRENT calls on ONE guard with an async (remote) sign
   });
   assert.equal(settled.size, N, "every decision is settled by exactly one outcome");
 
-  const v = verifyChain(guard.receipts, { keyring: remoteKeyring });
+  const v = verifyChain(b(guard.receipts), { keyring: b(remoteKeyring) });
   assert.equal(v.status, "VALID", "a corrupted/duplicate-seq chain would fail this");
   assert.equal(v.count, 2 * N);
 });

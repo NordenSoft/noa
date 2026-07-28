@@ -13,6 +13,7 @@ import { InMemoryStore } from "../src/store.js";
 import { hashSecret } from "../src/auth.js";
 import { guard, HttpGateClient } from "../src/wrapper.js";
 import { testSealer, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { b } from "./helpers/bytes.js";
 
 test("localhost HTTP: full ENFORCED round-trip returns a verifyChain-VALID chain over the wire", async () => {
   const trust = createAlphaTrust({ tenant: "http-tenant", approverRole: "approve-high" });
@@ -74,7 +75,7 @@ test("localhost HTTP: full ENFORCED round-trip returns a verifyChain-VALID chain
 
     // 6. verify the whole chain offline.
     const chain = [hold.deferredReceipt, receipt, executed];
-    const vc = verifyChain(chain, { keyring: trust.receiptKeyring, requireTenantConsistency: true });
+    const vc = verifyChain(b(chain), { keyring: b(trust.receiptKeyring), requireTenantConsistency: true });
     assert.equal(vc.status, "VALID", vc.reason);
     assert.equal(vc.count, 3);
   } finally {

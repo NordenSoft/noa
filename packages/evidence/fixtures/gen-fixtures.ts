@@ -21,6 +21,7 @@ import { ARTIFACTS, signArtifact, refHash, receiptRefHash, type Signer as SideSi
 import { buildReceipt, buildCheckpoint, type BuildInput, type Receipt, type Checkpoint, type Signer as ReceiptSigner, type Verdict } from "noa-receipt";
 import type { EvidenceBundle, EvidenceOutcome } from "../src/types.js";
 import type { ReceiptRole } from "../src/receipt-roles.js";
+import { encodeDocument } from "../src/bytes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT = join(__dirname, "..", "..", "conformance");
@@ -46,7 +47,10 @@ function sideDomain(spec: string): string {
   return ARTIFACTS[spec]!.domain!;
 }
 function sign(core: J, spec: string, kid: string): J {
-  return signArtifact(structuredClone(core), sideDomain(spec), sSign(kid)) as unknown as J;
+  // BYTES-IN: `signArtifact` takes the document as bytes now, so the `structuredClone` that used to
+  // stand here is redundant — serializing already produces a value the signer cannot share with this
+  // generator. The producer holds its own literal fixture objects, so this is a pure serialization.
+  return signArtifact(encodeDocument(core), sideDomain(spec), sSign(kid)) as unknown as J;
 }
 
 // ─── fixed clock / tenant / chain ────────────────────────────────────────────────────────────────

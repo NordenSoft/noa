@@ -4,6 +4,7 @@ import { generateKeyPair, signEd25519 } from "../src/keys.js";
 import { buildReceipt, buildReceiptAsync, BuilderError, type BuildInput, type RemoteSigner } from "../src/builder.js";
 import { verifyChain } from "../src/verify.js";
 import { sha256Prefixed } from "../src/hash.js";
+import { b } from "./helpers/bytes.js";
 
 function mkInput(id: string, ts: string): BuildInput {
   return {
@@ -52,7 +53,7 @@ test("buildReceiptAsync's receipt verifies VALID under the RemoteSigner's own pu
   const kp = generateKeyPair("k-async-2");
   const remoteSigner = fakeRemoteSigner(kp.kid, kp.privateKey);
   const r = await buildReceiptAsync(mkInput("rcpt_0", "2026-07-11T00:00:00.000Z"), null, remoteSigner);
-  const v = verifyChain([r], { keyring: { [kp.kid]: kp.publicKey } });
+  const v = verifyChain(b([r]), { keyring: b({ [kp.kid]: kp.publicKey }) });
   assert.equal(v.status, "VALID", v.reason);
 });
 
@@ -75,6 +76,6 @@ test("buildReceiptAsync still refuses to return a signed-but-malformed receipt (
 test("buildReceiptAsync accepts a LOCAL { kid, privateKey } Signer too (not RemoteSigner-only)", async () => {
   const kp = generateKeyPair("k-async-4");
   const r = await buildReceiptAsync(mkInput("rcpt_0", "2026-07-11T00:00:00.000Z"), null, { kid: kp.kid, privateKey: kp.privateKey });
-  const v = verifyChain([r], { keyring: { [kp.kid]: kp.publicKey } });
+  const v = verifyChain(b([r]), { keyring: b({ [kp.kid]: kp.publicKey }) });
   assert.equal(v.status, "VALID", v.reason);
 });

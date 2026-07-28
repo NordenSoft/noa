@@ -30,6 +30,7 @@ import { buildHoldEnvelope } from "./envelope.js";
 import { issueGrant, buildConsumption, buildUncertainty } from "./grants.js";
 import { buildHoldResolution } from "./resolution.js";
 import { getProjection } from "./projections.js";
+import { encodeDocument } from "./bytes.js";
 // PRISTINE TIME (review #6, C1): a grant-expiry comparison is an authorization decision, so it must
 // not dispatch through the globally-mutable `Date.parse`.
 const gateDateParse = Date.parse;
@@ -444,7 +445,7 @@ export class GateEngine {
 
     // 1. Verify the Decision Artifact: signature (approver), F15 role tier (from the held riskClass),
     //    and its binding to THIS Hold Envelope (holdEnvelopeHash), transitively enforcing tenant (F7b).
-    const daCheck = verifyArtifact(decisionArtifact, {
+    const daCheck = verifyArtifact(encodeDocument(decisionArtifact), encodeDocument({
       schemas: this.schemas,
       keyring: this.trust.keyring,
       now: receivedAt,
@@ -453,7 +454,7 @@ export class GateEngine {
       refHashChecks: [
         { path: "holdEnvelopeHash", rule: "side", artifact: hold.holdEnvelope, refEquals: [{ path: "tenant", value: hold.tenant }] },
       ],
-    });
+    }));
     if (!daCheck.ok) return err(422, "DECISION_ARTIFACT_INVALID", { detail: daCheck.reason });
 
     const decisionVal = decisionArtifact["decision"];
@@ -479,8 +480,10 @@ export class GateEngine {
         detail: "artifact and receipt keyrings must resolve the approver kid to the same public key",
       });
     }
-    const chainCheck = verifyChain([hold.deferredReceipt, receipt], {
-      keyring: this.trust.receiptKeyring,
+    // BYTES-IN: the chain and the keyring go to the kernel as DOCUMENTS. Both are the gate's own
+    // data — a receipt it stored and a keyring it resolved — so this is a pure serialization.
+    const chainCheck = verifyChain(encodeDocument([hold.deferredReceipt, receipt]), {
+      keyring: encodeDocument(this.trust.receiptKeyring),
       requireTenantConsistency: true,
     });
     if (chainCheck.status !== "VALID") {

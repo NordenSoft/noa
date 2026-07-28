@@ -108,6 +108,16 @@ export const NOA_RECEIPT: EntryPoint[] = [
 
   // ── primitives ─────────────────────────────────────────────────────────────────────────────────
   { name: "safeParse", cls: "dataless" },
+  // THE BYTE BOUNDARY ITSELF, published 2026-07-28 so `packages/evidence` stops re-creating it.
+  // `dataless` in the sense this registry means: their parameter is bytes or text, and the whole
+  // point of `decodeDocument` is to DECIDE whether an arbitrary value is one — so the `unknown` in
+  // its signature is the job, not an unrouted surface. Probing it with a hostile object is exactly
+  // what `test/security/bytes-boundary.test.ts` already does, in more detail than a generic probe
+  // could: it asserts the refusal, that no `toJSON`/`toString` is called, that the type test reads an
+  // internal slot rather than a forgeable tag, and that the ceiling is enforced BEFORE the decode.
+  { name: "decodeDocument", cls: "dataless" },
+  { name: "parseDocument", cls: "dataless" },
+  { name: "isUint8Array", cls: "dataless" },
   { name: "isNFC", cls: "dataless" },
   { name: "sha256Hex", cls: "dataless" },
   { name: "sha256Prefixed", cls: "dataless" },

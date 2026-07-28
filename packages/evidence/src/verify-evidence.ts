@@ -12,7 +12,8 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACTS, evalSchema, type KeyEntry } from "noa-approval-artifacts";
-import { snapshotImmutable, isIngestError, intrinsics, type Keyring } from "noa-receipt";
+import { intrinsics } from "noa-receipt";
+import { parseDocument } from "./bytes.js";
 import {
   EVIDENCE_SPEC,
   POSITIVE_OUTCOMES,
@@ -113,10 +114,14 @@ export function loadSchemas(): LoadedSchemas {
 }
 
 export interface VerifyEvidenceOptions {
-  /** EXTERNAL tenant trust root (F7a): kid -> ROOT KeyEntry (or terse kid->pubkey). REQUIRED. */
-  tenantRoot: Record<string, KeyEntry> | Record<string, string>;
-  /** EXTERNAL checkpoint keyring (F7a): kid -> base64 SPKI. REQUIRED. */
-  checkpointKeyring: Keyring | Record<string, unknown>;
+  /**
+   * EXTERNAL tenant trust root DOCUMENT (F7a), as bytes or its JSON text: kid -> ROOT KeyEntry (or
+   * terse kid->pubkey). REQUIRED. It is a FILE the operator supplies, so it is bytes — the same
+   * change `noa-receipt`'s own `VerifyOptions.keyring` made, for the same reason.
+   */
+  tenantRoot: Uint8Array | string;
+  /** EXTERNAL checkpoint keyring DOCUMENT (F7a), as bytes or its JSON text: kid -> base64 SPKI. REQUIRED. */
+  checkpointKeyring: Uint8Array | string;
   /** verification "now" (RFC 3339). Default: actual current time. */
   now?: string;
   /** F5 checkpoint max-age in ms. Default 24h. */
@@ -169,24 +174,40 @@ function result(
  * Verify an Approval Evidence Bundle. Pure/offline. Returns a tiered verdict + the ordered per-step
  * audit trail; never throws on a malformed bundle (fail-closed to INVALID / UNVERIFIED).
  */
-export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions): VerifyEvidenceResult {
+export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvidenceOptions): VerifyEvidenceResult {
   const warnings: string[] = [];
 
-  // THE INGEST BOUNDARY, FOR EVERY CALLER-SUPPLIED ARGUMENT (review #6, C1). The bundle was
-  // snapshotted and `opts` was not, so `purpose`, `tenantRoot`, `checkpointKeyring`, `now` and
-  // `maxAgeMs` were LIVE reads spanning the whole pipeline — the trust root that was validated by
-  // `asRootKeyEntryMap` and the trust root the steps then used were two separate reads of the same
-  // getter. Snapshotting the evidence and leaving the TRUST ROOT live is the same defect one argument
-  // to the left. `schemas` is excluded on purpose: it is the verifier's own loaded schema set (a
-  // large, already-parsed, non-caller-controlled structure), and re-snapshotting it on every call
-  // would be an O(schema) cost per verification for no security gain — a caller who can substitute
-  // the verifier's schemas has already replaced the verifier.
-  const suppliedSchemas = opts.schemas;
+  // ── OPTIONS ARE CONFIGURATION; DOCUMENTS ARE BYTES ──────────────────────────────────────────────
+  //
+  // `opts` used to be run through `snapshotImmutable` because the members were LIVE reads spanning
+  // the whole pipeline: the trust root `asRootKeyEntryMap` validated and the trust root the steps
+  // then used were two separate reads of the same getter. Two of those members were the real
+  // hazard, and they are no longer objects at all — `tenantRoot` and `checkpointKeyring` are
+  // DOCUMENTS and now arrive as bytes, parsed once by the kernel's own parser.
+  //
+  // What is left is genuine configuration: `now`, `maxAgeMs`, `purpose`, and the verifier's own
+  // `schemas`. Each is captured EXACTLY ONCE, here, into a local — so there is no second read to
+  // disagree with the first, and the TOCTOU class disappears rather than being defended against.
+  // (`schemas` was always excluded from the snapshot on purpose: it is the verifier's own loaded
+  // schema set, and a caller who can substitute it has already replaced the verifier.)
+  //
+  // The capture is guarded because a caller may still hand this a live object whose accessor throws,
+  // and a security-sensitive entry point must return a verdict rather than an exception.
+  let suppliedSchemas: LoadedSchemas | undefined;
+  let optTenantRoot: Uint8Array | string;
+  let optCheckpointKeyring: Uint8Array | string;
+  let optNow: string | undefined;
+  let optMaxAgeMs: number | undefined;
+  let rawPurpose: unknown;
   try {
-    opts = snapshotImmutable<VerifyEvidenceOptions>({ ...opts, schemas: undefined });
-  } catch (e) {
-    const why = isIngestError(e) ? (e as Error).message : "options could not be reduced to inert data";
-    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `verification options rejected at the ingest boundary: ${why}` });
+    suppliedSchemas = opts.schemas;
+    optTenantRoot = opts.tenantRoot;
+    optCheckpointKeyring = opts.checkpointKeyring;
+    optNow = opts.now;
+    optMaxAgeMs = opts.maxAgeMs;
+    rawPurpose = opts.purpose ?? "audit";
+  } catch {
+    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "verification options could not be read: an option accessor threw" });
   }
   const schemas = suppliedSchemas ?? loadSchemas();
 
@@ -195,28 +216,30 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
   // through the `=== "authorize"` tests to the AUDIT default and returned VALID_*. For a verb that
   // decides whether a live authorization check runs, an unrecognised value must FAIL CLOSED, never
   // quietly downgrade to audit.
-  const rawPurpose = opts.purpose ?? "audit";
   if (rawPurpose !== "audit" && rawPurpose !== "authorize") {
     return result("UNVERIFIED", null, [], warnings, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: `unrecognised purpose ${JSON.stringify(rawPurpose)} — must be exactly "audit" or "authorize" (fail-closed: an unknown purpose is never treated as audit)` });
   }
   const purpose: VerificationPurpose = rawPurpose;
 
-  // THE INGEST BOUNDARY — snapshot the caller's LIVE bundle into inert, own-data-only, frozen data
-  // ONCE, here, before evalSchema or any step reads a field. Every getter is fired exactly once, so
-  // the fifth review's C1 (a `governance` getter that returns unsigned DEFERRED to the role check and
-  // signer-attested ALLOWED to the reread, read three times) is impossible by construction: the steps
-  // read only the snapshot, which has no getters. A bundle that fights the snapshot (a throwing
-  // getter, a non-plain object) is INVALID, never silently accepted.
-  let bundle: EvidenceBundle;
-  try {
-    bundle = snapshotImmutable<EvidenceBundle>(bundleInput);
-  } catch (e) {
-    const why = isIngestError(e) ? (e as Error).message : "bundle could not be reduced to inert data";
-    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the ingest boundary: ${why}` }, [], { integrity: "BROKEN", authorization: "UNCHECKED" }, purpose);
+  // THE BYTE BOUNDARY — the bundle is a DOCUMENT and enters as bytes, parsed ONCE by the kernel's
+  // own strict parser before evalSchema or any step reads a field. The fifth review's C1 (a
+  // `governance` getter that returns unsigned DEFERRED to the role check and signer-attested ALLOWED
+  // to the reread) is not merely defended against now — it is not CONSTRUCTIBLE: a byte document has
+  // no getters to flip, and the parser's output is null-prototype, duplicate-key-free and
+  // accessor-free. The nearest byte-form equivalent of that attack is a document carrying the same
+  // key twice so producer and verifier can disagree about which value is "the" value; `safeParse`
+  // rejects duplicate keys outright, so it fails here rather than deeper in.
+  const parsedBundle = parseDocument(bundleInput, "bundle");
+  if (!parsedBundle.ok) {
+    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the byte boundary: ${parsedBundle.reason}` }, [], { integrity: "BROKEN", authorization: "UNCHECKED" }, purpose);
+  }
+  const bundle = parsedBundle.value as EvidenceBundle;
+  if (bundle === null || typeof bundle !== "object" || Array.isArray(bundle)) {
+    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "bundle rejected at the byte boundary: the document is not a JSON object" }, [], { integrity: "BROKEN", authorization: "UNCHECKED" }, purpose);
   }
 
-  const rootKeyring = asRootKeyEntryMap(opts.tenantRoot);
-  const checkpointKeyring = asStringKeyring(opts.checkpointKeyring);
+  const rootKeyring = asRootKeyEntryMap(optTenantRoot);
+  const checkpointKeyring = asStringKeyring(optCheckpointKeyring);
 
   // (F7a) external trust root REQUIRED — no root / no checkpoint keyring → UNVERIFIED, never VALID.
   if (Object.keys(rootKeyring).length === 0) {
@@ -237,7 +260,7 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
   }
 
   // precompute the shared context.
-  const now = opts.now ?? new Date(intrinsics.dateNow()).toISOString();
+  const now = optNow ?? new Date(intrinsics.dateNow()).toISOString();
   const hr = asObj(bundle.holdResolution);
   const deferred = asObj(bundle.deferredReceipt);
   const receivedAtRaw = hr && typeof hr.receivedAt === "string" ? hr.receivedAt : undefined;
@@ -261,7 +284,7 @@ export function verifyEvidence(bundleInput: unknown, opts: VerifyEvidenceOptions
   const ctx: Ctx = {
     bundle,
     now,
-    maxAgeMs: opts.maxAgeMs ?? DEFAULT_MAX_AGE_MS,
+    maxAgeMs: optMaxAgeMs ?? DEFAULT_MAX_AGE_MS,
     schemas: schemas.artifacts,
     rootKeyring,
     checkpointKeyring,

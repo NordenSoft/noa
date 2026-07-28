@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, signEd25519, verifyChain } from "noa-receipt";
+import { b } from "./helpers/bytes.mjs";
 import { preCheck } from "../src/pre-check.mjs";
 import { preCheckAsync } from "../src/pre-check.mjs";
 import { createChainSessionStore, prepareSessionReceipt, prepareSessionReceiptAsync, commitSessionReceipt } from "../src/session-store.mjs";
@@ -48,7 +49,7 @@ test("prepareSessionReceiptAsync + commitSessionReceipt: a 3-call chain via a Re
   }
   assert.equal(receipts.length, 3);
   assert.deepEqual(receipts.map((r) => r.chain.seq), [0, 1, 2]);
-  const v = verifyChain(receipts, { keyring: { [kp.kid]: kp.publicKey } });
+  const v = verifyChain(b(receipts), { keyring: b({ [kp.kid]: kp.publicKey }) });
   assert.equal(v.status, "VALID", v.reason);
 });
 

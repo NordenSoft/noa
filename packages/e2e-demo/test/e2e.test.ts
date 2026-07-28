@@ -12,6 +12,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { verifyChain } from 'noa-receipt';
 import { createLogger } from '../src/log.js';
+import { encodeDocument } from '../src/bytes.js';
 import {
   setupHarness,
   teardownHarness,
@@ -31,8 +32,8 @@ test('(a) happy path: agent → gate → relay → phone(approve) → gate → E
     assert.equal(r.verdict.verdict, 'VALID_FULL_CHAIN', `verify-evidence: ${r.verdict.verdict} (${r.verdict.reason ?? ''})`);
     assert.equal(r.verdict.outcome, 'EXECUTED');
 
-    const vc = verifyChain([r.artifacts.deferredReceipt, r.artifacts.allowedReceipt, r.artifacts.executedReceipt] as never[], {
-      keyring: ctx.trust.receiptKeyring,
+    const vc = verifyChain(encodeDocument([r.artifacts.deferredReceipt, r.artifacts.allowedReceipt, r.artifacts.executedReceipt]), {
+      keyring: encodeDocument(ctx.trust.receiptKeyring),
       requireTenantConsistency: true,
     });
     assert.equal(vc.status, 'VALID', `verifyChain: ${vc.status}`);
@@ -73,7 +74,7 @@ test('(c) timeout: no decision → gate mints a POLICY-signed BLOCKED approval-t
     assert.equal(agent.principal, 'POLICY', 'signed by the POLICY principal, never a human key');
 
     // Cryptographic proof: the timeout receipt is a valid gate-signed extension of the DEFERRED chain.
-    const vc = verifyChain([r.deferredReceipt, r.timeoutReceipt] as never[], { keyring: ctx.trust.receiptKeyring, requireTenantConsistency: true });
+    const vc = verifyChain(encodeDocument([r.deferredReceipt, r.timeoutReceipt]), { keyring: encodeDocument(ctx.trust.receiptKeyring), requireTenantConsistency: true });
     assert.equal(vc.status, 'VALID', `verifyChain([DEFERRED, timeout]): ${vc.status}`);
     assert.equal(vc.count, 2);
 

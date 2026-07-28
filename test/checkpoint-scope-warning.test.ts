@@ -27,6 +27,7 @@ import { verifyChain } from "../src/verify.js";
 import { generateKeyPair } from "../src/keys.js";
 import { buildReceipt, buildCheckpoint, type BuildInput } from "../src/builder.js";
 import type { Keyring } from "../src/index.js";
+import { b } from "./helpers/bytes.js";
 
 const victim = generateKeyPair("victim-key");
 const attacker = generateKeyPair("attacker-key");
@@ -63,7 +64,7 @@ test("an authenticated checkpoint with NO identityManifest warns that the tail c
   // The attacker drops the incriminating seq-2 receipt and mints its own checkpoint over seq 1
   // using its OWN co-trusted key. This is the documented T-tail-reheading residual.
   const forged = buildCheckpoint(r1, "2026-07-27T11:00:00Z", { kid: attacker.kid, privateKey: attacker.privateKey });
-  const res = verifyChain([r0, r1], { keyring, checkpoint: forged });
+  const res = verifyChain(b([r0, r1]), { keyring: b(keyring), checkpoint: b(forged) });
 
   // The verdict is UNCHANGED by this fix — the residual is real and documented, not a bug to
   // silently re-verdict. What must change is that the caller is TOLD.
@@ -86,10 +87,10 @@ test("an authenticated checkpoint with NO identityManifest warns that the tail c
 
 test("the same chain WITH an identityManifest is rejected UNTRUSTED (the §5b genesis binding still fires)", () => {
   const forged = buildCheckpoint(r1, "2026-07-27T11:00:00Z", { kid: attacker.kid, privateKey: attacker.privateKey });
-  const res = verifyChain([r0, r1], {
-    keyring,
-    checkpoint: forged,
-    identityManifest: { "agent-1": [victim.kid] },
+  const res = verifyChain(b([r0, r1]), {
+    keyring: b(keyring),
+    checkpoint: b(forged),
+    identityManifest: b({ "agent-1": [victim.kid] }),
   });
   assert.equal(res.status, "UNTRUSTED", res.reason);
   assert.match(res.reason ?? "", /not authorized for chain opener/);
@@ -97,10 +98,10 @@ test("the same chain WITH an identityManifest is rejected UNTRUSTED (the §5b ge
 
 test("the new warning does NOT fire when an identityManifest IS supplied (no false positive on the hardened path)", () => {
   const legit = buildCheckpoint(r2, "2026-07-27T11:00:00Z", { kid: victim.kid, privateKey: victim.privateKey });
-  const res = verifyChain([r0, r1, r2], {
-    keyring,
-    checkpoint: legit,
-    identityManifest: { "agent-1": [victim.kid] },
+  const res = verifyChain(b([r0, r1, r2]), {
+    keyring: b(keyring),
+    checkpoint: b(legit),
+    identityManifest: b({ "agent-1": [victim.kid] }),
   });
   assert.equal(res.status, "VALID", res.reason);
   assert.equal(res.tailChecked, true);
@@ -109,7 +110,7 @@ test("the new warning does NOT fire when an identityManifest IS supplied (no fal
 });
 
 test("no checkpoint supplied → the pre-existing no-checkpoint warning still fires, and the new one does not", () => {
-  const res = verifyChain([r0, r1, r2], { keyring });
+  const res = verifyChain(b([r0, r1, r2]), { keyring: b(keyring) });
   assert.equal(res.tailChecked, false);
   assert.equal(
     res.warnings.some((w) => /no checkpoint supplied/.test(w)),

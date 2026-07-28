@@ -7,6 +7,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { createHash } from "node:crypto";
 import { generateKeyPair, verifyChain } from "noa-receipt";
+import { b } from "./helpers/bytes.mjs";
 import { createFileSessionStore } from "../src/file-session-store.mjs";
 import { prepareSessionReceipt, commitSessionReceipt } from "../src/session-store.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
@@ -54,7 +55,7 @@ test("createFileSessionStore: emit -> restart (dispose + reconstruct against the
 
   const combined = [p1.receipt, p2.receipt, p3.receipt];
   assert.equal(new Set(combined.map((r) => r.scope.chain)).size, 1, "all 3 receipts (across the restart) must share the exact same scope.chain");
-  const v = verifyChain(combined, { keyring });
+  const v = verifyChain(b(combined), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
   assert.equal(v.count, 3);
 

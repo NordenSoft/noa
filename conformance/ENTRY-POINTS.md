@@ -5,7 +5,7 @@ waiting to happen and, worse, a list that can drift from the code it claims to d
 
 Source: `src/index.ts` value exports, resolved through the TypeScript compiler API.
 
-- total value exports: **63**
+- total value exports: **67**
 - security-sensitive: **15**
 - security-sensitive already bytes-in: **15**
 - security-sensitive NOT yet bytes-in (ADR §3.1 target): **0**
@@ -29,6 +29,7 @@ Source: `src/index.ts` value exports, resolved through the TypeScript compiler A
 | `coseSign1` | PRODUCER | `Buffer<ArrayBufferLike>` | n/a | `src/cose/cose-sign1.ts` | signs the caller's own payload |
 | `coseSign1Verify` | SECURITY_SENSITIVE | `Uint8Array<ArrayBufferLike>` | YES | `src/cose/cose-sign1.ts` |  |
 | `decode` | SECURITY_SENSITIVE | `Uint8Array<ArrayBufferLike>` | YES | `src/cose/cbor.ts` |  |
+| `decodeDocument` | UTILITY | `unknown` | n/a | `src/bytes.ts` | IS the byte boundary (src/bytes.ts); decides whether a value is a document at all |
 | `deepFreeze` | UTILITY | `T` | n/a | `src/inert.ts` | pure structural helper |
 | `encArray` | UTILITY | `Buffer<ArrayBufferLike>[]` | n/a | `src/cose/cbor.ts` | CBOR encoder primitive |
 | `encBstr` | UTILITY | `Buffer<ArrayBufferLike>` | n/a | `src/cose/cbor.ts` | CBOR encoder primitive |
@@ -46,10 +47,13 @@ Source: `src/index.ts` value exports, resolved through the TypeScript compiler A
 | `isFrozenSet` | INERT_CONSTRUCTOR | `unknown` | n/a | `src/inert.ts` | pure brand predicate; carries no verdict |
 | `isInertArray` | INERT_CONSTRUCTOR | `unknown` | n/a | `src/inert.ts` | pure structural predicate over a prototype identity; carries no verdict |
 | `isNFC` | UTILITY | `string` | n/a | `src/nfc.ts` | pure predicate over a string |
+| `isUint8Array` | UTILITY | `unknown` | n/a | `src/bytes.ts` | pure predicate over an internal slot |
 | `JcsError` | ERROR_CLASS | `—` | n/a | `src/jcs.ts` |  |
 | `makeInertArray` | INERT_CONSTRUCTOR | `T[]` | n/a | `src/inert.ts` | re-roots a module-owned array onto the inert prototype (ADR §5.6) |
+| `MAX_INPUT_BYTES` | CONSTANT | `—` | n/a | `src/bytes.ts` |  |
 | `MutablePolicyTableError` | ERROR_CLASS | `—` | n/a | `src/inert.ts` |  |
 | `nonNfcPaths` | UTILITY | `unknown` | n/a | `src/nfc.ts` | pure predicate |
+| `parseDocument` | UTILITY | `unknown` | n/a | `src/bytes.ts` | IS the byte boundary (src/bytes.ts); decode-then-strict-parse, the route every document takes |
 | `POLICY_SPEC` | CONSTANT | `—` | n/a | `src/policy/dsl.ts` |  |
 | `PolicyError` | ERROR_CLASS | `—` | n/a | `src/policy/eval.ts` |  |
 | `policyHash` | UTILITY | `Policy` | n/a | `src/policy/dsl.ts` | pure hash of a policy |

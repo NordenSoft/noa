@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, refHash, signArtifact } from "noa-approval-artifacts";
 import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { b } from "./helpers/bytes.js";
 
 function createPendingHighRiskHold(label: string) {
   const fx = setupGate({ approverRole: "approve-high" });
@@ -82,7 +83,7 @@ test("a live Decision signer cannot claim the revoked receipt signer's approverK
     revokedAt: null,
   };
   const decisionArtifact = signArtifact(
-    {
+    b({
       spec: "noa.decision/0.1",
       holdEnvelopeHash: refHash(hold.holdEnvelope),
       decision: "APPROVE",
@@ -90,7 +91,7 @@ test("a live Decision signer cannot claim the revoked receipt signer's approverK
       reasonEncryption: null,
       decidedAt: new Date(gateNow - 2_000).toISOString(),
       approverKid: revokedKid,
-    },
+    }),
     "NOA-Decision-v0.1-sig",
     active,
   );

@@ -25,6 +25,7 @@ import { fileURLToPath } from "node:url";
 import { inertViolations } from "noa-receipt";
 import * as evidence from "../src/index.js";
 import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
+import { b } from "./helpers/bytes.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONF = join(HERE, "..", "..", "conformance");
@@ -45,8 +46,8 @@ for (const slug of readdirSync(CONF)) {
 
 const run = (fx: Fixture): string => {
   try {
-    const r = verifyEvidence(fx.bundle, {
-      tenantRoot: fx.tenantRoot as never, checkpointKeyring: fx.checkpointKeyring as never,
+    const r = verifyEvidence(b(fx.bundle), {
+      tenantRoot: b(fx.tenantRoot), checkpointKeyring: b(fx.checkpointKeyring),
       now: fx.now, maxAgeMs: fx.maxAgeHours * 3600 * 1000, schemas,
     });
     return `${r.verdict}/${r.outcome ?? "-"}/${r.code ?? "-"}`;
@@ -187,15 +188,22 @@ test("C2: every exported function is classified — a NEW export cannot appear u
   );
 });
 
-test("C2: every `ingests` export fires a caller getter AT MOST ONCE", () => {
+test("C2: every `ingests` export fires a caller getter AT MOST ONCE — and the DOCUMENT entry points fire ZERO", () => {
   // Two reads of one field is the flipping-getter class by definition, so the probe measures reads
   // rather than trusting the classification.
+  //
+  // BYTES-IN raised this bar rather than lowering it. `asRootKeyEntryMap`, `asStringKeyring` and
+  // `verifyEvidence` take DOCUMENTS now, so a live object handed to one of them is not something it
+  // reads ONCE — it is something it REFUSES, and the getter fires ZERO times. The probe asserts the
+  // stronger `reads === 0` for those three and keeps `reads <= 1` for the two that still receive an
+  // intermediate value. A regression in either direction turns this red.
+  const documentEntryPoints = new Set(["asRootKeyEntryMap", "asStringKeyring", "verifyEvidence"]);
   const probes: Array<[string, (arg: unknown) => void]> = [
-    ["asRootKeyEntryMap", (a) => void evidence.asRootKeyEntryMap(a)],
-    ["asStringKeyring", (a) => void evidence.asStringKeyring(a)],
+    ["asRootKeyEntryMap", (a) => void evidence.asRootKeyEntryMap(a as never)],
+    ["asStringKeyring", (a) => void evidence.asStringKeyring(a as never)],
     ["buildReceiptKeyring", (a) => void evidence.buildReceiptKeyring(a as never)],
     ["assertReceiptRole", (a) => void evidence.assertReceiptRole(a as Record<string, unknown>, "deferredReceipt", new Set())],
-    ["verifyEvidence", (a) => void verifyEvidence(a, { tenantRoot: {}, checkpointKeyring: {}, schemas })],
+    ["verifyEvidence", (a) => void verifyEvidence(a as never, { tenantRoot: b({}), checkpointKeyring: b({}), schemas })],
   ];
   for (const [name, call] of probes) {
     let reads = 0;
@@ -203,6 +211,9 @@ test("C2: every `ingests` export fires a caller getter AT MOST ONCE", () => {
     Object.defineProperty(hostile, "probe", { enumerable: true, configurable: true, get() { reads++; return "x"; } });
     call(hostile);
     assert.ok(reads <= 1, `${name}: a caller getter fired ${reads} times — two reads can disagree`);
+    if (documentEntryPoints.has(name)) {
+      assert.equal(reads, 0, `${name} takes a DOCUMENT: a caller-owned object must be refused, never read`);
+    }
   }
 });
 
@@ -212,13 +223,36 @@ test("C2: every `ingests` export fails CLOSED on a hostile throw (no raw error e
   const hostile: Record<string, unknown> = {};
   Object.defineProperty(hostile, "boom", { enumerable: true, get() { throw proxy; } });
   const calls: Array<[string, () => unknown]> = [
-    ["asRootKeyEntryMap", () => evidence.asRootKeyEntryMap(hostile)],
-    ["asStringKeyring", () => evidence.asStringKeyring(hostile)],
+    ["asRootKeyEntryMap", () => evidence.asRootKeyEntryMap(hostile as never)],
+    ["asStringKeyring", () => evidence.asStringKeyring(hostile as never)],
     ["buildReceiptKeyring", () => evidence.buildReceiptKeyring(hostile as never)],
     ["assertReceiptRole", () => evidence.assertReceiptRole(hostile, "deferredReceipt", new Set())],
-    ["verifyEvidence", () => verifyEvidence(hostile, { tenantRoot: {}, checkpointKeyring: {}, schemas })],
+    ["verifyEvidence", () => verifyEvidence(hostile as never, { tenantRoot: b({}), checkpointKeyring: b({}), schemas })],
+    // THE BYTE FORM OF THE SAME ATTACK. A document has no getter to throw from, so the hostile
+    // shape becomes bytes that will not decode or will not parse. Those must land in the same
+    // fail-closed place, by a RETURNED verdict and never by a throw — otherwise bytes-in would have
+    // moved the crash rather than removed it.
+    ["verifyEvidence(truncated JSON bytes)", () => verifyEvidence(new TextEncoder().encode('{"spec":'), { tenantRoot: b({}), checkpointKeyring: b({}), schemas })],
+    ["verifyEvidence(invalid UTF-8 bytes)", () => verifyEvidence(new Uint8Array([0xff, 0xfe, 0xfd]), { tenantRoot: b({}), checkpointKeyring: b({}), schemas })],
+    ["asStringKeyring(invalid UTF-8 bytes)", () => evidence.asStringKeyring(new Uint8Array([0xc0, 0x80]))],
   ];
   for (const [name, call] of calls) {
-    assert.doesNotThrow(call, `${name}: a hostile getter escaped as a raw throw instead of a fail-closed result`);
+    assert.doesNotThrow(call, `${name}: a hostile input escaped as a raw throw instead of a fail-closed result`);
   }
+});
+
+test("C2 (bytes-in): a DOCUMENT entry point refuses a caller-owned object outright — fail-closed, never coerced", () => {
+  // The deleted boundary made a live object safe enough to READ. The new one does not read it at
+  // all: an object where bytes belong is not a document, and coercing it (`String(obj)`,
+  // `JSON.stringify(obj)`) would be precisely the silent object ingest bytes-in exists to forbid.
+  assert.deepEqual(evidence.asRootKeyEntryMap({ "kid-1": "pub" } as never), {}, "an OBJECT trust root resolves to NO keys");
+  assert.deepEqual(evidence.asStringKeyring({ "kid-1": "pub" } as never), {}, "an OBJECT checkpoint keyring resolves to NO keys");
+  // …and the SAME content as BYTES resolves normally, so the refusal above is about the FORM and
+  // this test is not vacuously passing against a broken function.
+  assert.deepEqual(evidence.asStringKeyring(b({ "kid-1": "pub" })), { "kid-1": "pub" });
+  assert.deepEqual(evidence.asRootKeyEntryMap(b({ "kid-1": "pub" })), { "kid-1": { publicKey: "pub", type: "ROOT", roles: [] } });
+
+  const r = verifyEvidence({ spec: "noa.approval-evidence/0.1" } as never, { tenantRoot: b({}), checkpointKeyring: b({}), schemas });
+  assert.equal(r.verdict, "INVALID");
+  assert.match(r.reason ?? "", /byte boundary/, "the refusal must name the boundary that made it");
 });

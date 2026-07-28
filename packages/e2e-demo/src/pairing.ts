@@ -28,6 +28,7 @@ import type {
 } from './mobile.js';
 import type { Clock } from './support.js';
 import { DemoError } from './errors.js';
+import { encodeDocument } from './bytes.js';
 
 const PAIRING_DOMAIN = 'NOA-Pairing-v0.1-sig';
 const PAIRING_CONFIRM_DOMAIN = 'NOA-PairingConfirm-v0.1-sig';
@@ -82,7 +83,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
   const issuedAt = new Date(t0 - 60 * 60 * 1000).toISOString();
 
   const keyDelegation = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.key-delegation/0.1',
       tenant,
       delegatedKid: authority.kid,
@@ -90,13 +91,13 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
       permissions: ['key-manifest-sign'],
       validFrom,
       expiresAt,
-    },
+    }),
     KEY_DELEGATION_DOMAIN,
     signer(root),
   ) as unknown as KeyDelegation;
 
   const bootstrapManifest = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.key-manifest/0.1',
       tenant,
       version: 1,
@@ -107,7 +108,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
         { kid: gate.kid, type: 'GATE', roles: ['hold-signer', 'execution-signer'], publicKey: gate.publicKey, validFrom, revokedAt: null },
         { kid: 'audit-1', type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auditHpkePublicKey, validFrom, revokedAt: null },
       ],
-    },
+    }),
     KEY_MANIFEST_DOMAIN,
     signer(authority),
   ) as unknown as KeyManifest;
@@ -131,7 +132,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
 /** §3 step 1 — the gate issues a one-time, tenant+role-scoped, gate-signed CHALLENGE. */
 export function issueChallenge(auth: DemoAuthority, pairingId: string, clock: Clock): PairingChallenge {
   const challenge = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.pairing/0.1',
       type: 'CHALLENGE',
       pairingId,
@@ -147,7 +148,7 @@ export function issueChallenge(auth: DemoAuthority, pairingId: string, clock: Cl
       allowedRole: 'approver',
       expiresAt: new Date(clock.now() + 10 * 60 * 1000).toISOString(),
       challengeNonce: `nonce-${pairingId}`,
-    },
+    }),
     PAIRING_DOMAIN,
     signer(auth.gate),
   ) as unknown as PairingChallenge;
@@ -201,21 +202,21 @@ export function acceptPairing(
 
   // F12 — the LOCAL gate process records the operator's SAS match; manifest issuance requires it.
   const localConfirmation = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.pairing-confirmation/0.1',
       pairingId: confirmation.pairingId,
       transcriptHash,
       result: 'SAS_MATCH_CONFIRMED',
       confirmedAt: nowIso,
       gateKid: auth.gate.kid,
-    },
+    }),
     PAIRING_CONFIRM_DOMAIN,
     signer(auth.gate),
   ) as unknown as PairingLocalConfirmation;
 
   // v2 manifest — tenant-authority-signed, pins the phone approver (Red Line 16: not gate-signed).
   const manifest = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.key-manifest/0.1',
       tenant: auth.tenant,
       version: 2,
@@ -227,14 +228,14 @@ export function acceptPairing(
         { kid: phone.approverKid, type: 'APPROVER', roles: ['approve-high'], publicKey: phone.approverPublicKey, hpkePublicKey: phone.approverHpkePublicKey, validFrom: auth.validFrom, revokedAt: null },
         { kid: 'audit-1', type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auth.auditHpkePublicKey, validFrom: auth.validFrom, revokedAt: null },
       ],
-    },
+    }),
     KEY_MANIFEST_DOMAIN,
     signer(auth.authority),
   ) as unknown as KeyManifest;
   const manifestHash = refHash(manifest as unknown as object);
 
   const accepted = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.pairing/0.1',
       type: 'ACCEPTED',
       pairingId: confirmation.pairingId,
@@ -245,7 +246,7 @@ export function acceptPairing(
       keyDelegationHash: refHash(auth.keyDelegation as unknown as object),
       delegatedManifestSignerKid: auth.authority.kid,
       acceptedAt: nowIso,
-    },
+    }),
     PAIRING_DOMAIN,
     signer(auth.gate),
   ) as unknown as PairingAccepted;

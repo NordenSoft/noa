@@ -23,6 +23,7 @@ import {
   REFUND_CEILING_MINOR,
 } from "./proxy.js";
 import { replay, assertReplayReproduces, REF_EVAL_VERSION } from "./replay.js";
+import { b } from "../helpers/bytes.js";
 
 /** A different valid "sha256:<64hex>" string (last hex char advanced), for tamper tests. */
 function flipSha256(prefixed: string): string {
@@ -49,7 +50,7 @@ describe("dogfood: emit -> replay -> verify round-trip", () => {
     expect(receipt.governance.compliance?.verdict).toBe("ALLOW");
     expect(receipt.governance.verdict).toBe("EXECUTED");
 
-    const r = replay(receipt, policy, inputs, { keyring: signer.keyring });
+    const r = replay(receipt, policy, inputs, { keyring: b(signer.keyring) });
     expect(r.engine).toBe(REF_EVAL_VERSION);
     expect(r.recordedVerdict).toBe("ALLOW");
     expect(r.reproducedVerdict).toBe("ALLOW");
@@ -58,9 +59,9 @@ describe("dogfood: emit -> replay -> verify round-trip", () => {
     expect(r.reproducedRuleFired).toBe("allow-refund");
 
     // the exercise form throws nothing on a faithful round-trip…
-    expect(() => assertReplayReproduces(receipt, policy, inputs, { keyring: signer.keyring })).not.toThrow();
+    expect(() => assertReplayReproduces(receipt, policy, inputs, { keyring: b(signer.keyring) })).not.toThrow();
     // …and the carrier is a VALID signed chain against the trust root.
-    expect(verifyChain([receipt], { keyring: signer.keyring }).status).toBe("VALID");
+    expect(verifyChain(b([receipt]), { keyring: b(signer.keyring) }).status).toBe("VALID");
   });
 
   it("reproduces a DENY decision byte-for-byte (refund at the ceiling, $10,000.00)", () => {
@@ -76,7 +77,7 @@ describe("dogfood: emit -> replay -> verify round-trip", () => {
     expect(receipt.governance.compliance?.verdict).toBe("DENY");
     expect(receipt.governance.verdict).toBe("BLOCKED");
 
-    const r = replay(receipt, policy, inputs, { keyring: signer.keyring });
+    const r = replay(receipt, policy, inputs, { keyring: b(signer.keyring) });
     expect(r.recordedVerdict).toBe("DENY");
     expect(r.reproducedVerdict).toBe("DENY");
     expect(r.reproducedByteForByte).toBe(true);
@@ -99,7 +100,7 @@ describe("dogfood: emit -> replay -> verify round-trip", () => {
       signer,
       e0.receipt,
     );
-    const res = verifyChain([e0.receipt, e1.receipt], { keyring: signer.keyring });
+    const res = verifyChain(b([e0.receipt, e1.receipt]), { keyring: b(signer.keyring) });
     expect(res.status).toBe("VALID");
     expect(res.count).toBe(2);
   });
@@ -120,11 +121,11 @@ describe("dogfood: a tampered receipt FAILS", () => {
     tampered.governance.compliance!.inputsHash = flipSha256(tampered.governance.compliance!.inputsHash);
 
     // carrier integrity: the signed body changed, so the stale hash/signature no longer verify.
-    expect(verifyChain([tampered], { keyring: signer.keyring }).status).toBe("TAMPERED");
+    expect(verifyChain(b([tampered]), { keyring: b(signer.keyring) }).status).toBe("TAMPERED");
     // L2 proof: the committed inputsHash no longer matches the recorded inputs.
-    const r = replay(tampered, policy, inputs, { keyring: signer.keyring });
+    const r = replay(tampered, policy, inputs, { keyring: b(signer.keyring) });
     expect(r.complianceOk).toBe(false);
-    expect(() => assertReplayReproduces(tampered, policy, inputs, { keyring: signer.keyring })).toThrow();
+    expect(() => assertReplayReproduces(tampered, policy, inputs, { keyring: b(signer.keyring) })).toThrow();
   });
 
   it("a receipt forged to the OPPOSITE verdict is rejected (verdict reconciliation)", () => {
@@ -155,15 +156,15 @@ describe("dogfood: a tampered receipt FAILS", () => {
     // too. That makes this test STRICTER, not weaker — carrier auth and the semantic reconciliation
     // must BOTH reject, and the assertion below still pins the semantic reason. (Isolating the
     // semantic rule by omitting the trust root is exactly how a false green got frozen elsewhere.)
-    const r = replay(forged, policy, inputs, { keyring: signer.keyring });
+    const r = replay(forged, policy, inputs, { keyring: b(signer.keyring) });
     expect(r.reproducedVerdict).toBe("ALLOW");
     expect(r.reproducedByteForByte).toBe(false);
     expect(r.complianceOk).toBe(false);
     expect(r.complianceReason).toMatch(/verdict mismatch/);
     expect(r.reproducedComplianceVerdict).toBe("ALLOW");
     // …and the STALE-signature variant of the same forgery is caught independently by carrier auth.
-    expect(verifyChain([forgedBody], { keyring: signer.keyring }).status).toBe("TAMPERED");
-    expect(replay(forgedBody, policy, inputs, { keyring: signer.keyring }).complianceOk).toBe(false);
+    expect(verifyChain(b([forgedBody]), { keyring: b(signer.keyring) }).status).toBe("TAMPERED");
+    expect(replay(forgedBody, policy, inputs, { keyring: b(signer.keyring) }).complianceOk).toBe(false);
   });
 
   it("substituted INPUTS are rejected (inputsHash bind) even when the re-run verdict matches", () => {
@@ -179,7 +180,7 @@ describe("dogfood: a tampered receipt FAILS", () => {
     // Different amount that ALSO evaluates to ALLOW — so the verdict alone cannot catch this;
     // the inputsHash bind is what does.
     const wrongInputs = { action: "payment.refund", amountMinor: 999_999 };
-    const r = replay(receipt, policy, wrongInputs, { keyring: signer.keyring });
+    const r = replay(receipt, policy, wrongInputs, { keyring: b(signer.keyring) });
     expect(r.reproducedVerdict).toBe("ALLOW");
     expect(r.reproducedByteForByte).toBe(true); // coincidentally still ALLOW…
     expect(r.complianceOk).toBe(false); // …but the recorded inputs were NOT these.
@@ -202,7 +203,7 @@ describe("dogfood: a tampered receipt FAILS", () => {
       requiredPaths: [],
       rules: [{ id: "always", when: { op: "exists", path: "action" }, then: "ALLOW" }],
     };
-    const r = replay(receipt, permissive, inputs, { keyring: signer.keyring });
+    const r = replay(receipt, permissive, inputs, { keyring: b(signer.keyring) });
     expect(r.complianceOk).toBe(false);
     expect(r.complianceReason).toMatch(/policyHash mismatch/);
   });

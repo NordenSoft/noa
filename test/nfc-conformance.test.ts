@@ -26,6 +26,7 @@ import { sha256Hex } from "../src/hash.js";
 import { signEd25519 } from "../src/keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../src/signing.js";
 import type { Keyring, Receipt } from "../src/index.js";
+import { b } from "./helpers/bytes.js";
 
 const kp = generateKeyPair("nfc-key");
 const keyring: Keyring = { [kp.kid]: kp.publicKey };
@@ -69,7 +70,7 @@ test("PRODUCE: the builder refuses to sign a non-NFC payload, and names the offe
 
 test("PRODUCE: the equivalent NFC payload signs normally (the check constrains spelling, not content)", () => {
   const r = buildReceipt(mkInput({ agent: { id: NFC, model: null, principal: "SERVICE" } }), null, { kid: kp.kid, privateKey: kp.privateKey });
-  assert.equal(verifyChain([r], { keyring }).status, "VALID");
+  assert.equal(verifyChain(b([r]), { keyring: b(keyring) }).status, "VALID");
 });
 
 test("PRODUCE: a non-NFC value nested deeper is caught too (approval.by), before anything is signed", () => {
@@ -87,7 +88,7 @@ test("VERIFY: an already-issued non-NFC receipt still VERIFIES by default, and i
   // exactly as a non-conforming third-party producer would have. This is what a receipt signed
   // before the producer check existed looks like.
   const legacy = mintNonNfcLegacyReceipt();
-  const res = verifyChain([legacy], { keyring });
+  const res = verifyChain(b([legacy]), { keyring: b(keyring) });
 
   assert.equal(res.status, "VALID", "receipts already in the wild must not stop verifying");
   const flagged = res.warnings.filter((w) => w.startsWith("non-nfc:"));
@@ -97,7 +98,7 @@ test("VERIFY: an already-issued non-NFC receipt still VERIFIES by default, and i
 
 test("VERIFY: requireNFC:true rejects the same receipt as MALFORMED, naming the field", () => {
   const legacy = mintNonNfcLegacyReceipt();
-  const res = verifyChain([legacy], { keyring, requireNFC: true });
+  const res = verifyChain(b([legacy]), { keyring: b(keyring), requireNFC: true });
   assert.equal(res.status, "MALFORMED");
   assert.match(res.reason ?? "", /non-NFC/);
   assert.match(res.reason ?? "", /agent\.id/);
@@ -106,7 +107,7 @@ test("VERIFY: requireNFC:true rejects the same receipt as MALFORMED, naming the 
 
 test("VERIFY: requireNFC:true is a no-op on a conforming chain (no false positives)", () => {
   const r = buildReceipt(mkInput(), null, { kid: kp.kid, privateKey: kp.privateKey });
-  const res = verifyChain([r], { keyring, requireNFC: true });
+  const res = verifyChain(b([r]), { keyring: b(keyring), requireNFC: true });
   assert.equal(res.status, "VALID", res.reason);
   assert.equal(res.warnings.some((w) => w.startsWith("non-nfc:")), false);
 });
@@ -134,12 +135,12 @@ test("PRODUCE: an NFC kid signs normally (the check constrains spelling, not the
   const nfcKp = generateKeyPair(NFC);
   const r = buildReceipt(mkInput(), null, { kid: NFC, privateKey: nfcKp.privateKey });
   assert.equal(r.sig.kid, NFC);
-  assert.equal(verifyChain([r], { keyring: { [NFC]: nfcKp.publicKey } }).status, "VALID");
+  assert.equal(verifyChain(b([r]), { keyring: b({ [NFC]: nfcKp.publicKey }) }).status, "VALID");
 });
 
 test("VERIFY: an already-issued receipt with a non-NFC KID verifies by default and is REPORTED", () => {
   const { receipt, kr } = mintNonNfcKidReceipt();
-  const res = verifyChain([receipt], { keyring: kr });
+  const res = verifyChain(b([receipt]), { keyring: b(kr) });
   assert.equal(res.status, "VALID", "receipts already in the wild must not stop verifying");
   const flagged = res.warnings.filter((w) => w.startsWith("non-nfc:"));
   assert.equal(flagged.length, 1, `expected exactly one non-nfc warning, got ${JSON.stringify(res.warnings)}`);
@@ -148,7 +149,7 @@ test("VERIFY: an already-issued receipt with a non-NFC KID verifies by default a
 
 test("VERIFY: requireNFC:true rejects a non-NFC KID as MALFORMED, naming sig.kid", () => {
   const { receipt, kr } = mintNonNfcKidReceipt();
-  const res = verifyChain([receipt], { keyring: kr, requireNFC: true });
+  const res = verifyChain(b([receipt]), { keyring: b(kr), requireNFC: true });
   assert.equal(res.status, "MALFORMED");
   assert.match(res.reason ?? "", /non-NFC/);
   assert.match(res.reason ?? "", /sig\.kid/);

@@ -23,11 +23,18 @@ function usage(msg?: string): never {
   process.exit(5);
 }
 
-function readJson(path: string): unknown {
+/**
+ * BYTES-IN: the CLI no longer parses anything. A bundle, a trust root and a checkpoint keyring are
+ * DOCUMENTS; the verifier takes them as bytes and the kernel's own strict parser is the single
+ * place they become data. `JSON.parse` here was a SECOND, weaker parser in front of the strict one
+ * — it accepts duplicate keys (last wins), floats, and `__proto__` — so a document the verifier
+ * would have rejected could have been silently normalised before it ever got there.
+ */
+function readBytes(path: string): Uint8Array {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    return readFileSync(path);
   } catch (e) {
-    usage(`cannot read/parse ${path}: ${(e as Error).message}`);
+    usage(`cannot read ${path}: ${(e as Error).message}`);
   }
 }
 
@@ -64,13 +71,13 @@ function main(argv: string[]): void {
   if (!tenantRootPath) usage("missing --tenant-root (F7a: external trust root is REQUIRED)");
   if (!checkpointKeyringPath) usage("missing --checkpoint-keyring (F7a: external checkpoint keyring is REQUIRED)");
 
-  const bundle = readJson(bundlePath);
-  const tenantRoot = readJson(tenantRootPath) as Record<string, unknown>;
-  const checkpointKeyring = readJson(checkpointKeyringPath) as Record<string, unknown>;
+  const bundle = readBytes(bundlePath);
+  const tenantRoot = readBytes(tenantRootPath);
+  const checkpointKeyring = readBytes(checkpointKeyringPath);
 
   const res = verifyEvidence(bundle, {
-    tenantRoot: tenantRoot as never,
-    checkpointKeyring: checkpointKeyring as never,
+    tenantRoot,
+    checkpointKeyring,
     ...(now !== undefined ? { now } : {}),
     ...(maxAgeHours !== undefined && Number.isFinite(maxAgeHours) ? { maxAgeMs: maxAgeHours * 60 * 60 * 1000 } : {}),
     ...(purpose !== undefined ? { purpose } : {}),

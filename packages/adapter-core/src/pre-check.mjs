@@ -24,6 +24,27 @@ import {
 } from "noa-receipt";
 import { matchApprovalRule } from "./approval-rules.mjs";
 
+/**
+ * ── THE DOCUMENT ENCODER (bytes-in) ──────────────────────────────────────────────────────────────
+ *
+ * `evaluate(policy, inputs)` no longer takes live JavaScript objects; both arguments are DOCUMENTS
+ * and arrive as bytes, which the kernel parses itself. That is what let the kernel delete its
+ * `snapshotImmutable` ingest boundary: it no longer walks a caller-owned object graph, so there is
+ * nothing to snapshot.
+ *
+ * Serializing here rather than there does NOT move the old hazard into this module. `policy` is
+ * operator configuration that this file already canonicalizes twice on the same call
+ * (`safePolicyHash`, `complianceCommit`), and `inputs` is the flat scalar map built a few lines
+ * above out of values this module already captured once behind its own read guard. The one new
+ * failure mode — a policy object `JSON.stringify` itself refuses (circular, a throwing getter, a
+ * bigint) — is caught explicitly at the call site and reported as its own fail-closed DENY rather
+ * than being mislabelled as an args failure.
+ */
+const DOCUMENT_ENCODER = new TextEncoder();
+function encodeDocument(value) {
+  return DOCUMENT_ENCODER.encode(JSON.stringify(value));
+}
+
 /** Cap on how deep `flattenArgsToPolicyInputs` will descend into nested args, and on how many
  *  scalar paths it will emit — a defensive bound against a maliciously deep/huge tool-call
  *  payload turning "project every arg into the policy input snapshot" into unbounded recursion
@@ -358,7 +379,19 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
   } else {
     try {
       Object.assign(inputs, flattenArgsToPolicyInputs(safeArgs, "args", 0, {}, { count: 0 }));
-      ev = evaluate(policy, inputs); // ALLOW | DENY, fail-closed, re-runnable
+      // BYTES-IN: both documents are serialized ONCE here and parsed by the kernel — see
+      // `encodeDocument` above. A policy that cannot be serialized at all is its own fail-closed
+      // DENY, not an args error: the receipt's `ruleId` is evidence, and evidence that names the
+      // wrong cause is worse than evidence that names none.
+      let policyBytes = null;
+      try {
+        policyBytes = encodeDocument(policy);
+      } catch {
+        policyBytes = null;
+      }
+      ev = policyBytes === null
+        ? { verdict: "DENY", ruleFired: "policy-unserializable", engine: "policy-encode-guard" }
+        : evaluate(policyBytes, encodeDocument(inputs)); // ALLOW | DENY, fail-closed, re-runnable
     } catch {
       argsEnumerationThrew = true;
       ev = { verdict: "DENY", ruleFired: "args-enumeration-threw", engine: "args-flatten-ambiguity-guard" };

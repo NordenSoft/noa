@@ -17,6 +17,7 @@ import {
   type PinnedWitness,
 } from "../../src/federation/acceptance.js";
 import { WIT1, WIT2, WIT3 } from "./_seeded-keys.js";
+import { b } from "../helpers/bytes.js";
 
 /**
  * Tests for the witness-anchor BUILDER (src/federation/anchor.ts). Ground-truth: real Ed25519 witness keys
@@ -49,7 +50,7 @@ test("(a) buildAnchor signs the acceptance preimage bit-for-bit: verifyEd25519(a
 
 test("(a') a quorum of built anchors is QUORUM_CONFIRMED by verifyCompleteness (roundtrip through the rule)", () => {
   const anchors = [buildAnchor(FRONTIER, W1S), buildAnchor(FRONTIER, W2S)];
-  const res = verifyCompleteness(HEAD, anchors, TS3);
+  const res = verifyCompleteness(b(HEAD), b(anchors), b(TS3));
   assert.equal(res.complete, true, res.reason);
   assert.equal(res.classification, "QUORUM_CONFIRMED");
   assert.equal(res.confirmations, 2);
@@ -88,7 +89,7 @@ test("(c) cross-domain replay: a CHECKPOINT-domain signature does NOT verify as 
   // low level: not valid under the anchor preimage.
   assert.equal(verifyEd25519(WIT1.publicKey, anchorSigningInput(replay), replay.sig.value), false);
   // high level: the acceptance rule drops it — only the genuine W2 confirm counts, below quorum.
-  const res = verifyCompleteness(HEAD, [replay, buildAnchor(FRONTIER, W2S)], TS3);
+  const res = verifyCompleteness(b(HEAD), b([replay, buildAnchor(FRONTIER, W2S)]), b(TS3));
   assert.equal(res.confirmations, 1, "the cross-domain replay is dropped; only the genuine confirm counts");
   assert.equal(res.complete, false);
 });
@@ -107,7 +108,7 @@ test("(c') cross-domain replay (reverse): an anchor signature does NOT verify as
     ts: FRONTIER.ts,
     sig: { alg: "ed25519", kid: WIT1.kid, value: a.sig.value },
   };
-  assert.equal(verifyCheckpoint(cp, { [WIT1.kid]: WIT1.publicKey }), "bad checkpoint signature");
+  assert.equal(verifyCheckpoint(b(cp), b({ [WIT1.kid]: WIT1.publicKey })), "bad checkpoint signature");
 });
 
 // ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -163,7 +164,7 @@ test("anchorForChainHead: mints an anchor over the real chain head that verifyCo
   assert.equal(a1.highestSeq, 2, "head seq is 2 for a 3-receipt chain");
   assert.equal(a1.headHash, r2.chain.hash, "head hash is the seq-2 receipt's chain.hash");
   const head: ChainHead = { chain: CHAIN, seq: 2, hash: r2.chain.hash };
-  const res = verifyCompleteness(head, [a1, a2], { witnesses: [pin(WIT1), pin(WIT2)], quorum: 2 });
+  const res = verifyCompleteness(b(head), b([a1, a2]), b({ witnesses: [pin(WIT1), pin(WIT2)], quorum: 2 }));
   assert.equal(res.complete, true, res.reason);
   assert.equal(res.classification, "QUORUM_CONFIRMED");
 });

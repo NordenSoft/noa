@@ -23,6 +23,7 @@ import { evaluate, type EvalResult } from "../../src/policy/eval.js";
 import { complianceCommit } from "../../src/policy/compliance.js";
 import type { Policy, InputSnapshot } from "../../src/policy/dsl.js";
 import type { Receipt, RiskClass, Verdict } from "../../src/types.js";
+import { b } from "../helpers/bytes.js";
 
 /** A long-lived Ed25519 identity for the harness: the signer plus its matching keyring (trust root). */
 export interface DogfoodSigner {
@@ -130,7 +131,7 @@ export function emitReceipt(
   signer: DogfoodSigner,
   prev: Receipt | null,
 ): EmittedReceipt {
-  const evalResult = evaluate(policy, req.inputs);
+  const evalResult = evaluate(b(policy), b(req.inputs));
   const inputsHash = sha256Prefixed(canonicalize(req.inputs));
 
   const buildInput: BuildInput = {

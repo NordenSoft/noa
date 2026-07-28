@@ -121,10 +121,18 @@ const KNOCKOUTS = [
     id: "safe-json-proto-rejection",
     control: "the strict parser rejects __proto__ / prototype / constructor keys",
     file: "src/safe-json.ts",
-    find: "const FORBIDDEN_KEYS",
-    replace: "const UNUSED_FORBIDDEN_KEYS_KNOCKOUT",
+    // RE-AIMED 2026-07-28. The control moved from a module-level `const FORBIDDEN_KEYS = new Set(…)`
+    // to a `isForbiddenKey()` comparing against literals, because `Set.prototype.has` is a writable
+    // global slot and the parse boundary cannot decide anything by calling a method it does not own
+    // (ADR §5.5). This gate FOUND the move — it reported ROTTED rather than passing, which is exactly
+    // what a knockout is for: an entry that silently stops matching measures nothing.
+    //
+    // The knockout is now a BEHAVIOURAL one rather than a rename. Renaming the function would only
+    // fail to compile, which proves the identifier exists, not that the check runs. Inverting the
+    // predicate's body makes the parser ACCEPT `__proto__` and the suite must go red.
+    find: "return key === \"__proto__\"",
+    replace: "return false && key === \"__proto__\"",
     suite: [".", "npm", ["test"]],
-    expectCompileFailure: true,
   },
 ];
 

@@ -13,7 +13,8 @@
  * (step 15) that no single-artifact verifier can express.
  */
 import { verifyArtifact, refHash, receiptRefHash, type KeyEntry } from "noa-approval-artifacts";
-import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type Keyring, type Checkpoint, type VerifyResult } from "noa-receipt";
+import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type Keyring, type VerifyResult } from "noa-receipt";
+import { encodeDocument } from "./bytes.js";
 
 // PRISTINE DECISIONS (review #6, C1). Every membership/search below is a verdict input; none of them
 // may dispatch through a globally-mutable prototype slot an ingested getter can rewrite.
@@ -242,12 +243,12 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
 
   // (G6) delegation: signed by the EXTERNAL tenant-root (F7a), tenant-matched, unexpired at receivedAt,
   // and carrying `key-manifest-sign`.
-  const dv = verifyArtifact(b.keyDelegation, {
+  const dv = verifyArtifact(encodeDocument(b.keyDelegation), encodeDocument({
     schemas: ctx.schemas,
     keyring: ctx.rootKeyring,
     now: ctx.now,
     equals: [{ path: "tenant", value: ctx.tenant }],
-  });
+  }));
   if (!dv.ok) return fail(S, "E_DELEGATION_CHAIN", `keyDelegation invalid: ${dv.reason}`);
   const permissions = del.permissions;
   if (!Array.isArray(permissions) || !arrayIncludes(permissions, "key-manifest-sign")) {
@@ -334,12 +335,12 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
 
   // (G6) manifest: signed by the DELEGATED signer (role key-manifest-sign, F15), sig.kid ==
   // delegation.delegatedKid, tenant-matched, unexpired at receivedAt.
-  const mv = verifyArtifact(b.keyManifest, {
+  const mv = verifyArtifact(encodeDocument(b.keyManifest), encodeDocument({
     schemas: ctx.schemas,
     keyring: ctx.resolvedKeyring,
     now: ctx.now,
     equals: [{ path: "tenant", value: ctx.tenant }, { path: "sig.kid", value: delegation.delegatedKid }],
-  });
+  }));
   if (!mv.ok) return fail(S, "E_HOLD_ENVELOPE", `keyManifest invalid: ${mv.reason}`);
   const mIssued = parseTime(manifest.issuedAt);
   const mExp = parseTime(manifest.expiresAt);
@@ -387,13 +388,13 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   // step 1 itself requires only "manifest unexpired"; envelope-expiry freshness is an implementation
   // liveness add-on, so exempting terminal negatives is spec-faithful.
   const skipEnvelopeFreshness = b.outcome === "EXPIRED" || b.outcome === "DENIED";
-  const ev = verifyArtifact(b.holdEnvelope, {
+  const ev = verifyArtifact(encodeDocument(b.holdEnvelope), encodeDocument({
     schemas: ctx.schemas,
     keyring: ctx.resolvedKeyring,
     now: ctx.now,
     equals: [{ path: "tenant", value: ctx.tenant }, { path: "gateKid", value: env.sig && asObj(env.sig)?.kid }],
     ...(skipEnvelopeFreshness ? {} : { mustBeAfter: [{ path: "expiresAt", time: ctx.now }] }),
-  });
+  }));
   if (!ev.ok) return fail(S, "E_HOLD_ENVELOPE", `holdEnvelope invalid: ${ev.reason}`);
   if (env.keyManifestVersion !== manifest.version) {
     return fail(S, "E_HOLD_ENVELOPE", `holdEnvelope.keyManifestVersion ${String(env.keyManifestVersion)} != manifest.version ${manifest.version}`);
@@ -439,7 +440,7 @@ export function step3_holdResolution(ctx: Ctx): StepResult {
   if (!hr || !env) return fail(S, "E_HOLD_RESOLUTION", "holdResolution/holdEnvelope missing");
 
   // GATE + execution-signer (F15), unrevoked at receivedAt, sig valid, within a plausible window.
-  const rv = verifyArtifact(b.holdResolution, { schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now });
+  const rv = verifyArtifact(encodeDocument(b.holdResolution), encodeDocument({ schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now }));
   if (!rv.ok) return fail(S, "E_HOLD_RESOLUTION", `holdResolution invalid: ${rv.reason}`);
 
   if (asStr(hr.holdEnvelopeHash) !== refHash(b.holdEnvelope)) {
@@ -534,12 +535,12 @@ export function step4_decision(ctx: Ctx): StepResult {
   // NOTE: the F15 approver-TIER check (approve-high vs approve-critical for the action's riskClass)
   // is deliberately OWNED by step 5, not here — so a tier violation is attributed to step 5. Here we
   // verify only that the signer is a valid APPROVER (any tier) + schema + binding to THIS envelope.
-  const dv = verifyArtifact(decision, {
+  const dv = verifyArtifact(encodeDocument(decision), encodeDocument({
     schemas: ctx.schemas,
     keyring: ctx.resolvedKeyring!,
     now: ctx.now,
     refHashChecks: [{ path: "holdEnvelopeHash", rule: "side", artifact: b.holdEnvelope, refEquals: [{ path: "tenant", value: ctx.tenant }] }],
-  });
+  }));
   if (!dv.ok) return fail(S, "E_DECISION", `decisionArtifact invalid: ${dv.reason}`);
 
   // decision ↔ verdict receipt mapping (APPROVE↔ALLOWED / DENY↔BLOCKED).
@@ -725,12 +726,12 @@ function checkGrantBinding(ctx: Ctx, S: StepName, code: StepResult["code"]): Ste
     return fail(S, code, `outcome ${b.outcome} carries an executionGrant but no allowedReceipt — a grant that cannot be traced to the approval it derives from is unbound by construction`);
   }
 
-  const gv = verifyArtifact(b.executionGrant, {
+  const gv = verifyArtifact(encodeDocument(b.executionGrant), encodeDocument({
     schemas: ctx.schemas,
     keyring: ctx.resolvedKeyring!,
     now: ctx.now,
     refHashChecks: [{ path: "holdEnvelopeHash", rule: "side", artifact: b.holdEnvelope, refEquals: [{ path: "tenant", value: ctx.tenant }] }],
-  });
+  }));
   if (!gv.ok) return fail(S, code, `executionGrant invalid: ${gv.reason}`);
 
   const allowedHash = asStr(getPath(allowed, "chain.hash"));
@@ -787,7 +788,7 @@ export function step10_executed(ctx: Ctx): StepResult {
   // for every grant-bearing outcome (see checkGrantBinding).
   const bindErr = checkGrantBinding(ctx, S, "E_EXECUTED");
   if (bindErr) return bindErr;
-  const cv = verifyArtifact(b.executionConsumption, { schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now });
+  const cv = verifyArtifact(encodeDocument(b.executionConsumption), encodeDocument({ schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now }));
   if (!cv.ok) return fail(S, "E_EXECUTED", `executionConsumption invalid: ${cv.reason}`);
 
   // grant unexpired at consumedAt (G5).
@@ -826,7 +827,7 @@ export function step11_executionFailed(ctx: Ctx): StepResult {
   // must have derived from THIS approval, action and hold.
   const bindErr = checkGrantBinding(ctx, S, "E_EXECUTION_FAILED");
   if (bindErr) return bindErr;
-  const cv = verifyArtifact(b.executionConsumption, { schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now });
+  const cv = verifyArtifact(encodeDocument(b.executionConsumption), encodeDocument({ schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now }));
   if (!cv.ok) return fail(S, "E_EXECUTION_FAILED", `executionConsumption invalid: ${cv.reason}`);
   // (G5) grant unexpired at consumedAt — the identical grant+consumption pair as step 10.
   const expErr = checkGrantUnexpiredAtConsumption(ctx, S, "E_EXECUTION_FAILED");
@@ -862,7 +863,7 @@ export function step12_unknown(ctx: Ctx): StepResult {
   const bindErr = checkGrantBinding(ctx, S, "E_UNKNOWN");
   if (bindErr) return bindErr;
   // gate-signed (GATE + execution-signer, F15) + the G3 liveness fields exist + within window.
-  const uv = verifyArtifact(b.executionUncertainty, { schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now });
+  const uv = verifyArtifact(encodeDocument(b.executionUncertainty), encodeDocument({ schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now }));
   if (!uv.ok) return fail(S, "E_UNKNOWN", `executionUncertainty invalid: ${uv.reason}`);
   if (asStr(unc.grantHash) !== refHash(b.executionGrant)) return fail(S, "E_UNKNOWN", "uncertainty.grantHash != refHash(grant)");
   if (asStr(unc.lastKnownState) !== "DISPATCH_STARTED") return fail(S, "E_UNKNOWN", "uncertainty.lastKnownState != DISPATCH_STARTED");
@@ -945,14 +946,17 @@ export function step17_checkpointReconcile(ctx: Ctx): StepResult {
     return fail(S, "E_CHECKPOINT_RECONCILE", "chain is not genesis-rooted (deferred receipt is not seq 0 / prevHash null)");
   }
   // receipt-chain integrity: signatures + contiguity + tenant-consistency (fail-closed).
-  const chainRes = verifyChain(chain, { keyring: ctx.receiptKeyring!, requireTenantConsistency: true });
+  // BYTES-IN: the chain and the keyring are handed to the kernel as DOCUMENTS. Both are already
+  // `safeParse` output (the bundle arrived as bytes; the keyring was derived from it), so this is a
+  // pure serialization of inert data, not a round-trip through anything a caller still owns.
+  const chainRes = verifyChain(encodeDocument(chain), { keyring: encodeDocument(ctx.receiptKeyring!), requireTenantConsistency: true });
   ctx.chainResult = chainRes;
   if (chainRes.status !== "VALID") {
     return fail(S, "E_CHECKPOINT_RECONCILE", `receipt chain not VALID: ${chainRes.status}${chainRes.reason ? ` (${chainRes.reason})` : ""}`);
   }
   // authenticate + reconcile the reused checkpoint against the EXTERNAL checkpoint keyring (F7).
   const cp = asObj(b.checkpoint);
-  const cpV = verifyCheckpoint(b.checkpoint as unknown as Checkpoint, ctx.checkpointKeyring);
+  const cpV = verifyCheckpoint(encodeDocument(b.checkpoint), encodeDocument(ctx.checkpointKeyring));
   if (cpV === "malformed checkpoint" || cpV === "bad spec") {
     return fail(S, "E_CHECKPOINT_RECONCILE", `checkpoint structurally invalid: ${cpV}`);
   }

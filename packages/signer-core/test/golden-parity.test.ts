@@ -32,6 +32,7 @@ import {
   type Signer as ReferenceSigner,
 } from "noa-receipt";
 
+import { b } from "./helpers/bytes.js";
 import { buildReceipt, canonicalize, spkiEd25519ToRawPublicKey, pkcs8Ed25519ToRawSeed, generateKeyPair as ourGenerateKeyPair } from "../src/index.js";
 import type { BuildInput, Receipt } from "../src/index.js";
 import { ed25519 } from "@noble/curves/ed25519.js";
@@ -94,8 +95,8 @@ test("G2: noa-signer buildReceipt is byte-identical to noa-receipt buildReceipt 
   assert.equal(ourBytes, referenceBytes, "JCS-canonical byte form must be identical (not just deep-equal)");
 
   const keyring = { [pair.kid]: pair.publicKey };
-  const refVerify = verifyChain([referenceReceipt], { keyring });
-  const oursVerify = verifyChain([ourReceipt], { keyring });
+  const refVerify = verifyChain(b([referenceReceipt]), { keyring: b(keyring) });
+  const oursVerify = verifyChain(b([ourReceipt]), { keyring: b(keyring) });
   assert.equal(refVerify.status, "VALID", "reference-built receipt must verify VALID");
   assert.equal(oursVerify.status, "VALID", "noa-signer-built receipt must verify VALID under the SAME verifier");
 });
@@ -119,8 +120,8 @@ test("G2: noa-signer buildReceipt is byte-identical to noa-receipt buildReceipt 
   assert.equal(ourNext.chain.prevHash, referenceGenesis.chain.hash);
 
   const keyring = { [pair.kid]: pair.publicKey };
-  const refChain = verifyChain([referenceGenesis, referenceNext], { keyring });
-  const ourChain = verifyChain([ourGenesis, ourNext], { keyring });
+  const refChain = verifyChain(b([referenceGenesis, referenceNext]), { keyring: b(keyring) });
+  const ourChain = verifyChain(b([ourGenesis, ourNext]), { keyring: b(keyring) });
   assert.equal(refChain.status, "VALID");
   assert.equal(ourChain.status, "VALID");
 });
@@ -159,6 +160,6 @@ test("G2 end-to-end: a key noa-signer itself generated signs a receipt noa-recei
 
   const receipt = buildReceipt(input, null, signer);
   const keyring = { [pair.kid]: pair.publicKey };
-  const result = verifyChain([receipt], { keyring });
+  const result = verifyChain(b([receipt]), { keyring: b(keyring) });
   assert.equal(result.status, "VALID");
 });

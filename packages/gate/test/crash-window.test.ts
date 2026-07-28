@@ -10,6 +10,7 @@ import assert from "node:assert/strict";
 import { verifyArtifact, refHash } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
 import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
 
@@ -59,12 +60,12 @@ test("stuck-RESERVED grant past the sweep window → gate-signed Uncertainty wit
   assert.equal(unc.uptimeResetAt, fx.trust.uptimeResetAt, "uptimeResetAt REQUIRED (G3)");
   assert.equal(unc.grantHash, refHash(rec.grant));
 
-  const check = verifyArtifact(unc as unknown as Record<string, unknown>, {
+  const check = verifyArtifact(b(unc as unknown as Record<string, unknown>), b({
     schemas,
     keyring: fx.trust.keyring,
     now: new Date(fx.trust.now()).toISOString(),
     refHashChecks: [{ path: "grantHash", rule: "side", artifact: rec.grant }],
-  });
+  }));
   assert.ok(check.ok, `uncertainty: ${check.reason}`);
 
   // idempotent — a second sweep signs nothing new.

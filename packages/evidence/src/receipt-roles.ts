@@ -34,7 +34,7 @@
  * turns the suite red on its own outcome's VALID fixture.
  */
 
-import { frozenTable, intrinsics, snapshotImmutable } from "noa-receipt";
+import { frozenTable, intrinsics } from "noa-receipt";
 
 // PRISTINE MEMBERSHIP (review #6, C1). `allowed.includes(verdict)` is a POLICY DECISION, and it used
 // to dispatch through the globally-mutable `Array.prototype.includes`. A getter fired while the
@@ -138,14 +138,16 @@ export function assertReceiptRole(
   role: ReceiptRole,
   asserted: Set<ReceiptRole>,
 ): RoleAssertion {
-  // THE INGEST BOUNDARY (review #6, C2). `verifyEvidence` hands this an already-inert bundle, but
-  // `index.ts` advertises the chokepoint "for downstream reuse", so a direct caller must not be able
-  // to split the role read from the verdict read. Snapshotting an already-inert value is cheap and
-  // idempotent; snapshotting a live one is the whole point. Fail closed on a bundle that fights it.
-  try {
-    bundle = snapshotImmutable<Record<string, unknown>>(bundle);
-  } catch {
-    return { ok: false, reason: `${role} could not be read from an inert bundle (a hostile getter, a proxy trap, or a non-plain object)` };
+  // TODO(bytes-in): the snapshot that stood here is GONE. On this package's own path the bundle is
+  // now the KERNEL'S parser output (`verifyEvidence` takes the bundle as bytes), so it carries no
+  // getters and the role read and the verdict read below cannot be split by a flipping accessor —
+  // the property this boundary existed to guarantee now holds by construction. `index.ts` still
+  // advertises the chokepoint "for downstream reuse", though, and a direct caller can hand it a
+  // live object; the bundle is not a document at THIS signature (it is one field of an
+  // already-parsed bundle away), so re-serializing to re-parse would be theatre. The shape guard
+  // below keeps the never-throws contract. Reported.
+  if (bundle === null || typeof bundle !== "object") {
+    return { ok: false, reason: `${role} could not be read: the bundle is not an object` };
   }
   const raw = bundle[role];
   if (raw === undefined || raw === null) {

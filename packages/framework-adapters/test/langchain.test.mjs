@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, verifyChain, REFUND_GUARD_POLICY } from "noa-mcp-adapter-core";
+import { b } from "./helpers/bytes.mjs";
 import { createToolGuard, GuardedToolDenied } from "../src/wrap-tool.mjs";
 import { wrapLangChainTool } from "../src/langchain.mjs";
 
@@ -38,7 +39,7 @@ test("wrapLangChainTool: ALLOW calls func and returns its result unchanged, rece
   assert.equal(guard.receipts.length, 2);
   assert.equal(guard.receipts[0].governance.verdict, "ALLOWED");
   assert.equal(guard.receipts[1].governance.verdict, "EXECUTED");
-  const v = verifyChain(guard.receipts, { keyring });
+  const v = verifyChain(b(guard.receipts), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
 });
 
@@ -96,7 +97,7 @@ test("wrapLangChainTool: N calls -> N receipts, offline-verifiable", async () =>
     assert.equal(outcome.id, `${guard.receipts[i].id}#outcome`, "the outcome must identify WHICH decision it settles");
     assert.equal(outcome.action.paramsHash, guard.receipts[i].action.paramsHash);
   }
-  const v = verifyChain(guard.receipts, { keyring });
+  const v = verifyChain(b(guard.receipts), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
   assert.equal(v.count, EXPECTED_VERDICTS.length);
 });
@@ -113,7 +114,7 @@ test("wrapLangChainTool: two tools sharing ONE guard chain onto the same receipt
   // refund ALLOW -> decision + outcome (2); db.delete DENY -> decision only (1).
   assert.equal(guard.receipts.length, 3, "both tools append to the SAME shared chain");
   assert.deepEqual(guard.receipts.map((r) => r.governance.verdict), ["ALLOWED", "EXECUTED", "BLOCKED"]);
-  const v = verifyChain(guard.receipts, { keyring });
+  const v = verifyChain(b(guard.receipts), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
 });
 

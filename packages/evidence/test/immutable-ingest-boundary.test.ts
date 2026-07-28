@@ -15,6 +15,7 @@ import { fileURLToPath } from "node:url";
 import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
 import { assertReceiptRole, RECEIPT_ROLE_VERDICTS, MANDATORY_RECEIPT_ROLES, type ReceiptRole } from "../src/receipt-roles.js";
 import type { EvidenceBundle } from "../src/types.js";
+import { b } from "./helpers/bytes.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const schemas = loadSchemas();
@@ -31,9 +32,9 @@ function loadValid(name: string): Fixture {
   return JSON.parse(readFileSync(join(HERE, "..", "..", "conformance", "valid", name), "utf8")) as Fixture;
 }
 function run(fx: Fixture, over: Partial<{ now: string; purpose: "audit" | "authorize" }> = {}) {
-  return verifyEvidence(fx.bundle, {
-    tenantRoot: fx.tenantRoot as never,
-    checkpointKeyring: fx.checkpointKeyring as never,
+  return verifyEvidence(b(fx.bundle), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
     now: over.now ?? fx.now,
     maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
     schemas,
@@ -53,51 +54,75 @@ test("C1: the verdict policy table is deeply frozen — the runtime-widening exp
   assert.ok(Object.isFrozen(MANDATORY_RECEIPT_ROLES));
 });
 
-test("C1: a governance getter on the bundle is fired EXACTLY ONCE — no two reads can disagree", () => {
+/**
+ * ── C1, RE-EXPRESSED AS BYTES ────────────────────────────────────────────────────────────────────
+ *
+ * The two tests below used to install a LIVE `governance` getter on the bundle and assert that the
+ * ingest snapshot fired it exactly once, so a value that flipped between reads could not show one
+ * verdict to the role check and another to a reread.
+ *
+ * That attack is not expressible against `verifyEvidence` any more, and the reason is the fix: the
+ * bundle is a DOCUMENT and arrives as bytes, which have no getters to fire. Deleting the tests
+ * would be deleting the coverage; keeping them in object form would be asserting a property of an
+ * argument the function no longer accepts. So each is translated into the nearest thing a BYTE
+ * document can express, and the boundary is required to reject it:
+ *
+ *   • "two reads can disagree" becomes "one document carries the same key twice" — the classic
+ *     forgery channel where a producer and a verifier disagree about which value is "the" value.
+ *     `safeParse` refuses duplicate keys outright, so the whole document is rejected rather than
+ *     silently resolved last-wins (which is what `JSON.parse` would have done).
+ *
+ *   • "the FIRST read is authoritative" becomes "a forged verdict in the byte form is caught by the
+ *     same role check", proving the role rule still bites on the parsed document and that the
+ *     honest bytes still verify — the negative and the positive control together.
+ */
+
+test("C1 (bytes): a live getter is not expressible — the honest bundle verifies from its BYTES", () => {
   const fx = loadValid("executed.json");
-  const live = structuredClone(fx.bundle) as unknown as Record<string, unknown>;
-  const deferred = live["deferredReceipt"] as Record<string, unknown>;
-  const realGov = deferred["governance"];
-  let reads = 0;
-  Object.defineProperty(deferred, "governance", {
-    enumerable: true,
-    configurable: true,
-    get() {
-      reads++;
-      return realGov; // the honest, signed governance — so the bundle still verifies
-    },
-  });
-  const res = verifyEvidence(live, {
-    tenantRoot: fx.tenantRoot as never,
-    checkpointKeyring: fx.checkpointKeyring as never,
+  const res = verifyEvidence(b(fx.bundle), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
     now: fx.now,
     maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
     schemas,
   });
-  assert.equal(res.verdict, "VALID_FULL_CHAIN", `bundle should still verify; got ${res.verdict} (${res.reason ?? ""})`);
-  assert.equal(reads, 1, "the source getter must be fired EXACTLY ONCE (ingest snapshot) — the whole point of C1");
+  assert.equal(res.verdict, "VALID_FULL_CHAIN", `bundle should verify from bytes; got ${res.verdict} (${res.reason ?? ""})`);
 });
 
-test("C1: a governance getter that flips verdict cannot launder — the FIRST (only) read is authoritative", () => {
+test("C1 (bytes): a DUPLICATE governance key — the byte-form of 'two reads disagree' — is REJECTED, never resolved last-wins", () => {
   const fx = loadValid("executed.json");
-  const live = structuredClone(fx.bundle) as unknown as Record<string, unknown>;
-  const deferred = live["deferredReceipt"] as Record<string, unknown>;
-  const realGov = deferred["governance"] as Record<string, unknown>;
-  const forged = { ...realGov, verdict: "BLOCKED" }; // a verdict UNFIT for the deferredReceipt role
-  let reads = 0;
-  Object.defineProperty(deferred, "governance", {
-    enumerable: true,
-    configurable: true,
-    get() {
-      // forged FIRST, honest AFTER: pre-ingest-boundary, a later honest read could rescue the role
-      // check while an earlier forged read did the damage (or vice-versa). Post-boundary, only the
-      // first read exists — it is snapshotted and frozen — so the flip is inert.
-      return ++reads === 1 ? forged : realGov;
-    },
+  const honest = JSON.stringify(fx.bundle);
+  const deferredGov = JSON.stringify((fx.bundle as unknown as Record<string, Record<string, unknown>>)["deferredReceipt"]!["governance"]);
+  // Inject a SECOND `"governance"` member into the deferredReceipt object, carrying a verdict unfit
+  // for the role. `JSON.parse` would keep the last one and hand the verifier a laundered bundle;
+  // the strict parser refuses the document.
+  const forgedGov = JSON.stringify({ ...(fx.bundle as unknown as Record<string, Record<string, Record<string, unknown>>>)["deferredReceipt"]!["governance"], verdict: "BLOCKED" });
+  const duplicated = honest.replace(`"governance":${deferredGov}`, `"governance":${deferredGov},"governance":${forgedGov}`);
+  assert.notEqual(duplicated, honest, "the fixture must actually have been rewritten — otherwise this test proves nothing");
+  assert.equal(
+    (JSON.parse(duplicated) as Record<string, Record<string, Record<string, unknown>>>)["deferredReceipt"]!["governance"]!["verdict"],
+    "BLOCKED",
+    "sanity: a NAIVE parser silently takes the forged value — that is the attack this boundary refuses",
+  );
+
+  const res = verifyEvidence(new TextEncoder().encode(duplicated), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
+    now: fx.now,
+    maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
+    schemas,
   });
-  const res = verifyEvidence(live, {
-    tenantRoot: fx.tenantRoot as never,
-    checkpointKeyring: fx.checkpointKeyring as never,
+  assert.equal(res.verdict, "INVALID", "a duplicate-key document must never verify");
+  assert.match(res.reason ?? "", /byte boundary/, "and it must be rejected AT the boundary, not deeper in");
+});
+
+test("C1 (bytes): a forged deferred verdict in the byte form is still caught by the role check", () => {
+  const fx = loadValid("executed.json");
+  const forged = structuredClone(fx.bundle) as unknown as Record<string, Record<string, Record<string, unknown>>>;
+  forged["deferredReceipt"]!["governance"]!["verdict"] = "BLOCKED"; // UNFIT for the deferredReceipt role
+  const res = verifyEvidence(b(forged), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
     now: fx.now,
     maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
     schemas,
@@ -140,9 +165,9 @@ test("H1: an absent OPTIONAL role is a checked fact (recorded); an absent MANDAT
 test("H3: an unrecognised purpose fails CLOSED (UNVERIFIED), never silently downgrades to audit", () => {
   const fx = loadValid("executed.json");
   for (const bogus of ["AUTHORIZE", "authorize ", "bogus", "", "Audit"]) {
-    const res = verifyEvidence(fx.bundle, {
-      tenantRoot: fx.tenantRoot as never,
-      checkpointKeyring: fx.checkpointKeyring as never,
+    const res = verifyEvidence(b(fx.bundle), {
+      tenantRoot: b(fx.tenantRoot),
+      checkpointKeyring: b(fx.checkpointKeyring),
       now: fx.now,
       maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
       schemas,
@@ -164,9 +189,9 @@ test("H3: the AUDIT authorization dimension reflects the MANIFEST window at now,
   // so the checkpoint stays fresh at the advanced `now` (a negative outcome needs a fresh checkpoint).
   const fx = loadValid("denied.json");
   const now = "2026-07-16T00:00:00.000Z";
-  const res = verifyEvidence(fx.bundle, {
-    tenantRoot: fx.tenantRoot as never,
-    checkpointKeyring: fx.checkpointKeyring as never,
+  const res = verifyEvidence(b(fx.bundle), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
     now,
     maxAgeMs: 240 * 60 * 60 * 1000, // 10 days — keeps the checkpoint fresh at the advanced `now`
     schemas,

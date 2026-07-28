@@ -8,6 +8,7 @@
  * verdicts (pasted, not summarized), and the measured flow duration.
  */
 import { verifyChain } from 'noa-receipt';
+import { encodeDocument } from './bytes.js';
 import { setupHarness, teardownHarness, runApprovedFlow } from './harness.js';
 
 const FLOW = String.raw`
@@ -35,7 +36,7 @@ async function main(): Promise<void> {
     const result = await runApprovedFlow(ctx, 'APPROVE');
 
     const chain = [result.artifacts.deferredReceipt, result.artifacts.allowedReceipt, result.artifacts.executedReceipt];
-    const vc = verifyChain(chain as never[], { keyring: ctx.trust.receiptKeyring, requireTenantConsistency: true });
+    const vc = verifyChain(encodeDocument(chain), { keyring: encodeDocument(ctx.trust.receiptKeyring), requireTenantConsistency: true });
 
     process.stdout.write('\n── VERDICTS (pasted from the real verifiers) ────────────────────────────────────\n');
     process.stdout.write('verify-evidence: ' + JSON.stringify({ verdict: result.verdict.verdict, outcome: result.verdict.outcome, steps: result.verdict.steps.length, warnings: result.verdict.warnings.length }) + '\n');

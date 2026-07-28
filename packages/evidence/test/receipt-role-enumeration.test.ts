@@ -24,6 +24,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
+import { b } from "./helpers/bytes.js";
 import { step19_receiptRoleIntegrity, type Ctx } from "../src/steps.js";
 import { RECEIPT_ROLES, RECEIPT_ROLE_VERDICTS, type ReceiptRole } from "../src/receipt-roles.js";
 import { OUTCOME_ARTIFACT_UNION, type EvidenceBundle, type EvidenceOutcome } from "../src/types.js";
@@ -50,9 +51,9 @@ for (const slug of readdirSync(CONF)) {
   }
 }
 function run(fx: Fixture) {
-  return verifyEvidence(fx.bundle, {
-    tenantRoot: fx.tenantRoot as never,
-    checkpointKeyring: fx.checkpointKeyring as never,
+  return verifyEvidence(b(fx.bundle), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
     now: fx.now,
     maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
     schemas,

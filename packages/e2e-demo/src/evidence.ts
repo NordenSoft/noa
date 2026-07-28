@@ -13,6 +13,7 @@ import type { KeyEntry } from 'noa-approval-artifacts';
 import type { GateTrust } from 'noa-gate';
 import { DemoError } from './errors.js';
 import type { Clock } from './support.js';
+import { encodeDocument } from './bytes.js';
 
 export interface FlowArtifacts {
   holdEnvelope: unknown;
@@ -86,9 +87,12 @@ export function verifyBundle(
   tenantRoot: Record<string, KeyEntry>,
   clock: Clock,
 ): VerifyEvidenceResult {
-  return verifyEvidence(bundle, {
-    tenantRoot,
-    checkpointKeyring: { [trust.gate.kid]: trust.gate.publicKey },
+  // BYTES-IN: the bundle, the external trust root and the checkpoint keyring are DOCUMENTS. This is
+  // also the more honest demo: what it proves is that the BYTES a relying party would receive
+  // verify, not that an object graph the demo happened to be holding in-process did.
+  return verifyEvidence(encodeDocument(bundle), {
+    tenantRoot: encodeDocument(tenantRoot),
+    checkpointKeyring: encodeDocument({ [trust.gate.kid]: trust.gate.publicKey }),
     now: clock.iso(),
     maxAgeMs: 24 * 60 * 60 * 1000,
   });

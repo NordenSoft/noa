@@ -20,6 +20,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createToolGuard, ToolOutcomeNotRecorded } from "../src/wrap-tool.mjs";
 import { generateKeyPair, verifyChain, REFUND_GUARD_POLICY } from "noa-mcp-adapter-core";
+import { b } from "./helpers/bytes.mjs";
 import { THROWN_CORPUS } from "../../../scripts/thrown-value-corpus.mjs";
 
 const ARGS = { action: "payment.refund", amountMinor: 4_200 };
@@ -80,7 +81,7 @@ for (const entry of THROWN_CORPUS) {
       ["ALLOWED"],
       "the decision stands; NO terminal verdict is signed for an outcome nobody can observe",
     );
-    assert.equal(verifyChain(guard.receipts, { keyring }).status, "VALID");
+    assert.equal(verifyChain(b(guard.receipts), { keyring: b(keyring) }).status, "VALID");
   });
 
   test(`DOOR 2 — the RECORDING throws it after a SUCCESSFUL call: the discriminator survives: ${entry.name}`, async () => {
