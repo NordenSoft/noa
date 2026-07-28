@@ -58,6 +58,11 @@ const OUT_OF_TCB = {
 
 const TCB = [
   "src/verify.ts",
+  // THE BYTES-IN BOUNDARY (ADR §3, P3). Both are decision paths by construction: `bytes.ts` decides
+  // whether a value is a document at all, and `opts.ts` decides whether a caller-owned object may be
+  // read. They are in the TCB from their first commit rather than after someone notices.
+  "src/bytes.ts",
+  "src/opts.ts",
   // Exempting this was my own first instance of the very bypass L0 now blocks: it declares
   // SECURITY_SENSITIVE exports (snapshotImmutable / tryIngest), so it is in the TCB by derivation,
   // and bytes-in deleting it later is the fix — not a reason to stop linting it now.
