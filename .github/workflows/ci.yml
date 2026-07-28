@@ -240,7 +240,17 @@ jobs:
         # All eleven preserved review-round-7 exploits, each pinned CLOSED or OPEN in BOTH
         # directions: a CLOSED exploit that reproduces again is a regression, and an OPEN exploit
         # that silently stops reproducing is an exploit that rotted into measuring nothing.
-        run: npm run test:r7-exploits
+        #
+        # The two builds below are load-bearing, not tidiness. Without them the exploits that import
+        # packages/gate and packages/approval-artifacts die on ERR_MODULE_NOT_FOUND, and the first
+        # version of the runner scored that crash as CLOSED — a fixed vulnerability. The runner now
+        # requires each exploit to PRINT its verdict and treats a silent death as INDETERMINATE, so
+        # this step can no longer pass vacuously; building the dependencies is what makes it pass
+        # for the right reason instead.
+        run: |
+          npm --prefix packages/approval-artifacts ci && npm --prefix packages/approval-artifacts run build
+          npm --prefix packages/gate ci && npm --prefix packages/gate run build
+          npm run test:r7-exploits
       - name: L4 control knockout (every control has a test that dies without it)
         # Slow by construction: each control is removed and its suite re-run. It runs here rather
         # than in a fast lane precisely because "what would have caught this?" is worth the minutes.
