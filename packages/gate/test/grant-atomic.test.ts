@@ -9,8 +9,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
 
-function approveAndGrant(fx: ReturnType<typeof setupGate>, chain: string): string {
-  const created = fx.engine.createHold(fx.agent, `idem-${chain}`, {
+function approveAndGrant(fx: ReturnType<typeof setupGate>, chain: string, idem = `idem-${chain}`): string {
+  const created = fx.engine.createHold(fx.agent, idem, {
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
@@ -137,4 +137,53 @@ test("C-04: a caller cannot manufacture an authorization it never obtained — D
     assert.equal(r.status, 409, `${result} without a reservation must not be accepted`);
     assert.equal((r.body as { error: string }).error, "GRANT_NOT_RESERVED");
   }
+});
+
+/**
+ * NC-2.7 — found by adversarially probing the C-04 fix, and it is NOT a C-04 regression.
+ *
+ * Two holds may legitimately exist for the same action and the same `paramsHash` on one chain —
+ * that is what retrying a genuinely-failed action looks like. So an attacker can dispatch
+ * invocation A and then, entirely honestly, obtain a determinate signed FAILED receipt for a
+ * SECOND invocation B that was refused before reservation. Every statement the gate makes is true:
+ * B's grant never left UNUSED.
+ *
+ * The residual risk is CORRELATION, not epistemics: a consumer that aggregates terminal verdicts by
+ * `action.canonical` + `action.paramsHash` conflates A and B and can read "this action failed" while
+ * A was dispatched. This test pins the property that makes the confusion AVOIDABLE — the artifacts
+ * must stay distinguishable by their grant binding. If a future change stopped binding `grantHash`,
+ * the non-claim would silently become unfixable-at-the-consumer, and this fails.
+ */
+test("NC-2.7: two invocations of the SAME action stay distinguishable by grant binding, not by action fields", () => {
+  const fx = setupGate({ approverRole: "approve-high" });
+  const grantA = approveAndGrant(fx, "chain-corr", "idem-A");
+  assert.equal(fx.engine.reserve(grantA, fx.agent).status, 200, "A is dispatched");
+
+  // A DISTINCT idempotency key — the gate correctly collapses a repeat of the same key onto one
+  // hold, so the realistic case is a caller that simply submits a new request.
+  const grantB = approveAndGrant(fx, "chain-corr", "idem-B");
+  assert.notEqual(grantB, grantA, "a second hold yields its own grant");
+  const rB = fx.engine.report(grantB, { result: "FAILED_BEFORE_DISPATCH" }, fx.agent);
+  assert.equal(rB.status, 200, "B never reserved, so its determinate negative is gate-observed and TRUE");
+
+  const body = rB.body as { consumption: Record<string, unknown>; attemptReceipt: Record<string, unknown> };
+  const recA = fx.engine.getGrant(grantA)!;
+  const recB = fx.engine.getGrant(grantB)!;
+
+  // The honest part: A is untouched and still carries no terminal artifact.
+  assert.equal(recA.status, "RESERVED", "the dispatched grant is NOT resolved by B's report");
+  assert.equal(recA.consumption, null, "no consumption is signed for the dispatched invocation");
+
+  // THE PINNED PROPERTY: the artifacts are separable by their grant binding.
+  assert.notEqual(
+    body.consumption["grantHash"],
+    undefined,
+    "the consumption MUST bind its grant — without it the two invocations become indistinguishable",
+  );
+  assert.notEqual(recB.grant.grantId, recA.grant.grantId);
+  assert.notEqual(
+    (body.attemptReceipt["chain"] as { seq: number }).seq,
+    undefined,
+    "the terminal receipt MUST carry a chain position",
+  );
 });

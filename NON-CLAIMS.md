@@ -97,6 +97,25 @@ situation travels on the error the host receives (`data.executionHappened`, `dat
 `data.sideEffectState`), not in the outcome receipt. *This is a live, deliberately-accepted residual —
 see `scripts/lint-dispatch-surfaces.mjs`, disposition `MITIGATED`.*
 
+### NC-2.7 — A terminal receipt is evidence about ITS OWN invocation, never about another invocation of the same action
+Found while adversarially probing the C-04 fix, 2026-07-28. Two holds may legitimately exist for the
+same `action.canonical` and the same `paramsHash` on the same chain — that is what retrying a
+genuinely-failed action looks like. If invocation A is dispatched and invocation B is refused before
+reservation, the gate signs a determinate `FAILED` receipt for **B**, and it is true: B's grant never
+left `UNUSED`.
+
+**Every gate statement here is correct and correctly bound** — the receipts differ by `id`,
+`chain.seq`, `chain.prevHash`, and the consumption's `grantHash`. What does **not** distinguish them
+is `action.canonical` + `action.paramsHash`, which are identical by construction.
+
+So: **a consumer that aggregates terminal verdicts by action and parameter hash will conflate two
+distinct invocations, and can conclude "this action failed" while an invocation of it was
+dispatched.** Correlate by `grantHash`, receipt `id`, or `chain.seq` — never by action fields alone.
+This is the same distinction `packages/framework-adapters/src/wrap-tool.mjs` already documents for
+concurrent calls: copying the action fields proves an outcome is about the same ACTION; it does not
+identify WHICH CALL. Pinned mechanically by
+`packages/gate/test/grant-atomic.test.ts` ("distinguishable by grantHash").
+
 ### NC-2.5 — Nothing here is an exactly-once guarantee
 The durable commit protocol is specified (`docs/side-effect-unconfirmed.md`) and **deliberately not
 built**. It is blocked on four preconditions, two of which require cooperation from tools outside this
