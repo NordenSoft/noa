@@ -41,6 +41,7 @@
  * security-sensitive entry point that throws hands the caller an exception object whose own
  * `message` getter is attacker-reachable (ADR §3.5).
  */
+import { safeParse, isSafeJsonError, type SafeJsonError } from "./safe-json.js";
 
 /** The hard ceiling on a single document, enforced on BYTES before any decode (ADR §3.4). */
 export const MAX_INPUT_BYTES = 16 * 1024 * 1024;
@@ -148,4 +149,39 @@ export function decodeDocument(input: unknown, what: string): DecodeResult {
     return { ok: false, reason: `${what}: input is not valid UTF-8` };
   }
   return { ok: true, text };
+}
+
+export type ParseResult = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly reason: string };
+
+/**
+ * DECODE THEN STRICT-PARSE — the single route by which a security-sensitive document becomes data
+ * the kernel will reason about. Everything downstream of this call operates on `safeParse` output:
+ * null-prototype objects, no accessors, no duplicate keys, no `__proto__`/`prototype`/`constructor`,
+ * no floats or exponents, no unsafe integers, no lone surrogates, no unescaped control characters,
+ * no trailing content, and bounded depth.
+ *
+ * That list is not restated here and is not re-implemented here. It is `src/safe-json.ts`, which is
+ * the normative parse authority for all five implementations (ADR §1.3, §3.4) — writing a second
+ * strict parser for the new boundary would create a second normative text and turn any drift between
+ * them into an interop break across TS/Py/Go/Rust/C#. The parser has been correct the whole time.
+ * The defect this migration fixes is that the OBJECT API ROUTED AROUND IT: `verifyChain(obj)` never
+ * called `safeParse`, so none of its guarantees applied, and `ingest`/`inert`/`intrinsics` were an
+ * attempt to reconstruct over a live hostile object the properties the parser already provided for
+ * free over bytes.
+ *
+ * Reading `e.message` here is safe in a way it would not be for an arbitrary caught value, and the
+ * safety is established by the BRAND rather than by the read: `isSafeJsonError` is a `WeakSet`
+ * identity lookup that fires no trap for any input, and a `true` answer certifies the message was
+ * built from `safe-json.ts`'s own literals plus a numeric position. Anything else gets a fixed
+ * reason and is never touched — no `instanceof`, no interpolation, no stringification.
+ */
+export function parseDocument(input: unknown, what: string): ParseResult {
+  const decoded = decodeDocument(input, what);
+  if (!decoded.ok) return decoded;
+  try {
+    return { ok: true, value: safeParse(decoded.text, { maxLength: MAX_INPUT_BYTES }) };
+  } catch (e) {
+    if (isSafeJsonError(e)) return { ok: false, reason: `${what}: ${(e as SafeJsonError).message}` };
+    return { ok: false, reason: `${what}: input could not be parsed` };
+  }
 }

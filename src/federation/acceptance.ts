@@ -31,7 +31,9 @@
 import { verifyEd25519 } from "../keys.js";
 import { canonicalize } from "../jcs.js";
 import { signingMessage } from "../signing.js";
-import { snapshotImmutable } from "../ingest.js";
+import { parseDocument } from "../bytes.js";
+import { isSha256Hash, isRfc3339 } from "../scan.js";
+import { inertOptions, type OptionSchema } from "../opts.js";
 import {
   arrayLength,
   isArray,
@@ -42,7 +44,6 @@ import {
   mapSet,
   mapValuesToArray,
   dateParse,
-  regexpTest,
   setAdd,
   setHas,
 } from "../intrinsics.js";
@@ -176,11 +177,11 @@ export function anchorSigningInput(a: Pick<Anchor, "chain" | "highestSeq" | "hea
   return signingMessage(ANCHOR_SIG_DOMAIN, jcs);
 }
 
-const HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const B64_SPKI_MIN = 1; // structural presence only; verifyEd25519 enforces real SPKI/curve/canonicality
-// RFC 3339 (lowercase t/z accepted) — mirrors src/verify.ts CP_RFC3339_RE so anchor ts strictness matches
-// the receipt/checkpoint discipline. A non-RFC3339 ts is NOT freshness-checkable → fail-closed.
-const ANCHOR_RFC3339_RE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
+// Formats are decided by hand-written scanners (src/scan.ts). A regex literal cannot stay on a
+// decision path: `RegExp.prototype.test` performs a dynamic `Get(re, "exec")`, so even a CAPTURED
+// `test` dispatches through the writable `RegExp.prototype.exec` — reproduced by
+// `test/security/r7-exploits/c02_regexp_witness.mjs` against the captured wrapper.
 
 const SNAPSHOT_NOTE =
   "snapshot check: complete:true means a quorum of pinned witnesses confirmed this head AS OF the supplied " +
@@ -203,7 +204,7 @@ function r(
  * silently coerced into a freshness pass.
  */
 function parseAnchorTsMs(ts: string): number | null {
-  if (!regexpTest(ANCHOR_RFC3339_RE, ts)) return null;
+  if (!isRfc3339(ts)) return null;
   const ms = dateParse(ts);
   return Number.isNaN(ms) ? null : ms;
 }
@@ -248,29 +249,79 @@ function isContradiction(c: "confirm" | "beyond" | "divergent" | "stale"): boole
  * @param opts     optional `{ freshness: { now, maxAgeMs, skewMs? } }` to enforce currency (else not enforced)
  */
 export function verifyCompleteness(
+  headBytes: Uint8Array | string,
+  anchorsBytes: Uint8Array | string,
+  trustSetBytes: Uint8Array | string,
+  opts: CompletenessOptions = {},
+): CompletenessResult {
+  // ── THREE DOCUMENTS AND ONE OPTIONS OBJECT (federation-spec §4) ──────────────────────────────────
+  // The head, the witness anchors and the pinned trust-set are all artifacts under adjudication, so
+  // all three are bytes. The §4 rule reads each anchor's (chain, highestSeq, headHash, ts, sig.*) and
+  // each pinned witness's (kid, pubkey) MANY times — the distinctness dedup, the signature check, the
+  // classification, the tally — and review #5's C2 was exactly two reads disagreeing: genuine
+  // witnesses over head A whose getters exposed A to the signature check and B to classification
+  // (→ complete over a head nobody signed), and one physical key flipping its `kid`/`pubkey` to be
+  // tallied as two witnesses toward a quorum. Parsed bytes cannot disagree with themselves.
+  const hParsed = parseDocument(headBytes, "head");
+  if (!hParsed.ok) return r(false, "INVALID_INPUT", hParsed.reason);
+  const aParsed = parseDocument(anchorsBytes, "anchors");
+  if (!aParsed.ok) return r(false, "INVALID_INPUT", aParsed.reason);
+  const tParsed = parseDocument(trustSetBytes, "trustSet");
+  if (!tParsed.ok) return r(false, "INVALID_INPUT", tParsed.reason);
+  const admitted = inertOptions<InertCompletenessOptions>(COMPLETENESS_OPTION_SCHEMA, opts, "options");
+  if (!admitted.ok) return r(false, "INVALID_INPUT", admitted.reason);
+  // The nested freshness policy was admitted by `inertOptions` itself, against
+  // FRESHNESS_OPTION_SCHEMA — `admitted.value.freshness` is already a frozen null-prototype record of
+  // scalars, never the caller's object. A getter named `now` returning a number is still caller code
+  // running inside the boundary, so "it is only numbers" was never a reason to skip the pass; what
+  // changed is that skipping it is no longer possible from here.
+  let freshness: FreshnessPolicy | undefined;
+  if (admitted.value.freshness !== undefined) {
+    const f = admitted.value.freshness;
+    if (f.now === undefined || f.maxAgeMs === undefined) {
+      return r(false, "INVALID_INPUT", "opts.freshness must be an object { now, maxAgeMs, skewMs? }");
+    }
+    freshness = f as FreshnessPolicy;
+  }
+  return verifyCompletenessParsed(
+    hParsed.value as ChainHead,
+    aParsed.value as readonly Anchor[],
+    tParsed.value as TrustSet,
+    freshness === undefined ? {} : { freshness },
+  );
+}
+
+/**
+ * The freshness policy is a NUMERIC option, not a document, so it stays an object member — but a
+ * nested object cannot be validated by the flat option schema. It is therefore admitted by its own
+ * nested `inertOptions` call below, with the same rules, rather than being waved through because it
+ * is "just numbers": a GETTER named `now` that returns a number still runs caller code.
+ */
+interface InertCompletenessOptions {
+  readonly freshness?: { readonly now?: number; readonly maxAgeMs?: number; readonly skewMs?: number };
+}
+
+/** Declared BEFORE the schema that references it: a `const` read before its declaration is a TDZ
+ * ReferenceError at MODULE LOAD, which for a security boundary means the entry point cannot run at
+ * all. Ordering is load-bearing here, not stylistic. */
+const FRESHNESS_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.create(null), {
+  now: { kind: "count", max: Number.MAX_SAFE_INTEGER },
+  maxAgeMs: { kind: "count", max: Number.MAX_SAFE_INTEGER },
+  skewMs: { kind: "count", max: Number.MAX_SAFE_INTEGER },
+})) as OptionSchema;
+
+const COMPLETENESS_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.create(null), {
+  freshness: { kind: "nested", schema: FRESHNESS_OPTION_SCHEMA },
+})) as OptionSchema;
+
+
+/** The §4 acceptance rule over PARSED data — kernel-internal, NOT re-exported from `src/index.ts`. */
+export function verifyCompletenessParsed(
   head: ChainHead,
   anchors: readonly Anchor[],
   trustSet: TrustSet,
   opts: CompletenessOptions = {},
 ): CompletenessResult {
-  // ── THE INGEST BOUNDARY (federation-spec §4) ─────────────────────────────────────────────────────
-  // Snapshot every caller-supplied input into inert, own-data-only, frozen data ONCE, before a single
-  // §4 rule reads it. The rule reads each anchor's (chain, highestSeq, headHash, ts, sig.*) and each
-  // pinned witness's (kid, pubkey) MULTIPLE times — the distinctness dedup, the signature check, the
-  // classification, the tally. A LIVE getter can return one value to the dedup and another to the
-  // tally: the fifth review's C2 is two genuine witnesses over head A whose live getters expose A to
-  // the signature checks and B to classification (→ complete over a head nobody signed), and one
-  // physical key flipping its `kid`/`pubkey` to be tallied as two witnesses toward the quorum. Fired
-  // once here into frozen data, no getter can disagree with itself. A value that fights the snapshot
-  // (a throwing getter, a proxy trap, a non-plain object) is INVALID_INPUT — never silently confirmed.
-  try {
-    head = snapshotImmutable<ChainHead>(head);
-    anchors = snapshotImmutable<readonly Anchor[]>(anchors);
-    trustSet = snapshotImmutable<TrustSet>(trustSet);
-    opts = snapshotImmutable<CompletenessOptions>(opts);
-  } catch {
-    return r(false, "INVALID_INPUT", "an input could not be reduced to inert data at the ingest boundary (a hostile getter, a proxy trap, or a non-plain object)");
-  }
 
   // ── 0. Structural validation of the presented head (fail-closed) ────────────────────────────────
   if (typeof head !== "object" || head === null) return r(false, "INVALID_INPUT", "head is not an object");
@@ -280,7 +331,7 @@ export function verifyCompleteness(
   if (typeof head.seq !== "number" || !isSafeInteger(head.seq) || head.seq < 0) {
     return r(false, "INVALID_INPUT", "head.seq must be a non-negative safe integer");
   }
-  if (typeof head.hash !== "string" || !regexpTest(HASH_RE, head.hash)) {
+  if (typeof head.hash !== "string" || !isSha256Hash(head.hash)) {
     return r(false, "INVALID_INPUT", "head.hash must be sha256:<64-hex>");
   }
 
@@ -360,7 +411,7 @@ export function verifyCompleteness(
     if (typeof a !== "object" || a === null) continue;
     if (typeof a.chain !== "string") continue;
     if (typeof a.highestSeq !== "number" || !isSafeInteger(a.highestSeq) || a.highestSeq < 0) continue;
-    if (typeof a.headHash !== "string" || !regexpTest(HASH_RE, a.headHash)) continue;
+    if (typeof a.headHash !== "string" || !isSha256Hash(a.headHash)) continue;
     // ts is structurally only required to be a non-empty string here (buildAnchor is stricter and always
     // emits RFC3339). A non-RFC3339 ts is handled fail-closed downstream WITHOUT dropping the anchor early:
     // under a freshness policy parseAnchorTsMs returns null ⇒ the confirm is downgraded to STALE (does not

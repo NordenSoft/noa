@@ -5,6 +5,8 @@ import {
   createPrivateKey,
   createPublicKey,
 } from "node:crypto";
+import { bufferFrom, bufToString, bufEquals, bufSubarray } from "./intrinsics.js";
+import { membership } from "./inert.js";
 
 /**
  * Ed25519 key handling for receipt signatures.
@@ -34,7 +36,7 @@ export interface KeyPair {
  * changes no valid behavior. (Mirrors libsodium's has_small_order / ZIP-215's small-order rejection;
  * the chosen convention is documented in THREAT-MODEL.md T15 + the spec verification section.)
  */
-const SMALL_ORDER_PUBKEYS: ReadonlySet<string> = new Set([
+const isSmallOrderPubkey = membership([
   "0100000000000000000000000000000000000000000000000000000000000000", // order 1 (identity)
   "ecffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f", // order 2
   "0000000000000000000000000000000000000000000000000000000000000000", // order 4
@@ -44,6 +46,17 @@ const SMALL_ORDER_PUBKEYS: ReadonlySet<string> = new Set([
   "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac037a", // order 8
   "c7176a703d4dd84fba3c0b760d10670f2a2053fa2c39ccc64ec7fd7792ac03fa", // order 8
 ]);
+
+/**
+ * ── C-01 ROUTE 2, CLOSED AT THE SINK ──────────────────────────────────────────────────────────────
+ * `Buffer.from` is a writable property of a mutable global. `c01_buffer.mjs` replaced it so that an
+ * HONEST keyring entry's base64 string decoded to the ATTACKER's public-key bytes: the receipt then
+ * verified VALID under the honest kid, with `signaturesVerified: true`, against a keyring the
+ * attacker's key was never in. Bytes-in does not touch this — it is key DECODING, not input
+ * traversal — so it closes here or not at all. Every `Buffer` operation below now goes through a
+ * capture taken at module-evaluation time (`src/intrinsics.ts`), including `toString`, `equals` and
+ * `subarray`, each of which is an equally writable prototype method reached from a value.
+ */
 
 export function generateKeyPair(kid: string): KeyPair {
   const { publicKey, privateKey } = generateKeyPairSync("ed25519");
@@ -57,24 +70,24 @@ export function generateKeyPair(kid: string): KeyPair {
 /** Sign a message (the receipt digest) with an Ed25519 private key. Returns base64. */
 export function signEd25519(privateKeyB64: string, message: Buffer): string {
   const key = createPrivateKey({
-    key: Buffer.from(privateKeyB64, "base64"),
+    key: bufferFrom(privateKeyB64, "base64"),
     format: "der",
     type: "pkcs8",
   });
   // Pin the curve: cryptoSign(null, …) dispatches on the KEY type, so an Ed448/EC/RSA key would
   // silently produce a non-Ed25519 signature under a receipt that declares sig.alg="ed25519".
   if (key.asymmetricKeyType !== "ed25519") throw new Error("signEd25519: key is not an Ed25519 key");
-  return cryptoSign(null, message, key).toString("base64");
+  return bufToString(cryptoSign(null, message, key), "base64");
 }
 
 /** Verify an Ed25519 signature. Never throws — malformed key/sig returns false. */
 export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB64: string): boolean {
   try {
-    const der = Buffer.from(publicKeyB64, "base64");
+    const der = bufferFrom(publicKeyB64, "base64");
     // Canonical base64 for the keyring public key too: node's Buffer.from is lenient
     // (whitespace / URL-safe / missing padding), so a non-canonical key STRING would verify VALID in TS
     // while the strict Python reference rejects it — a consensus divergence on a logically-identical key.
-    if (der.toString("base64") !== publicKeyB64) return false;
+    if (bufToString(der, "base64") !== publicKeyB64) return false;
     const key = createPublicKey({ key: der, format: "der", type: "spki" });
     // PIN THE CURVE. cryptoVerify(null, …) dispatches the verification algorithm on the KEY's type,
     // NOT on a fixed Ed25519. Without this, an Ed448 (or any verify(null)-compatible) public key in
@@ -88,7 +101,7 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // treat a key's encoding as canonical, so any future key-bytes-based logic (fingerprints,
     // dedup, byte-pinning) cannot be bypassed by re-encoding. Re-export and require byte-equality.
     const canonical = key.export({ type: "spki", format: "der" }) as Buffer;
-    if (!canonical.equals(der)) return false;
+    if (!bufEquals(canonical, der)) return false;
     // CROSS-IMPL CONSENSUS on the PUBLIC KEY. node:crypto/OpenSSL verify is COFACTORED and
     // accepts public keys the independent strict-equation Python reference rejects — splitting VALID(TS) /
     // TAMPERED(PY) on identical signed bytes. Two divergent classes, BOTH closed here so A is decoded with
@@ -99,16 +112,16 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     //       Reject it so both agree. (RFC 8032: the y-coordinate MUST be canonical.)
     //   (b) SMALL-ORDER points: a key in the order-dividing-8 torsion subgroup. After (a), the only remaining
     //       encodings of those points are the 8 canonical ones in SMALL_ORDER_PUBKEYS → exact-byte reject.
-    const raw = canonical.subarray(12); // 12-byte Ed25519 SPKI prefix -> trailing 32 raw key bytes
+    const raw = bufSubarray(canonical, 12); // 12-byte Ed25519 SPKI prefix -> trailing 32 raw key bytes
     // (a) y < q: zero bit 255 (sign), then require the resulting 255-bit little-endian integer < q.
-    const yBytes = Buffer.from(raw);
+    const yBytes = bufferFrom(raw);
     yBytes[31] = yBytes[31]! & 0x7f;
     const Q = (1n << 255n) - 19n;
     let y = 0n;
     for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(yBytes[i]!);
     if (y >= Q) return false;
     // (b) small-order torsion subgroup (the canonical encodings; non-canonical variants already rejected by (a)).
-    if (SMALL_ORDER_PUBKEYS.has(raw.toString("hex"))) return false;
+    if (isSmallOrderPubkey(bufToString(raw, "hex"))) return false;
     // STRICT, CANONICAL base64 for the signature. sig.value is NOT covered by the receipt hash, so its
     // exact byte string is unconstrained by the chain — only the decoded 64 bytes matter cryptographically.
     // node's Buffer.from(…, "base64") is LENIENT (silently ignores embedded whitespace, missing '='
@@ -116,8 +129,8 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // sig.value is non-canonical, and a receipt this verifier accepts is rejected (TAMPERED) by the strict
     // Python reference (base64decode validate=True), breaking the cross-impl consensus bar.
     // Require exactly 64 bytes AND that the input round-trips to its own canonical base64 encoding.
-    const sigBytes = Buffer.from(signatureB64, "base64");
-    if (sigBytes.length !== 64 || sigBytes.toString("base64") !== signatureB64) return false;
+    const sigBytes = bufferFrom(signatureB64, "base64");
+    if (sigBytes.length !== 64 || bufToString(sigBytes, "base64") !== signatureB64) return false;
     // EXPLICIT S < L scalar check (RFC 8032 §5.1.7 / T14). sigBytes = R (32 bytes) || S (32 bytes,
     // little-endian). A malleated signature S' = S + L (for any valid (R, S)) verifies under the SAME
     // equation as the original (the group has order L, so S and S+L are congruent mod L) — S' is a

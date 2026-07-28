@@ -19,11 +19,12 @@
 
 import { verifyChain, verifyChainText, DEFAULT_MAX_RECEIPTS, type VerifyResult, type VerifyOptions } from "../verify.js";
 import { safeParse } from "../safe-json.js";
-import { snapshotImmutable } from "../ingest.js";
+import { parseDocument } from "../bytes.js";
+import { inertOptions, type OptionSchema } from "../opts.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
 import type { Checkpoint } from "../types.js";
 import {
-  verifyCompleteness,
+  verifyCompletenessParsed,
   type Anchor,
   type TrustSet,
   type FreshnessPolicy,
@@ -32,16 +33,16 @@ import {
 } from "./acceptance.js";
 
 export interface WitnessedOptions {
-  /** the caller-collected snapshot of witness answers (each pinned witness's LATEST anchored frontier). */
-  anchors: readonly Anchor[];
-  /** the verifier's sovereign pinned trust-set (k witnesses + quorum q) — federation-spec §2.2. */
-  trustSet: TrustSet;
+  /** the caller-collected snapshot of witness answers, as JSON bytes (each pinned witness's LATEST anchored frontier). */
+  anchors: Uint8Array | string;
+  /** the verifier's sovereign pinned trust-set as JSON bytes (k witnesses + quorum q) — federation-spec §2.2. */
+  trustSet: Uint8Array | string;
   /** optional §4/§6 freshness policy forwarded to the acceptance rule (currency enforcement). */
   freshness?: FreshnessPolicy;
-  /** optional signed checkpoint forwarded to verifyChain for the offline tail-truncation check. */
-  checkpoint?: Checkpoint;
-  /** optional identity manifest forwarded to verifyChain (agent.id -> authorized kid[]). */
-  identityManifest?: IdentityManifest;
+  /** optional signed checkpoint as JSON bytes, forwarded to verifyChain for the offline tail-truncation check. */
+  checkpoint?: Uint8Array | string;
+  /** optional identity manifest as JSON bytes, forwarded to verifyChain (agent.id -> authorized kid[]). */
+  identityManifest?: Uint8Array | string;
   /** optional DoS bound forwarded to verifyChain. */
   maxReceipts?: number;
   /** optional opt-in chain-wide tenant-consistency enforcement forwarded to verifyChain. */
@@ -105,107 +106,116 @@ function deriveHead(parsed: unknown): ChainHead {
  * same input the chain verifier saw.
  */
 export function verifyChainWitnessed(
-  chain: string | readonly unknown[],
-  keyring: Keyring | undefined,
+  chain: Uint8Array | string,
+  keyring: Uint8Array | string | undefined,
   opts: WitnessedOptions,
 ): WitnessedResult {
-  // THE INGEST BOUNDARY (review #6, C2 — the fifth un-routed entry point). The chain was snapshotted
-  // and `opts` was not, so every option was a LIVE read: `opts.maxReceipts` was read twice (the DoS
-  // pre-guard, then the bound passed to verifyChain), `opts.freshness` twice (the presence test, then
-  // the value), and `opts.checkpoint`/`identityManifest`/`requireTenantConsistency` once each into the
-  // options the chain verifier trusts. A getter that answers differently across those reads splits
-  // the policy that was CHECKED from the policy that was ENFORCED. `opts.anchors`/`opts.trustSet` were
-  // snapshotted downstream inside `verifyCompleteness`, which is exactly the pattern that leaves the
-  // NEXT field open; every caller-supplied argument is now inert before it is read at all.
-  //
-  // `chain` is deliberately NOT snapshotted here: `verifyChain` owns its own bounded ingest (it must
-  // reject an over-bound array WITHOUT paying an O(n) traversal first), and duplicating the snapshot
-  // here would defeat that guard.
-  try {
-    opts = snapshotImmutable<WitnessedOptions>(opts);
-    if (keyring !== undefined) keyring = snapshotImmutable<Keyring>(keyring);
-  } catch {
-    // Fail closed on BOTH halves: an options object that fights the snapshot yields an UNVERIFIED
-    // chain result and an INVALID_INPUT witness result, never a partial acceptance.
-    return {
-      chain: { status: "MALFORMED", count: 0, reason: "options could not be reduced to inert data at the ingest boundary (a hostile getter, a proxy trap, or a non-plain object)" } as VerifyResult,
-      witness: verifyCompleteness(INVALID_HEAD, [], { witnesses: [], quorum: 0 }),
-    };
+  // ── EVERY ARGUMENT IS EITHER BYTES OR A SCHEMA-ADMITTED SCALAR ───────────────────────────────────
+  // This was the fifth un-routed entry point (review #6, C2). The chain was snapshotted and `opts`
+  // was not, so every option was a LIVE read: `maxReceipts` read twice (the DoS pre-guard, then the
+  // bound passed to `verifyChain`), `freshness` twice (presence, then value), and
+  // `checkpoint`/`identityManifest`/`requireTenantConsistency` once each into the options the chain
+  // verifier trusts. A getter answering differently across those reads splits the policy that was
+  // CHECKED from the policy that was ENFORCED. `anchors`/`trustSet` were snapshotted downstream
+  // inside `verifyCompleteness` — the pattern that always leaves the NEXT field open.
+  const admitted = inertOptions<InertWitnessedOptions>(WITNESSED_OPTION_SCHEMA, opts, "options");
+  if (!admitted.ok) return failClosed(admitted.reason);
+  const o = admitted.value;
+  if (o.anchors === undefined || o.trustSet === undefined) {
+    return failClosed("options: anchors and trustSet are required (federation-spec §4)");
+  }
+  const aParsed = parseDocument(o.anchors, "anchors");
+  if (!aParsed.ok) return failClosed(aParsed.reason);
+  const tParsed = parseDocument(o.trustSet, "trustSet");
+  if (!tParsed.ok) return failClosed(tParsed.reason);
+  // Admitted by `inertOptions` against FRESHNESS_OPTION_SCHEMA in the same pass (src/opts.ts): this
+  // is already a frozen null-prototype record, not the caller's object.
+  let freshness: FreshnessPolicy | undefined;
+  if (o.freshness !== undefined) {
+    const f = o.freshness;
+    if (f.now === undefined || f.maxAgeMs === undefined) {
+      return failClosed("opts.freshness must be an object { now, maxAgeMs, skewMs? }");
+    }
+    freshness = f as FreshnessPolicy;
   }
 
   const verifyOpts: VerifyOptions = {};
   if (keyring !== undefined) verifyOpts.keyring = keyring;
-  if (opts.checkpoint !== undefined) verifyOpts.checkpoint = opts.checkpoint;
-  if (opts.identityManifest !== undefined) verifyOpts.identityManifest = opts.identityManifest;
-  if (opts.maxReceipts !== undefined) verifyOpts.maxReceipts = opts.maxReceipts;
-  if (opts.requireTenantConsistency !== undefined) verifyOpts.requireTenantConsistency = opts.requireTenantConsistency;
+  if (o.checkpoint !== undefined) verifyOpts.checkpoint = o.checkpoint;
+  if (o.identityManifest !== undefined) verifyOpts.identityManifest = o.identityManifest;
+  if (o.maxReceipts !== undefined) verifyOpts.maxReceipts = o.maxReceipts;
+  if (o.requireTenantConsistency !== undefined) verifyOpts.requireTenantConsistency = o.requireTenantConsistency;
 
-  // Bound the work BEFORE any O(n) clone/traversal, mirroring verify.ts's "don't clone a >maxReceipts array"
-  // DoS guard: for an array input, read length behind a guard and, if it exceeds maxReceipts (or the length
-  // getter is hostile), pass the ORIGINAL array straight to verifyChain — which rejects it cheaply as
-  // MALFORMED at the same bound — and skip the snapshot AND the head-derivation entirely (head → INVALID_HEAD,
-  // fail-closed). Without this, a witnessed-mode caller (e.g. the CLI over a parsed receipts array) would pay
-  // the full structuredClone cost of an attacker-chosen array length before the bound ever applied.
-  const maxReceipts = opts.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
-  let overBound = false;
-  if (Array.isArray(chain)) {
-    let n: number;
-    try {
-      n = chain.length;
-    } catch {
-      n = Infinity; // hostile length getter → treat as over-bound; verifyChain's own guard also fails closed
-    }
-    if (n > maxReceipts) overBound = true;
+  // 1. Offline receipt-chain verification — the existing verifier, called UNCHANGED.
+  const chainResult: VerifyResult = verifyChain(chain, verifyOpts);
+
+  // 2. Derive H from the SAME DOCUMENT the chain verifier read.
+  //
+  // The old code went to considerable lengths here — an over-bound pre-check to avoid an O(n)
+  // structuredClone, then a clone so that `verifyChain` and `deriveHead` would read identical bytes,
+  // because otherwise a hostile getter could show one head to the verifier and another to the witness
+  // step (→ the witness confirms a head the chain verifier never validated). All of that is now a
+  // property of the input: `chain` is an immutable byte sequence, `safeParse` is deterministic, so
+  // parsing it here yields exactly the tree `verifyChain` parsed. Not a copy believed to be
+  // identical — the same bytes, twice.
+  //
+  // The DoS bound survives in a simpler form: the document is already capped at MAX_INPUT_BYTES, and
+  // an array longer than `maxReceipts` collapses to INVALID_HEAD instead of being walked.
+  const maxReceipts = o.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
+  let head: ChainHead = INVALID_HEAD;
+  const parsed = parseDocument(chain, "receipts");
+  if (parsed.ok && Array.isArray(parsed.value) && parsed.value.length <= maxReceipts) {
+    head = deriveHead(parsed.value);
   }
-
-  // Snapshot the object input ONCE (within-bound only) so the chain verifier (step 1) and the head-derivation
-  // (step 2) read the SAME frozen bytes. Load-bearing for the object path: without it, verifyChain reads the
-  // caller's live objects and deriveHead reads them AGAIN, so a hostile getter could return one head to
-  // verifyChain (→ chain.status VALID over head A) and a different head to deriveHead (→ witness confirms head
-  // B). Cloning once executes any getter a single time and freezes the result, upholding the package's
-  // "snapshot reads once" invariant (verify.ts's flipping-getter defenses). Text is already immutable; an
-  // over-bound or non-array or non-cloneable input is passed through / collapsed to fail closed.
-  let receipts: string | readonly unknown[];
-  if (typeof chain === "string" || overBound || !Array.isArray(chain)) {
-    receipts = chain as string | readonly unknown[];
-  } else {
-    try {
-      receipts = structuredClone(chain) as readonly unknown[];
-    } catch {
-      receipts = [];
-    }
-  }
-
-  // 1. Offline receipt-chain verification — the existing verifier, called UNCHANGED (over the snapshot).
-  const chainResult: VerifyResult =
-    typeof receipts === "string" ? verifyChainText(receipts, verifyOpts) : verifyChain(receipts, verifyOpts);
-
-  // 2. Derive H from the SAME snapshot, then apply the §4 acceptance rule over the caller's anchor snapshot.
-  //    An over-bound array short-circuits to INVALID_HEAD so we never re-traverse an attacker-sized array.
-  //    (Text is re-parsed here only to read the head; verifyChainText is not asked to expose internals — the
-  //    chain verifier stays a black box. A parse failure yields an INVALID_INPUT head, fail-closed.)
-  let head: ChainHead;
-  if (overBound) {
-    head = INVALID_HEAD;
-  } else {
-    let parsed: unknown;
-    if (typeof receipts === "string") {
-      try {
-        parsed = safeParse(receipts);
-      } catch {
-        parsed = null;
-      }
-    } else {
-      parsed = receipts;
-    }
-    head = deriveHead(parsed);
-  }
-  const witness = verifyCompleteness(
+  const witness = verifyCompletenessParsed(
     head,
-    opts.anchors,
-    opts.trustSet,
-    opts.freshness !== undefined ? { freshness: opts.freshness } : {},
+    aParsed.value as readonly Anchor[],
+    tParsed.value as TrustSet,
+    freshness === undefined ? {} : { freshness },
   );
 
   return { chain: chainResult, witness };
+}
+
+/** The option members that are DOCUMENTS arrive decoded to text; the rest are scalars or nested. */
+interface InertWitnessedOptions {
+  readonly anchors?: string;
+  readonly trustSet?: string;
+  readonly checkpoint?: string;
+  readonly identityManifest?: string;
+  readonly maxReceipts?: number;
+  readonly requireTenantConsistency?: boolean;
+  readonly freshness?: { readonly now?: number; readonly maxAgeMs?: number; readonly skewMs?: number };
+}
+
+/** Declared BEFORE the schema that references it: a `const` read before its declaration is a TDZ
+ * ReferenceError at MODULE LOAD, which for a security boundary means the entry point cannot run at
+ * all. Ordering is load-bearing here, not stylistic. */
+const FRESHNESS_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.create(null), {
+  now: { kind: "count", max: Number.MAX_SAFE_INTEGER },
+  maxAgeMs: { kind: "count", max: Number.MAX_SAFE_INTEGER },
+  skewMs: { kind: "count", max: Number.MAX_SAFE_INTEGER },
+})) as OptionSchema;
+
+const WITNESSED_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.create(null), {
+  anchors: { kind: "document" },
+  trustSet: { kind: "document" },
+  checkpoint: { kind: "document" },
+  identityManifest: { kind: "document" },
+  maxReceipts: { kind: "count", max: DEFAULT_MAX_RECEIPTS },
+  requireTenantConsistency: { kind: "boolean" },
+  freshness: { kind: "nested", schema: FRESHNESS_OPTION_SCHEMA },
+})) as OptionSchema;
+
+
+/**
+ * BOTH halves fail closed, never one. A malformed options object yields a MALFORMED chain result AND
+ * an INVALID_INPUT witness result — a partial acceptance (a witness verdict over a chain nobody
+ * verified, or vice versa) is the shape of answer this function exists to avoid producing.
+ */
+function failClosed(reason: string): WitnessedResult {
+  return {
+    chain: { status: "MALFORMED", chain: null, count: 0, signaturesVerified: false, tailChecked: false, reason, warnings: [] },
+    witness: verifyCompletenessParsed(INVALID_HEAD, [], { witnesses: [], quorum: 0 }),
+  };
 }

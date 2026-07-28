@@ -13,10 +13,11 @@
 import type { Policy, Condition, Scalar } from "./dsl.js";
 import { POLICY_SPEC } from "./dsl.js";
 import { canonicalize, MAX_DEPTH } from "../jcs.js";
-import { snapshotImmutable } from "../ingest.js";
-import { arrayPush } from "../intrinsics.js";
+import { parseDocument } from "../bytes.js";
+import { arrayPush, arrayIncludes, objectKeys, setHas, setAdd } from "../intrinsics.js";
+import { membership } from "../inert.js";
 
-const CMP_OPS = new Set(["eq", "ne", "lt", "le", "gt", "ge"]);
+const isCmpOp = membership(["eq", "ne", "lt", "le", "gt", "ge"]);
 
 export interface PolicyValidation {
   ok: boolean;
@@ -36,8 +37,8 @@ function scalarType(v: Scalar): string {
 
 /** additionalProperties:false — reject any key outside the closed grammar for this node. */
 function noExtraKeys(obj: Record<string, unknown>, allowed: string[], path: string, errors: string[]): void {
-  for (const k of Object.keys(obj)) {
-    if (!allowed.includes(k)) arrayPush(errors, `${path}: unknown key "${k}" (closed grammar)`);
+  for (const k of objectKeys(obj)) {
+    if (!arrayIncludes(allowed, k)) arrayPush(errors, `${path}: unknown key "${k}" (closed grammar)`);
   }
 }
 
@@ -93,7 +94,7 @@ function validateCondition(c: unknown, path: string, errors: string[], depth: nu
     }
     return;
   }
-  if (CMP_OPS.has(op)) {
+  if (isCmpOp(op)) {
     noExtraKeys(cond, ["op", "path", "value"], `${path}.${op}`, errors);
     if (typeof cond.path !== "string" || cond.path.length === 0) arrayPush(errors, `${path}.${op}: path must be a non-empty string`);
     if (!isScalar(cond.value)) arrayPush(errors, `${path}.${op}.value: not an allowed scalar (string|boolean|safe-int)`);
@@ -102,16 +103,27 @@ function validateCondition(c: unknown, path: string, errors: string[], depth: nu
   arrayPush(errors, `${path}: unknown op "${op}" (allowed: eq/ne/lt/le/gt/ge/in/exists/absent/and/or/not)`);
 }
 
-/** Validate a policy against the closed grammar. Pure, static, input-independent. */
-export function validatePolicy(p: unknown): PolicyValidation {
+/**
+ * Validate a policy against the closed grammar, from its BYTES. Pure, static, input-independent.
+ *
+ * A policy is a signed, hash-pinned trust artifact (`policyHash` is its published identity), so it
+ * is a document and not configuration. It used to need an ingest boundary because it is walked by
+ * the grammar check and then RE-READ by the canonicalization below, and the two had to see the same
+ * bytes; now they do so by construction.
+ */
+export function validatePolicy(policy: Uint8Array | string): PolicyValidation {
+  const parsed = parseDocument(policy, "policy");
+  if (!parsed.ok) return { ok: false, errors: [parsed.reason] };
+  return validatePolicyParsed(parsed.value);
+}
+
+/**
+ * The grammar validator over PARSED data — kernel-internal, and NOT re-exported from
+ * `src/index.ts`. `evaluate` and `complianceCommit` already hold a parsed policy and must not
+ * re-serialize it to re-enter the bytes boundary.
+ */
+export function validatePolicyParsed(p: unknown): PolicyValidation {
   const errors: string[] = [];
-  // THE INGEST BOUNDARY (review #6, C2). `p` is walked by the grammar check and then RE-READ by the
-  // canonicalization below; the two must see the same bytes.
-  try {
-    p = snapshotImmutable<unknown>(p);
-  } catch {
-    return { ok: false, errors: ["policy: could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)"] };
-  }
   if (typeof p !== "object" || p === null) return { ok: false, errors: ["policy: not an object"] };
   const pol = p as Record<string, unknown>;
   noExtraKeys(pol, ["spec", "id", "requiredPaths", "rules"], "policy", errors);
@@ -132,8 +144,8 @@ export function validatePolicy(p: unknown): PolicyValidation {
       const rule = r as Record<string, unknown>;
       noExtraKeys(rule, ["id", "when", "then"], `policy.rules[${i}]`, errors);
       if (typeof rule.id !== "string" || rule.id.length === 0) arrayPush(errors, `policy.rules[${i}].id: non-empty string`);
-      else if (seenIds.has(rule.id)) arrayPush(errors, `policy.rules[${i}].id: duplicate rule id "${rule.id}"`);
-      else seenIds.add(rule.id);
+      else if (setHas(seenIds, rule.id)) arrayPush(errors, `policy.rules[${i}].id: duplicate rule id "${rule.id}"`);
+      else setAdd(seenIds, rule.id);
       if (rule.then !== "ALLOW" && rule.then !== "DENY") arrayPush(errors, `policy.rules[${i}].then: must be exactly "ALLOW" or "DENY"`);
       validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);
     });
@@ -154,8 +166,20 @@ export function validatePolicy(p: unknown): PolicyValidation {
   return { ok: errors.length === 0, errors };
 }
 
-/** Narrowing assertion used by callers that want a typed Policy after validation. */
-export function assertValidPolicy(p: unknown): asserts p is Policy {
-  const v = validatePolicy(p);
+/**
+ * Parse and validate a policy from BYTES, returning the typed `Policy` or throwing.
+ *
+ * It was `asserts p is Policy` over a caller object. That signature cannot survive bytes-in — there
+ * is no caller object left to narrow — and the honest replacement RETURNS the parsed policy, which
+ * is strictly better: the value the caller goes on to use is the value that was validated, rather
+ * than a separate object the type system was persuaded to trust. Throwing is correct here and only
+ * here: this is an assertion helper for a caller who has already decided a bad policy is fatal.
+ * Every VERDICT-bearing entry point still returns rather than throws.
+ */
+export function assertValidPolicy(policy: Uint8Array | string): Policy {
+  const parsed = parseDocument(policy, "policy");
+  if (!parsed.ok) throw new Error(`invalid policy: ${parsed.reason}`);
+  const v = validatePolicyParsed(parsed.value);
   if (!v.ok) throw new Error(`invalid policy: ${v.errors.join("; ")}`);
+  return parsed.value as Policy;
 }

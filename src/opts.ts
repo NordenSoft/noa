@@ -67,14 +67,30 @@ const _freeze = Object.freeze;
 /**
  * `boolean` — a flag. `count` — a non-negative safe integer with a mandatory ceiling.
  * `document` — bytes or text, decoded once (a signed/verified artifact supplied as configuration,
- * e.g. the keyring or the checkpoint).
+ * e.g. the keyring or the checkpoint). `nested` — a sub-object validated by its OWN schema, in the
+ * same pass, by this function.
+ *
+ * ── WHY `nested` VALIDATES HERE AND NOT AT THE CALL SITE (fixed 2026-07-28) ──────────────────────
+ * The first version of this file stored the caller's nested object into the inert record unchanged
+ * and documented that "the inner `inertOptions` call the caller makes does the rest". Both call
+ * sites did make that call, so the code was correct — and the CONTROL was not, because nothing
+ * enforced it. A schema author adding `{ kind: "nested" }` and then reading `admitted.value.freshness
+ * .now` directly would have read a live caller getter inside the boundary, with no gate objecting.
+ * That is the H-03 shape exactly: a rule that holds because the current authors happened to follow
+ * it. The validator now owns the inner pass, so forgetting it is not expressible.
+ *
+ * DEPTH IS BOUNDED AT ONE, MECHANICALLY. A `nested` field's schema may not itself declare a `nested`
+ * field; `inertOptions` rejects such a schema at the first call rather than recursing. An exact
+ * schema whose depth is unbounded is not an exact schema.
  */
-export type OptionKind = "boolean" | "count" | "document";
+export type OptionKind = "boolean" | "count" | "document" | "nested";
 
 export interface OptionField {
   readonly kind: OptionKind;
   /** Mandatory for `count`: an option without a ceiling is an unbounded value. */
   readonly max?: number;
+  /** Mandatory for `nested`: the exact schema the sub-object is admitted against. */
+  readonly schema?: OptionSchema;
 }
 
 export type OptionSchema = { readonly [key: string]: OptionField };
@@ -82,7 +98,10 @@ export type OptionSchema = { readonly [key: string]: OptionField };
 export type OptionsResult<T> = { readonly ok: true; readonly value: T } | { readonly ok: false; readonly reason: string };
 
 /** The inert record produced for a `document` field: decoded once, never re-read from the caller. */
-export type OptionRecord = { readonly [key: string]: string | number | boolean | undefined };
+export type OptionRecord = { readonly [key: string]: string | number | boolean | object | undefined };
+
+/** The shape the validator produces; callers name a narrower interface over the same members. */
+export type InertRecord = object;
 
 /**
  * Validate `input` against `schema` and convert it, exactly once, into an inert immutable record.
@@ -91,7 +110,14 @@ export type OptionRecord = { readonly [key: string]: string | number | boolean |
  * empty record. A default parameter fills only a MISSING argument, never an explicit `null`, which
  * is how `verifyChain(x, null)` used to reach a property read on `null`.
  */
-export function inertOptions<T extends OptionRecord>(schema: OptionSchema, input: unknown, what: string): OptionsResult<T> {
+export function inertOptions<T extends InertRecord>(schema: OptionSchema, input: unknown, what: string): OptionsResult<T> {
+  return admit(schema, input, what, 0);
+}
+
+/** The one allowed nesting depth. A `nested` field inside a `nested` schema is a schema error. */
+const MAX_OPTION_DEPTH = 1;
+
+function admit<T extends InertRecord>(schema: OptionSchema, input: unknown, what: string, depth: number): OptionsResult<T> {
   if (input === undefined || input === null) {
     return { ok: true, value: _freeze(_create(null)) as T };
   }
@@ -122,7 +148,7 @@ export function inertOptions<T extends OptionRecord>(schema: OptionSchema, input
     };
   }
 
-  const out: Record<string, string | number | boolean> = _create(null);
+  const out: Record<string, string | number | boolean | object> = _create(null);
   // ALL own keys, not just enumerable ones: a non-enumerable own property is invisible to
   // `Object.keys` and would carry configuration past a validator that only looked at what enumerates.
   const keys = _ownKeys(input as object);
@@ -161,6 +187,22 @@ export function inertOptions<T extends OptionRecord>(schema: OptionSchema, input
         return { ok: false, reason: `${what}: option "${key}" exceeds its permitted ceiling` };
       }
       out[key] = raw;
+      continue;
+    }
+    if (field.kind === "nested") {
+      // A schema defect, not a caller defect — reported the same way (never thrown) so a
+      // security-sensitive entry point still cannot throw, but it can only be triggered by OUR code.
+      if (field.schema === undefined) {
+        return { ok: false, reason: `${what}: option "${key}" is declared nested without a schema — an unvalidated sub-object is not configuration` };
+      }
+      if (depth >= MAX_OPTION_DEPTH) {
+        return { ok: false, reason: `${what}: option "${key}" nests deeper than the schema permits` };
+      }
+      // The inner pass repeats EVERY check from its own first line, including `isProxy`: a nested
+      // Proxy is caught there, before any trap-firing reflection touches it.
+      const inner = admit<InertRecord>(field.schema, raw, `${what}.${key}`, depth + 1);
+      if (!inner.ok) return { ok: false, reason: inner.reason };
+      out[key] = inner.value;
       continue;
     }
     // field.kind === "document" — bytes or text, decoded exactly once into the inert record.

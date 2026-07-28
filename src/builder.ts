@@ -4,8 +4,9 @@ import { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
 import { signEd25519 } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
-import { validateReceiptShape } from "./schema.js";
+import { validateReceiptShapeParsed } from "./schema.js";
 import { nonNfcPaths, isNFC } from "./nfc.js";
+import { isSha256Hash, isRfc3339 } from "./scan.js";
 
 export interface Signer {
   kid: string;
@@ -131,7 +132,7 @@ function buildDraft(input: BuildInput, prev: Receipt | null, kid: string): { dra
  *  guarantee this package's docstring (above `BuilderError`) documents: a caller must never
  *  receive a validly-SIGNED-but-structurally-malformed receipt. */
 function finalizeReceipt(draft: Receipt): Receipt {
-  const shape = validateReceiptShape(draft);
+  const shape = validateReceiptShapeParsed(draft);
   if (!shape.ok) {
     throw new BuilderError(
       `buildReceipt: refusing to return a signed receipt that fails its own verifier's structural check: ${shape.errors.join("; ")}`,
@@ -182,9 +183,10 @@ export async function buildReceiptAsync(input: BuildInput, prev: Receipt | null,
   return finalizeReceipt(draft);
 }
 
-const CHECKPOINT_HASH_RE = /^sha256:[0-9a-f]{64}$/;
-// RFC 3339 §5.6 permits lowercase 't'/'z' (matches schema.ts RFC3339_RE / verify.ts CP_RFC3339_RE).
-const CHECKPOINT_RFC3339_RE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
+// Formats are decided by hand-written scanners (src/scan.ts). A regex literal cannot stay on a
+// decision path: `RegExp.prototype.test` performs a dynamic `Get(re, "exec")`, so even a CAPTURED
+// `test` dispatches through the writable `RegExp.prototype.exec` — reproduced by
+// `test/security/r7-exploits/c02_regexp_witness.mjs` against the captured wrapper.
 
 /**
  * Structural check for a fully-built Checkpoint draft, run immediately before it is returned as
@@ -205,9 +207,9 @@ function checkpointDraftErrors(cp: Checkpoint): string[] {
   if (typeof cp.chain !== "string" || cp.chain.length === 0) errors.push("checkpoint.chain: non-empty string");
   if (typeof cp.highestSeq !== "number" || !Number.isSafeInteger(cp.highestSeq) || cp.highestSeq < 0)
     errors.push("checkpoint.highestSeq: non-negative safe integer");
-  if (typeof cp.headHash !== "string" || !CHECKPOINT_HASH_RE.test(cp.headHash))
+  if (typeof cp.headHash !== "string" || !isSha256Hash(cp.headHash))
     errors.push("checkpoint.headHash: sha256:<64 hex>");
-  if (typeof cp.ts !== "string" || !CHECKPOINT_RFC3339_RE.test(cp.ts))
+  if (typeof cp.ts !== "string" || !isRfc3339(cp.ts))
     errors.push("checkpoint.ts: must be RFC 3339 UTC timestamp");
   if (cp.sig.alg !== "ed25519") errors.push('checkpoint.sig.alg: must be "ed25519"');
   if (typeof cp.sig.kid !== "string" || cp.sig.kid.length === 0) errors.push("checkpoint.sig.kid: non-empty string");

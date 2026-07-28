@@ -160,6 +160,39 @@ export function isFrozenSet(v: unknown): boolean {
   return typeof v === "object" && v !== null && hasOwn(v as object, FROZEN_SET_BRAND);
 }
 
+// ── membership ────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ADR §5.5's membership primitive, and the strongest form available: **a direct own-property probe
+ * on a frozen null-prototype table.**
+ *
+ * `frozenSet` above is already unpoisonable — its `has` is an own closure over a pristine `indexOf`.
+ * This is stronger in two further ways that matter for the TCB's hottest paths:
+ *
+ *   1. NO METHOD IS CALLED ON THE TABLE AT ALL. `frozenSet(...).has(x)` still READS the property
+ *      `has` off a value before invoking it. That read is safe here because the object is frozen and
+ *      null-rooted, but "safe because of what this particular object is" is the reasoning that lost
+ *      four rounds in a row. `hasOwn(TABLE, x)` reads no property off the table; it passes the table
+ *      as an argument to a `hasOwnProperty` captured at module load.
+ *   2. IT IS MECHANICALLY VISIBLE. `scripts/lint-security-gates.mjs` L2 bans the TEXT `.has(` on a
+ *      TCB decision path, because a source lint cannot know whether a receiver is a `Set` or a
+ *      `frozenSet`. A primitive that reads correct AND lints clean is the one that survives the next
+ *      author, who will not have read this comment.
+ *
+ * The table is null-prototype, so `Object.prototype` pollution cannot forge a member (C-03's class),
+ * and frozen, so nothing can widen it after load (the `Set.prototype.add` class from reviews #5/#6).
+ */
+export function membership(values: readonly string[]): (v: unknown) => boolean {
+  const table = objectCreateNull<Record<string, true>>();
+  for (let i = 0; i < (values as { length: number }).length; i++) {
+    objectDefineProperty(table as object, values[i] as string, {
+      value: true, enumerable: true, writable: false, configurable: false,
+    });
+  }
+  objectFreeze(table);
+  return (v: unknown): boolean => typeof v === "string" && hasOwn(table as object, v);
+}
+
 // ── frozenTable ───────────────────────────────────────────────────────────────────────────────────
 
 /** Thrown at MODULE-EVALUATION time by `frozenTable` — a policy table that could be mutated later
@@ -270,4 +303,33 @@ export function inertViolations(v: unknown, path: string, seen: WeakSet<object> 
 
 function objectIsFrozenSafe(v: unknown): boolean {
   try { return Object.isFrozen(v); } catch { return false; }
+}
+
+/**
+ * Recursively freeze an already-inert, module-owned structure (a policy/spec table built from
+ * literals) so it cannot be mutated at runtime. Unlike `snapshotImmutable` this does NOT copy and
+ * does NOT strip prototypes — it is for OUR OWN constant tables, where the goal is only "no code,
+ * ours or an attacker's, can rewrite this after load". Returns the same reference, frozen.
+ *
+ * ⚠ IT IS NOT ENOUGH FOR A POLICY TABLE. It cannot make a `Set`/`Map` immutable (their mutators
+ * bypass `Object.freeze` — review #5's `RECEIPT_ROLE_VERDICTS.deferredReceipt.add("ALLOWED")` and
+ * review #6's `POSITIVE_OUTCOMES.add(...)`), and it leaves an array rooted on the LIVE
+ * `Array.prototype` (review #6's poisoned `.includes`). Use `frozenTable` for a policy table: it
+ * REFUSES a `Set`/`Map`/accessor at construction and re-roots arrays onto the inert prototype.
+ * `deepFreeze` remains only for callers that already depend on its in-place semantics.
+ *
+ * It moved here from the deleted `ingest.ts` unchanged. It never belonged to the ingest boundary —
+ * it operates on the module's OWN constant tables, which is this file's subject.
+ */
+export function deepFreeze<T>(o: T): T {
+  if (o === null || (typeof o !== "object" && typeof o !== "function")) return o;
+  for (const key of objectGetOwnPropertyNames(o as object)) {
+    const d = getOwnPropertyDescriptor(o as object, key);
+    if (d === undefined || d.get !== undefined || d.set !== undefined) continue;
+    const v = d.value;
+    if (v !== null && (typeof v === "object" || typeof v === "function") && !Object.isFrozen(v)) {
+      deepFreeze(v);
+    }
+  }
+  return objectFreeze(o);
 }

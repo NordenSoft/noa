@@ -15,11 +15,34 @@
  * no reviver callbacks.
  */
 
+/**
+ * Module-private brand registry. The bytes boundary needs to distinguish "the parser refused this
+ * document, and its reason is safe to surface" from "something else went wrong". `instanceof` is
+ * the obvious test and the wrong one: it consults `Symbol.hasInstance` and walks the operand's
+ * prototype chain, both attacker-invocable, and a revoked Proxy makes the walk THROW — from inside
+ * the handler whose job is to report a failure. A `WeakSet` membership test is an internal identity
+ * lookup: total for every input, trap-free, and unforgeable from outside this module.
+ */
+const SAFE_JSON_ERRORS = new WeakSet<object>();
+
+import { weakSetHas, weakSetAdd, setHas, setAdd, strSlice } from "./intrinsics.js";
+import { isHex4 } from "./scan.js";
+
 export class SafeJsonError extends Error {
   constructor(message: string, public readonly pos: number) {
     super(`${message} (at position ${pos})`);
     this.name = "SafeJsonError";
+    weakSetAdd(SAFE_JSON_ERRORS, this);
   }
+}
+
+/**
+ * Brand check for `SafeJsonError` that never touches the value's prototype chain. A `true` answer
+ * also certifies the message is safe to surface: it is built from this module's own literals plus a
+ * numeric position, so no caller string is interpolated and no caller `toString` is invoked.
+ */
+export function isSafeJsonError(value: unknown): boolean {
+  return weakSetHas(SAFE_JSON_ERRORS, value as object);
 }
 
 export interface SafeJsonOptions {
@@ -27,7 +50,15 @@ export interface SafeJsonOptions {
   maxLength?: number;
 }
 
-const FORBIDDEN_KEYS = new Set(["__proto__", "prototype", "constructor"]);
+/**
+ * The three keys that must never reach an object literal. Compared by `===` against literals rather
+ * than looked up in a `Set`: `Set.prototype.has` is a writable global slot, and this is the parse
+ * boundary every other guarantee in the kernel is derived from — it cannot itself decide anything by
+ * calling a method it does not own (ADR §5.5).
+ */
+function isForbiddenKey(key: string): boolean {
+  return key === "__proto__" || key === "prototype" || key === "constructor";
+}
 
 export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
   const maxDepth = opts.maxDepth ?? 64;
@@ -88,9 +119,9 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
       skipWs();
       if (text[i] !== '"') err("expected object key string");
       const key = parseString();
-      if (FORBIDDEN_KEYS.has(key)) err(`forbidden object key '${key}'`);
-      if (seen.has(key)) err(`duplicate object key '${key}'`);
-      seen.add(key);
+      if (isForbiddenKey(key)) err(`forbidden object key '${key}'`);
+      if (setHas(seen, key)) err(`duplicate object key '${key}'`);
+      setAdd(seen, key);
       skipWs();
       if (text[i] !== ":") err("expected ':' after object key");
       i++;
@@ -160,8 +191,8 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
           case "r": out += "\r"; break;
           case "t": out += "\t"; break;
           case "u": {
-            const hex = text.slice(i + 1, i + 5);
-            if (!/^[0-9a-fA-F]{4}$/.test(hex)) err("invalid \\u escape");
+            const hex = strSlice(text, i + 1, i + 5);
+            if (!isHex4(hex)) err("invalid \\u escape");
             out += String.fromCharCode(parseInt(hex, 16));
             i += 4;
             break;
