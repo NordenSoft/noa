@@ -57,3 +57,12 @@ is a time-bounded decision that remains visible until removal.
 - The keypairs under `conformance/` are **test-only fixtures** (a chain signing key plus a
   second "adversary" key used to build the key-pinning attack vector) — their private keys are
   public on purpose and must never be used for anything real.
+
+## What this software does NOT prove
+
+Every claim here is narrow on purpose. The consolidated, versioned, normative statement of what
+receipts, signatures, approvals and evidence do **not** establish is [NON-CLAIMS.md](NON-CLAIMS.md).
+It is the first thing to read before relying on any artifact this project produces.
+
+Weakening or removing a non-claim is a reviewed event with its own rules (NON-CLAIMS.md §7), because
+a removed non-claim is a new claim.

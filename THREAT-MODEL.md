@@ -187,7 +187,26 @@ truth or safety.
   (every confirmed finding fixed in BOTH implementations with a regression probe + cross-impl
   conformance), the v0.1 correctness surface is **declared hardened**. Callers passing attacker-influenced
   *live JS objects* directly to the in-process API should pre-parse via `verifyChainText` / `JSON.parse`
-  (the immune path). New same-class in-process-getter findings are tracked and fixed, not gated on.
+  New same-class in-process-getter findings are tracked and fixed, not gated on.
+
+  > **CORRECTION (review #7, 2026-07-28) — this paragraph called `verifyChainText` "the immune path".
+  > It is not immune; it is immune to ONE of the two classes.** Measured, not argued: a probe against
+  > the built kernel showed `verifyChainText` fully exploitable by both C-01 and C-02
+  > (`clean = TAMPERED / POISON = VALID, sigVerified = true`). It calls `safeParse` and then hands the
+  > result to `verifyChain`, which still deep-copies through the *live global* `structuredClone`
+  > (`src/verify.ts:178`) and still resolves membership through live `Array.prototype.includes`
+  > (`src/verify.ts:426`). Parsing from text removes the hostile-ACCESSOR class (A) and leaves the
+  > intrinsic-POISONING class (B) untouched.
+  >
+  > Why the advice is still worth following, stated precisely: against the DECLARED threat model — a
+  > data-only attacker who controls the receipt bytes and nothing else — pre-parsing does close the
+  > class, because removing object traversal removes the only route by which untrusted DATA obtains
+  > code execution. It does not make the poisons fail; it removes the attacker's ability to run them.
+  > Against an attacker who already has code execution in the realm it closes nothing, and neither
+  > does anything else a library can do (see "The residual, stated plainly", below).
+  >
+  > Full reasoning and evidence: `docs/ADR-0001-trust-kernel-vnext.md` §2.3. Consolidated limits:
+  > `NON-CLAIMS.md`.
 
   **Update (review #6, 2026-07-28) — the class was NOT closed by snapshotting, and the paragraph above
   was too optimistic.** Reading a hostile object necessarily RUNS the attacker's code (a getter, a
@@ -212,8 +231,32 @@ truth or safety.
   evaluated. A HOST APPLICATION that mutates an intrinsic in a module evaluated BEFORE `noa-receipt`
   is outside that boundary and defeats it — the capture is honest but it captures whatever was there.
   Nothing in a library can fix that; it is a property of the host's module graph. Callers embedding
-  this in an environment that loads untrusted code should either load `noa-receipt` first or run the
-  verifier in a separate realm.
+  this in an environment that loads untrusted code should load `noa-receipt` first.
+
+  > **CORRECTION (review #7, 2026-07-28) — the advice to "run the verifier in a separate realm" is
+  > WITHDRAWN.** The first half (load `noa-receipt` first) is sound and stands. The second half was
+  > wrong, and wrong in the direction that invites a caller to believe they have mitigated something
+  > they have not.
+  >
+  > A same-realm "isolated realm" (`ShadowRealm`, `vm.createContext`) is not a boundary against the
+  > attacker who motivates it. That attacker controls the code that CONSTRUCTS the realm, marshals
+  > the input into it, and reads the verdict out. It adds a marshalling boundary and a second set of
+  > intrinsics to audit while moving the attacker's cost approximately nowhere — and it LOOKS like a
+  > boundary in documentation, which is the failure mode this project has spent four review rounds
+  > learning to detect.
+  >
+  > A separate PROCESS is genuinely different: it raises the required capability from "code execution
+  > in the host process" to "code execution in the verifier process". But it protects the INTEGRITY OF
+  > THE COMPUTATION and never the INTEGRITY OF THE CONSUMPTION. An attacker inside the host process
+  > can discard a correct verdict as easily as forge one, and that ceiling is not liftable by any
+  > isolation mechanism.
+  >
+  > **What actually defeats this attacker is already in the product, and is not an isolation mechanism
+  > at all:** the receipt is signed and offline-verifiable, so the party who CARES about the verdict
+  > re-verifies it themselves, in their own process, with their own copy. An attacker who owns the
+  > relying party's process has already won for reasons that have nothing to do with this kernel.
+  >
+  > Reasoning: `docs/ADR-0001-trust-kernel-vnext.md` §5.2-§5.3. Consolidated limits: `NON-CLAIMS.md`.
 
 ## Clean-room / scope boundary (why this is safe to open-source)
 

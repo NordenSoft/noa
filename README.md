@@ -19,7 +19,7 @@ Python reference verifier is required to agree with the TS verifier on every con
 **The receipt every AI action leaves behind. Verifiable by anyone. Owned by no one.**
 
 > *Tamper-**evident** provenance: it proves a record was produced under the stated rules and
-> wasn't altered — not that the action was right, and not proof-of-action. [Honest limits →](THREAT-MODEL.md)*
+> wasn't altered — not that the action was right, and not proof-of-action. [Honest limits →](THREAT-MODEL.md) · [What this does NOT prove →](NON-CLAIMS.md)*
 
 ---
 
@@ -47,7 +47,8 @@ happen **before** it runs, and leaves an independently verifiable provenance rec
 > with more than one trusted key it proves *a trusted key signed this*, not *which `agent.id` acted*.
 > The honest limits (replay, key compromise, fork/equivocation, tail-truncation, cross-agent
 > attribution in multi-key keyrings) are written down in
-> [THREAT-MODEL.md](THREAT-MODEL.md) — read them before you rely on this.
+> [THREAT-MODEL.md](THREAT-MODEL.md) and, consolidated and normative,
+> [NON-CLAIMS.md](NON-CLAIMS.md) — read them before you rely on this.
 
 ## The Receipt
 
