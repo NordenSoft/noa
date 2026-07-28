@@ -25,7 +25,8 @@
 import { signEd25519 } from "../keys.js";
 import { verifyChain } from "../verify.js";
 import { jsonStringify } from "../intrinsics.js";
-import { arrayLength, arrayPush, isSafeInteger } from "../intrinsics.js";
+import { arrayLength, arrayPush, isSafeInteger, isArray } from "../intrinsics.js";
+import { safeParse } from "../safe-json.js";
 import { isSha256Hash, isRfc3339 } from "../scan.js";
 import type { Receipt } from "../types.js";
 import type { Signer } from "../builder.js";
@@ -189,17 +190,31 @@ export function anchorForChainHead(receipts: readonly Receipt[], signer: Signer,
   // witness key would sign a frontier the verifier never saw (review #5, C3; review #6, C1). The old
   // fix was to snapshot first and search with an indexed walk.
   //
-  // Bytes-in gives a stronger version for free: the receipts are serialised ONCE and the chain
-  // verifier is handed exactly those bytes. Whatever `verifyChain` validated is, by construction, the
-  // same document the head is read from — not a copy believed to be identical. `JSON.stringify` is
-  // safe here for the reason it is NOT safe in a compat shim: this producer's input is its own data,
-  // never an attacker's, so there are no hostile getters for the serializer to run.
-  const snap: readonly Receipt[] = receipts;
+  // Bytes-in gives a stronger version, but ONLY IF THE HEAD IS READ FROM THE BYTES. The first
+  // bytes-in draft of this function serialised once, handed the JSON to `verifyChain`, and then
+  // located the head by walking the LIVE `receipts` array — which is the C3 defect verbatim, one
+  // layer down. `test/federation/ingest-boundary.test.ts` caught it: a `chain.hash` getter answering
+  // honestly to `JSON.stringify` and `sha256:eee…` to the head walk produced an anchor binding a
+  // frontier `verifyChain` had never seen. Serialising once is not the property; READING ONCE is.
+  //
+  // So the document is serialised ONCE and PARSED BACK, and everything below reads the parsed tree.
+  // The bytes the verifier validated and the bytes the head is taken from are then the same bytes by
+  // construction rather than by discipline. `JSON.stringify` is safe here for the reason it is NOT
+  // safe in a compat shim: this producer's input is its own data (ADR §3.3), so a hostile getter is
+  // out of scope — but "out of scope" is not "harmless", and one read is cheap.
   let receiptsJson: string;
   try {
-    receiptsJson = jsonStringify(snap) as string;
+    receiptsJson = jsonStringify(receipts) as string;
   } catch {
     throw new AnchorError("anchorForChainHead: receipts are not serializable and cannot be anchored", []);
+  }
+  let snap: readonly Receipt[];
+  try {
+    const parsed = safeParse(receiptsJson);
+    if (!isArray(parsed)) throw new Error("not an array");
+    snap = parsed as unknown as readonly Receipt[];
+  } catch {
+    throw new AnchorError("anchorForChainHead: receipts are not a parseable receipt array", []);
   }
 
   const res = verifyChain(receiptsJson);
@@ -229,7 +244,8 @@ export function anchorForChainHead(receipts: readonly Receipt[], signer: Signer,
   if (head === undefined) {
     throw new AnchorError(`anchorForChainHead: could not locate the chain head at seq ${res.count - 1}`, []);
   }
-  // Both the frontier fields below and the chain verifyChain validated come from the SAME frozen snap.
+  // Both the frontier fields below and the chain `verifyChain` validated come from the SAME PARSE of
+  // the SAME bytes — there is no second read of the caller's array anywhere in this function.
   return buildAnchor(
     { chain: head.scope.chain, highestSeq: head.chain.seq, headHash: head.chain.hash, ts },
     signer,

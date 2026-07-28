@@ -1,5 +1,15 @@
 /**
- * The fifth review's federation findings, pinned to the ingest boundary:
+ * The fifth review's federation findings, re-pinned to the BYTES boundary (2026-07-28).
+ *
+ * These tests were written against the ingest boundary, and every one of them built a live anchor
+ * whose `headHash` was a flipping GETTER — HA to the signature check, HB to the classification. That
+ * fixture is no longer expressible: `verifyCompleteness` takes `Uint8Array | string`, so the object is
+ * refused before any property is read. The findings are therefore asserted in the two forms that
+ * still have content: the OBJECT form must be REFUSED with the getter firing zero times, and the
+ * split-view attack must be attempted in its BYTE form (a duplicate `headHash` key — JSON's only way
+ * to give one field two values) and rejected by the strict parser.
+ *
+ * The original headers, kept because they name what is being defended:
  *   C2 — verifyCompleteness read the LIVE anchors/trust-set: a getter could expose one frontier to
  *        the signature check and another to the classification (→ QUORUM_CONFIRMED for a head nobody
  *        signed), and a flipping kid/pubkey could count one physical key as two witnesses.
@@ -38,6 +48,12 @@ const TS: TrustSet = { witnesses: [pin(WIT1), pin(WIT2)], quorum: 2 };
  * §4 classification (so it would be tallied as confirming the presented head HB). Pre-ingest-boundary,
  * two of these produced QUORUM_CONFIRMED over HB, which nobody signed.
  */
+const enc = new TextEncoder();
+const b = (v: unknown): Uint8Array => enc.encode(JSON.stringify(v));
+
+/** Counts every property read the boundary performs on a caller object. Must stay at zero. */
+let hostileReads = 0;
+
 function flippingAnchor(signer: Signer): Anchor {
   const sigValue = signEd25519(signer.privateKey, anchorSigningInput({ chain: CHAIN, highestSeq: 5, headHash: HA, ts: "2026-06-23T10:00:00Z" }));
   let reads = 0;
@@ -48,6 +64,7 @@ function flippingAnchor(signer: Signer): Anchor {
       // HA to the structural check (typeof + regex = 2 reads) and the signature preimage (1 read), HB
       // to the §4 classification equality (the LAST read). Pre-boundary that split-view forced a
       // confirm over HB; post-boundary the snapshot reads headHash ONCE, so every read sees HA.
+      hostileReads++;
       return ++reads <= 3 ? HA : HB;
     },
     ts: "2026-06-23T10:00:00Z",
@@ -56,11 +73,32 @@ function flippingAnchor(signer: Signer): Anchor {
   return a as unknown as Anchor;
 }
 
-test("C2: a flipping headHash cannot confirm a head nobody signed — the frontier is read ONCE", () => {
+test("C2: a flipping headHash cannot confirm a head nobody signed — it is REFUSED, not read once", () => {
+  hostileReads = 0;
   const headB: ChainHead = { chain: CHAIN, seq: 5, hash: HB };
-  const res = verifyCompleteness(headB, [flippingAnchor(W1S), flippingAnchor(W2S)], TS);
-  assert.equal(res.complete, false, "the ingest boundary must defeat the split-view confirm");
+  const res = verifyCompleteness(
+    b(headB),
+    [flippingAnchor(W1S), flippingAnchor(W2S)] as unknown as Uint8Array,
+    b(TS),
+  );
+  assert.equal(res.complete, false, "the boundary must defeat the split-view confirm");
   assert.notEqual(res.classification, "QUORUM_CONFIRMED");
+  assert.equal(hostileReads, 0, "the anchors' getter fired — the anchor list is still being traversed");
+  assert.match(res.reason ?? "", /expected Uint8Array or string/);
+});
+
+test("C2 as BYTES: the split view becomes a DUPLICATE headHash key, and the parser refuses to choose", () => {
+  // The byte-form of "one field, two values". `JSON.parse` would silently keep the last (HB) and the
+  // signature — made over HA — would then be checked against a head nobody signed.
+  const sigValue = signEd25519(W1S.privateKey, anchorSigningInput({ chain: CHAIN, highestSeq: 5, headHash: HA, ts: "2026-06-23T10:00:00Z" }));
+  const dup = `[{"chain":${JSON.stringify(CHAIN)},"highestSeq":5,"headHash":${JSON.stringify(HA)},` +
+    `"headHash":${JSON.stringify(HB)},"ts":"2026-06-23T10:00:00Z",` +
+    `"sig":{"alg":"ed25519","kid":${JSON.stringify(W1S.kid)},"value":${JSON.stringify(sigValue)}}}]`;
+  const headB: ChainHead = { chain: CHAIN, seq: 5, hash: HB };
+  const res = verifyCompleteness(b(headB), enc.encode(dup), b(TS));
+  assert.equal(res.complete, false);
+  assert.notEqual(res.classification, "QUORUM_CONFIRMED");
+  assert.match(res.reason ?? "", /duplicate object key/);
 });
 
 test("C2: a throwing getter on an anchor is INVALID_INPUT (fail-closed), never a raw throw or a confirm", () => {
@@ -69,12 +107,14 @@ test("C2: a throwing getter on an anchor is INVALID_INPUT (fail-closed), never a
     return { chain: CHAIN, highestSeq: 5, headHash: HA, ts: "2026-06-23T10:00:00Z", sig: { alg: "ed25519", kid: W1S.kid, value: v } };
   })();
   const hostile: Record<string, unknown> = { chain: CHAIN, highestSeq: 5, ts: "2026-06-23T10:00:00Z", sig: good.sig };
-  Object.defineProperty(hostile, "headHash", { enumerable: true, get() { throw new Error("boom"); } });
+  let threwReads = 0;
+  Object.defineProperty(hostile, "headHash", { enumerable: true, get() { threwReads++; throw new Error("boom"); } });
   const headA: ChainHead = { chain: CHAIN, seq: 5, hash: HA };
   let res!: ReturnType<typeof verifyCompleteness>;
-  assert.doesNotThrow(() => { res = verifyCompleteness(headA, [hostile as unknown as Anchor], TS); });
+  assert.doesNotThrow(() => { res = verifyCompleteness(b(headA), [hostile] as unknown as Uint8Array, b(TS)); });
   assert.equal(res.complete, false);
   assert.equal(res.classification, "INVALID_INPUT");
+  assert.equal(threwReads, 0, "the throwing getter fired — the boundary is still traversing");
 });
 
 test("C2: honest anchors over the presented head still confirm (no over-correction)", () => {
@@ -83,7 +123,7 @@ test("C2: honest anchors over the presented head still confirm (no over-correcti
     const v = signEd25519(s.privateKey, anchorSigningInput({ chain: CHAIN, highestSeq: 5, headHash: HA, ts: "2026-06-23T10:00:00Z" }));
     return { chain: CHAIN, highestSeq: 5, headHash: HA, ts: "2026-06-23T10:00:00Z", sig: { alg: "ed25519", kid: s.kid, value: v } };
   };
-  const res = verifyCompleteness(headA, [mk(W1S), mk(W2S)], TS);
+  const res = verifyCompleteness(b(headA), b([mk(W1S), mk(W2S)]), b(TS));
   assert.equal(res.complete, true, res.reason);
   assert.equal(res.classification, "QUORUM_CONFIRMED");
 });

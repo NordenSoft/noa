@@ -13,14 +13,27 @@
  *   • a listed export no longer exists (the registry cannot rot); or
  *   • an export classified `ingests` fails its live probe.
  *
- * THE PROBES ARE DYNAMIC, NOT DECLARATIVE. `ingests` is not a promise, it is measured. For each such
+ * THE PROBES ARE DYNAMIC, NOT DECLARATIVE. `bytes-in` is not a promise, it is measured. For each such
  * export the coverage test calls it with an argument carrying a COUNTING GETTER and asserts the getter
- * fired AT MOST ONCE (two reads is the flipping-getter class, by definition), and calls it again with
- * an argument whose getter throws a REVOKED PROXY and asserts nothing escapes as a raw `TypeError`
- * (fail-closed, the review-#6 ingest defect). A classification that has stopped being true fails.
+ * fired **ZERO** times, and calls it again with an argument whose getter throws a REVOKED PROXY and
+ * asserts nothing escapes as a raw `TypeError`. A classification that has stopped being true fails.
+ *
+ * ── THE THRESHOLD MOVED FROM "AT MOST ONCE" TO "ZERO" (2026-07-28) ──────────────────────────────
+ * The old class was `ingests` and the old assertion was `reads <= 1`, because the old boundary
+ * TRAVERSED a caller object exactly once and the defect being measured was a SECOND, disagreeing
+ * read. One read was the best that design could do — reading a live object at all gives the attacker
+ * a turn, and the whole of ADR §2.3 is about that turn being the route by which untrusted data
+ * executes code.
+ *
+ * Bytes-in removes the turn. A security-sensitive entry point now takes `Uint8Array | string`, so a
+ * caller-owned object is REFUSED at the boundary and its getters never run. The probe threshold is
+ * therefore ZERO, and a single fire is a finding — it would mean some path still traverses. Leaving
+ * the assertion at `<= 1` would have kept a passing test that no longer measured the property the
+ * migration bought.
  *
  * THE CLASSES:
- *   ingests        — takes caller data AND routes it through the ingest boundary. Probed.
+ *   bytes-in       — a security-sensitive entry point taking `Uint8Array | string`. Probed: a caller
+ *                    object must be refused with the hostile getter firing ZERO times.
  *   dataless       — every parameter is a primitive / Buffer / absent. Nothing to flip.
  *   producer-inert — takes caller data, and its OUTPUT is not a security verdict; it either signs
  *                    from a snapshot or its result is re-verified downstream before anyone acts on
@@ -33,7 +46,7 @@
  *                    The test prints them as a standing report so the count can only go down.
  */
 
-export type EntryClass = "ingests" | "dataless" | "producer-inert" | "caller-owned" | "unrouted";
+export type EntryClass = "bytes-in" | "dataless" | "producer-inert" | "caller-owned" | "unrouted";
 
 export interface EntryPoint {
   /** exported name, exactly as the entry module exports it */
@@ -42,8 +55,8 @@ export interface EntryPoint {
   /** required for every class except `dataless` */
   why?: string;
   /**
-   * For `ingests`: the argument index that carries caller evidence, and a factory producing an
-   * otherwise-valid call so the probe reaches the ingest. Omitted ⇒ probe with a bare object at
+   * For `bytes-in`: the argument index that carries caller evidence, and a factory producing an
+   * otherwise-valid call so the probe reaches the boundary. Omitted ⇒ probe with a bare object at
    * index 0 and accept any non-throwing outcome.
    */
   probe?: { argIndex: number; args: () => unknown[] };
@@ -52,19 +65,17 @@ export interface EntryPoint {
 /** `noa-receipt` — `src/index.ts` (the package's only exports entry). */
 export const NOA_RECEIPT: EntryPoint[] = [
   // ── verifiers: ingest ──────────────────────────────────────────────────────────────────────────
-  { name: "verifyChain", cls: "ingests", why: "snapshots receipts + opts behind the maxReceipts DoS pre-guard" },
-  { name: "verifyChainText", cls: "ingests", why: "text is inert; opts snapshotted by verifyChain" },
-  { name: "verifyCheckpoint", cls: "ingests", why: "checkpoint and keyring both snapshotted" },
-  { name: "verifyCompleteness", cls: "ingests", why: "head/anchors/trustSet/opts snapshotted at the top" },
-  { name: "verifyChainWitnessed", cls: "ingests", why: "opts + keyring snapshotted; chain delegated to verifyChain's bounded ingest" },
-  { name: "verifyReceiptCompliance", cls: "ingests", why: "receipt/policy/inputs/opts all snapshotted" },
-  { name: "snapshotImmutable", cls: "ingests", why: "IS the boundary" },
-  { name: "tryIngest", cls: "ingests", why: "IS the boundary (non-throwing form)" },
-  { name: "validateReceiptShape", cls: "ingests", why: "snapshots before the structural walk" },
-  { name: "receiptFromCose", cls: "ingests", why: "COSE bytes are inert; keyring + identityManifest snapshotted" },
-  { name: "coseSign1Verify", cls: "ingests", why: "COSE bytes are inert; keyring snapshotted" },
-  { name: "anchorForChainHead", cls: "ingests", why: "receipts snapshotted before verifyChain and before the head walk" },
-  { name: "buildAnchor", cls: "ingests", why: "frontier + signer snapshotted before validation, so checked bytes == signed bytes" },
+  { name: "verifyChain", cls: "bytes-in", why: "receipts are Uint8Array|string; every document option is decoded once at the boundary" },
+  { name: "verifyChainText", cls: "bytes-in", why: "a pure alias for verifyChain; the two entry points can no longer disagree about what a valid document is" },
+  { name: "verifyCheckpoint", cls: "bytes-in", why: "checkpoint AND keyring are both documents; review #6 C2 was exactly the asymmetry of snapshotting one and not the other" },
+  { name: "verifyCompleteness", cls: "bytes-in", why: "head, anchors and trustSet are all bytes; freshness is admitted by the option schema" },
+  { name: "verifyChainWitnessed", cls: "bytes-in", why: "chain, keyring, anchors and trustSet are bytes; the head is derived from the SAME bytes verifyChain parsed" },
+  { name: "verifyReceiptCompliance", cls: "bytes-in", why: "receipt, policy and inputs are three documents; options are schema-admitted" },
+  { name: "validateReceiptShape", cls: "bytes-in", why: "the structural walk runs over safeParse output, so its many passes cannot disagree" },
+  { name: "receiptFromCose", cls: "bytes-in", why: "COSE bytes were always inert; the keyring and identityManifest are now documents too" },
+  { name: "coseSign1Verify", cls: "bytes-in", why: "COSE bytes were always inert; the keyring is now a document too" },
+  { name: "anchorForChainHead", cls: "producer-inert", why: "the signer's own chain (ADR §3.3); it serialises ONCE, so the verified bytes and the signed bytes are literally the same bytes" },
+  { name: "buildAnchor", cls: "producer-inert", why: "the signer's own frontier (ADR §3.3); read once into locals, so checked == signed" },
 
   // ── producers: sign from a snapshot ────────────────────────────────────────────────────────────
   { name: "buildReceipt", cls: "producer-inert", why: "BuildInput cloned in buildDraft; output is re-verified by verifyChain before anyone acts on it" },
@@ -80,9 +91,9 @@ export const NOA_RECEIPT: EntryPoint[] = [
   { name: "anchorSigningInput", cls: "producer-inert", why: "reads the four frontier fields once into the preimage; callers (buildAnchor, verifyCompleteness) ingest first" },
 
   // ── policy surface ─────────────────────────────────────────────────────────────────────────────
-  { name: "evaluate", cls: "ingests", why: "policy + inputs snapshotted before the rule walk" },
-  { name: "validatePolicy", cls: "ingests", why: "snapshots before validating, so the validated bytes are the canonicalized bytes" },
-  { name: "assertValidPolicy", cls: "ingests", why: "delegates to validatePolicy" },
+  { name: "evaluate", cls: "bytes-in", why: "policy and inputs are documents; the rule walk runs over safeParse output" },
+  { name: "validatePolicy", cls: "bytes-in", why: "the validated bytes ARE the supplied bytes" },
+  { name: "assertValidPolicy", cls: "bytes-in", why: "delegates to validatePolicy; RETURNS the parsed Policy, because an `asserts p is Policy` signature cannot survive bytes-in honestly" },
   { name: "policyHash", cls: "producer-inert", why: "pure hash of one canonicalization; the verdict-bearing callers ingest first" },
   { name: "readSet", cls: "producer-inert", why: "pure derivation; verdict-bearing callers ingest first" },
   { name: "readSetHash", cls: "producer-inert", why: "pure hash of one canonicalization" },
@@ -94,7 +105,6 @@ export const NOA_RECEIPT: EntryPoint[] = [
   { name: "isFrozenSet", cls: "dataless" },
   { name: "frozenTable", cls: "caller-owned", why: "builds the caller's own policy table; refuses anything mutable" },
   { name: "inertViolations", cls: "caller-owned", why: "a read-only audit walk over the caller's own exports" },
-  { name: "isIngestError", cls: "dataless" },
 
   // ── primitives ─────────────────────────────────────────────────────────────────────────────────
   { name: "safeParse", cls: "dataless" },
@@ -117,8 +127,8 @@ export const NOA_RECEIPT: EntryPoint[] = [
 
 /** `noa-approval-artifacts` — `src/index.ts`. */
 export const NOA_APPROVAL_ARTIFACTS: EntryPoint[] = [
-  { name: "verifyArtifact", cls: "ingests", why: "artifact + ctx snapshotted; schemas excluded as verifier-owned" },
-  { name: "signArtifact", cls: "ingests", why: "doc + signer snapshotted, so guarded == signed == returned bytes" },
+  { name: "verifyArtifact", cls: "bytes-in", why: "artifact AND context are bytes; the ctx.schemas exclusion that C-03 went through no longer exists" },
+  { name: "signArtifact", cls: "bytes-in", why: "the document is bytes parsed once, so guarded == signed == returned by construction" },
   { name: "evalSchema", cls: "producer-inert", why: "a single structural walk with no second read; every verdict-bearing caller (verifyArtifact, verifyEvidence) ingests first" },
   { name: "canonicalize", cls: "producer-inert", why: "one depth-bounded traversal; pure" },
   { name: "refHash", cls: "producer-inert", why: "pure hash of one canonicalization" },
@@ -136,11 +146,11 @@ export const NOA_APPROVAL_ARTIFACTS: EntryPoint[] = [
 
 /** `noa-approval-evidence` — `src/index.ts`. */
 export const NOA_APPROVAL_EVIDENCE: EntryPoint[] = [
-  { name: "verifyEvidence", cls: "ingests", why: "bundle + opts snapshotted; schemas excluded as verifier-owned" },
+  { name: "verifyEvidence", cls: "bytes-in", why: "bundle + opts snapshotted; schemas excluded as verifier-owned" },
   { name: "loadSchemas", cls: "dataless" },
-  { name: "asRootKeyEntryMap", cls: "ingests", why: "snapshots the raw trust root before normalising it" },
-  { name: "asStringKeyring", cls: "ingests", why: "snapshots the raw keyring before normalising it" },
-  { name: "buildResolvedKeyring", cls: "ingests", why: "snapshots the root keyring, delegation and manifest" },
-  { name: "buildReceiptKeyring", cls: "ingests", why: "snapshots the manifest" },
-  { name: "assertReceiptRole", cls: "ingests", why: "snapshots the bundle; index.ts advertises it for direct downstream reuse, so it cannot rely on verifyEvidence having ingested" },
+  { name: "asRootKeyEntryMap", cls: "bytes-in", why: "snapshots the raw trust root before normalising it" },
+  { name: "asStringKeyring", cls: "bytes-in", why: "snapshots the raw keyring before normalising it" },
+  { name: "buildResolvedKeyring", cls: "bytes-in", why: "snapshots the root keyring, delegation and manifest" },
+  { name: "buildReceiptKeyring", cls: "bytes-in", why: "snapshots the manifest" },
+  { name: "assertReceiptRole", cls: "bytes-in", why: "snapshots the bundle; index.ts advertises it for direct downstream reuse, so it cannot rely on verifyEvidence having ingested" },
 ];

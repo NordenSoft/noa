@@ -241,32 +241,55 @@ const trustOK = { witnesses: [{ kid: wk.kid, pubkey: wk.publicKey }, { kid: wk2.
 const anchorsAlias = [buildAnchor(frontier, { kid: "alias-1", privateKey: wk.privateKey }), buildAnchor(frontier, { kid: "alias-2", privateKey: wk.privateKey })];
 const trustAlias = { witnesses: [{ kid: "alias-1", pubkey: wk.publicKey }, { kid: "alias-2", pubkey: wk.publicKey }], quorum: 2 };
 
+/**
+ * Documents are bytes at every boundary (ADR §3.1), so the subjects hand the verifiers bytes. The
+ * PROPERTY under test is unchanged and is the reason this file exists: no poison of any intrinsic
+ * may turn a rejection into an acceptance, or change an accepted verdict's label. Serialising once,
+ * here, keeps every subject's input a fixed byte sequence across the clean run and all N poisoned
+ * runs — which is itself part of the property (a subject whose input differed between runs would
+ * make a label change meaningless).
+ */
+const enc = new TextEncoder();
+const b = (v: unknown): Uint8Array => enc.encode(JSON.stringify(v));
+
+const validChainBytes = b(validChain);
+const keyringBytes = b(keyring);
+const checkpointBytes = b(checkpoint);
+const compKeyringBytes = b(compKeyring);
+const policyBytes = b(POLICY);
+const compInputsBytes = b(compInputs);
+const fHeadBytes = b(fHead);
+const anchorsOKBytes = b(anchorsOK);
+const trustOKBytes = b(trustOK);
+const anchorsAliasBytes = b(anchorsAlias);
+const trustAliasBytes = b(trustAlias);
+
 interface Subject { name: string; run: () => Verdict; }
 const SUBJECTS: Subject[] = [
-  { name: "verifyChain(valid, keyring)", run: () => { const r = verifyChain(validChain, { keyring, checkpoint }); return { accepted: r.status === "VALID", label: r.status }; } },
-  { name: "verifyChainText(valid, keyring)", run: () => { const r = verifyChainText(JSON.stringify(validChain), { keyring }); return { accepted: r.status === "VALID", label: r.status }; } },
-  { name: "verifyChain(no keyring) — must stay UNVERIFIED", run: () => { const r = verifyChain(validChain, {}); return { accepted: r.status === "VALID", label: r.status }; } },
+  { name: "verifyChain(valid, keyring)", run: () => { const r = verifyChain(validChainBytes, { keyring: keyringBytes, checkpoint: checkpointBytes }); return { accepted: r.status === "VALID", label: r.status }; } },
+  { name: "verifyChainText(valid, keyring)", run: () => { const r = verifyChainText(JSON.stringify(validChain), { keyring: keyringBytes }); return { accepted: r.status === "VALID", label: r.status }; } },
+  { name: "verifyChain(no keyring) — must stay UNVERIFIED", run: () => { const r = verifyChain(validChainBytes, {}); return { accepted: r.status === "VALID", label: r.status }; } },
   ...ATTACKS.map((f) => ({
     name: `verifyChain(attack/${f})`,
-    run: (): Verdict => { const r = verifyChain(loadJson(join(attackDir, f)) as unknown[], { keyring, checkpoint }); return { accepted: r.status === "VALID", label: r.status }; },
+    run: (): Verdict => { const r = verifyChain(b(loadJson(join(attackDir, f))), { keyring: keyringBytes, checkpoint: checkpointBytes }); return { accepted: r.status === "VALID", label: r.status }; },
   })),
-  { name: "verifyCheckpoint(genuine)", run: () => { const r = verifyCheckpoint(checkpoint, keyring); return { accepted: r === "ok", label: String(r) }; } },
-  { name: "verifyCheckpoint(no keyring)", run: () => { const r = verifyCheckpoint(checkpoint); return { accepted: r === "ok", label: String(r) }; } },
-  { name: "validateReceiptShape(valid)", run: () => { const r = validateReceiptShape(validChain[0]); return { accepted: r.ok, label: r.ok ? "ok" : "invalid" }; } },
-  { name: "validateReceiptShape(garbage)", run: () => { const r = validateReceiptShape({ spec: "nope" }); return { accepted: r.ok, label: r.ok ? "ok" : "invalid" }; } },
-  { name: "coseSign1Verify(genuine)", run: () => { const r = coseSign1Verify(cose, compKeyring); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
-  { name: "coseSign1Verify(empty keyring)", run: () => { const r = coseSign1Verify(cose, {}); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
-  { name: "receiptFromCose(genuine)", run: () => { const r = receiptFromCose(cose, compKeyring); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
-  { name: "verifyReceiptCompliance(genuine)", run: () => { const r = verifyReceiptCompliance(compReceipt, POLICY, compInputs, { keyring: compKeyring }); return { accepted: r.ok, label: r.ok ? `ok/${r.attribution}` : "rejected" }; } },
-  { name: "verifyReceiptCompliance(no keyring) — must stay rejected", run: () => { const r = verifyReceiptCompliance(compReceipt, POLICY, compInputs); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
-  { name: "verifyReceiptCompliance(substituted inputs)", run: () => { const r = verifyReceiptCompliance(compReceipt, POLICY, { action: "payment.refund", amountMinor: 999 }, { keyring: compKeyring }); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
-  { name: "evaluate(policy, allow-inputs)", run: () => { const r = evaluate(POLICY, compInputs); return { accepted: r.verdict === "ALLOW", label: r.verdict }; } },
-  { name: "evaluate(policy, deny-inputs)", run: () => { const r = evaluate(POLICY, { action: "payment.refund", amountMinor: 5_000_000 }); return { accepted: r.verdict === "ALLOW", label: r.verdict }; } },
-  { name: "validatePolicy(malformed)", run: () => { const r = validatePolicy({ spec: "noa.policy/0.2", id: "x", requiredPaths: [], rules: [{ id: "r", when: { op: "bogus" }, then: "ALLOW" }] }); return { accepted: r.ok, label: r.ok ? "ok" : "invalid" }; } },
-  { name: "verifyCompleteness(2 distinct witnesses)", run: () => { const r = verifyCompleteness(fHead, anchorsOK, trustOK); return { accepted: r.complete, label: r.classification }; } },
-  { name: "verifyCompleteness(ONE key under two aliases) — must NEVER reach quorum", run: () => { const r = verifyCompleteness(fHead, anchorsAlias, trustAlias); return { accepted: r.complete, label: r.classification }; } },
-  { name: "verifyChainWitnessed(valid chain + quorum)", run: () => { const r = verifyChainWitnessed(validChain, keyring, { anchors: anchorsOK, trustSet: trustOK }); return { accepted: r.chain.status === "VALID" && r.witness.complete, label: `${r.chain.status}/${r.witness.classification}` }; } },
-  { name: "verifyChainWitnessed(alias trust set)", run: () => { const r = verifyChainWitnessed(validChain, keyring, { anchors: anchorsAlias, trustSet: trustAlias }); return { accepted: r.witness.complete, label: r.witness.classification }; } },
+  { name: "verifyCheckpoint(genuine)", run: () => { const r = verifyCheckpoint(checkpointBytes, keyringBytes); return { accepted: r === "ok", label: String(r) }; } },
+  { name: "verifyCheckpoint(no keyring)", run: () => { const r = verifyCheckpoint(checkpointBytes); return { accepted: r === "ok", label: String(r) }; } },
+  { name: "validateReceiptShape(valid)", run: () => { const r = validateReceiptShape(b(validChain[0])); return { accepted: r.ok, label: r.ok ? "ok" : "invalid" }; } },
+  { name: "validateReceiptShape(garbage)", run: () => { const r = validateReceiptShape(b({ spec: "nope" })); return { accepted: r.ok, label: r.ok ? "ok" : "invalid" }; } },
+  { name: "coseSign1Verify(genuine)", run: () => { const r = coseSign1Verify(cose, compKeyringBytes); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
+  { name: "coseSign1Verify(empty keyring)", run: () => { const r = coseSign1Verify(cose, b({})); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
+  { name: "receiptFromCose(genuine)", run: () => { const r = receiptFromCose(cose, compKeyringBytes); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
+  { name: "verifyReceiptCompliance(genuine)", run: () => { const r = verifyReceiptCompliance(b(compReceipt), policyBytes, compInputsBytes, { keyring: compKeyringBytes }); return { accepted: r.ok, label: r.ok ? `ok/${r.attribution}` : "rejected" }; } },
+  { name: "verifyReceiptCompliance(no keyring) — must stay rejected", run: () => { const r = verifyReceiptCompliance(b(compReceipt), policyBytes, compInputsBytes); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
+  { name: "verifyReceiptCompliance(substituted inputs)", run: () => { const r = verifyReceiptCompliance(b(compReceipt), policyBytes, b({ action: "payment.refund", amountMinor: 999 }), { keyring: compKeyringBytes }); return { accepted: r.ok, label: r.ok ? "ok" : "rejected" }; } },
+  { name: "evaluate(policy, allow-inputs)", run: () => { const r = evaluate(policyBytes, compInputsBytes); return { accepted: r.verdict === "ALLOW", label: r.verdict }; } },
+  { name: "evaluate(policy, deny-inputs)", run: () => { const r = evaluate(policyBytes, b({ action: "payment.refund", amountMinor: 5_000_000 })); return { accepted: r.verdict === "ALLOW", label: r.verdict }; } },
+  { name: "validatePolicy(malformed)", run: () => { const r = validatePolicy(b({ spec: "noa.policy/0.2", id: "x", requiredPaths: [], rules: [{ id: "r", when: { op: "bogus" }, then: "ALLOW" }] })); return { accepted: r.ok, label: r.ok ? "ok" : "invalid" }; } },
+  { name: "verifyCompleteness(2 distinct witnesses)", run: () => { const r = verifyCompleteness(fHeadBytes, anchorsOKBytes, trustOKBytes); return { accepted: r.complete, label: r.classification }; } },
+  { name: "verifyCompleteness(ONE key under two aliases) — must NEVER reach quorum", run: () => { const r = verifyCompleteness(fHeadBytes, anchorsAliasBytes, trustAliasBytes); return { accepted: r.complete, label: r.classification }; } },
+  { name: "verifyChainWitnessed(valid chain + quorum)", run: () => { const r = verifyChainWitnessed(validChainBytes, keyringBytes, { anchors: anchorsOKBytes, trustSet: trustOKBytes }); return { accepted: r.chain.status === "VALID" && r.witness.complete, label: `${r.chain.status}/${r.witness.classification}` }; } },
+  { name: "verifyChainWitnessed(alias trust set)", run: () => { const r = verifyChainWitnessed(validChainBytes, keyringBytes, { anchors: anchorsAliasBytes, trustSet: trustAliasBytes }); return { accepted: r.witness.complete, label: r.witness.classification }; } },
   { name: "anchorForChainHead(genuine chain) signs the REAL head", run: () => {
       const a = anchorForChainHead(validChain as never, { kid: wk.kid, privateKey: wk.privateKey }, { ts: "2026-07-27T10:00:00Z" });
       // The label carries the SIGNED FRONTIER, so a poison that redirects the head search changes the

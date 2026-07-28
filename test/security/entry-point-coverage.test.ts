@@ -68,42 +68,45 @@ test("C2: there are no `unrouted` entry points (and if there ever are, they are 
 });
 
 // ── the probes ────────────────────────────────────────────────────────────────────────────────────
+/**
+ * Valid BYTES for the arguments the probe is not attacking, so the hostile argument reaches the
+ * boundary rather than being short-circuited by an earlier type failure on a sibling parameter.
+ */
+const enc = new TextEncoder();
+const EMPTY_ARRAY = enc.encode("[]");
+const EMPTY_OBJECT = enc.encode("{}");
+const EMPTY_TRUST = enc.encode(JSON.stringify({ witnesses: [], quorum: 2 }));
+const EMPTY_POLICY = enc.encode(JSON.stringify({ spec: "noa.policy/0.2", id: "p", requiredPaths: [], rules: [] }));
 /** A plausible-but-hostile argument for each ingesting export, plus which index carries it. */
 const CALLS: Record<string, (arg: unknown) => unknown> = {
   verifyChain: (a) => noaReceipt.verifyChain(a as never),
-  verifyChainText: (a) => noaReceipt.verifyChainText("[]", a as never),
+  verifyChainText: (a) => noaReceipt.verifyChainText(a as never, {}),
   verifyCheckpoint: (a) => noaReceipt.verifyCheckpoint(a as never),
-  verifyCompleteness: (a) => noaReceipt.verifyCompleteness(a as never, [], { witnesses: [], quorum: 2 }),
-  verifyChainWitnessed: (a) => noaReceipt.verifyChainWitnessed([], undefined, a as never),
-  verifyReceiptCompliance: (a) => noaReceipt.verifyReceiptCompliance(a as never, { spec: "noa.policy/0.2", id: "p", requiredPaths: [], rules: [] }, {}, {}),
-  // The boundary itself is contract-tested rather than swallowed: it MAY throw, but ONLY an
-  // IngestError. Wrapping it in a bare try/catch here would have hidden the review-#6 defect (a raw
-  // TypeError escaping because the boundary's own `instanceof` walked the thrown value's prototype
-  // chain), so the probe re-throws anything that is not branded.
-  snapshotImmutable: (a) => {
-    try { return noaReceipt.snapshotImmutable(a); }
-    catch (e) { if (noaReceipt.isIngestError(e)) return null; throw e; }
-  },
-  tryIngest: (a) => noaReceipt.tryIngest(a),
-  validateReceiptShape: (a) => noaReceipt.validateReceiptShape(a),
+  verifyCompleteness: (a) => noaReceipt.verifyCompleteness(a as never, EMPTY_ARRAY, EMPTY_TRUST),
+  verifyChainWitnessed: (a) => noaReceipt.verifyChainWitnessed(EMPTY_ARRAY, undefined, { anchors: a as never, trustSet: EMPTY_TRUST }),
+  verifyReceiptCompliance: (a) => noaReceipt.verifyReceiptCompliance(a as never, EMPTY_POLICY, EMPTY_OBJECT, {}),
+  validateReceiptShape: (a) => noaReceipt.validateReceiptShape(a as never),
   receiptFromCose: (a) => noaReceipt.receiptFromCose(Buffer.from("x"), a as never),
   coseSign1Verify: (a) => noaReceipt.coseSign1Verify(Buffer.from("x"), a as never),
-  anchorForChainHead: (a) => { try { return noaReceipt.anchorForChainHead(a as never, { kid: "k", privateKey: "p" }, { ts: "2026-07-27T10:00:00Z" }); } catch { return null; } },
-  buildAnchor: (a) => { try { return noaReceipt.buildAnchor(a as never, { kid: "k", privateKey: "p" }); } catch { return null; } },
-  evaluate: (a) => noaReceipt.evaluate(a as never, {}),
-  validatePolicy: (a) => noaReceipt.validatePolicy(a),
-  assertValidPolicy: (a) => { try { return noaReceipt.assertValidPolicy(a); } catch { return null; } },
+  evaluate: (a) => noaReceipt.evaluate(a as never, EMPTY_OBJECT),
+  validatePolicy: (a) => noaReceipt.validatePolicy(a as never),
+  assertValidPolicy: (a) => { try { return noaReceipt.assertValidPolicy(a as never); } catch { return null; } },
 };
 
-const INGESTING: EntryPoint[] = NOA_RECEIPT.filter((e) => e.cls === "ingests");
+const INGESTING: EntryPoint[] = NOA_RECEIPT.filter((e) => e.cls === "bytes-in");
 
-test("C2: every `ingests` export has a probe (a classification is a claim; this is the evidence)", () => {
+test("C2: every `bytes-in` export has a probe (a classification is a claim; this is the evidence)", () => {
   const unprobed = INGESTING.filter((e) => CALLS[e.name] === undefined).map((e) => e.name);
-  assert.deepEqual(unprobed, [], `classified 'ingests' with nothing measuring it: ${unprobed.join(", ")}`);
+  assert.deepEqual(unprobed, [], `classified 'bytes-in' with nothing measuring it: ${unprobed.join(", ")}`);
 });
 
 for (const e of INGESTING) {
-  test(`C2 probe — a caller getter fires AT MOST ONCE: ${e.name}`, () => {
+  // THRESHOLD MOVED FROM `<= 1` TO `=== 0` (2026-07-28). `<= 1` was the best the ingest boundary
+  // could do: it traversed the caller's object exactly once, and the defect it measured was a SECOND,
+  // disagreeing read. Bytes-in refuses the object outright, so the getter must never fire at all —
+  // and leaving the assertion at `<= 1` would have kept a green test that no longer measured the
+  // property the migration bought.
+  test(`C2 probe — a caller getter fires ZERO times: ${e.name}`, () => {
     const call = CALLS[e.name]!;
     let reads = 0;
     // A shape plausible enough to travel some distance into each verifier before being rejected.
@@ -114,7 +117,7 @@ for (const e of INGESTING) {
     };
     Object.defineProperty(hostile, "probe", { enumerable: true, configurable: true, get() { reads++; return "x"; } });
     call(hostile);
-    assert.ok(reads <= 1, `${e.name}: the argument's getter fired ${reads} times — two reads of one field can disagree, which is the whole class`);
+    assert.equal(reads, 0, `${e.name}: the argument's getter fired ${reads} time(s) — a security-sensitive entry point must refuse a caller-owned object, not traverse it (ADR §3.1)`);
   });
 
   test(`C2 probe — a hostile throw does NOT escape raw: ${e.name}`, () => {
