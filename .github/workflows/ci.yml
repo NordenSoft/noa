@@ -220,6 +220,31 @@ jobs:
             git status --porcelain conformance/
             exit 1
           fi
+      - name: Entry-point registry is up to date (no drift)
+        # The registry of security-sensitive entry points is GENERATED from src/index.ts via the
+        # TypeScript compiler API and diff-gated exactly like the conformance matrix. A new export
+        # cannot reach the public surface without a human reading the change. Hand-maintained lists
+        # are what H-03 was made of.
+        run: npm run check:entry-points
+      - name: Dispatch-surface enumeration (C-04 / H-02 class)
+        # Every call that hands control to code we do not own is matched from source and reconciled
+        # against a registry stating its mechanism and its failing-test evidence. Bidirectional: an
+        # unregistered surface bypassed review, and a stale entry describes code that is gone.
+        run: npm run lint:dispatch-surfaces
+      - name: L1-L7 security gates
+        # Source-level, full strength, ratcheted enforcement. L5/L6/L7 block today. L1/L2/L3 report
+        # against a violation BUDGET that fails on regression — the count may only fall, and each
+        # flips to blocking when it reaches zero. The rule is never weakened to fit the code.
+        run: npm run lint:security-gates
+      - name: R7 exploit corpus (pinned dispositions)
+        # All eleven preserved review-round-7 exploits, each pinned CLOSED or OPEN in BOTH
+        # directions: a CLOSED exploit that reproduces again is a regression, and an OPEN exploit
+        # that silently stops reproducing is an exploit that rotted into measuring nothing.
+        run: npm run test:r7-exploits
+      - name: L4 control knockout (every control has a test that dies without it)
+        # Slow by construction: each control is removed and its suite re-run. It runs here rather
+        # than in a fast lane precisely because "what would have caught this?" is worth the minutes.
+        run: npm run lint:knockout
       - name: Conformance matrix is up to date (no drift)
         # Regenerates conformance/MATRIX.md from conformance.mjs's own output and fails if it differs
         # from the committed copy (or if any vector could not be classified into a security class).

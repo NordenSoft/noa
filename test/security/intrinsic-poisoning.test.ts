@@ -64,10 +64,20 @@ const loadJson = (p: string): unknown => JSON.parse(readFileSync(p, "utf8"));
 // actually flipped three verdicts in review #6.
 interface Poison { name: string; apply: () => () => void; }
 
+/**
+ * The slot the most recent `onProto` actually patched. Read by the harness self-check below to
+ * prove, PER POISON, that the poison bit — H-03 found three iterator poisons aimed at
+ * `%IteratorPrototype%` rather than the prototype that owns `next`, which reported
+ * `poisonActuallyBit:false` and passed anyway.
+ */
+let lastPatched: { obj: object; key: PropertyKey; before: unknown; after: unknown } | null = null;
+
 function onProto(obj: object, key: PropertyKey, value: unknown): () => void {
   const had = Object.prototype.hasOwnProperty.call(obj, key);
   const prev = Object.getOwnPropertyDescriptor(obj, key);
+  const before = (obj as Record<PropertyKey, unknown>)[key];
   Object.defineProperty(obj, key, { value, writable: true, configurable: true, enumerable: false });
+  lastPatched = { obj, key, before, after: value };
   return () => {
     if (had && prev) Object.defineProperty(obj, key, prev);
     else Reflect.deleteProperty(obj, key);
@@ -307,4 +317,46 @@ test("the poison harness itself is honest — an UNPROTECTED lookup really is fl
     undo();
   }
   assert.equal(table.includes("EXECUTED"), false, "and must be fully undone");
+});
+
+/**
+ * ── H-03, THE DEFECT VERBATIM, NOW CLOSED ─────────────────────────────────────────────────────
+ * The self-check above exercises `POISONS[0]` AND ONLY `POISONS[0]`. Every other poison in the
+ * catalogue was assumed to work. Three of them did not: the iterator poisons targeted
+ * `%IteratorPrototype%` rather than the prototype that actually owns `next`, so they patched a slot
+ * nothing reads, the verifier was never actually attacked, and the suite reported green.
+ *
+ * A poison that does not bite is not a weak test — it is a test that MEASURES NOTHING while
+ * counting itself as coverage, which is strictly worse than having no test, because it is
+ * load-bearing in the decision to stop looking.
+ *
+ * This asserts the property for EVERY member, mechanically, and it is deliberately generic: it does
+ * not know what any individual poison targets. It only requires that applying one OBSERVABLY
+ * changes the slot it claims to change, and that undoing it restores that slot exactly. A future
+ * poison aimed at the wrong prototype fails here on the day it is written.
+ */
+test("EVERY poison in the catalogue actually bites, and every undo actually restores", () => {
+  assert.ok(POISONS.length >= 66, `the catalogue shrank to ${POISONS.length} — poisons must not be quietly dropped`);
+  const inert: string[] = [];
+  for (const poison of POISONS) {
+    lastPatched = null;
+    const undo = poison.apply();
+    try {
+      assert.ok(lastPatched, `${poison.name}: apply() patched nothing at all`);
+      const { obj, key, before, after } = lastPatched;
+      const live = (obj as Record<PropertyKey, unknown>)[key];
+      // The slot must now hold the poison. If `before === after` the poison is a no-op by
+      // construction and cannot test anything.
+      if (Object.is(before, after)) inert.push(`${poison.name} (replacement is identical to the original)`);
+      if (!Object.is(live, after)) inert.push(`${poison.name} (the patch did not take: slot still holds something else)`);
+    } finally {
+      undo();
+    }
+    const { obj, key, before } = lastPatched!;
+    assert.ok(
+      Object.is((obj as Record<PropertyKey, unknown>)[key], before),
+      `${poison.name}: undo() did not restore the original slot — poison leaked into every later test`,
+    );
+  }
+  assert.deepEqual(inert, [], `poisons that do not actually bite (the H-03 class):\n  ${inert.join("\n  ")}`);
 });

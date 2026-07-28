@@ -258,21 +258,24 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
   } catch (e) {
     // ANY throw after dispatch: genuinely unknown. There is no marked variant any more.
     //
-    // BELT AS WELL AS BRACES. The read-before-transition order above is what makes this reachable
-    // only from DISPATCHED. This block additionally refuses to let ANY residual throw leave
-    // `guard()` unmarked: a mechanism nobody has thought of yet must degrade to "it may have run",
-    // never to an ordinary error. `state` is passed by value from the pre-transition constant so
-    // the reducer call itself cannot be the thing that throws.
-    try {
-      state = nextSideEffectState("DISPATCHED", "TOOL_THREW_AFTER_DISPATCH"); // → SIDE_EFFECT_UNCONFIRMED
-    } catch (reducerFailure) {
-      throw new ToolOutcomeNotRecorded(input.action.canonical, {
-        outcome: "EXECUTED",
-        receipt: null,
-        cause: reducerFailure,
-        component: "noa-gate",
-      });
-    }
+    // `state` is passed, NOT the literal `"DISPATCHED"`, and that is deliberate. The
+    // read-before-transition order above is the ONE control that keeps this block reachable only
+    // from DISPATCHED — the single state that models this event.
+    //
+    // TWO redundant controls were written here first and both were DELETED, on evidence from the L4
+    // knockout runner (scripts/lint-control-knockout.mjs):
+    //   • a defensive try/catch around this call — SURVIVED knockout: removing it left the entire
+    //     suite green, because the read-order fix makes it unreachable. Unreachable code inside the
+    //     TCB is untestable, and untestable code that only ever runs at the worst possible moment
+    //     is a comfort blanket, not a control.
+    //   • hardcoding `"DISPATCHED"` here instead of `state` — this ALSO independently closed the
+    //     defect, which made the read-order fix survive its own knockout: with a second control in
+    //     place, neither was individually observable.
+    //
+    // Redundant defences read as prudence and measure as blindness: each one hides the failure of
+    // the others, and the suite reports green while nothing in particular is being tested. One
+    // control, measured, beats three controls and no signal.
+    state = nextSideEffectState(state, "TOOL_THREW_AFTER_DISPATCH"); // → SIDE_EFFECT_UNCONFIRMED
     reportResult = "UNKNOWN";
     execDetail = describeThrown(e);
   }
