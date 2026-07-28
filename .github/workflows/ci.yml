@@ -55,6 +55,17 @@ jobs:
         with:
           node-version: 22
           cache: npm
+      - name: Install the root FIRST — a file: link install builds its target
+        # NOT optional, and not obvious. `npm ci` inside a package whose manifest says
+        # `noa-receipt: file:../..` makes npm run the LINK TARGET's `prepare` script — and this
+        # repository's root `prepare` is `npm run build` (tsc). Without the root's own devDeps
+        # installed, that build dies with `TS2688: Cannot find type definition file for 'node'`
+        # and takes the whole job with it, before this gate has inspected anything.
+        #
+        # Every other job in this file happens to satisfy this by installing the root for its own
+        # reasons. This job has no other reason to, so the dependency is stated explicitly here.
+        run: npm ci
+
       - name: Install every package that declares the kernel (list derived, never hand-maintained)
         # The set is computed from the manifests themselves. A hand-written list is how this class
         # of check rots: someone adds a package with a kernel dependency, nobody updates the list,
