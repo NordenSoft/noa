@@ -54,11 +54,14 @@ const OUT_OF_TCB = {
   "src/builder.ts": "PRODUCER — the signer's own data, trusted by definition (ADR §3.3)",
   "src/cli.ts": "calls the boundary; takes no verdict of its own",
   "src/pii.ts": "advisory helper, not on any verdict path",
-  "src/ingest.ts": "hostile-object boundary — deleted by bytes-in (ADR §4); exempt so its removal is the fix, not a lint bypass",
 };
 
 const TCB = [
   "src/verify.ts",
+  // Exempting this was my own first instance of the very bypass L0 now blocks: it declares
+  // SECURITY_SENSITIVE exports (snapshotImmutable / tryIngest), so it is in the TCB by derivation,
+  // and bytes-in deleting it later is the fix — not a reason to stop linting it now.
+  "src/ingest.ts",
   "src/schema.ts",
   "src/keys.ts",
   "src/safe-json.ts",
@@ -84,14 +87,60 @@ const TCB = [
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 const lines = (p) => read(p).split("\n");
 
-/** Strip line comments, block comments and string/template literals so a lint never fires on prose. */
+/**
+ * Blank out comments and string/template literals so a lint never fires on prose — SINGLE PASS,
+ * left to right, because sequential regex replaces get this wrong in both directions.
+ *
+ * THE BUG THIS REPLACES (adversarial review, 2026-07-28). The first version ran five independent
+ * `.replace()` passes: block comments, then line comments, then strings. A string containing comment
+ * syntax therefore ATE THE REST OF THE LINE:
+ *
+ *     const DOCS = "https://example.com/spec"; const ok = TRUSTED.includes(kid);
+ *                       ^^ the // inside the string opened a "line comment"
+ *
+ * Everything after it — including a genuine `.includes(` on a TCB decision path — was blanked, and
+ * L2 and L3 saw nothing. A URL in a string literal is ordinary TypeScript, not an exotic construct,
+ * so the gate's premise ("a property of the code, checkable exhaustively") was simply false. The
+ * same ordering bug let `const OPEN = "/*";` swallow a block.
+ *
+ * My own self-test missed it because every case I wrote put the string and the call in DIFFERENT
+ * positions. A stripper is a tokenizer; testing it with regex-shaped cases tests the same
+ * assumption twice.
+ *
+ * A single left-to-right scan cannot have this class of bug: whichever construct OPENS first wins,
+ * which is exactly what the language does. Newlines are preserved so line numbers stay true.
+ */
 function strip(src) {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, " "))
-    .replace(/\/\/[^\n]*/g, "")
-    .replace(/"(?:[^"\\\n]|\\.)*"/g, '""')
-    .replace(/'(?:[^'\\\n]|\\.)*'/g, "''")
-    .replace(/`(?:[^`\\]|\\.)*`/g, "``");
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  const keep = (ch) => (ch === "\n" ? "\n" : " ");
+  while (i < n) {
+    const c = src[i];
+    const c2 = src[i + 1];
+    if (c === "/" && c2 === "/") {
+      while (i < n && src[i] !== "\n") { out += " "; i++; }
+      continue;
+    }
+    if (c === "/" && c2 === "*") {
+      out += "  "; i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { out += keep(src[i]); i++; }
+      if (i < n) { out += "  "; i += 2; }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      const quote = c;
+      out += quote; i++;
+      while (i < n) {
+        if (src[i] === "\\") { out += "  "; i += 2; continue; }
+        if (src[i] === quote) { out += quote; i++; break; }
+        out += keep(src[i]); i++;
+      }
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
 }
 
 const findings = [];
@@ -158,6 +207,44 @@ function L2() {
  * exempted (with a reason). A new file that is neither is a decision path nobody classified, and it
  * defaults to being a FINDING rather than to being invisible.
  */
+/**
+ * TCB MEMBERSHIP IS NOT A FREE CHOICE (adversarial review, 2026-07-28).
+ *
+ * `reconcileTCB` requires every `src/**.ts` to be CLASSIFIED. It did not require it to be classified
+ * CORRECTLY — so L2 and L3 had a one-line escape that was strictly easier than fixing anything: move
+ * `src/verify.ts` (the home of the C-01 `structuredClone` sink and the C-02 `includes` sink) from
+ * TCB into OUT_OF_TCB with a prose reason. Measured: 15 violations vanish, L0 stays 0, exit stays 0.
+ * And because budgets ratchet DOWNWARD, committing the lower count then makes the gate actively
+ * BLOCK putting the file back.
+ *
+ * A file whose exports are security-sensitive is in the TCB by definition, and `conformance/
+ * ENTRY-POINTS.md` already computes that set from `src/index.ts` through the compiler. So membership
+ * is DERIVED from the same generated source L1 uses, and an exemption for a file that declares a
+ * security-sensitive export is rejected — the two gates can no longer disagree about what is
+ * security-critical.
+ */
+function tcbMembershipFromExports() {
+  const registry = fs.existsSync(path.join(ROOT, "conformance/ENTRY-POINTS.md")) ? read("conformance/ENTRY-POINTS.md") : "";
+  const required = new Set();
+  for (const row of registry.split("\n")) {
+    const m = /^\| `[^`]+` \| SECURITY_SENSITIVE \|[^|]*\|[^|]*\| `([^`]+)` \|/.exec(row);
+    if (m) required.add(m[1]);
+  }
+  let n = 0;
+  for (const f of required) {
+    if (f in OUT_OF_TCB) {
+      add("L0", f, 0,
+        `exempted from the TCB while declaring a SECURITY_SENSITIVE export (per conformance/ENTRY-POINTS.md). ` +
+        `TCB membership is derived, not chosen — exempting a file is not a way to satisfy L2/L3.`);
+      n++;
+    } else if (!TCB.includes(f)) {
+      add("L0", f, 0, "declares a SECURITY_SENSITIVE export but is not in the TCB list — L2/L3 would not lint it.");
+      n++;
+    }
+  }
+  return n;
+}
+
 function reconcileTCB() {
   const seen = new Set();
   const walk = (dir) => {
@@ -168,7 +255,7 @@ function reconcileTCB() {
     }
   };
   walk("src");
-  let n = 0;
+  let n = tcbMembershipFromExports();
   for (const f of seen) {
     if (!TCB.includes(f) && !(f in OUT_OF_TCB)) {
       add("L0", f, 0,
@@ -211,8 +298,10 @@ function L3() {
 // verdict must be pinned by exact value, and the CLEAN verdict must be pinned too — otherwise a
 // control that rejects everything scores perfectly.
 function L5() {
+  // `.mjs`/`.js` were invisible here while L6 accepted them — the inconsistency WAS the bypass:
+  // renaming counts.test.ts to counts.test.mjs turned this control off.
   const suites = fs.existsSync(path.join(ROOT, "test/security"))
-    ? fs.readdirSync(path.join(ROOT, "test/security")).filter((f) => f.endsWith(".test.ts"))
+    ? fs.readdirSync(path.join(ROOT, "test/security")).filter((f) => /\.test\.(ts|mts|mjs|js)$/.test(f))
     : [];
   let n = 0;
   for (const f of suites) {
@@ -221,7 +310,11 @@ function L5() {
     // learn to ignore, and an ignored gate is the blind gate with extra steps.
     const src = strip(read(p));
     const usesCounts = /\b(accepted|rejected|passCount|failCount|okCount)\s*(\+\+|\+=|=\s*\d)/.test(src);
-    const pinsClean = /clean/i.test(src) && /assert\.(equal|deepEqual|strictEqual)/.test(src);
+    // The old predicate was `/clean/i.test(src) && /assert\.(equal|...)/.test(src)` — ANY identifier
+    // containing "clean" anywhere plus ANY equality assert anywhere. A variable named `cleanup` and
+    // an `assert.equal(1, 1)` satisfied a blocking gate. It now requires the two to be on the SAME
+    // assertion, which is what "pin the clean verdict by exact value" actually means.
+    const pinsClean = /assert\.(equal|deepEqual|strictEqual)\([^;]*\bclean/i.test(src);
     if (usesCounts && !pinsClean) {
       add("L5", p, 0, "compares aggregate counts without pinning the CLEAN verdict by exact value — offsetting flips net to zero (H-03)");
       n++;
@@ -240,20 +333,30 @@ function L6() {
   if (!fs.existsSync(dir)) return 0;
   for (const f of fs.readdirSync(dir).filter((x) => /\.test\.[tm]?[jt]s$/.test(x))) {
     const p = `test/security/${f}`;
-    const src = read(p);
+    // COMMENTS AND STRINGS ARE STRIPPED FIRST. L5 already did this and said why; L6 read the raw
+    // file, so a blocking gate was SATISFIED BY PROSE — one comment line mentioning `fired++`
+    // silenced it with no code change. That is strictly worse than firing on prose.
+    const src = strip(read(p));
     // The RULE is "a self-check must exercise the WHOLE catalogue". The H-03 defect was a self-check
     // that touched element [0] and nothing else. Referencing [0] is fine — as a worked example
     // alongside a whole-catalogue assertion. It is a finding only when the whole-catalogue
     // assertion is ABSENT, which is the rule stated exactly, not softened.
-    const touchesZero = /POISONS\[0\]/.test(src);
-    const iteratesAll = /for\s*\(\s*const\s+\w+\s+of\s+POISONS\s*\)/.test(src);
-    const assertsBite = /(bites|actually bite|poisonActuallyBit|did not take|patched nothing)/i.test(read(p));
+    // Keyed to the SHAPE, not to the identifier `POISONS` — renaming the catalogue turned this off.
+    const catalogue = /\b([A-Z][A-Z0-9_]*)\s*(?::[^=]+)?=\s*\[/.exec(src)?.[1];
+    const touchesZero = catalogue ? new RegExp(`\\b${catalogue}\\[0\\]`).test(src) : /\w+\[0\]!?\.apply\(/.test(src);
+    const iteratesAll = catalogue
+      ? new RegExp(`for\\s*\\(\\s*const\\s+\\w+\\s+of\\s+${catalogue}\\s*\\)`).test(src)
+      : false;
+    // The evidence must be an ASSERTION, not a sentence: searched in stripped source.
+    const assertsBite = /assert\.(ok|equal|deepEqual|strictEqual)\(/.test(src) && /(bite|bites|actually|patched|inert)/i.test(src);
     if (touchesZero && !(iteratesAll && assertsBite)) {
       add("L6", p, 0, "the poison self-check does not exercise the whole catalogue and assert each poison BITES — the H-03 defect verbatim");
       n++;
     }
     const declaresGetter = /get\s*\(\s*\)\s*\{/.test(src) || /defineProperty\([^)]*get[:\s]/.test(src);
-    const countsFires = /(fired|invocations|reads|calls|hits|touched)\s*(\+\+|\+=)/.test(src) || /assert\.ok\(\s*(fired|reads|calls|hits)/.test(src);
+    // Must be real code in stripped source — a counter INCREMENT or an assertion ON the counter.
+    const countsFires = /(fired|invocations|reads|calls|hits|touched)\s*(\+\+|\+=)/.test(src)
+      || /assert\.(ok|equal|deepEqual|strictEqual)\([^;]*\b(fired|invocations|reads|calls|hits|touched)\b/.test(src);
     if (declaresGetter && !countsFires) {
       add("L6", p, 0, "declares a hostile accessor but never asserts it FIRED — the verifyChain entry probe passed while firing zero times (H-03)");
       n++;
@@ -305,7 +408,11 @@ const LINTS = [
   { id: "L0", name: "TCB coverage (every src/ file is classified)", run: reconcileTCB, mode: "block" },
   { id: "L1", name: "boundary (generated entry-point registry)", run: L1, mode: "warn", budget: 21,
     ratchet: "blocks when the bytes-in migration (ADR §3, P3) reaches 0. The registry-staleness half already blocks — see below." },
-  { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "warn", budget: 63,
+  // BUDGET RAISED 63 → 64 on 2026-07-28, and the reason must be legible or this is indistinguishable
+  // from loosening a gate to make a run go green: `src/ingest.ts` MOVED INTO the TCB (it declares
+  // SECURITY_SENSITIVE exports, so L0 now derives its membership rather than accepting my
+  // exemption). The subject set grew by one file; no violation was added and none was forgiven.
+  { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "warn", budget: 64,
     ratchet: "blocks when the decision path stops calling includes/has/HOFs/for-of/regex (ADR §5.5, P3)." },
   { id: "L3", name: "no mutable policy state (module-level tables)", run: L3, mode: "warn", budget: 10,
     ratchet: "blocks when every TCB table is Object.create(null) + deep-frozen at construction (ADR §5.6, P3)." },
