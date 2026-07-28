@@ -9,6 +9,58 @@ All notable changes to `noa-receipt` are documented here. The format follows
 > **NOT RELEASED, NOT PUBLISHED, NO VERSION BUMP.** These land on a feature branch. The two
 > BREAKING items below require a MAJOR release; that decision and its timing are the maintainer's.
 
+### Security (cross-family review ROUND 6, 2026-07-28) — the classes, not the mechanisms
+
+Round 6 returned 4 CRITICAL + 2 HIGH — the third consecutive round with CRITICALs, and every one of
+them the SAME CLASS as a previous round reached through a DIFFERENT MECHANISM. Freeze the data → the
+attacker poisons the prototype the frozen data still inherits. Fix the mutable `Set` here → the
+mutable `Set`s one file over are untouched. Route three entry points → the fourth and fifth are not
+routed. Add a pre-side-effect marker → the marker is forgeable.
+
+So the response is not six fixes. Each finding below states the CLASS-LEVEL PROPERTY that makes the
+class impossible, and each property is enforced by a mechanism that fails closed for code nobody has
+written yet.
+
+- **CRITICAL C1 — the ingest boundary was not inert.** A getter fired *during* ingestion is attacker
+  code running inside the boundary, and it rewrote shared intrinsics. Property: *no decision in the
+  verifier core dispatches through a mutable slot, and no value the boundary produces inherits from
+  anything writable.* Mechanisms: `src/intrinsics.ts` (every builtin captured at module load),
+  `src/inert.ts` (`INERT_ARRAY_PROTOTYPE`, `frozenSet`, `frozenTable`), a rewritten `src/ingest.ts`
+  with no attacker-invocable operation in its control path — in particular no `instanceof`, which
+  walks the thrown value's prototype chain and is how a revoked Proxy escaped as a raw `TypeError`.
+  Enforced by `test/security/intrinsic-poisoning.test.ts`: ~70 poisons × every entry point × every
+  fixture, requiring that no poison can loosen a verdict.
+- **CRITICAL C2 — the fourth and fifth entry points.** `verifyArtifact` (published, un-routed) and
+  `verifyChainWitnessed`. Property: *every exported function that takes caller evidence is routed,
+  and that is measured rather than asserted.* Mechanism: `test/security/entry-point-registry.ts`
+  classifies all 49 exports with a written reason; the coverage test reconciles the registry against
+  the real export surface in both directions and PROBES every `ingests` classification (a counting
+  getter must fire at most once; a revoked-proxy throw must not escape raw).
+- **CRITICAL C3 — the mutable-table class was fixed in one file only.** Property: *policy state
+  cannot be constructed mutable.* Mechanism: `frozenTable` throws at module-evaluation time on a
+  `Set`/`Map`/accessor/class instance, plus a walker over every exported value of every package that
+  catches tables which never went through it. That walker found a third file: the §6 `ARTIFACTS`
+  authority table (which signer type and role each spec requires) was entirely unfrozen.
+- **CRITICAL C4 — the pre-side-effect marker was forgeable.** Removed rather than authenticated: the
+  gate must hand a token TO the tool for the tool to return it, so no token can prove a fact only the
+  judged party can observe. Property: *once `execute()` has been invoked, the gate never reports a
+  retry-safe outcome.* Enforced by exhaustive reachability over the transition graph and by the tool's
+  entire observable vocabulary at the gate. `{ ok: false }` was the same class through a different
+  mechanism and is closed with it.
+- **HIGH H1 — the signed COSE kid was decoded lossily.** Property: *no byte→string lift on the COSE
+  path may be lossy, in either direction.* Verifier and producer both require a byte round-trip; a
+  directory grep keeps the next field from bypassing it.
+- **HIGH H2 — two tests codified unsafe behaviour.** `verifyReceiptCompliance` was the only verifier
+  in the repository that returned a positive result with NO trust root. Property: *no trust root, no
+  positive verdict* — matching `verifyChain` (UNVERIFIED) and `verifyEvidence` (F7a). A re-sweep of
+  all 84 test files under the reviewer's standard also closed a relay omission-bypass (deleting
+  `delegation.tenant` skipped the cross-tenant guard) and left two families reported-not-fixed with
+  their proof and blast radius.
+
+Three defects were found by the new mechanisms rather than by a reviewer: a poisonable
+`Array.prototype.push` in error accumulation (`errors.length === 0` is a verdict), a poisonable
+`Date.parse` in the evidence steps, and the unfrozen `ARTIFACTS` table.
+
 ### Security (cross-family review ROUND 4, 2026-07-27) — boundaries, not more patches
 
 Round 4 returned 0 CRITICAL / 3 HIGH, and all three continued classes earlier rounds had declared

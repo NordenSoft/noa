@@ -189,6 +189,32 @@ truth or safety.
   *live JS objects* directly to the in-process API should pre-parse via `verifyChainText` / `JSON.parse`
   (the immune path). New same-class in-process-getter findings are tracked and fixed, not gated on.
 
+  **Update (review #6, 2026-07-28) — the class was NOT closed by snapshotting, and the paragraph above
+  was too optimistic.** Reading a hostile object necessarily RUNS the attacker's code (a getter, a
+  Proxy trap), and `structuredClone` closed only the flipping half. A getter fired *during* ingestion
+  could rewrite a shared intrinsic — `Array.prototype.includes = () => true`, `Set.prototype.has = () =>
+  false`, `Array.prototype.find = () => attackerHead` — and the snapshot that came back was frozen,
+  accessor-free and completely honest while the DECISION taken over it was attacker-controlled,
+  because membership resolved through a globally-mutable slot. Three verdicts flipped that way.
+
+  What now holds, and how it is measured:
+  * every builtin the verifier core uses is captured at module load (`src/intrinsics.ts`) and called
+    through a captured `Reflect.apply`, so a decision never dispatches through a mutable slot;
+  * every snapshot node is inert — objects are null-prototype, arrays are re-rooted onto a frozen,
+    null-rooted prototype carrying pristine methods and a self-contained iterator, so nothing the
+    boundary produces inherits from anything writable;
+  * policy tables are built with `frozenTable`, which REFUSES a `Set`/`Map`/accessor at construction;
+  * `test/security/intrinsic-poisoning.test.ts` asserts the class property over every entry point,
+    every fixture and ~70 poisoned intrinsics: **no mutation of any shared intrinsic may make a
+    verdict more permissive.**
+
+  **The residual, stated plainly.** This library captures its intrinsics when its own modules are
+  evaluated. A HOST APPLICATION that mutates an intrinsic in a module evaluated BEFORE `noa-receipt`
+  is outside that boundary and defeats it — the capture is honest but it captures whatever was there.
+  Nothing in a library can fix that; it is a property of the host's module graph. Callers embedding
+  this in an environment that loads untrusted code should either load `noa-receipt` first or run the
+  verifier in a separate realm.
+
 ## Clean-room / scope boundary (why this is safe to open-source)
 
 This repository is the **governance/receipt organ only**. It must never contain NOA-brain
