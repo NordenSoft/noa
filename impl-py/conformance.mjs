@@ -17,12 +17,24 @@ import { receiptHashInput, checkpointHashInput } from "../dist/src/canonicalize.
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "../dist/src/signing.js";
 import { verifyChain, verifyChainText, complianceCommit } from "../dist/src/index.js";
 import { safeParse } from "../dist/src/safe-json.js";
-import { writeFileSync, mkdtempSync } from "node:fs";
+import { writeFileSync, readFileSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
 const dir = mkdtempSync(join(tmpdir(), "noa-conf-"));
+
+/**
+ * Documents are BYTES on both sides now (ADR §3.1), and that removes an asymmetry this harness
+ * existed to eliminate but could not: the Python verifier always read a FILE, while the TypeScript
+ * side was handed a live JavaScript value. Two implementations agreeing on "the same document" while
+ * one of them never touched the bytes is a weaker claim than it looks — most of this file's history
+ * is divergences that lived in exactly that gap (a lenient base64, a duplicate key, a non-canonical
+ * SPKI). `bytesOf` feeds TypeScript the SAME FILE Python is given, byte for byte.
+ */
+const enc = new TextEncoder();
+const b = (v) => enc.encode(JSON.stringify(v));
+const bytesOf = (p) => new Uint8Array(readFileSync(p));
 const kp = generateKeyPair("agent-key-1");
 
 function mk(seq, prev) {
@@ -141,7 +153,7 @@ function structParity(label, mutate) {
   const p = join(dir, `struct-${label.replace(/[^a-z0-9]+/gi, "-")}.json`);
   writeFileSync(p, JSON.stringify([m]));
   // TS reference must call it MALFORMED…
-  const tsStatus = verifyChain([m], { keyring }).status;
+  const tsStatus = verifyChain(b([m]), { keyring: b(keyring) }).status;
   const tsOk = tsStatus === "MALFORMED";
   console.log(`${tsOk ? "✓" : "✗"} ${label} [TS verifyChain]: ${tsStatus} (want MALFORMED)`);
   if (!tsOk) failures++;
@@ -183,7 +195,7 @@ function structParity(label, mutate) {
   writeFileSync(cpRHPath, JSON.stringify(bobCp));
 
   // TS reference must return UNTRUSTED (not VALID).
-  const tsRH = verifyChain([a0, b1], { keyring: krRH, checkpoint: bobCp, identityManifest: manRH });
+  const tsRH = verifyChain(b([a0, b1]), { keyring: b(krRH), checkpoint: b(bobCp), identityManifest: b(manRH) });
   const tsRHok = tsRH.status === "UNTRUSTED" && tsRH.tailChecked === false;
   console.log(`${tsRHok ? "✓" : "✗"} UNTRUSTED (re-heading truncation, genesis-binding) [TS verifyChain]: ${tsRH.status} tailChecked=${tsRH.tailChecked} (want UNTRUSTED / false)`);
   if (!tsRHok) failures++;
@@ -198,7 +210,7 @@ function structParity(label, mutate) {
   const goodCpPath = join(dir, "cp-rh-good.json");
   writeFileSync(legitPath, JSON.stringify([la0, la1]));
   writeFileSync(goodCpPath, JSON.stringify(goodCp));
-  const tsLegit = verifyChain([la0, la1], { keyring: krRH, checkpoint: goodCp, identityManifest: manRH });
+  const tsLegit = verifyChain(b([la0, la1]), { keyring: b(krRH), checkpoint: b(goodCp), identityManifest: b(manRH) });
   const tsLegitOk = tsLegit.status === "VALID" && tsLegit.tailChecked === true;
   console.log(`${tsLegitOk ? "✓" : "✗"} VALID    (legit opener checkpoint, no false-positive) [TS verifyChain]: ${tsLegit.status} tailChecked=${tsLegit.tailChecked} (want VALID / true)`);
   if (!tsLegitOk) failures++;
@@ -234,7 +246,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   }, null, { kid: kp.kid, privateKey: kp.privateKey });
   const compPath = join(dir, "compliance.json");
   writeFileSync(compPath, JSON.stringify([cr]));
-  const tsComp = verifyChain([cr], { keyring }).status;
+  const tsComp = verifyChain(b([cr]), { keyring: b(keyring) }).status;
   const tsCompOk = tsComp === "VALID";
   console.log(`${tsCompOk ? "✓" : "✗"} VALID    (B4 compliance receipt w/ verdict) [TS verifyChain]: ${tsComp} (want VALID)`);
   if (!tsCompOk) failures++;
@@ -254,7 +266,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   malleated.sig.value = Buffer.concat([sb.subarray(0, 32), spb]).toString("base64");
   const malPath = join(dir, "malleated.json");
   writeFileSync(malPath, JSON.stringify([malleated]));
-  const tsMal = verifyChain([malleated], { keyring }).status;
+  const tsMal = verifyChain(b([malleated]), { keyring: b(keyring) }).status;
   const tsMalOk = tsMal === "TAMPERED";
   console.log(`${tsMalOk ? "✓" : "✗"} TAMPERED (Ed25519 S-malleability, S+L) [TS verifyChain]: ${tsMal} (want TAMPERED)`);
   if (!tsMalOk) failures++;
@@ -264,7 +276,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   nc.sig.value = r0.sig.value.slice(0, 4) + " " + r0.sig.value.slice(4);
   const ncPath = join(dir, "noncanon-b64.json");
   writeFileSync(ncPath, JSON.stringify([nc]));
-  const tsNc = verifyChain([nc], { keyring }).status;
+  const tsNc = verifyChain(b([nc]), { keyring: b(keyring) }).status;
   const tsNcOk = tsNc === "TAMPERED";
   console.log(`${tsNcOk ? "✓" : "✗"} TAMPERED (non-canonical base64 sig) [TS verifyChain]: ${tsNc} (want TAMPERED)`);
   if (!tsNcOk) failures++;
@@ -279,7 +291,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   // non-object keyring up front (verify.ts), so BOTH reach MALFORMED, and BOTH sides are asserted here.)
   const listKrPath = join(dir, "keyring-list.json");
   writeFileSync(listKrPath, JSON.stringify([kp.publicKey]));
-  const tsListKr = verifyChain(chain, { keyring: [kp.publicKey] }).status;
+  const tsListKr = verifyChain(bytesOf(chainPath), { keyring: bytesOf(listKrPath) }).status;
   const tsListKrOk = tsListKr === "MALFORMED";
   console.log(`${tsListKrOk ? "✓" : "✗"} MALFORMED (keyring is a JSON list, not an object) [TS verifyChain]: ${tsListKr} (want MALFORMED)`);
   if (!tsListKrOk) failures++;
@@ -290,7 +302,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   const ncKr = { [kp.kid]: kp.publicKey.slice(0, 4) + " " + kp.publicKey.slice(4) };
   const ncKrPath = join(dir, "keyring-noncanon.json");
   writeFileSync(ncKrPath, JSON.stringify(ncKr));
-  const tsNcKr = verifyChain(chain, { keyring: ncKr }).status;
+  const tsNcKr = verifyChain(bytesOf(chainPath), { keyring: bytesOf(ncKrPath) }).status;
   const tsNcKrOk = tsNcKr === "TAMPERED";
   console.log(`${tsNcKrOk ? "✓" : "✗"} TAMPERED (non-canonical keyring SPKI base64) [TS verifyChain]: ${tsNcKr} (want TAMPERED)`);
   if (!tsNcKrOk) failures++;
@@ -312,7 +324,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
     tb.sig.value = trailing;
     const tbPath = join(dir, "trailing-bits-sig.json");
     writeFileSync(tbPath, JSON.stringify([tb]));
-    const tsTb = verifyChain([tb], { keyring }).status;
+    const tsTb = verifyChain(b([tb]), { keyring: b(keyring) }).status;
     const tsTbOk = tsTb === "TAMPERED";
     console.log(`${tsTbOk ? "✓" : "✗"} TAMPERED (trailing-bits non-canonical sig base64) [TS verifyChain]: ${tsTb} (want TAMPERED)`);
     if (!tsTbOk) failures++;
@@ -329,7 +341,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   const bigText = JSON.stringify([r0]).replace('"seq":0', '"seq":9007199254740993');
   const bigPath = join(dir, "oversized-int.json");
   writeFileSync(bigPath, bigText);
-  const tsBig = verifyChainText(bigText, { keyring }).status;
+  const tsBig = verifyChainText(bigText, { keyring: b(keyring) }).status;
   const tsBigOk = tsBig === "MALFORMED";
   console.log(`${tsBigOk ? "✓" : "✗"} MALFORMED (oversized int > 2^53-1, strict parse) [TS verifyChainText]: ${tsBig} (want MALFORMED)`);
   if (!tsBigOk) failures++;
@@ -338,7 +350,7 @@ structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts =
   const nanText = JSON.stringify([r0]).replace('"seq":0', '"seq":NaN');
   const nanPath = join(dir, "nan-literal.json");
   writeFileSync(nanPath, nanText);
-  const tsNan = verifyChainText(nanText, { keyring }).status;
+  const tsNan = verifyChainText(nanText, { keyring: b(keyring) }).status;
   const tsNanOk = tsNan === "MALFORMED";
   console.log(`${tsNanOk ? "✓" : "✗"} MALFORMED (NaN literal, strict parse) [TS verifyChainText]: ${tsNan} (want MALFORMED)`);
   if (!tsNanOk) failures++;
@@ -364,7 +376,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
   cpU.sig.value = signEd25519(kp.privateKey, signingMessage(CHECKPOINT_SIG_DOMAIN, checkpointHashInput(cpU)));
   const cpUPath = join(dir, "cp-unicode-digits.json");
   writeFileSync(cpUPath, JSON.stringify(cpU));
-  const tsCpU = verifyChain(chain, { keyring, checkpoint: cpU }).status;
+  const tsCpU = verifyChain(bytesOf(chainPath), { keyring: bytesOf(keyringPath), checkpoint: b(cpU) }).status;
   const tsCpUOk = tsCpU === "TAMPERED";
   console.log(`${tsCpUOk ? "✓" : "✗"} TAMPERED (Unicode-digit checkpoint ts) [TS verifyChain]: ${tsCpU} (want TAMPERED)`);
   if (!tsCpUOk) failures++;
@@ -417,7 +429,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
   const nullIdentPath = join(dir, "identity-null.json");
   writeFileSync(nullIdentPath, "null");
   // TS in-process: passing identityManifest:null is "present but not an object" → MALFORMED.
-  const tsNullId = verifyChain(chain, { keyring, identityManifest: null }).status;
+  const tsNullId = verifyChain(bytesOf(chainPath), { keyring: bytesOf(keyringPath), identityManifest: bytesOf(nullIdentPath) }).status;
   const tsNullIdOk = tsNullId === "MALFORMED";
   console.log(`${tsNullIdOk ? "✓" : "✗"} MALFORMED (identity provided as null) [TS verifyChain]: ${tsNullId} (want MALFORMED)`);
   if (!tsNullIdOk) failures++;
@@ -425,7 +437,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
 
   const nullCpPath = join(dir, "checkpoint-null.json");
   writeFileSync(nullCpPath, "null");
-  const tsNullCp = verifyChain(chain, { keyring, checkpoint: null }).status;
+  const tsNullCp = verifyChain(bytesOf(chainPath), { keyring: bytesOf(keyringPath), checkpoint: bytesOf(nullCpPath) }).status;
   // checkpoint:null → opts.checkpoint !== undefined is TRUE → the non-object guard → MALFORMED.
   const tsNullCpOk = tsNullCp === "MALFORMED";
   console.log(`${tsNullCpOk ? "✓" : "✗"} MALFORMED (checkpoint provided as null) [TS verifyChain]: ${tsNullCp} (want MALFORMED)`);
@@ -441,7 +453,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
 {
   const arrCpPath = join(dir, "checkpoint-array.json");
   writeFileSync(arrCpPath, "[]");
-  const tsArrCp = verifyChain(chain, { keyring, checkpoint: [] }).status;
+  const tsArrCp = verifyChain(bytesOf(chainPath), { keyring: bytesOf(keyringPath), checkpoint: bytesOf(arrCpPath) }).status;
   const tsArrCpOk = tsArrCp === "MALFORMED";
   console.log(`${tsArrCpOk ? "✓" : "✗"} MALFORMED (checkpoint is a JSON array, not an object) [TS verifyChain]: ${tsArrCp} (want MALFORMED)`);
   if (!tsArrCpOk) failures++;
@@ -449,7 +461,7 @@ structParity("MALFORMED (Unicode digits in approval.at)", (m) => { m.governance.
 
   const numCpPath = join(dir, "checkpoint-number.json");
   writeFileSync(numCpPath, "7");
-  const tsNumCp = verifyChain(chain, { keyring, checkpoint: 7 }).status;
+  const tsNumCp = verifyChain(bytesOf(chainPath), { keyring: bytesOf(keyringPath), checkpoint: bytesOf(numCpPath) }).status;
   const tsNumCpOk = tsNumCp === "MALFORMED";
   console.log(`${tsNumCpOk ? "✓" : "✗"} MALFORMED (checkpoint is a JSON number, not an object) [TS verifyChain]: ${tsNumCp} (want MALFORMED)`);
   if (!tsNumCpOk) failures++;
@@ -478,7 +490,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   reseal(ok128);
   const ok128Path = join(dir, "astral-id-128.json");
   writeFileSync(ok128Path, JSON.stringify([ok128]));
-  const tsOk128 = verifyChain([ok128], { keyring }).status;
+  const tsOk128 = verifyChain(b([ok128]), { keyring: b(keyring) }).status;
   const tsOk128Ok = tsOk128 === "VALID";
   console.log(`${tsOk128Ok ? "✓" : "✗"} VALID    (id = 128 astral chars = 128 code points, code-point cap) [TS verifyChain]: ${tsOk128} (want VALID)`);
   if (!tsOk128Ok) failures++;
@@ -490,7 +502,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   reseal(bad129);
   const bad129Path = join(dir, "astral-id-129.json");
   writeFileSync(bad129Path, JSON.stringify([bad129]));
-  const tsBad129 = verifyChain([bad129], { keyring }).status;
+  const tsBad129 = verifyChain(b([bad129]), { keyring: b(keyring) }).status;
   const tsBad129Ok = tsBad129 === "MALFORMED";
   console.log(`${tsBad129Ok ? "✓" : "✗"} MALFORMED (id = 129 astral chars = 129 code points, over cap) [TS verifyChain]: ${tsBad129} (want MALFORMED)`);
   if (!tsBad129Ok) failures++;
@@ -521,7 +533,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
     const loKr = { [kp.kid]: rawToSpkiB64(rawHex) };
     const loKrPath = join(dir, `keyring-low-order-${i}.json`);
     writeFileSync(loKrPath, JSON.stringify(loKr));
-    const tsLo = verifyChain(chain, { keyring: loKr }).status;
+    const tsLo = verifyChain(bytesOf(chainPath), { keyring: b(loKr) }).status;
     const tsLoOk = tsLo === "TAMPERED";
     console.log(`${tsLoOk ? "✓" : "✗"} TAMPERED (low-order pubkey #${i} in keyring) [TS verifyChain]: ${tsLo} (want TAMPERED)`);
     if (!tsLoOk) failures++;
@@ -532,7 +544,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   const ncLoKr = { [kp.kid]: rawToSpkiB64("eeffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f") };
   const ncLoKrPath = join(dir, "keyring-noncanon-low-order.json");
   writeFileSync(ncLoKrPath, JSON.stringify(ncLoKr));
-  const tsNcLo = verifyChain(chain, { keyring: ncLoKr }).status;
+  const tsNcLo = verifyChain(bytesOf(chainPath), { keyring: b(ncLoKr) }).status;
   const tsNcLoOk = tsNcLo === "TAMPERED";
   console.log(`${tsNcLoOk ? "✓" : "✗"} TAMPERED (non-canonical y≥q low-order pubkey in keyring) [TS verifyChain]: ${tsNcLo} (want TAMPERED)`);
   if (!tsNcLoOk) failures++;
@@ -558,7 +570,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   const swapKrPath = join(dir, "key-swap-keyring.json");
   writeFileSync(swapPath, JSON.stringify(swapChain));
   writeFileSync(swapKrPath, JSON.stringify(swapKeyring));
-  const tsSwap = verifyChain(swapChain, { keyring: swapKeyring }).status;
+  const tsSwap = verifyChain(b(swapChain), { keyring: b(swapKeyring) }).status;
   const tsSwapOk = tsSwap === "TAMPERED";
   console.log(`${tsSwapOk ? "✓" : "✗"} TAMPERED (key swap mid-chain, resigned, same agent.id) [TS verifyChain]: ${tsSwap} (want TAMPERED)`);
   if (!tsSwapOk) failures++;
@@ -587,7 +599,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   const driftPath = join(dir, "tenant-drift.json");
   writeFileSync(driftPath, JSON.stringify([t0, t1]));
 
-  const tsDrift = verifyChain([t0, t1], { keyring }).status;
+  const tsDrift = verifyChain(b([t0, t1]), { keyring: b(keyring) }).status;
   const tsDriftOk = tsDrift === "TAMPERED";
   console.log(`${tsDriftOk ? "✓" : "✗"} TAMPERED (scope.tenant drifts mid-chain — fail-closed DEFAULT) [TS verifyChain]: ${tsDrift} (want TAMPERED)`);
   if (!tsDriftOk) failures++;
@@ -595,7 +607,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
 
   // ...and the documented opt-out must restore the previous verdict on the SAME bytes, so the
   // migration path is a tested claim rather than a promise in a changelog.
-  const tsOptOut = verifyChain([t0, t1], { keyring, requireTenantConsistency: false }).status;
+  const tsOptOut = verifyChain(b([t0, t1]), { keyring: b(keyring), requireTenantConsistency: false }).status;
   const tsOptOutOk = tsOptOut === "VALID";
   console.log(`${tsOptOutOk ? "✓" : "✗"} VALID (same bytes, requireTenantConsistency:false — the migration path) [TS verifyChain]: ${tsOptOut} (want VALID)`);
   if (!tsOptOutOk) failures++;
@@ -626,7 +638,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   const s2 = mkT2(2, "globex", s1);
   const splicePath = join(dir, "tenant-splice-via-absent.json");
   writeFileSync(splicePath, JSON.stringify([s0, s1, s2]));
-  const tsSplice = verifyChain([s0, s1, s2], { keyring }).status;
+  const tsSplice = verifyChain(b([s0, s1, s2]), { keyring: b(keyring) }).status;
   const tsSpliceOk = tsSplice === "TAMPERED";
   console.log(`${tsSpliceOk ? "✓" : "✗"} TAMPERED (scope.tenant acme -> absent -> globex, omission must not reset the tenant boundary) [TS verifyChain]: ${tsSplice} (want TAMPERED)`);
   if (!tsSpliceOk) failures++;
@@ -639,7 +651,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   const g2 = mkT2(2, "acme", g1);
   const okPath = join(dir, "tenant-omission-same-tenant.json");
   writeFileSync(okPath, JSON.stringify([g0, g1, g2]));
-  const tsOmit = verifyChain([g0, g1, g2], { keyring }).status;
+  const tsOmit = verifyChain(b([g0, g1, g2]), { keyring: b(keyring) }).status;
   const tsOmitOk = tsOmit === "VALID";
   console.log(`${tsOmitOk ? "✓" : "✗"} VALID (scope.tenant acme -> absent -> acme, an optional field may come and go) [TS verifyChain]: ${tsOmit} (want VALID)`);
   if (!tsOmitOk) failures++;
@@ -657,7 +669,7 @@ expect("USAGE (--identity is the last token, no keyring) [PY verifier]", pyVerif
   tenantBad.sig.value = signEd25519(kp.privateKey, signingMessage(RECEIPT_SIG_DOMAIN, tHi));
   const tenantPath = join(dir, "tenant-bad-type.json");
   writeFileSync(tenantPath, JSON.stringify([tenantBad]));
-  const tsTenant = verifyChain([tenantBad], { keyring }).status;
+  const tsTenant = verifyChain(b([tenantBad]), { keyring: b(keyring) }).status;
   const tsTenantOk = tsTenant === "MALFORMED";
   console.log(`${tsTenantOk ? "✓" : "✗"} MALFORMED (scope.tenant is a number, not a string) [TS verifyChain]: ${tsTenant} (want MALFORMED)`);
   if (!tsTenantOk) failures++;
