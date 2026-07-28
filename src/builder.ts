@@ -7,6 +7,7 @@ import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./sig
 import { validateReceiptShapeParsed } from "./schema.js";
 import { nonNfcPaths, isNFC } from "./nfc.js";
 import { isSha256Hash, isRfc3339 } from "./scan.js";
+import { arrayPush } from "./intrinsics.js";
 
 export interface Signer {
   kid: string;
@@ -203,18 +204,18 @@ export async function buildReceiptAsync(input: BuildInput, prev: Receipt | null,
  */
 function checkpointDraftErrors(cp: Checkpoint): string[] {
   const errors: string[] = [];
-  if (cp.spec !== "noa.checkpoint/0.1") errors.push('checkpoint.spec: must be "noa.checkpoint/0.1"');
-  if (typeof cp.chain !== "string" || cp.chain.length === 0) errors.push("checkpoint.chain: non-empty string");
+  if (cp.spec !== "noa.checkpoint/0.1") arrayPush(errors, 'checkpoint.spec: must be "noa.checkpoint/0.1"');
+  if (typeof cp.chain !== "string" || cp.chain.length === 0) arrayPush(errors, "checkpoint.chain: non-empty string");
   if (typeof cp.highestSeq !== "number" || !Number.isSafeInteger(cp.highestSeq) || cp.highestSeq < 0)
-    errors.push("checkpoint.highestSeq: non-negative safe integer");
+    arrayPush(errors, "checkpoint.highestSeq: non-negative safe integer");
   if (typeof cp.headHash !== "string" || !isSha256Hash(cp.headHash))
-    errors.push("checkpoint.headHash: sha256:<64 hex>");
+    arrayPush(errors, "checkpoint.headHash: sha256:<64 hex>");
   if (typeof cp.ts !== "string" || !isRfc3339(cp.ts))
-    errors.push("checkpoint.ts: must be RFC 3339 UTC timestamp");
-  if (cp.sig.alg !== "ed25519") errors.push('checkpoint.sig.alg: must be "ed25519"');
-  if (typeof cp.sig.kid !== "string" || cp.sig.kid.length === 0) errors.push("checkpoint.sig.kid: non-empty string");
+    arrayPush(errors, "checkpoint.ts: must be RFC 3339 UTC timestamp");
+  if (cp.sig.alg !== "ed25519") arrayPush(errors, 'checkpoint.sig.alg: must be "ed25519"');
+  if (typeof cp.sig.kid !== "string" || cp.sig.kid.length === 0) arrayPush(errors, "checkpoint.sig.kid: non-empty string");
   if (typeof cp.sig.value !== "string" || cp.sig.value.length === 0)
-    errors.push("checkpoint.sig.value: non-empty string");
+    arrayPush(errors, "checkpoint.sig.value: non-empty string");
   return errors;
 }
 

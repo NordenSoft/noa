@@ -5,6 +5,7 @@
  * head encoding, map keys sorted by their encoded bytes. We own the bytes so a real COSE library
  * and NOA agree exactly (proven by cross-implementation conformance, not assertion).
  */
+import { arrayPush } from "../intrinsics.js";
 
 export class CborError extends Error {
   constructor(m: string) {
@@ -138,7 +139,9 @@ function decodeAt(c: Cur, depth: number): CborValue {
     }
     case 4: {
       const arr: CborValue[] = [];
-      for (let k = 0; k < n; k++) arr.push(decodeAt(c, depth + 1));
+      // Captured push: see src/safe-json.ts — a poisoned `Array.prototype.push` silently empties
+      // every decoded CBOR array, and `decode` is a security-sensitive entry point.
+      for (let k = 0; k < n; k++) arrayPush(arr, decodeAt(c, depth + 1));
       return { t: "array", v: arr };
     }
     case 5: {
@@ -156,7 +159,7 @@ function decodeAt(c: Cur, depth: number): CborValue {
         }
         prevKeyBytes = keyBytes;
         const val = decodeAt(c, depth + 1);
-        m.push([key, val]);
+        arrayPush(m, [key, val] as [CborValue, CborValue]);
       }
       return { t: "map", v: m };
     }
