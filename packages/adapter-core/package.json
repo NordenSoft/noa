@@ -56,6 +56,6 @@
     "prepublishOnly": "npm test"
   },
   "dependencies": {
-    "noa-receipt": "^0.5.0"
+    "noa-receipt": "file:../.."
   }
 }

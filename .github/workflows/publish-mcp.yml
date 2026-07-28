@@ -57,6 +57,17 @@ jobs:
       - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1; pin 11.x — npm 12 needs node 22+)
         run: npm install -g npm@11.18.0
 
+      - name: Build the root kernel (adapter-core and signer-sidecar link it via file:../..)
+        # Both packages resolve `noa-receipt` from THIS repository tree, not from the registry, so
+        # that their suites measure the kernel being released rather than a previously published
+        # copy of it. `npm ci` in those packages only creates the symlink — `import "noa-receipt"`
+        # then resolves through the root's `main: dist/src/index.js`, which exists only after this
+        # build. Without this step every adapter-core test fails with an unresolvable import.
+        # Keep it BEFORE the package test gates below; do not move it later.
+        run: |
+          npm ci
+          npm run build
+
       - name: Gate — packages are versioned in lockstep and (on a tag run) the tag matches
         # The two packages release together under one mcp-v* tag. A mistagged push (tag says
         # 0.2.0, package.json still 0.1.0) would otherwise publish stale or duplicate versions,
@@ -87,8 +98,9 @@ jobs:
       - name: signer-sidecar deps + test gate (mcp-proxy's --signer-socket smoke spawns it)
         # signer-sidecar is NOT published this release (it is mcp-proxy's OPTIONAL dependency), but
         # mcp-proxy's own smoke test (Bonus S/T) spawns packages/signer-sidecar/src/sidecar.mjs,
-        # which needs signer-sidecar's own node_modules (noa-mcp-adapter-core via file:, noa-receipt
-        # from the registry). Must run AFTER adapter-core's npm ci populated the file: link target.
+        # which needs signer-sidecar's own node_modules (noa-mcp-adapter-core and noa-receipt, both
+        # via file:). Must run AFTER adapter-core's npm ci populated the file: link target, and
+        # after the root build — the noa-receipt link resolves through the root's dist/.
         working-directory: packages/signer-sidecar
         run: |
           npm ci
@@ -110,6 +122,33 @@ jobs:
 
       - name: Lint the published surface — mcp-proxy (K4 internal-process jargon + K5 security-marketing claims)
         run: node scripts/lint-published-surface.mjs --dir packages/mcp-proxy
+
+      - name: Point adapter-core at the published noa-receipt registry version
+        # adapter-core declares `noa-receipt: file:../..` so its tests measure THIS repository's
+        # kernel. The published tarball must depend on the registry package instead — a consumer
+        # who installed `file:../..` would resolve it against their own tree and get garbage or an
+        # install failure. The version is read from the root package.json, NOT hardcoded.
+        #
+        # FAIL-CLOSED ON AN UNPUBLISHED KERNEL: if the root version is not on the registry, this
+        # would ship a dependency nobody can install. That happens exactly when the kernel has been
+        # changed but not released — so the correct action is to release the kernel first, never to
+        # publish adapter-core pointing at a version that does not exist.
+        working-directory: packages/adapter-core
+        run: |
+          KV="$(node -p "require('../../package.json').version")"
+          if [ -z "$(npm view "noa-receipt@$KV" version 2>/dev/null || true)" ]; then
+            echo "::error::noa-receipt@$KV is not on the registry. Publishing adapter-core with a"
+            echo "::error::dependency on ^$KV would ship an uninstallable package. Release the"
+            echo "::error::kernel first, then re-run this workflow."
+            exit 1
+          fi
+          npm pkg set "dependencies.noa-receipt=^$KV"
+
+      - name: Prove adapter-core's TARBALL carries no local-path dependency
+        # The rewrites above are write-only operations; nothing until now confirmed they took
+        # effect, covered every dependency, or survived a newly added local dep. This packs the
+        # exact bytes npm would upload and reads the manifest out of the tarball.
+        run: node scripts/lint-publish-tarball-deps.mjs --dir packages/adapter-core
 
       - name: Publish adapter-core to npm via OIDC (no token, with provenance)
         # Skip-if-published makes a rerun after a partial failure safe: if adapter-core landed
@@ -146,6 +185,13 @@ jobs:
         run: |
           SV="$(node -p "require('../signer-sidecar/package.json').version")"
           npm pkg set "optionalDependencies.noa-signer-sidecar=^$SV"
+
+      - name: Prove mcp-proxy's TARBALL carries no local-path dependency
+        # Covers BOTH rewrites above (the adapter-core dependency and the optional signer-sidecar
+        # one) against the artifact itself rather than against the intent of the steps that wrote
+        # them. optionalDependencies are inspected too: an unusable optional path is skipped at
+        # install time rather than failing loudly, which makes it harder to notice, not safer.
+        run: node scripts/lint-publish-tarball-deps.mjs --dir packages/mcp-proxy
 
       - name: Publish mcp-proxy to npm via OIDC (no token, with provenance)
         # Same skip-if-published rerun guard as adapter-core above.

@@ -37,6 +37,58 @@ jobs:
             npm --prefix "$package_dir" audit --package-lock-only --omit=dev --audit-level=high
           done < <(find . \( -name package-lock.json -o -name npm-shrinkwrap.json \) -not -path '*/node_modules/*' -print | sort)
 
+  dependency-topology:
+    # Every internal package that links the trust kernel must link THIS repository's kernel, not a
+    # registry copy of it. adapter-core and signer-sidecar previously resolved `noa-receipt` from
+    # npm, so their suites measured the PUBLISHED kernel while the local one changed underneath —
+    # a gate reporting health about a different artifact. This job makes that unrepeatable.
+    #
+    # It is a SEPARATE job on purpose: no existing job installs every declaring package, so none of
+    # them can prove resolution across the full inventory. --strict requires exactly that.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install every package that declares the kernel (list derived, never hand-maintained)
+        # The set is computed from the manifests themselves. A hand-written list is how this class
+        # of check rots: someone adds a package with a kernel dependency, nobody updates the list,
+        # and the gate silently stops covering it.
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const {readdirSync,existsSync,readFileSync} = require("node:fs");
+            for (const d of readdirSync("packages",{withFileTypes:true}).filter(e=>e.isDirectory())) {
+              const p = `packages/${d.name}/package.json`;
+              if (!existsSync(p)) continue;
+              const m = JSON.parse(readFileSync(p,"utf8"));
+              const has = ["dependencies","devDependencies","optionalDependencies","peerDependencies"]
+                .some(f => m[f] && m[f]["noa-receipt"] !== undefined);
+              if (has) console.log(d.name);
+            }
+          ' > declaring.txt
+          echo "packages declaring noa-receipt:"; cat declaring.txt
+          while IFS= read -r pkg; do
+            echo "::group::npm ci packages/$pkg"
+            npm --prefix "packages/$pkg" ci
+            echo "::endgroup::"
+          done < declaring.txt
+      - name: DEPENDENCY TOPOLOGY — manifest intent, lockfile record, and resolved reality agree
+        run: node scripts/lint-dependency-topology.mjs --strict
+      - name: Self-test the publish tarball gate (prove it detects local-path deps at all)
+        # The publish workflows rely on this gate to confirm their dependency rewrites took effect.
+        # A gate that has never been observed to fail is not known to be a gate — so on the dev
+        # tree, where local-path deps are correct and expected, it must FIND them.
+        run: |
+          node scripts/lint-publish-tarball-deps.mjs --dir packages/adapter-core --expect-local
+          node scripts/lint-publish-tarball-deps.mjs --dir packages/mcp-proxy --expect-local
+
   extended-package-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -282,9 +334,15 @@ jobs:
       - name: INERT CORE — the vendored ingest boundary is byte-identical to its source
         run: npm run check:inert-core
       - name: adapter-core unit tests (packages/adapter-core)
-        # package-lock.json is committed here — adapter-core now depends on the published
-        # noa-receipt registry package instead of importing the repo's built dist/ directly, so
-        # `npm ci` is correct (and no longer needs the root build step above for this dependency).
+        # adapter-core depends on the kernel via `noa-receipt: file:../..`, so `npm ci` here only
+        # creates the symlink and `import "noa-receipt"` resolves through the root's
+        # `main: dist/src/index.js`. That dist/ exists because this job's earlier `npm test` built
+        # it. Keep this step AFTER that build — do not move it earlier.
+        #
+        # It used to depend on the PUBLISHED noa-receipt instead, which meant this step measured a
+        # registry copy of the kernel rather than the kernel in this commit: during a kernel change
+        # it would report green against code that was no longer here. The dependency-topology job
+        # enforces the local link across every declaring package.
         run: |
           cd packages/adapter-core
           npm ci
@@ -313,11 +371,11 @@ jobs:
           npm test
       - name: tsa-anchor unit tests (packages/tsa-anchor)
         # RFC 3161 DER encode/decode, TimeStampReq/Resp, client self-checks, verifyStamp, CLI.
-        # UNLIKE adapter-core (which uses the PUBLISHED noa-receipt), tsa-anchor depends on the
-        # LOCAL repo via `noa-receipt: file:../..`, so `npm ci` here just symlinks node_modules/
-        # noa-receipt -> the repo root, and `import "noa-receipt"` resolves to the root's built
-        # dist/ (main: dist/src/index.js). That dist/ already exists because the conformance step
-        # above ran `npm run build`. Keep this step AFTER that build — do not move it earlier.
+        # LIKE every other kernel-linking package, tsa-anchor depends on the LOCAL repo via
+        # `noa-receipt: file:../..`, so `npm ci` here just symlinks node_modules/noa-receipt -> the
+        # repo root, and `import "noa-receipt"` resolves to the root's built dist/
+        # (main: dist/src/index.js). That dist/ already exists because the conformance step above
+        # ran `npm run build`. Keep this step AFTER that build — do not move it earlier.
         run: |
           cd packages/tsa-anchor
           npm ci

@@ -49,6 +49,6 @@
   },
   "dependencies": {
     "noa-mcp-adapter-core": "file:../adapter-core",
-    "noa-receipt": "^0.5.0"
+    "noa-receipt": "file:../.."
   }
 }

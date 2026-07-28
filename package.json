@@ -68,6 +68,9 @@
     "lint:security-gates": "node scripts/lint-security-gates.mjs",
     "lint:knockout": "node scripts/lint-control-knockout.mjs",
     "test:r7-exploits": "node scripts/run-r7-exploits.mjs",
+    "lint:topology": "node scripts/lint-dependency-topology.mjs",
+    "lint:topology:strict": "node scripts/lint-dependency-topology.mjs --strict",
+    "lint:tarball-deps": "node scripts/lint-publish-tarball-deps.mjs",
     "security-gates": "npm run lint:dispatch-surfaces && npm run lint:security-gates && npm run test:r7-exploits"
   },
   "devDependencies": {
