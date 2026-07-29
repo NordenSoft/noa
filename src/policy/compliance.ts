@@ -40,7 +40,7 @@ import { validateReceiptShapeParsed } from "../schema.js";
 import { receiptHashInput } from "../canonicalize.js";
 import { verifyEd25519, type Keyring, type IdentityManifest } from "../keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../signing.js";
-import { arrayIncludes, mapGet, mapSet, arraySlice, arrayEvery, objectGetOwnPropertyNames } from "../intrinsics.js";
+import { arrayIncludes, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray } from "../intrinsics.js";
 
 export interface ComplianceCommit {
   policyHash: string;
@@ -193,7 +193,7 @@ export function verifyReceiptCompliance(
     if (haveKeyring) {
       const kParsed = parseDocument(o.keyring, "keyring");
       if (!kParsed.ok) return { ok: false, reason: kParsed.reason };
-      if (typeof kParsed.value !== "object" || kParsed.value === null || Array.isArray(kParsed.value)) {
+      if (typeof kParsed.value !== "object" || kParsed.value === null || isArray(kParsed.value)) {
         return { ok: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
       }
       keyringParsed = kParsed.value as Keyring;
@@ -248,13 +248,13 @@ export function verifyReceiptCompliance(
         const mParsed = parseDocument(o.identityManifest, "identityManifest");
         if (!mParsed.ok) return { ok: false, reason: mParsed.reason };
         const live = mParsed.value;
-        if (typeof live !== "object" || live === null || Array.isArray(live)) {
+        if (typeof live !== "object" || live === null || isArray(live)) {
           return { ok: false, reason: "identityManifest must be an object (agent.id -> kid[])" };
         }
-        const manifest = new Map<string, string[]>();
+        const manifest = newMap<string, string[]>();
         for (const aid of objectGetOwnPropertyNames(live)) {
           const kidsLive = (live as Record<string, unknown>)[aid]; // ONE read of the entry
-          if (!Array.isArray(kidsLive)) {
+          if (!isArray(kidsLive)) {
             return { ok: false, reason: `identityManifest["${aid}"] must be an array of kid strings` };
           }
           const kids = arraySlice(kidsLive) as unknown[]; // copy by value

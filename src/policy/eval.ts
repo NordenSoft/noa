@@ -14,7 +14,7 @@ import type { Policy, Condition, InputSnapshot, Verdict, Scalar } from "./dsl.js
 import { DEFAULT_VERDICT } from "./dsl.js";
 import { validatePolicyParsed } from "./validate.js";
 import { parseDocument } from "../bytes.js";
-import { hasOwn, objectKeys, isSafeInteger } from "../intrinsics.js";
+import { hasOwn, objectKeys, isSafeInteger, arraySome, arrayEvery, arrayLength, isArray } from "../intrinsics.js";
 
 export const REF_EVAL_VERSION = "noa-refeval/0.2" as const;
 
@@ -72,10 +72,14 @@ function cmp(a: Scalar, b: Scalar): number {
 
 function match(c: Condition, inputs: InputSnapshot): boolean {
   switch (c.op) {
+    // CAPTURED (2026-07-29, round-2, R3-05). `c.clauses.every`/`.some` and `c.values.some` below
+    // dispatched through `Array.prototype.{every,some}`; forcing either to `true` made an ALLOW rule
+    // guarded by a false `and`/`or`/`in` fire, flipping the policy verdict DENY -> ALLOW over byte-
+    // identical policy and inputs. Membership/quantifiers now go through the captured wrappers.
     case "and":
-      return c.clauses.every((x) => match(x, inputs));
+      return arrayEvery(c.clauses, (x) => match(x, inputs));
     case "or":
-      return c.clauses.some((x) => match(x, inputs));
+      return arraySome(c.clauses, (x) => match(x, inputs));
     case "not":
       return !match(c.clause, inputs);
     case "exists":
@@ -85,7 +89,7 @@ function match(c: Condition, inputs: InputSnapshot): boolean {
     case "in": {
       const v = ownGet(inputs, c.path);
       if (v === undefined) return false;
-      return c.values.some((x) => {
+      return arraySome(c.values, (x) => {
         assertScalar(x, `rule.in.values`);
         return cmp(v, x) === 0;
       });
@@ -141,7 +145,7 @@ export function evaluateParsed(policy: Policy, inputs: InputSnapshot): EvalResul
     return { verdict: "DENY", ruleFired: "policy-invalid", engine: REF_EVAL_VERSION };
   }
   // input-shape guard: never throw on null/undefined/non-object/array inputs — fail-closed DENY
-  if (typeof inputs !== "object" || inputs === null || Array.isArray(inputs)) {
+  if (typeof inputs !== "object" || inputs === null || isArray(inputs)) {
     return { verdict: "DENY", ruleFired: "input-invalid", engine: REF_EVAL_VERSION };
   }
   try {
@@ -149,15 +153,23 @@ export function evaluateParsed(policy: Policy, inputs: InputSnapshot): EvalResul
     // then (2) input scalar well-formedness, then (3) rule matching. Presence is checked before
     // well-formedness so a missing required path always reports `required-input-absent`, never a
     // value-shape error from some other field.
-    for (const p of policy.requiredPaths) {
+    // Index walks (R3-05): a substituting/skipping `%ArrayIteratorPrototype%.next` could drop a required
+    // path or a rule; the captured `arrayLength` + index read has no iterator dispatch.
+    const rpn = arrayLength(policy.requiredPaths);
+    for (let rpi = 0; rpi < rpn; rpi++) {
+      const p = policy.requiredPaths[rpi]!;
       if (!hasOwn(inputs, p)) {
         return { verdict: "DENY", ruleFired: `required-input-absent:${p}`, engine: REF_EVAL_VERSION };
       }
     }
     // integer-only scalars (no float leakage into the hashed surface)
-    for (const key of objectKeys(inputs)) assertScalar(inputs[key], `input.${key}`);
+    const ikeys = objectKeys(inputs);
+    const ikn = arrayLength(ikeys);
+    for (let iki = 0; iki < ikn; iki++) { const key = ikeys[iki]!; assertScalar(inputs[key], `input.${key}`); }
 
-    for (const rule of policy.rules) {
+    const rn = arrayLength(policy.rules);
+    for (let ri = 0; ri < rn; ri++) {
+      const rule = policy.rules[ri]!;
       if (match(rule.when, inputs)) {
         return { verdict: rule.then, ruleFired: rule.id, engine: REF_EVAL_VERSION };
       }

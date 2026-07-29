@@ -9,7 +9,7 @@
 import { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, type CborValue } from "./cbor.js";
 import { signEd25519, verifyEd25519, type Keyring } from "../keys.js";
 import { parseDocument } from "../bytes.js";
-import { bufEquals, bufToString, bufferFrom, isArray } from "../intrinsics.js";
+import { bufEquals, bufToString, bufferFrom, bufferAlloc, isArray } from "../intrinsics.js";
 
 /**
  * H1 — LIFT A SIGNED BYTE STRING INTO A JS STRING ONLY IF IT ROUND-TRIPS.
@@ -58,13 +58,15 @@ const ALG_ED25519 = -19;
 function protectedHeaderBytes(kid: string): Buffer {
   return encMap([
     [encInt(HDR_ALG), encInt(ALG_ED25519)],
-    [encInt(HDR_KID), encBstr(Buffer.from(kid, "utf8"))],
+    [encInt(HDR_KID), encBstr(bufferFrom(kid, "utf8"))],
   ]);
 }
 
 /** RFC 9052 Sig_structure for COSE_Sign1: [ "Signature1", protected:bstr, external_aad:bstr(empty), payload:bstr ]. */
 function sigStructure(protectedBytes: Buffer, payload: Buffer): Buffer {
-  return encArray([encTstr("Signature1"), encBstr(protectedBytes), encBstr(Buffer.alloc(0)), encBstr(payload)]);
+  // `bufferAlloc`/`encBstr` captured: `sigStructure` runs on the VERIFY path too, so a poisoned
+  // `Buffer.alloc` would change the bytes the signature is checked against.
+  return encArray([encTstr("Signature1"), encBstr(protectedBytes), encBstr(bufferAlloc(0)), encBstr(payload)]);
 }
 
 export interface CoseSigner {
@@ -86,7 +88,7 @@ export function coseSign1(payload: Buffer, signer: CoseSigner): Buffer {
   }
   const prot = protectedHeaderBytes(kid);
   const sigB64 = signEd25519(signer.privateKey, sigStructure(prot, payload));
-  const sig = Buffer.from(sigB64, "base64");
+  const sig = bufferFrom(sigB64, "base64");
   const unprotected = encMap([]); // kid is now SIGNED, in the protected header
   const body = encArray([encBstr(prot), unprotected, encBstr(payload), encBstr(sig)]);
   return encTag(COSE_SIGN1_TAG, body);
@@ -144,7 +146,17 @@ function validateProtectedAlg(protectedBytes: Buffer): ProtectedCheck {
   let alg: number | null = null;
   let critLabels: CborValue | null = null;
   let protectedKid: string | null = null;
-  for (const [k, val] of m.v) {
+  // ── INDEX WALK, BOTH LEVELS (2026-07-29, T19) ───────────────────────────────────────────────────
+  // `for (const [k, val] of m.v)` performed TWO iterator dispatches — one over the pair list, one per
+  // pair when it destructured — and a substituting `Array.prototype[Symbol.iterator]` used the second
+  // to rewrite `alg: -7` to `-19` at CHECK time while the SIGNED bytes still said -7: an envelope
+  // every conforming COSE verifier rejects came back `ok:true, kidAuthenticated:true`. The decoder
+  // now re-roots both levels onto the inert prototype, which closes it at the source; this walk is
+  // the belt to that pair of braces, and it is what L8 can actually see.
+  for (let mi = 0; mi < m.v.length; mi++) {
+    const entry = m.v[mi] as [CborValue, CborValue];
+    const k = entry[0] as CborValue;
+    const val = entry[1] as CborValue;
     if (k.t !== "int") continue; // string/other-typed labels are non-critical → ignore (forward-compat)
     if (k.v === HDR_ALG) {
       if (val.t !== "int") return { ok: false, protectedKid: null, reason: "protected alg (label 1) must be an int" };
@@ -180,7 +192,8 @@ function validateProtectedAlg(protectedBytes: Buffer): ProtectedCheck {
     if (critLabels.t !== "array" || critLabels.v.length === 0) {
       return { ok: false, protectedKid: null, reason: "crit (label 2) must be a non-empty array" };
     }
-    for (const c of critLabels.v) {
+    for (let ci = 0; ci < critLabels.v.length; ci++) {
+      const c = critLabels.v[ci] as CborValue;
       if (!(c.t === "int" && (c.v === HDR_ALG || c.v === HDR_KID))) {
         return { ok: false, protectedKid: null, reason: "unprocessable critical header in crit (label 2) — fail-closed" };
       }
@@ -228,7 +241,10 @@ export function coseSign1VerifyParsed(coseBytes: Uint8Array, keyring: Keyring): 
   // makes us accept a draft-conformant peer that puts kid (label 4) in the protected header.
   let kid: string | null = prot.protectedKid;
   if (kid === null) {
-    for (const [k, val] of u.v) {
+    for (let ui = 0; ui < u.v.length; ui++) {
+      const entry = u.v[ui] as [CborValue, CborValue];
+      const k = entry[0] as CborValue;
+      const val = entry[1] as CborValue;
       if (k.t === "int" && k.v === HDR_KID && val.t === "bstr") {
         // H1 again: the SAME byte-fidelity rule for the unprotected copy. It is unauthenticated
         // either way, but a lossy lift would still collapse distinct peers onto one keyring entry.
@@ -243,7 +259,11 @@ export function coseSign1VerifyParsed(coseBytes: Uint8Array, keyring: Keyring): 
   if (!kid) return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: "no kid (header label 4, protected or unprotected)" };
   const pub = keyring[kid];
   if (!pub) return { ok: false, kid, payload: null, kidAuthenticated: false, reason: `unknown kid "${kid}" not in keyring` };
-  const ok = verifyEd25519(pub, sigStructure(p.v, pl.v), s.v.toString("base64"));
+  // CAPTURED (2026-07-29, round-2, R3-03). `s.v.toString("base64")` was a LIVE `Buffer.prototype.toString`
+  // on the signature bytes, immediately before Ed25519 verify: a rewriting poison substituted a different
+  // base64 string for the one the envelope carried, flipping a rejecting verify to accepting. Routed
+  // through the captured `bufToString` so the string handed to `verifyEd25519` is the envelope's own bytes.
+  const ok = verifyEd25519(pub, sigStructure(p.v, pl.v), bufToString(s.v, "base64"));
   // kidAuthenticated iff the kid came from the PROTECTED (signed) header (H4): a kid present only in
   // the unprotected header verifies the signature but is not covered by it, so its attribution is not
   // authenticated and an identity-binding consumer must refuse to bind an agent to it.

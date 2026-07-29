@@ -81,8 +81,12 @@ test("re-verifying the same bytes always re-derives the same tree (the old 'deep
   const text = `{"a":{"b":[1,2,3]}}`;
   const first = safeParse(text) as { a: { b: number[] } };
   first.a.b[0] = 999; // a caller may do whatever it likes to ITS OWN parse
+  assert.equal(first.a.b[0], 999, "a parse result is the caller's — re-rooting it must not freeze it");
   const second = safeParse(text) as { a: { b: number[] } };
-  assert.deepEqual(second.a.b, [1, 2, 3], "a mutation of one parse must not be visible to the next");
+  // `Array.from` because parsed arrays are re-rooted onto INERT_ARRAY_PROTOTYPE (T19) and
+  // `deepStrictEqual` compares prototypes. The VALUES are what this test is about; the prototype is
+  // asserted directly in test/safe-json.test.ts.
+  assert.deepEqual(Array.from(second.a.b), [1, 2, 3], "a mutation of one parse must not be visible to the next");
 });
 
 test("parsed output is null-rooted: nothing inherited is reachable as data", () => {

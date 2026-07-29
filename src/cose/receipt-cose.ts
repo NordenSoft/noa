@@ -15,11 +15,11 @@ import { validateReceiptShapeParsed } from "../schema.js";
 import { parseDocument } from "../bytes.js";
 import type { Receipt } from "../types.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
-import { arrayIncludes, mapGet, mapSet, arraySlice, arrayEvery, objectGetOwnPropertyNames } from "../intrinsics.js";
+import { arrayIncludes, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray, bufferFrom, bufToString, bufEquals } from "../intrinsics.js";
 
 /** Wrap a receipt as a COSE_Sign1 (CBOR bytes). Payload = JCS-canonical receipt. */
 export function receiptToCose(receipt: Receipt, signer: CoseSigner): Buffer {
-  return coseSign1(Buffer.from(canonicalize(receipt), "utf8"), signer);
+  return coseSign1(bufferFrom(canonicalize(receipt), "utf8"), signer);
 }
 
 export interface ReceiptCoseResult {
@@ -64,7 +64,7 @@ export function receiptFromCose(
   // entry too, BEFORE any manifest work, so a null/array/non-object keyring is a clean ok:false here (not a
   // raw throw on a later `keyring[kid]`). coseSign1Verify guards as well; this keeps THIS entry point's own
   // contract fail-closed with a consistent reason.
-  if (keyring === null || typeof keyring !== "object" || Array.isArray(keyring)) {
+  if (keyring === null || typeof keyring !== "object" || isArray(keyring)) {
     return { ok: false, kid: null, receipt: null, reason: "keyring must be an object (kid -> base64 SPKI)", warnings: [] };
   }
   // Validate the optional manifest AND SNAPSHOT it (fail-closed; matches verifyChain). TOCTOU hardening:
@@ -74,9 +74,9 @@ export function receiptFromCose(
   // enforcement reads from the snapshot, never the live object. (CLI/Python consume JSON.parse output —
   // no accessors — so are immune; this defends the JS in-process API.)
   const haveManifest = identityManifest !== undefined;
-  const manifest = new Map<string, string[]>();
+  const manifest = newMap<string, string[]>();
   if (haveManifest) {
-    if (typeof identityManifest !== "object" || identityManifest === null || Array.isArray(identityManifest)) {
+    if (typeof identityManifest !== "object" || identityManifest === null || isArray(identityManifest)) {
       return { ok: false, kid: null, receipt: null, reason: "identityManifest must be an object (agent.id -> kid[])", warnings: [] };
     }
     // GUARD the manifest read in try/catch: the entries / array elements are caller-supplied LIVE
@@ -86,7 +86,7 @@ export function receiptFromCose(
     try {
       for (const aid of objectGetOwnPropertyNames(identityManifest)) {
         const kidsLive = (identityManifest as Record<string, unknown>)[aid]; // ONE read of the entry
-        if (!Array.isArray(kidsLive)) {
+        if (!isArray(kidsLive)) {
           return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
         }
         const kids = arraySlice(kidsLive) as unknown[]; // copy by value
@@ -103,7 +103,7 @@ export function receiptFromCose(
   if (!r.ok || !r.payload) return { ok: false, kid: r.kid, receipt: null, reason: r.reason, warnings: [] };
   let parsed: unknown;
   try {
-    parsed = safeParse(r.payload.toString("utf8"));
+    parsed = safeParse(bufToString(r.payload, "utf8"));
   } catch (e) {
     return { ok: false, kid: r.kid, receipt: null, reason: `payload parse: ${(e as Error).message}`, warnings: [] };
   }
@@ -114,13 +114,18 @@ export function receiptFromCose(
   // (agentId, ...) are NOT the bytes the signature covers — the verifier would be inventing semantics
   // the signer never attested. Re-canonicalize and require byte-equality with the signed payload; a
   // payload that does not re-canonicalize to itself is rejected (fail-closed).
+  // CAPTURED (2026-07-29, round-2, R3-07). BOTH sides of this canonical-payload equality gate were live:
+  // `Buffer.from(...)` (the re-canonicalized bytes) and `recanon.equals(...)` (the compare). A rewriting
+  // `Buffer.from` or an `equals -> true` poison made a validly-signed but NONCANONICAL payload pass the
+  // byte-equality check as `ok:true`, handing the caller a receipt whose fields are not the signed bytes.
+  // Both routed through captures taken at load.
   let recanon: Buffer;
   try {
-    recanon = Buffer.from(canonicalize(parsed), "utf8");
+    recanon = bufferFrom(canonicalize(parsed), "utf8");
   } catch (e) {
     return { ok: false, kid: r.kid, receipt: null, reason: `payload is not canonicalizable: ${(e as Error).message}`, warnings: [] };
   }
-  if (!recanon.equals(r.payload)) {
+  if (!bufEquals(recanon, r.payload)) {
     return { ok: false, kid: r.kid, receipt: null, reason: "COSE payload is not canonical JCS: it does not re-canonicalize to the signed bytes (non-canonical encoding, or invalid/lossy UTF-8) — the returned receipt would not match the bytes the signature covers", warnings: [] };
   }
   const v = validateReceiptShapeParsed(parsed);

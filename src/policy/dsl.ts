@@ -16,6 +16,7 @@
 
 import { canonicalize } from "../jcs.js";
 import { sha256Prefixed } from "../hash.js";
+import { isArray, setToArray, setAdd, newSet, arraySort } from "../intrinsics.js";
 
 /** Scalars allowed in inputs + policy values. number = safe integer only (no float). */
 export type Scalar = string | number | boolean;
@@ -64,14 +65,21 @@ export function policyHash(p: Policy): string {
  *  `new Set("ab")` → ["a","b"], colliding with `new Set(["a","b"])`. A type-confused policy is
  *  malformed (validatePolicy rejects it); here we still fail safe — a non-array seeds nothing. */
 export function readSet(p: Policy): string[] {
-  const s = new Set<string>(Array.isArray(p.requiredPaths) ? p.requiredPaths : []);
+  const s = newSet<string>(isArray(p.requiredPaths) ? p.requiredPaths : []);
   const walk = (c: Condition): void => {
-    if ("clauses" in c) c.clauses.forEach(walk);
+    // Index walk + captured `setAdd`: this builds the READ-SET that is hashed into `readSetHash`, so
+    // a `forEach` that visits nothing silently shrinks the committed input surface of the policy.
+    if ("clauses" in c) { for (let i = 0; i < c.clauses.length; i++) walk(c.clauses[i] as Condition); }
     else if ("clause" in c) walk(c.clause);
-    else if (typeof c.path === "string") s.add(c.path);
+    else if (typeof c.path === "string") setAdd(s, c.path);
   };
-  if (Array.isArray(p.rules)) for (const r of p.rules) if (r && typeof r === "object" && "when" in r) walk(r.when);
-  return [...s].sort();
+  if (isArray(p.rules)) {
+    for (let i = 0; i < p.rules.length; i++) {
+      const r = p.rules[i];
+      if (r && typeof r === "object" && "when" in r) walk((r as { when: Condition }).when);
+    }
+  }
+  return arraySort(setToArray(s));
 }
 
 /** sha256:<hex> of the sorted read-set — committed so the evaluated input surface can't be forged. */

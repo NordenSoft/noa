@@ -25,7 +25,16 @@
  */
 const SAFE_JSON_ERRORS = new WeakSet<object>();
 
-import { weakSetHas, weakSetAdd, setHas, setAdd, strSlice, arrayPush } from "./intrinsics.js";
+import {
+  weakSetHas, weakSetAdd, setHas, setAdd, strSlice, arrayPush,
+  // Added 2026-07-29 (cross-family round 1). This parser builds the value the SIGNATURE is checked
+  // against, so every lookup it makes is part of the trusted pre-image. A poison that REWRITES a
+  // value on the way in — `Object.defineProperty`, `String.prototype.slice`, `Number` — made a
+  // forged document verify VALID while the catalogue's destructive poisons all failed closed.
+  objectCreateNull, objectDefineProperty, strCharCodeAt, strIsWellFormed, strFromCharCode,
+  strStartsWithAt, parseIntRadix, toNumber, isSafeInteger, newSet,
+} from "./intrinsics.js";
+import { inertArray } from "./inert.js";
 import { isHex4 } from "./scan.js";
 
 export class SafeJsonError extends Error {
@@ -76,7 +85,7 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
 
   function skipWs(): void {
     while (i < n) {
-      const c = text.charCodeAt(i);
+      const c = strCharCodeAt(text, i);
       // space, tab, LF, CR
       if (c === 0x20 || c === 0x09 || c === 0x0a || c === 0x0d) i++;
       else break;
@@ -108,8 +117,8 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
 
   function parseObject(depth: number): Record<string, unknown> {
     i++; // {
-    const obj: Record<string, unknown> = Object.create(null);
-    const seen = new Set<string>();
+    const obj: Record<string, unknown> = objectCreateNull<Record<string, unknown>>();
+    const seen = newSet<string>();
     skipWs();
     if (text[i] === "}") {
       i++;
@@ -126,7 +135,7 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
       if (text[i] !== ":") err("expected ':' after object key");
       i++;
       const val = parseValue(depth + 1);
-      Object.defineProperty(obj, key, { value: val, enumerable: true, writable: true, configurable: true });
+      objectDefineProperty(obj, key, { value: val, enumerable: true, writable: true, configurable: true });
       skipWs();
       const ch = text[i];
       if (ch === ",") {
@@ -141,13 +150,38 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
     }
   }
 
+  /**
+   * ── THE ROOT OF THE ITERATOR CLASS, CLOSED AT THE SOURCE (2026-07-29, T19) ──────────────────────
+   *
+   * Three rounds each found the same defect one call deeper — a `for…of`, a spread or a HOF over
+   * PARSED data — and each fix hardened the file the finding named. They were all one bug: this
+   * function emitted arrays rooted on the LIVE `Array.prototype`, so every downstream walk of
+   * attacker-supplied data dispatched through slots the attacker owns. `pol.rules.forEach(...)` in
+   * `src/policy/validate.ts` is the purest instance: a no-op `forEach` skipped every rule, so an
+   * unknown-op rule was never rejected and a `DENY/policy-invalid` became `ALLOW/allow-x` on
+   * byte-identical input.
+   *
+   * The arrays are now re-rooted onto `INERT_ARRAY_PROTOTYPE` before they leave the parser, which the
+   * repository already owned for exactly this purpose. That prototype carries PRISTINE copies of the
+   * non-mutating `Array.prototype` methods and a SELF-CONTAINED iterator whose `next` is an own
+   * closure, so `for…of`, `[...x]`, destructuring and `.forEach/.map/.every` over parsed data all keep
+   * working and NONE of them consult a shared mutable slot. Verified, not assumed: `Array.isArray`
+   * still answers true (it reads an internal slot, not the prototype), `JSON.stringify` is unchanged,
+   * and the golden vectors plus all four external verifiers stay byte-identical. `inertArray` and not
+   * `makeInertArray`: a parse result is the CALLER's to mutate, so it is re-rooted but NOT frozen —
+   * the prototype is the security property, the freeze is not (see `src/inert.ts`).
+   *
+   * This does NOT retire the per-site fixes — the call sites are converted to captured wrappers as
+   * well, and L8 blocks new ones. It removes the class's SOURCE, so a site nobody converted is still
+   * safe, which is the property the last three rounds did not have.
+   */
   function parseArray(depth: number): unknown[] {
     i++; // [
     const arr: unknown[] = [];
     skipWs();
     if (text[i] === "]") {
       i++;
-      return arr;
+      return inertArray(arr);
     }
     for (;;) {
       // `arrayPush`, NOT `arr.push`. `Array.prototype.push` is a writable property of a mutable
@@ -167,7 +201,7 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
       }
       if (ch === "]") {
         i++;
-        return arr;
+        return inertArray(arr);
       }
       err("expected ',' or ']' in array");
     }
@@ -183,7 +217,7 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
         i++; // consume closing quote
         // Reject unpaired surrogates (from raw input or \u escapes): they are not well-formed
         // Unicode and would collapse to U+FFFD at the UTF-8 hashing step — a forgery channel.
-        if (!out.isWellFormed()) err("unpaired surrogate in string");
+        if (!strIsWellFormed(out)) err("unpaired surrogate in string");
         return out;
       }
       if (c === "\\") {
@@ -201,7 +235,7 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
           case "u": {
             const hex = strSlice(text, i + 1, i + 5);
             if (!isHex4(hex)) err("invalid \\u escape");
-            out += String.fromCharCode(parseInt(hex, 16));
+            out += strFromCharCode(parseIntRadix(hex, 16));
             i += 4;
             break;
           }
@@ -211,7 +245,7 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
         i++;
         continue;
       }
-      const code = text.charCodeAt(i);
+      const code = strCharCodeAt(text, i);
       if (code < 0x20) err("unescaped control character in string");
       out += c;
       i++;
@@ -232,18 +266,18 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
     if (text[i] === "." || text[i] === "e" || text[i] === "E") {
       err("non-integer (float/exponent) number not allowed");
     }
-    const raw = text.slice(start, i);
-    const num = Number(raw);
-    if (!Number.isSafeInteger(num)) err("integer outside safe range");
+    const raw = strSlice(text, start, i);
+    const num = toNumber(raw);
+    if (!isSafeInteger(num)) err("integer outside safe range");
     return num;
   }
 
   function parseBool(): boolean {
-    if (text.startsWith("true", i)) {
+    if (strStartsWithAt(text, "true", i)) {
       i += 4;
       return true;
     }
-    if (text.startsWith("false", i)) {
+    if (strStartsWithAt(text, "false", i)) {
       i += 5;
       return false;
     }
@@ -251,7 +285,7 @@ export function safeParse(text: string, opts: SafeJsonOptions = {}): unknown {
   }
 
   function parseNull(): null {
-    if (text.startsWith("null", i)) {
+    if (strStartsWithAt(text, "null", i)) {
       i += 4;
       return null;
     }

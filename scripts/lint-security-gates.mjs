@@ -303,6 +303,217 @@ function L3() {
   return n;
 }
 
+// ── L8 — THE DISPATCH-SURFACE ENUMERATOR (added 2026-07-29, round-2, closes R3-10) ─────────────────
+// R3-10 was FALSE-GREEN: the runtime poison suite reported 81/81 and this gate exited 0 while nine
+// live-lookup forgeries were reproducible, because the enumeration was INCOMPLETE. L2 derives
+// `includes/has/HOFs/for…of/regex`; it never derived the OTHER dispatch surfaces an attacker reaches —
+// a spread (`[...x]` → `%StringIteratorPrototype%`/`%ArrayIteratorPrototype%.next`), an `instanceof`
+// (`Symbol.hasInstance`), a live builtin-static read (`Object.keys(`, `Buffer.from(`, `Array.isArray(`),
+// and a live rewrite/decode prototype method (`.toString`, `.equals`, `.export`, `.normalize`,
+// `.charCodeAt`, `.codePointAt`, `.isWellFormed`, `.subarray`). Every one of R3-03..R3-09 lived in that
+// blind spot. L8 + L2 together DERIVE the full construct set across the TCB, so a NEW live lookup on a
+// decision path — the exact defect each of the last three rounds shipped one call deeper — turns a gate
+// RED instead of passing silently.
+//
+// SCOPE, stated so it cannot be quietly narrowed (constraint C-8): every TCB file EXCEPT
+// `src/intrinsics.ts`. That module is the capture mechanism itself — its whole job is to read each
+// builtin ONCE at load and re-export it as a plain function — so linting it for "no live global read"
+// is linting the linter. The exclusion is named here, not hidden, and it is the ONLY file exempt.
+// Only INDENTED lines are inspected: a construct at column 0 is a module-load-time capture / frozen-
+// table construction (the SAFE pattern L3 already blesses), whereas a live lookup on a decision path is
+// always inside a function body. This is a detection rule, not a scan-root narrowing — every TCB file is
+// still read in full.
+/**
+ * ── ROUND-3 EXTENSION (2026-07-29): WHAT THE ENUMERATION STILL MISSED, MEASURED ─────────────────
+ *
+ * L8 shipped at BLOCK/0 and was FALSE-GREEN within one round, for the same reason L2 was: the
+ * enumeration was incomplete, so `0` meant "no instance of the four constructs I happen to list",
+ * not "no live lookup". Measured against the tree it was passing, it MISSED all four of that round's
+ * findings:
+ *
+ *   MISSED  cryptoVerify(null, message, key, sigBytes)  — a LIVE BUILTIN ESM IMPORT BINDING. It is
+ *           not a `Buffer.x(` static and not a `.y(` method, so it matched nothing — while being the
+ *           signature verdict itself, repointable with `crypto.verify = …; syncBuiltinESMExports()`.
+ *   MISSED  BigInt(yBytes[i])                           — a BARE GLOBAL call. Absent from the static
+ *           alternation, which only listed dotted builtins.
+ *   MISSED  pol.rules.forEach(...)                      — a HOF. L2 carries HOFs at a WARN budget, so
+ *           a silent-skip `forEach` on a verdict path was an in-budget scoreboard entry, not a block.
+ *   MISSED  key.asymmetricKeyType                       — a PROPERTY READ. Every rule required a call.
+ *
+ * Its regexes were also evadable by spelling: `globalThis.Buffer.from(`, `Buffer["from"]`,
+ * `Buffer?.from`, and a detached `const f = Buffer.from` all reach the same slot and matched none of
+ * the four rules. Each of those is now its own construct, so the evasion is a finding rather than a
+ * gap. Nothing was removed and no budget was raised: the four original constructs are unchanged
+ * below and every addition is a strictly larger subject set at the same BLOCK/0 enforcement.
+ */
+const BUILTIN_GLOBALS = "Object|Array|Buffer|Number|String|JSON|Reflect|Math|Date|Set|Map|WeakSet|WeakMap|Symbol|BigInt|Promise|Proxy|Function|globalThis";
+const L8_CONSTRUCTS = [
+  { re: /\[\s*\.\.\./, what: "array/iterable spread", why: "`[...x]` dispatches through %String/ArrayIteratorPrototype%.next (R3-04/R3-08)" },
+  { re: /\binstanceof\b/, what: "instanceof", why: "performs a dynamic Get(C, Symbol.hasInstance) — use a captured brand check (collectionBrand)" },
+  { re: /\b(?:Object|Array|Buffer|Number|String|JSON|Reflect|Math|Date|Set|Map|WeakSet|WeakMap|Symbol)\.\w+\s*\(/, what: "live builtin-static call", why: "a live read of a mutable global (e.g. Object.keys/Buffer.from/Array.isArray) — route through src/intrinsics.ts (R3-04)" },
+  { re: /\.(?:toString|equals|export|normalize|charCodeAt|codePointAt|isWellFormed|subarray)\s*\(/, what: "live prototype-method call", why: "a rewrite/decode method looked up on a value (toString/equals/export/normalize/…) — route through src/intrinsics.ts (R3-03/R3-07/R3-09)" },
+  // ── ADDED 2026-07-29 (round-3). Each closes one MISS measured above. ────────────────────────────
+  {
+    re: /(?<![.\w$])(?:BigInt|Number|String|Boolean|parseInt|parseFloat|isNaN|isFinite|encodeURIComponent|decodeURIComponent|encodeURI|decodeURI)\s*\(/,
+    what: "bare-global call",
+    why: "an UNDOTTED global (BigInt/Number/parseInt/…) is a writable property of globalThis — `globalThis.BigInt = () => 0n` collapsed the y<q AND S<L canonicality gates in verifyEd25519 (T18). Route through src/intrinsics.ts (toBigInt/toNumber/…)",
+  },
+  {
+    re: /\.(?:forEach|map|filter|reduce|reduceRight|some|every|find|findIndex|findLast|findLastIndex|flatMap|flat|sort|reverse)\s*\(/,
+    what: "array HOF",
+    why: "a higher-order method looked up on a value. `Array.prototype.forEach = () => undefined` VISITS NOTHING, so a validator silently accepts what it never inspected — measured DENY/policy-invalid -> ALLOW (T19). L2 carries these at a WARN budget; on this gate they BLOCK. Use an index walk or a captured wrapper (arrayEvery/arrayMap/…)",
+  },
+  {
+    re: new RegExp(`(?<![.\\w$])(?:${BUILTIN_GLOBALS})\\s*\\[\\s*["'\`]`),
+    what: "computed builtin member",
+    why: "`Buffer[\"from\"]` reaches the same mutable slot as `Buffer.from` while matching no dotted rule — a spelling evasion, not a different operation",
+  },
+  {
+    re: new RegExp(`(?<![.\\w$])(?:${BUILTIN_GLOBALS})\\s*\\?\\.`),
+    what: "optional-chained builtin",
+    why: "`Buffer?.from(...)` is the same live read with an existence check in front of it — same evasion class as the computed member",
+  },
+  {
+    re: /(?<![.\w$])globalThis\b/,
+    what: "globalThis reference",
+    why: "`globalThis.Buffer.from(` is the longhand spelling of every rule above; reaching the global object explicitly on a decision path has no legitimate use here",
+  },
+  {
+    re: new RegExp(`(?:const|let|var)\\s+[\\w$]+\\s*=\\s*(?:${BUILTIN_GLOBALS})\\s*\\.\\s*[\\w$]+\\s*(?:;|,|\\)|$)`),
+    what: "detached builtin binding",
+    why: "`const f = Buffer.from` inside a function body takes the read at CALL time, so the capture is worthless — a load-time capture belongs in src/intrinsics.ts, at module top level, which this rule (indented lines only) deliberately still permits there",
+  },
+  {
+    re: /(?<![.\w$])new\s+(?:Set|Map|WeakSet|WeakMap|Date|RegExp|Proxy|Function|Array|Object)\s*(?:<[^>]*>)?\s*\(/,
+    what: "live global constructor",
+    why: "`new Set()` READS globalThis.Set at call time; a substituted class is then handed to the captured Set.prototype.* wrappers. That fails closed rather than permissively, but it is still a live read of a mutable global on a decision path — use newSet()/newMap() from src/intrinsics.ts",
+  },
+  {
+    re: /\.(?:asymmetricKeyType|asymmetricKeyDetails|symmetricKeySize)\b/,
+    what: "live KeyObject accessor read",
+    why: "`key.asymmetricKeyType` is an ACCESSOR on AsymmetricKeyObject.prototype (measured: configurable, get is a function), NOT a data property — one defineProperty makes the Ed25519 CURVE PIN bless an Ed448 key (T18). Read it through asymmetricKeyType() in src/intrinsics.ts",
+  },
+  {
+    re: /\.(?:buffer|byteOffset|byteLength)\b/,
+    what: "live typed-array accessor read",
+    why: "`.buffer`/`.byteOffset`/`.byteLength` are configurable ACCESSORS on %TypedArray%.prototype — the bytes the decoder is handed are chosen by them. Use taBuffer/taByteOffset/taByteLength (and byteLength() for `.length`, which is the same accessor)",
+  },
+];
+
+/**
+ * A LIVE BUILTIN ESM IMPORT BINDING — the T17 miss, and the one construct that is a property of the
+ * FILE rather than of a line, so it is checked separately and over EVERY line (an import sits at
+ * column 0, which the indented-line rule below deliberately skips).
+ *
+ * `import { verify } from "node:crypto"` is not a snapshot: an ESM namespace binding for a builtin is
+ * REPOINTED by `node:module`'s `syncBuiltinESMExports()` after the importing module has been
+ * evaluated. `src/keys.ts` carried a comment explaining exactly this about `createPublicKey` — three
+ * lines above four sibling bindings from the same statement that were left live, one of which was the
+ * signature verdict. So the rule is structural and admits no per-binding argument: `src/intrinsics.ts`
+ * is the only TCB file that may import a builtin, because it is the only one that copies the value
+ * into a `const` at load and never reads the binding again.
+ */
+/**
+ * COMMENT-ONLY stripper. `strip` above blanks comments AND string CONTENTS, which is right for every
+ * other rule and exactly wrong for this one: the thing being detected IS a string literal (the module
+ * specifier `"node:crypto"`), so a stripped-source scan would see `"           "` and measure nothing.
+ * Scanning the RAW source instead is not the answer either — it fires on any COMMENT that mentions
+ * `from "node:crypto"`, and this file's own comments discuss that import at length. A false positive
+ * is how a gate earns the right to be ignored.
+ *
+ * So: blank comments, keep strings. String literals are still CONSUMED properly (left to right,
+ * whichever construct opens first wins) so a `//` inside a string cannot open a comment — that
+ * ordering bug is documented on `strip` and is not repeated here.
+ */
+function stripComments(src) {
+  let out = "";
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    const c2 = src[i + 1];
+    if (c === "/" && c2 === "/") { while (i < n && src[i] !== "\n") { out += " "; i++; } continue; }
+    if (c === "/" && c2 === "*") {
+      out += "  "; i += 2;
+      while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { out += src[i] === "\n" ? "\n" : " "; i++; }
+      if (i < n) { out += "  "; i += 2; }
+      continue;
+    }
+    if (c === '"' || c === "'" || c === "`") {
+      const q = c;
+      out += q; i++;
+      while (i < n) {
+        if (src[i] === "\\") { out += src[i] + (src[i + 1] ?? ""); i += 2; continue; }
+        if (src[i] === q) { out += q; i++; break; }
+        out += src[i]; i++;
+      }
+      continue;
+    }
+    out += c; i++;
+  }
+  return out;
+}
+
+/**
+ * `\s` matches a NEWLINE, so this one expression covers both spellings — the ordinary
+ * `} from "node:crypto";` and the specifier split across lines (`from\n  "node:crypto"`), which a
+ * per-line scan misses by construction. The first version of this rule had a separate whole-file
+ * "fallback" for the split case; it was DEAD — its two conditions were mutually exclusive — which is
+ * the same defect class as a lint that reads 0 because it matches nothing.
+ */
+const ESM_BUILTIN_IMPORT = /\bfrom\s*["']node:/g;
+/** Type-only imports are erased by tsc and have no runtime binding to repoint. */
+const TYPE_ONLY_IMPORT = /(?:^|\n)\s*import\s+type\b[^;]*?$/;
+
+/**
+ * ONE function, called by BOTH `L8` and its self-test. That is deliberate and it was not the first
+ * shape: the self-test originally re-implemented the scan, so knocking out the comment-stripping
+ * INSIDE L8 left the self-test green — a self-test that exercises a copy of the code proves the copy
+ * works. Sharing the path means any defanging of the real scan is observed.
+ *
+ * Returns one `{ line }` per live builtin ESM import binding found in `raw`.
+ */
+function esmImportFindings(raw) {
+  const out = [];
+  const noComments = stripComments(raw);
+  ESM_BUILTIN_IMPORT.lastIndex = 0;
+  for (let m = ESM_BUILTIN_IMPORT.exec(noComments); m !== null; m = ESM_BUILTIN_IMPORT.exec(noComments)) {
+    const before = noComments.slice(0, m.index);
+    // The statement may span lines, so the type-only exemption is tested against the text back to the
+    // previous `;` rather than against one line.
+    if (TYPE_ONLY_IMPORT.test(before.slice(before.lastIndexOf(";") + 1))) continue;
+    out.push({ line: before.split("\n").length });
+  }
+  return out;
+}
+
+function L8() {
+  let n = 0;
+  for (const f of TCB) {
+    if (f === "src/intrinsics.ts") continue; // the capture module — see the scope note above
+    if (!fs.existsSync(path.join(ROOT, f))) continue;
+    const raw = read(f);
+    // The scan lives in `esmImportFindings` and is shared with the self-test — see there for why the
+    // self-test must not re-implement it, and for why the source is comment-stripped but NOT
+    // string-stripped (the subject IS a string literal).
+    for (const hit of esmImportFindings(raw)) {
+      add("L8", f, hit.line,
+        "LIVE BUILTIN ESM IMPORT BINDING on a TCB decision path — an ESM binding for a node: builtin is " +
+        "repointable by syncBuiltinESMExports() AFTER this module is evaluated (T17: `crypto.verify = () => true` " +
+        "made a garbage signature VALID under an honest keyring). Only src/intrinsics.ts may import a builtin; " +
+        "it snapshots the value into a const at load. Import the captured wrapper instead.");
+      n++;
+    }
+    strip(raw).split("\n").forEach((line, i) => {
+      if (!/^\s/.test(line)) return; // module-top-level = load-time capture / table construction (L3's territory)
+      for (const c of L8_CONSTRUCTS) {
+        if (c.re.test(line)) { add("L8", f, i + 1, `${c.what} on a TCB decision path — ${c.why}`); n++; }
+      }
+    });
+  }
+  return n;
+}
+
 // ── L5 — VERDICTS PINNED ─────────────────────────────────────────────────────────────────────────
 // H-03: the poison suite compared AGGREGATE accept/reject counts, so a poison that flipped one
 // fixture from VALID to TAMPERED and another from TAMPERED to VALID netted to zero and passed. A
@@ -438,7 +649,21 @@ const LINTS = [
   // "blocking" for a gate the code does not yet satisfy is the failure mode this table exists to
   // prevent. The earlier note here recorded a RAISE 63 → 64 when `src/ingest.ts` moved into the TCB;
   // that file no longer exists, and `src/scan.ts` took its place in the subject set.
-  { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "warn", budget: 35,
+  // Budget RATCHETED 35 -> 33 -> 29 on 2026-07-29. 35->33: `src/jcs.ts` lost two `for…of` loops
+  // when its key walk and code-point walk became index loops. 33->29: `src/verify.ts` lost four more
+  // when the chain-partition, seq-map, hash/signature and distinct-agent walks became index loops —
+  // those were not style changes, they closed a substituting-iterator forgery. The ratchet only ever
+  // moves down: lowering it locks the gain in so a later change cannot quietly spend it.
+  // Budget RATCHETED 29 -> 17 on 2026-07-29 (round-2). The drop is the substituting-iterator closure of
+  // R3-04/R3-05/R3-06/R3-08: `for…of` over parsed arrays became index walks and the policy `and/or/in`
+  // quantifiers (`.some`/`.every`) became captured wrappers in `src/nfc.ts`, `src/schema.ts`,
+  // `src/policy/eval.ts` and `src/federation/verify-witnessed.ts`. The ratchet only ever moves down.
+  // Budget RATCHETED 17 -> 11 on 2026-07-29 (round-3, measured). The drop is the T19 closure: the
+  // three protected/unprotected COSE header walks in `src/cose/cose-sign1.ts`, the `clauses`/`rules`
+  // walks in `src/policy/validate.ts` and `src/policy/dsl.ts`, and the identity-manifest `.every` in
+  // `src/verify.ts` became index walks and captured wrappers. The ratchet only ever moves down;
+  // lowering it locks the gain in so a later change cannot quietly spend it.
+  { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "warn", budget: 11,
     ratchet: "blocks when the decision path stops calling includes/has/HOFs/for-of/regex (ADR §5.5, P3)." },
   // FLIPPED warn(10) -> BLOCK on 2026-07-28, budget deleted. Measured 0: every module-level table in
   // the TCB is now built frozen and null-rooted at construction. The last three were CHECKPOINT_KEYS
@@ -450,7 +675,97 @@ const LINTS = [
   { id: "L5", name: "verdicts pinned by exact value", run: L5, mode: "block" },
   { id: "L6", name: "declared cases actually execute", run: L6, mode: "block" },
   { id: "L7", name: "corpus parity across five implementations", run: L7, mode: "block" },
+  // ADDED 2026-07-29 (round-2). Enters at BLOCK/0: R3-03..R3-09 were all closed at the source in this
+  // pass (spread/instanceof/live-static/live-proto counts across the TCB = 0, measured), so per the
+  // rule at the top of this file a zero-count gate ships blocking with no budget — any regression is a
+  // hard failure, never an in-budget warning.
+  // EXTENDED 2026-07-29 (round-3) with the four construct classes it was MEASURED to miss —
+  // bare-global calls, array HOFs, live builtin ESM import bindings and live accessor reads — plus the
+  // four spelling evasions of its own original rules (globalThis./["x"]/?./detached binding). Stays at
+  // BLOCK with no budget: measured 0 across the TCB after the fixes in this pass. `--selftest` proves
+  // every rule still BITES, because a rule that has never been observed to fail is not a rule.
+  // Runs BEFORE L8 in the table so a defanged rule is reported before its count of 0 is printed.
+  { id: "L8-selftest", name: "every L8 construct is observed to bite (positive + negative sample)", run: L8SelfTest, mode: "block" },
+  { id: "L8", name: "dispatch-surface enumeration (spread/instanceof/live-static/live-proto/bare-global/HOF/esm-binding/accessor)", run: L8, mode: "block" },
 ];
+
+/**
+ * ── L8 SELF-TEST: EVERY RULE MUST BE OBSERVED TO BITE ──────────────────────────────────────────────
+ *
+ * L8 reads 0 after this pass, and 0 is exactly what it read on the day it MISSED four reproducible
+ * forgeries. A count of zero is evidence only if the instrument is known to respond, so each
+ * construct carries a POSITIVE sample it must match and a NEGATIVE sample it must not — the negative
+ * half matters as much, because a rule that fires on the captured wrapper (`toBigInt(x)`,
+ * `arrayEvery(a, f)`) trains everyone to route around the gate.
+ *
+ * This is the same rule L6 enforces on the poison suite, applied to the lint itself: "absence of
+ * findings and absence of checking are the same value in code and opposite facts in reality." It runs
+ * on EVERY invocation, not behind a flag, so the gate cannot be silently defanged by a regex edit.
+ */
+const L8_SELFTEST = [
+  // [ construct `what`, MUST match, MUST NOT match ]
+  ["array/iterable spread",        "  const a = [...parsed];",                      "  const a = arraySlice(parsed);"],
+  ["instanceof",                   "  if (v instanceof Set) return null;",          "  if (collectionBrand(v) !== null) return null;"],
+  ["live builtin-static call",     "  const b = Buffer.from(s, 'base64');",         "  const b = bufferFrom(s, 'base64');"],
+  ["live prototype-method call",   "  return der.toString('base64');",              "  return bufToString(der, 'base64');"],
+  ["bare-global call",             "  y = (y << 8n) | BigInt(yBytes[i]);",          "  y = (y << 8n) | toBigInt(yBytes[i]);"],
+  ["array HOF",                    "  pol.rules.forEach((r, i) => check(r, i));",   "  for (let i = 0; i < pol.rules.length; i++) check(pol.rules[i], i);"],
+  ["computed builtin member",      "  const f = Buffer[\"from\"];",                  "  const f = bufferFrom;"],
+  ["optional-chained builtin",     "  const b = Buffer?.from(s);",                  "  const b = bufferFrom(s);"],
+  ["globalThis reference",         "  const b = globalThis.Buffer.from(s);",        "  const b = bufferFrom(s);"],
+  ["detached builtin binding",     "  const from = Buffer.from;",                   "  const from = bufferFrom;"],
+  ["live global constructor",      "  const seen = new Set();",                     "  const seen = newSet();"],
+  ["live KeyObject accessor read", "  if (key.asymmetricKeyType !== 'ed25519') {",  "  if (asymmetricKeyType(key) !== 'ed25519') {"],
+  ["live typed-array accessor read", "  return from(bytes.buffer, bytes.byteOffset);", "  return from(taBuffer(bytes), taByteOffset(bytes));"],
+];
+function L8SelfTest() {
+  let n = 0;
+  for (const [what, positive, negative] of L8_SELFTEST) {
+    const c = L8_CONSTRUCTS.find((x) => x.what === what);
+    if (!c) {
+      add("L8-selftest", "scripts/lint-security-gates.mjs", 0, `construct "${what}" has a self-test but no rule — the rule was deleted or renamed and its coverage vanished with it`);
+      n++;
+      continue;
+    }
+    if (!c.re.test(strip(positive))) {
+      add("L8-selftest", "scripts/lint-security-gates.mjs", 0, `construct "${what}" does NOT match its own known-positive sample \`${positive.trim()}\` — the rule reads 0 because it measures nothing`);
+      n++;
+    }
+    if (c.re.test(strip(negative))) {
+      add("L8-selftest", "scripts/lint-security-gates.mjs", 0, `construct "${what}" fires on the CAPTURED form \`${negative.trim()}\` — a rule that flags the fix teaches everyone to route around the gate`);
+      n++;
+    }
+  }
+  // Every construct must be covered. A rule added without a self-test is a rule nobody has seen bite.
+  for (const c of L8_CONSTRUCTS) {
+    if (!L8_SELFTEST.some(([what]) => what === c.what)) {
+      add("L8-selftest", "scripts/lint-security-gates.mjs", 0, `construct "${c.what}" has NO self-test — it has never been observed to bite`);
+      n++;
+    }
+  }
+  // The ESM-import rule is not in L8_CONSTRUCTS (it is a whole-FILE check over comment-stripped
+  // source), so it is asserted here — including the two defects the first version of it shipped with:
+  // a COMMENT mentioning the specifier fired it, and a specifier SPLIT ACROSS LINES was invisible to
+  // both the per-line scan and the "fallback" that was supposed to catch it (that fallback's two
+  // conditions were mutually exclusive, i.e. it was dead code pretending to be coverage).
+  const esmCase = (label, src, shouldFire) => {
+    // THE SAME FUNCTION L8 CALLS — see `esmImportFindings`.
+    const fired = esmImportFindings(src).length > 0;
+    if (fired !== shouldFire) {
+      add("L8-selftest", "scripts/lint-security-gates.mjs", 0,
+        `the live-builtin-ESM-import rule ${fired ? "FIRED" : "did NOT fire"} on the "${label}" sample, expected the opposite — ${JSON.stringify(src)}`);
+      n++;
+    }
+  };
+  esmCase("ordinary live builtin import", 'import { verify as cryptoVerify } from "node:crypto";', true);
+  esmCase("multi-line live builtin import", 'import {\n  sign,\n  verify,\n} from "node:crypto";', true);
+  esmCase("specifier split across lines", 'import { verify } from\n  "node:crypto";', true);
+  esmCase("captured-wrapper import", 'import { ed25519Verify } from "./intrinsics.js";', false);
+  esmCase("type-only import (erased by tsc, no runtime binding)", 'import type { KeyObject } from "node:crypto";', false);
+  esmCase("a COMMENT discussing the import", '// e.g. `import { verify } from "node:crypto"` is repointable\nconst x = 1;', false);
+  esmCase("a BLOCK COMMENT discussing the import", '/* import { verify } from "node:crypto" */\nconst x = 1;', false);
+  return n;
+}
 
 let exitCode = 0;
 const summary = [];

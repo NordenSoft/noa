@@ -14,7 +14,7 @@ import type { Policy, Condition, Scalar } from "./dsl.js";
 import { POLICY_SPEC } from "./dsl.js";
 import { canonicalize, MAX_DEPTH } from "../jcs.js";
 import { parseDocument } from "../bytes.js";
-import { arrayPush, arrayIncludes, objectKeys, setHas, setAdd } from "../intrinsics.js";
+import { arrayPush, arrayIncludes, arrayEvery, objectKeys, setHas, setAdd, newSet, isArray, isSafeInteger } from "../intrinsics.js";
 import { membership } from "../inert.js";
 
 const isCmpOp = membership(["eq", "ne", "lt", "le", "gt", "ge"]);
@@ -27,7 +27,7 @@ export interface PolicyValidation {
 function isScalar(v: unknown): v is Scalar {
   const t = typeof v;
   if (t === "string" || t === "boolean") return true;
-  if (t === "number") return Number.isSafeInteger(v as number); // integers only, no float
+  if (t === "number") return isSafeInteger(v as number); // integers only, no float (captured)
   return false;
 }
 
@@ -60,8 +60,11 @@ function validateCondition(c: unknown, path: string, errors: string[], depth: nu
   if (op === "and" || op === "or") {
     noExtraKeys(cond, ["op", "clauses"], `${path}.${op}`, errors);
     const cl = cond.clauses;
-    if (!Array.isArray(cl) || cl.length === 0) arrayPush(errors, `${path}.${op}: clauses must be a non-empty array`);
-    else cl.forEach((x, i) => validateCondition(x, `${path}.${op}[${i}]`, errors, depth + 1));
+    if (!isArray(cl) || cl.length === 0) arrayPush(errors, `${path}.${op}: clauses must be a non-empty array`);
+    // INDEX WALK, not `.forEach`. A no-op `Array.prototype.forEach` visits nothing, so every nested
+    // clause goes UNVALIDATED and the policy is pronounced valid — the same silent-skip that turned
+    // `DENY/policy-invalid` into `ALLOW` at the rule level below (T19).
+    else for (let i = 0; i < cl.length; i++) validateCondition(cl[i], `${path}.${op}[${i}]`, errors, depth + 1);
     return;
   }
   if (op === "not") {
@@ -78,7 +81,7 @@ function validateCondition(c: unknown, path: string, errors: string[], depth: nu
     noExtraKeys(cond, ["op", "path", "values"], `${path}.in`, errors);
     if (typeof cond.path !== "string" || cond.path.length === 0) arrayPush(errors, `${path}.in: path must be a non-empty string`);
     const vals = cond.values;
-    if (!Array.isArray(vals) || vals.length === 0) {
+    if (!isArray(vals) || vals.length === 0) {
       arrayPush(errors, `${path}.in: values must be a non-empty array`);
     } else {
       let firstType: string | null = null;
@@ -129,17 +132,27 @@ export function validatePolicyParsed(p: unknown): PolicyValidation {
   noExtraKeys(pol, ["spec", "id", "requiredPaths", "rules"], "policy", errors);
   if (pol.spec !== POLICY_SPEC) arrayPush(errors, `policy.spec: must be "${POLICY_SPEC}"`);
   if (typeof pol.id !== "string" || pol.id.length === 0) arrayPush(errors, "policy.id: non-empty string");
-  if (!Array.isArray(pol.requiredPaths) || !pol.requiredPaths.every((x) => typeof x === "string" && x.length > 0)) {
+  // `arrayEvery` (captured) rather than `.every` looked up on parsed data — same class as the
+  // `forEach` walks, and a poisoned `every` that answers `true` blesses a malformed requiredPaths.
+  if (!isArray(pol.requiredPaths) || !arrayEvery(pol.requiredPaths, (x) => typeof x === "string" && x.length > 0)) {
     arrayPush(errors, "policy.requiredPaths: array of non-empty strings");
   }
-  if (!Array.isArray(pol.rules)) {
+  if (!isArray(pol.rules)) {
     arrayPush(errors, "policy.rules: must be an array");
   } else {
-    const seenIds = new Set<string>();
-    pol.rules.forEach((r, i) => {
+    const seenIds = newSet<string>();
+    // ── T19, THE FINDING'S OWN SITE ────────────────────────────────────────────────────────────────
+    // `pol.rules.forEach(...)` was a SILENT-SKIP verdict: `Array.prototype.forEach = () => undefined`
+    // visits no rule, so an unknown-op rule is never rejected, `errors` stays empty, the policy is
+    // pronounced VALID and `evaluate` proceeds to the next matching rule — measured, byte-identical
+    // input, `DENY/policy-invalid` -> `ALLOW/allow-x`, one poison hit. The previous round hardened
+    // `eval.ts`, the file the finding named, and left the VALIDATOR one call deeper. An index walk
+    // cannot be skipped; the array is also inert-rooted now, so both halves of the class are closed.
+    for (let i = 0; i < pol.rules.length; i++) {
+      const r = pol.rules[i];
       if (typeof r !== "object" || r === null) {
         arrayPush(errors, `policy.rules[${i}]: must be an object`);
-        return;
+        continue;
       }
       const rule = r as Record<string, unknown>;
       noExtraKeys(rule, ["id", "when", "then"], `policy.rules[${i}]`, errors);
@@ -148,7 +161,7 @@ export function validatePolicyParsed(p: unknown): PolicyValidation {
       else setAdd(seenIds, rule.id);
       if (rule.then !== "ALLOW" && rule.then !== "DENY") arrayPush(errors, `policy.rules[${i}].then: must be exactly "ALLOW" or "DENY"`);
       validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);
-    });
+    }
   }
   // Identity-hash safety: a policy this validator ACCEPTS must be canonicalizable,
   // so policyHash()/readSetHash() (both route through canonicalize) can never throw on an accepted

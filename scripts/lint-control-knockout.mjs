@@ -134,6 +134,105 @@ const KNOCKOUTS = [
     replace: "return false && key === \"__proto__\"",
     suite: [".", "npm", ["test"]],
   },
+  // ── ADDED 2026-07-29 (round-3). One entry per finding, because the previous rounds' fixes shipped
+  // with NO knockout at all: nothing in the repository would have gone red if any of them had been
+  // reverted, which is why the same class kept reappearing one call deeper and kept being reported as
+  // "new". A fix without a knockout is a claim.
+  {
+    id: "t17-crypto-verify-capture",
+    control: "T17 — the Ed25519 signature verdict goes through the LOAD-TIME snapshot of crypto.verify, not a live ESM binding",
+    file: "src/keys.ts",
+    // Restores the vulnerability exactly: a live `node:crypto` import binding used as the verdict.
+    find: "    return ed25519Verify(message, key, sigBytes);",
+    replace: "    return _liveVerify(null, message, key as never, sigBytes);",
+    also: [{
+      find: "import {\n  bufferFrom, bufToString, bufEquals, bufSubarray, byteLength,",
+      replace: "import { verify as _liveVerify } from \"node:crypto\";\nimport {\n  bufferFrom, bufToString, bufEquals, bufSubarray, byteLength,",
+    }],
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t18-bigint-capture",
+    control: "T18 — the y<q canonicality gate builds its comparand with the CAPTURED BigInt, not the bare global",
+    file: "src/keys.ts",
+    find: "toBigInt(yBytes[i]!)",
+    replace: "BigInt(yBytes[i]!)",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t18-curve-pin-accessor",
+    control: "T18b — the Ed25519 curve pin reads asymmetricKeyType through the CAPTURED accessor",
+    file: "src/keys.ts",
+    find: "    if (asymmetricKeyType(key) !== \"ed25519\") return false;",
+    replace: "    if ((key as { asymmetricKeyType?: string }).asymmetricKeyType !== \"ed25519\") return false;",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t19-parser-inert-arrays",
+    control: "T19 — safeParse re-roots every array it emits onto INERT_ARRAY_PROTOTYPE (the ROOT of the iterator/HOF class)",
+    file: "src/safe-json.ts",
+    find: "        return inertArray(arr);",
+    replace: "        return arr;",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t19-validator-index-walk",
+    control: "T19 — the policy validator walks `rules` by INDEX, so a no-op forEach cannot skip every rule",
+    file: "src/policy/validate.ts",
+    find: "    for (let i = 0; i < pol.rules.length; i++) {\n      const r = pol.rules[i];",
+    replace: "    (pol.rules as unknown[]).forEach((r, i) => {",
+    also: [{
+      find: "      validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);\n    }",
+      replace: "      validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);\n    });",
+    }, { find: "        continue;\n      }\n      const rule = r as Record<string, unknown>;", replace: "        return;\n      }\n      const rule = r as Record<string, unknown>;" }],
+    // The parser's re-rooting independently defeats this poison, so knocking out ONE layer leaves the
+    // other measuring it and the run would report a false "nothing measures this". Both come out
+    // together — which is also the honest statement of the design: two layers, each load-bearing.
+    andAlso: "t19-parser-inert-arrays",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t19b-cbor-inert-arrays",
+    control: "T19b — the CBOR decoder re-roots decoded arrays AND each map pair (destructuring dispatches through the pair's own iterator)",
+    file: "src/cose/cbor.ts",
+    find: "      return { t: \"map\", v: inertArray(m) };",
+    replace: "      return { t: \"map\", v: m };",
+    also: [{
+      find: "        arrayPush(m, inertArray([key, val]) as [CborValue, CborValue]);",
+      replace: "        arrayPush(m, [key, val] as [CborValue, CborValue]);",
+    }],
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "inert-proto-refuses-accessors",
+    control: "INERT_ARRAY_PROTOTYPE copies DATA descriptors only — a pre-load accessor is refused (absent), never copied",
+    file: "src/inert.ts",
+    find: "    if (!hasOwn(d, \"value\")) continue;",
+    replace: "    if (!hasOwn(d, \"value\")) { objectDefineProperty(proto as object, key, { get: d.get, set: d.set, enumerable: false, configurable: false }); continue; }",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t20-l8-selftest",
+    control: "T20 — every L8 construct is proven to BITE against a known-positive sample (a gate reading 0 because it matches nothing is the false-green pathology)",
+    file: "scripts/lint-security-gates.mjs",
+    find: "(?:BigInt|Number|String|Boolean|parseInt|parseFloat|isNaN|isFinite|encodeURIComponent|decodeURIComponent|encodeURI|decodeURI)",
+    replace: "(?:NEVER_MATCHES_ANYTHING)",
+    suite: [".", "npm", ["run", "lint:security-gates"]],
+  },
+  {
+    id: "t20-source-lock-scope",
+    control: "T20 — the source lock's subject is the WHOLE derived TCB, not a hand-picked five",
+    file: "test/security/intrinsic-poisoning.test.ts",
+    // Aimed at the DERIVATION, not at the scan loop. Narrowing the loop alone is unmeasurable once
+    // the tree is clean — nothing is found either way — which is precisely the trap: a scope
+    // regression is invisible until an offender exists, so the SCOPE ITSELF has to be the assertion.
+    // Replacing the derived list with the hand-picked five this lock used to carry is the exact
+    // regression that left src/keys.ts unlocked while it held a live `verify` binding on the
+    // signature verdict, and it turns the coverage test red immediately.
+    find: "  return (block![1]!.match(/\"([^\"]+)\"/g) ?? []).map((s) => s.slice(1, -1));",
+    replace: "  return [\"src/hash.ts\", \"src/signing.ts\", \"src/cose/cbor.ts\", \"src/nfc.ts\", \"src/verify.ts\"];",
+    suite: [".", "npm", ["test"]],
+  },
 ];
 
 function run(dir, cmd, args) {

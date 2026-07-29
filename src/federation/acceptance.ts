@@ -34,19 +34,7 @@ import { signingMessage } from "../signing.js";
 import { parseDocument } from "../bytes.js";
 import { isSha256Hash, isRfc3339 } from "../scan.js";
 import { inertOptions, type OptionSchema } from "../opts.js";
-import {
-  arrayLength,
-  isArray,
-  isFiniteNumber,
-  isSafeInteger,
-  mapGet,
-  mapHas,
-  mapSet,
-  mapValuesToArray,
-  dateParse,
-  setAdd,
-  setHas,
-} from "../intrinsics.js";
+import { arrayLength, isArray, isFiniteNumber, isSafeInteger, mapGet, mapHas, mapSet, newMap, newSet, mapValuesToArray, dateParse, setAdd, setHas, isNaNValue } from "../intrinsics.js";
 
 /**
  * Anchor signing domain — distinct from RECEIPT_SIG_DOMAIN / CHECKPOINT_SIG_DOMAIN so a witness anchor
@@ -206,7 +194,7 @@ function r(
 function parseAnchorTsMs(ts: string): number | null {
   if (!isRfc3339(ts)) return null;
   const ms = dateParse(ts);
-  return Number.isNaN(ms) ? null : ms;
+  return isNaNValue(ms) ? null : ms;
 }
 
 /** beyond/divergent are CONTRADICTION signals (truncation / fork) — never suppressed by freshness, sticky. */
@@ -375,8 +363,8 @@ export function verifyCompletenessParsed(
   // `Set.prototype.has = () => false`; both aliases of one key were then pinned, both anchors
   // verified under that one key, and `complete:true, QUORUM_CONFIRMED, 2/2` came back for a head a
   // single witness had signed. Membership is now resolved with the intrinsics captured at load.
-  const pinned = new Map<string, string>();
-  const seenPubkeys = new Set<string>();
+  const pinned = newMap<string, string>();
+  const seenPubkeys = newSet<string>();
   const witnesses = trustSet.witnesses;
   for (let wi = 0; wi < arrayLength(witnesses); wi++) {
     const w = witnesses[wi] as PinnedWitness;
@@ -403,7 +391,7 @@ export function verifyCompletenessParsed(
   // and another beyond H), that is a self-equivocation on the presented frontier → divergent/fork
   // (fail-closed). A fresh confirm DOMINATES a stale one from the same witness (the witness IS current).
   type WClass = "confirm" | "beyond" | "divergent" | "stale";
-  const witnessClass = new Map<string, WClass>();
+  const witnessClass = newMap<string, WClass>();
 
   for (let ai = 0; ai < arrayLength(anchors); ai++) {
     const a = anchors[ai] as Anchor;

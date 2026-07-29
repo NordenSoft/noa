@@ -27,13 +27,23 @@
  * difference per string. It is O(total string bytes), once, on a surface that is already being
  * hashed.
  */
-import { arrayPush } from "./intrinsics.js";
+import { arrayPush, strCharCodeAt, strNormalize, isArray, objectKeys, arrayLength } from "./intrinsics.js";
 
-/** True iff `s` is already in Unicode Normalization Form C. */
+/**
+ * True iff `s` is already in Unicode Normalization Form C.
+ *
+ * Both lookups are CAPTURED (2026-07-29, round-1 re-run). They used to be live, and either one
+ * flipped the opt-in `requireNFC: true` path from MALFORMED to VALID on a genuinely-signed
+ * external receipt: `String.prototype.normalize -> identity` makes the comparison trivially true,
+ * and `String.prototype.charCodeAt -> 65` never reports a byte above 0x7f, so the ASCII fast path
+ * returns `true` without normalizing at all. The second one is the sharper lesson — the poison
+ * catalogue already carried `charCodeAt -> always 65`, and it still could not see this call site,
+ * because no fixture exercised `requireNFC` with a non-NFC receipt.
+ */
 export function isNFC(s: string): boolean {
   // Fast path: pure ASCII is always NFC, and receipts are overwhelmingly ASCII.
   for (let i = 0; i < s.length; i++) {
-    if (s.charCodeAt(i) > 0x7f) return s.normalize("NFC") === s;
+    if (strCharCodeAt(s, i) > 0x7f) return strNormalize(s, "NFC") === s;
   }
   return true;
 }
@@ -55,13 +65,23 @@ export function nonNfcPaths(value: unknown, limit = 16): string[] {
       if (!isNFC(v)) arrayPush(out, path);
       return;
     }
-    if (Array.isArray(v)) {
-      for (let i = 0; i < v.length && out.length < limit; i++) walk(v[i], `${path}[${i}]`);
+    if (isArray(v)) {
+      const n = arrayLength(v);
+      for (let i = 0; i < n && out.length < limit; i++) walk(v[i], `${path}[${i}]`);
       return;
     }
     if (typeof v === "object" && v !== null) {
-      for (const k of Object.keys(v as Record<string, unknown>)) {
+      // CAPTURED (2026-07-29, round-2, R3-04). This walk was `for (const k of Object.keys(...))` with a
+      // LIVE `Object.keys` and a LIVE `%ArrayIteratorPrototype%.next`: poisoning either (`Object.keys ->
+      // []`, or an empty array iterator) hid the offending member so a genuinely non-NFC, correctly-signed
+      // receipt passed `requireNFC:true` as VALID. `isNFC` was captured last round; `nonNfcPaths`, one call
+      // deeper on the SAME verdict path, was not. Membership is now the captured `objectKeys` walked by
+      // index — no live global read, no iterator dispatch.
+      const keys = objectKeys(v as Record<string, unknown>);
+      const kn = arrayLength(keys);
+      for (let ki = 0; ki < kn; ki++) {
         if (out.length >= limit) return;
+        const k = keys[ki]!;
         const child = path === "" ? k : `${path}.${k}`;
         if (!isNFC(k)) arrayPush(out, `${child} (member name)`);
         walk((v as Record<string, unknown>)[k], child);
