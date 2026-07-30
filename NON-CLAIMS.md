@@ -286,7 +286,7 @@ gate contradicts, in either direction.
 hold same-realm code execution — see NC-6.1 — but 'requires a stronger attacker' is not 'closed', and
 this document will not describe it as closed." That tail survived an earlier correction of this
 entry's title and body, leaving `They all` with no antecedent and the final clause asserting the exact
-opposite of the entry's own measured result of `closed 13 / open 0`. Found by the round-5 QA panel.)*
+opposite of the entry's own measured result of `closed 13 / open 0`. Found by an independent adversarial review.)*
 
 ### NC-6.5 — An in-process guard is advisory
 `createToolGuard` and friends govern only calls that actually go through the wrapped function. Install
@@ -358,7 +358,7 @@ that makes bypassing the kernel infeasible rather than merely detectable. Anythi
 decision back to the caller and hopes it complies is **not** in this set.
 
 > 🔴 **CORRECTED 2026-07-29, hours after this entry was written.** It originally read *"Satisfied by
-> exactly one of: (a)…(b)…(c)"* — a **sufficiency** claim, and the round-5 QA panel falsified it with
+> exactly one of: (a)…(b)…(c)"* — a **sufficiency** claim, and an independent adversarial review falsified it with
 > an executed proof-of-concept against this project's own shipped gate code.
 >
 > **The hole: authority is not intent.** In the gate's RAW mode the `display` a human approves and
@@ -398,7 +398,7 @@ The signer-sidecar holds the *receipt* signing key out of process
 (`packages/signer-sidecar/src/sidecar.mjs:4-5`); nothing holds the *grant* signing key that way,
 and grant custody is the single most important key in the capability architecture. **An enforcement
 boundary whose own authority root sits in the process it is defending against is not yet a
-boundary.** Found by the round-5 QA panel; no fix attempted here, because the fix is architectural.
+boundary.** Found by an independent adversarial review; no fix attempted here, because the fix is architectural.
 
 Architecture options and their surviving claims: `docs/ADR-0003-enforcement-boundary.md`.
 

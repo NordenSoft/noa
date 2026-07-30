@@ -309,6 +309,30 @@ jobs:
             git status --porcelain conformance/
             exit 1
           fi
+      # ── WIDENED FROM conformance/ TO THE WHOLE TREE (2026-07-30) ───────────────────────────────
+      # The check above has existed for a while and watches ONE directory. `fa2179c` then had to
+      # commit 27 untracked files whose message says it plainly: "the gates existed only in my
+      # working directory". Every mechanical gate in `scripts/` had been running locally, passing,
+      # and being quoted as evidence — while CI, which never had the files, could not have run a
+      # single one of them. A gate that is not committed is not a gate; it is a habit on one laptop.
+      #
+      # Scoping the drift check to `conformance/` encoded the assumption that generated VECTORS are
+      # the only thing that can go missing. Authored files can too, and those are worse, because a
+      # missing vector fails loudly while a missing gate simply never speaks.
+      #
+      # WHOLE-TREE, and that is safe rather than aspirational: measured locally on 2026-07-30 that
+      # `npm run build`, `npm test`, `npm run security-gates` and `lint-trusted-roots --selftest`
+      # ALL leave `git status --porcelain` completely empty — the L9 selftest plants and removes its
+      # own fixtures, including a symlink and its target directory. If a future step starts leaving
+      # a file behind, that is the finding, not the reason to narrow this back.
+      - name: Working tree is clean (nothing generated, nothing uncommitted)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the working tree is dirty after build+test+gates — a file is generated-and-uncommitted, or an authored file (a gate in scripts/, a test, a source) was never committed. See fa2179c."
+            git status --porcelain
+            exit 1
+          fi
       - name: Entry-point registry is up to date (no drift)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # The registry of security-sensitive entry points is GENERATED from src/index.ts via the

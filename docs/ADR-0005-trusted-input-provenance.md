@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | **PROPOSED. Design only — source changes are not authorized.** |
+| **Status** | **ACCEPTED, IMPLEMENTATION IN PROGRESS** (2026-07-30). Was *"PROPOSED. Design only — source changes are not authorized"*; the owner authorized source and the implementation has been landing across `impl/adr-0005-trusted-input-provenance` since. Corrected here **and** at §11 in the same pass — a status row and a body that disagree about whether work is authorized is how a settled question gets re-asked. See §13. |
 | **Date** | 2026-07-30 |
 | **Supersedes** | Nothing. ADR-0003 and ADR-0004 are **preserved as rejected** and are not rewritten. |
 | **Precondition** | `docs/TRUST-INPUT-PROVENANCE-MATRIX.md`. This ADR is not readable as design without it. |
@@ -226,8 +226,8 @@ That is the runtime representation of "only the boundary may construct this". A 
 | Need | Existing primitive | Location |
 |---|---|---|
 | strict parse | `safeParse` | `src/safe-json.ts:72` (normative for 5 implementations) |
-| bytes → data at a boundary | `parseDocument`, `decodeDocument` | `inert-core/bytes.ts:187`, `:131` |
-| inert arrays / frozen tables | `inertArray`, `frozenTable`, `deepFreeze` | `inert-core/inert.ts:116, :254, :374` |
+| bytes → data at a boundary | `parseDocument`, `decodeDocument` | `packages/approval-artifacts/src/inert-core/bytes.ts:187`, `:131` |
+| inert arrays / frozen tables | `inertArray`, `frozenTable`, `deepFreeze` | `packages/approval-artifacts/src/inert-core/inert.ts:116, :254, :374` |
 | unforgeable identity | the `WeakSet` brand pattern | `src/safe-json.ts:19-26` |
 | canonical bytes | `canonicalize` (JCS-RFC8785) | `src/jcs.ts` |
 | copy parity across packages | `scripts/sync-inert-core.mjs` (generated + CI-diffed) | already wired |
@@ -339,7 +339,13 @@ Non-structural residue, listed rather than hidden:
 
 All are preserved with exact commands and expected output in that directory's `README.md`.
 
-`[BLOCKED-ON-AUTHORIZATION: implementation of every section above. This ADR changes source under packages/gate/src, packages/relay/src and scripts/, which is not authorized. What exists today is the design, the acceptance criteria in docs/ADR-0005-ATTACK-REQUIREMENTS.md, and eleven external harnesses that prove the defects are real.]`
+> ⚠ **THE `BLOCKED-ON-AUTHORIZATION` LINE THAT STOOD HERE IS STALE AND IS REMOVED (2026-07-30).**
+> It read: *"BLOCKED-ON-AUTHORIZATION: implementation of every section above. This ADR changes source
+> under packages/gate/src, packages/relay/src and scripts/, which is not authorized. What exists
+> today is the design…"* Source **was** subsequently authorized by the owner and the implementation
+> has been landing across this branch since. A blocker that outlives its block is worse than no
+> blocker: the next reader takes "not authorized" at face value and either re-asks a settled
+> question or treats shipped code as an unbuilt design. See §13 for what is actually done.
 
 ## 12. Owner decision points
 
@@ -348,3 +354,33 @@ All are preserved with exact commands and expected output in that directory's `R
 3. **DECISION B (§4.1)** — delete `RAW`, or keep it as a provisioned capability that can never yield `HUMAN_APPROVED`. Recommendation: delete.
 4. **DECISION C (§7 G1)** — authorize the gate-coverage extension knowing it goes red immediately across five packages. This is the single highest-leverage item in the whole workstream and the most disruptive.
 5. **DECISION D** — `registerProjection` is deleted with no signed-manifest replacement until #39. Accept a one-release gap, or sequence #39's projection manifest first.
+
+## 13. Correction log
+
+Claims this ADR made that later measurement changed. Appended to, never rewritten — the same rule as
+`CORRECTIONS.md` at the repository root, and for the same reason: a document that only ever records
+its final position teaches nothing about how it got there.
+
+| Date | Section | Correction |
+|---|---|---|
+| 2026-07-29 | §8.4 | Recorded a defect as "fixed" when the remedy had **zero implementation**. The claim was withdrawn in `e449c20`. |
+| 2026-07-29 | §10 | Withdrew my own "unimplementable" verdict on §4. A refuter implemented it in ~15 lines from already-shipped code. "Unimplementable" is a terminal verdict, and I reached it from a reading rather than an attempt. |
+| 2026-07-30 | §11 | Removed the stale `BLOCKED-ON-AUTHORIZATION` line — see the note above §12. Source was authorized and the implementation has been landing since. |
+| 2026-07-30 | §6 | Citation paths made absolute. They were written as `inert-core/inert.ts:116`, which resolves from nowhere. |
+
+### Two findings against this ADR that were audited and found FALSE
+
+Both were on the open list; both are closed as **not defects**, because an item that turns out to be
+wrong has to be reported as wrong rather than quietly dropped.
+
+- *"§6 describes an `inertArray` primitive that exists nowhere."* It exists twice:
+  `src/inert.ts:107` and `packages/approval-artifacts/src/inert-core/inert.ts:116`, and it is live —
+  `src/safe-json.ts:184` calls it.
+- *"§7 line numbers have drifted."* Checked every cited line in the §6 table against the file it
+  names. `inert.ts:116, :254, :374` and `bytes.ts:187, :131` are **exact** for
+  `packages/approval-artifacts/src/inert-core/`. Nothing had drifted; only the path prefix was
+  ambiguous, which is the §6 row above.
+
+The real defect the two findings were circling is that a relative citation invites exactly this
+argument — a reader resolves it against the wrong file, finds the wrong line, and reports drift that
+is not there. Absolute paths cost nothing and end the ambiguity.

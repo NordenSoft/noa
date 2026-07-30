@@ -299,12 +299,26 @@ export class GateEngine {
     let paramsHash: string;
     let display: Record<string, unknown>;
     // Seeded to the HIGHEST tier, not to the caller's hint. Only the ENFORCED path reaches this line
-    // now — RAW returned above — and ENFORCED overwrites it from `run.derivedRisk`. Seeding it
-    // `CRITICAL` rather than `riskClass` means that if a future branch ever reaches the consumers at
+    // now — RAW returned above — and ENFORCED overwrites it from `run.derivedRisk`. Seeding it here
+    // rather than from `riskClass` means that if a future branch ever reaches the consumers at
     // `:381`/`:449` without deriving, it fails CLOSED at the strictest tier instead of silently
     // adopting whatever the caller asked for. A default is a security decision (owner decision B-1:
     // "otherwise the default is the vulnerability").
-    let effectiveRisk: string = "CRITICAL";
+    //
+    // ── CRITICAL -> IRREVERSIBLE, 2026-07-30 (MEDIUM-4) ─────────────────────────────────────────
+    // The paragraph above said "the strictest tier" and the value was `CRITICAL`. It is not the
+    // strictest: the lattice at `:79` is `LOW:0 MEDIUM:1 HIGH:2 CRITICAL:3 IRREVERSIBLE:4`, so
+    // `IRREVERSIBLE` outranks it, and owner decision B-1 says "the HIGHEST tier" — not "a high one".
+    // A comment asserting a property its own value does not have is the shape of defect this branch
+    // keeps finding, and it is worse in a paragraph whose whole job is to justify a default.
+    //
+    // MEASURED IMPACT TODAY: ZERO, and that is stated rather than used as a reason to leave it.
+    // `requiredApproverRole` (`approval-artifacts/src/verify.ts:133`) maps CRITICAL and IRREVERSIBLE
+    // to the same `["approve-critical"]`, and `:431`'s `criticalRisk` treats them alike, so no
+    // consumer distinguishes them at present. The seed is corrected because the NEXT consumer might
+    // — a two-person rule, or a policy keyed on irreversibility — and at that moment the fallback
+    // would have been quietly one tier under the floor B-1 fixed, with a comment claiming otherwise.
+    let effectiveRisk: string = "IRREVERSIBLE";
     let actionSchema: ProjectionId | null = null;
     let displayProjection: ProjectionId | null = null;
 
