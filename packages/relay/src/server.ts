@@ -10,7 +10,7 @@ import { InMemoryStore, type Store } from "./store.js";
 import { FileStore } from "./file-store.js";
 import { NoopLogPushProvider, type PushProvider } from "./push.js";
 import { RelayEngine, type EngineResult } from "./engine.js";
-import { parseBearer } from "./auth.js";
+import { parseBearer, hashSecret } from "./auth.js";
 import { RateLimiter } from "./ratelimit.js";
 
 export interface CreateRelayOptions {
@@ -213,12 +213,32 @@ async function handle(
     return sendJson(res, 200, { ok: true, service: "noa-relay", role: "untrusted-transport" });
   }
 
+  // ── R8-13 (2026-07-31): THE PEER ALWAYS PAYS FIRST ────────────────────────────────────────────
+  // This used to read `bearer ? k:${bearer.secret} : ip:${addr}` — the bucket key was the caller's
+  // OWN token string, taken off the wire before any credential resolution. So an unauthenticated
+  // stranger escaped the limiter by changing a header: measured, 400 requests under 400 distinct
+  // invalid bearers were throttled ZERO times, and `POST /v1/devices` minted 200 device credentials
+  // with no 429 at all. The token bucket cannot be keyed on something the untrusted side chooses.
+  //
+  // The peer address is spent UNCONDITIONALLY and FIRST, so rotating a header cannot buy a fresh
+  // allowance. The per-credential bucket below is retained on top — it is the tighter of the two for
+  // an honest caller, and it now costs a SECOND token rather than replacing the first.
+  const peerKey = `ip:${req.socket.remoteAddress ?? "unknown"}`;
+  const peerRl = limiter.take(peerKey);
+  if (!peerRl.ok) {
+    res.setHeader("Retry-After", String(peerRl.retryAfterSec));
+    return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: peerRl.retryAfterSec });
+  }
+
   const bearer = parseBearer(req.headers["authorization"]);
-  const rateKey = bearer ? `k:${bearer.secret}` : `ip:${req.socket.remoteAddress ?? "unknown"}`;
-  const rl = limiter.take(rateKey);
-  if (!rl.ok) {
-    res.setHeader("Retry-After", String(rl.retryAfterSec));
-    return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: rl.retryAfterSec });
+  if (bearer) {
+    // Still keyed on the presented secret's HASH rather than the secret, so the limiter never holds
+    // credential material, and a wrong guess cannot mine the bucket table for a right one.
+    const rl = limiter.take(`k:${hashSecret(bearer.secret)}`);
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: rl.retryAfterSec });
+    }
   }
 
   // ── ENROLMENT routes (R-1) ──
