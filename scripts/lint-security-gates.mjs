@@ -595,16 +595,83 @@ const L10_EXTRA = [
  * fixing one `for…of` would buy the right to hide a whole module, and the scoreboard would net to
  * zero while the blind spot grew.
  */
+/**
+ * Every TypeScript module under a root, RECURSIVELY, following symlinks.
+ *
+ * ── FOUR MEASURED BLIND SPOTS, FIXED 2026-07-30 ─────────────────────────────────────────────────
+ * The previous body was one `readdirSync` at a single level, matching `.ts`, guarded by
+ * `e.isFile()`. Each of those three choices was a hole, and all three were reproduced by planting a
+ * file whose ONLY content is `allowed.includes(v)` — the exact construct L10 exists to find — and
+ * watching the gate stay at `L10-reconcile BLOCKING 0` and `L10 38`, entirely green:
+ *
+ *   packages/relay/src/routes/decide.ts   subdirectory   not recursive        -> 0 findings
+ *   packages/relay/src/decide.mts         .mts           extension not matched -> 0 findings
+ *   packages/relay/src/evil-decide.ts     symlink        isFile() is FALSE     -> 0 findings
+ *
+ * A gate whose scan root can be stepped out of by making a folder is not a boundary. This is the
+ * same shape as the escape `2c0af6f` closed one level up — there the cheap way past L10 was moving a
+ * file out of the scanned package; here it is moving it one directory down inside the scanned
+ * package. Both are "relocate the code, keep the number".
+ *
+ * `statSync` rather than `Dirent.isFile()` because it FOLLOWS the link: a symlink must be classified
+ * like any other module. A dangling link is skipped (nothing to read), not fatal.
+ *
+ * `node_modules` and `dist` are excluded because they are build artefacts and dependencies, never
+ * authored decision paths — and that exclusion is by NAME, so it cannot be widened by accident.
+ */
+function typescriptModulesUnder(dir) {
+  const found = new Set();
+  const walk = (rel) => {
+    const abs = path.join(ROOT, rel);
+    let entries;
+    try {
+      entries = fs.readdirSync(abs, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.name === "node_modules" || e.name === "dist") continue;
+      const childRel = `${rel}/${e.name}`;
+      let st;
+      try {
+        st = fs.statSync(path.join(ROOT, childRel)); // FOLLOWS symlinks, unlike Dirent.isFile()
+      } catch {
+        continue; // dangling symlink — nothing to classify
+      }
+      if (st.isDirectory()) {
+        walk(childRel);
+        continue;
+      }
+      if (!st.isFile()) continue;
+      // .ts / .mts / .cts are all TypeScript modules Node and tsc will run. Declaration files
+      // (.d.ts / .d.mts / .d.cts) are erased and carry no decision.
+      if (!/\.(ts|mts|cts)$/.test(e.name)) continue;
+      if (/\.d\.(ts|mts|cts)$/.test(e.name)) continue;
+      found.add(childRel);
+    }
+  };
+  if (fs.existsSync(path.join(ROOT, dir))) walk(dir);
+  return found;
+}
+
 function reconcileRelay() {
-  const seen = new Set();
   const dir = "packages/relay/src";
-  const abs = path.join(ROOT, dir);
-  if (fs.existsSync(abs)) {
-    for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
-      if (e.isFile() && e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) seen.add(`${dir}/${e.name}`);
+  const seen = typescriptModulesUnder(dir);
+  let n = 0;
+  // AN EXEMPTION WITHOUT A REASON IS NOT AN EXEMPTION. Membership used to be tested with
+  // `f in RELAY_OUT_OF_TCB`, which reads the KEY and never the value — so
+  // `"packages/relay/src/decide.ts": ""` would have excused a live decision path with no
+  // justification at all, and the gate would have exited 0 reporting full coverage. The reason is
+  // the entire content of an exemption; if it is empty the entry is a hole with a name.
+  for (const [f, why] of Object.entries(RELAY_OUT_OF_TCB)) {
+    if (typeof why !== "string" || why.trim().length === 0) {
+      add("L10-reconcile", f, 0,
+        "exempted from the relay TCB with an EMPTY reason — an unjustified exemption is " +
+        "indistinguishable from an unnoticed gap. State what this file decides and why it is not a " +
+        "decision path, or classify it in RELAY_TCB.");
+      n++;
     }
   }
-  let n = 0;
   for (const f of seen) {
     if (!RELAY_TCB.includes(f) && !(f in RELAY_OUT_OF_TCB)) {
       add("L10-reconcile", f, 0,
