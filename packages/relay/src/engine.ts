@@ -792,10 +792,31 @@ export class RelayEngine {
    * one out. A document cannot carry that guarantee; the wire format has to.
    *
    * WHAT REPLACES IT. `lifecycle` reports only what the relay legitimately owns — whether a decision
-   * has ARRIVED, not what it SAID. APPROVED and DENIED both collapse to `DECIDED`, so the outcome is
-   * unlearnable without verifying `decisionReceipt` against a registered key. EXPIRED survives
-   * because it is not a human verdict: Red Line 6 makes it a distinct terminal state the relay owns,
-   * and erasing it would blind operators without removing any impersonation.
+   * has ARRIVED, not what it SAID. APPROVED and DENIED both collapse to `DECIDED`.
+   *
+   * WHAT THIS IS AND IS NOT — corrected 2026-07-30 after QA refuted the original wording. This is an
+   * AUTHENTICITY change, NOT a confidentiality one. The relay stops asserting a verdict IN ITS OWN
+   * VOICE; it does not hide the outcome. `decisionReceipt.governance.verdict` is published in this
+   * same body in plaintext, and that is correct — the signed receipt is the payload the relay exists
+   * to carry, and the relay cannot forge its signature. The earlier claim that the outcome was
+   * "unlearnable without verifying" was simply false, and a false security claim in a docstring is
+   * worse than the bug it describes.
+   *
+   * AND DO NOT VERIFY IT "AGAINST A REGISTERED KEY" — that phrasing was here and it is dangerous.
+   * The relay's keyring is precisely the thing with no root: anyone who clears enrolment registers a
+   * key, so "valid against a registered key" is satisfied BY THE ATTACKER. The sound check is the
+   * CONSUMER'S OWN keyring, which is what the gate actually does — `gate/src/engine.ts` verifies with
+   * `keyring: encodeDocument(this.trust.receiptKeyring)` and never consults relay state.
+   *
+   * EXPIRED survives, and the reason matters because the one first written here licenses the wrong
+   * generalisation. "Not a human verdict, the relay owns it" is true and load-bearing for nothing:
+   * the relay AUTHORS expiry unsigned from its own clock (`lazyExpire`), and to a consumer EXPIRED
+   * and DENIED have the identical consequence — do not proceed. So EXPIRED *is* a relay-authored,
+   * unsigned, actionable terminal state, the very shape this change removed elsewhere. It is right to
+   * publish for a different reason: a compromised relay's power to FAIL an action is already total
+   * and cannot be narrowed away by a wire format (it can drop the receipt, or simply not answer), so
+   * EXPIRED grants no new capability, while removing it would break the timeout path the gate's
+   * `buildTimeoutReceipt` and operators depend on.
    *
    * The internal state machine is UNCHANGED — `hold.status` still holds APPROVED/DENIED and is still
    * asserted directly against the store in tests. Only the PUBLISHED surface narrowed.

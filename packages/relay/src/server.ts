@@ -44,8 +44,24 @@ export function createRelay(opts: CreateRelayOptions = {}): Relay {
 
   let sweepTimer: NodeJS.Timeout | null = null;
 
+  // R-1 shape (A) — EXPOSURE IS DECIDED FROM THE REAL SOCKET, NOT FROM `config.bindAddress`.
+  // `httpServer` is a public field on the returned `Relay`, so an embedder can call
+  // `httpServer.listen(port, "0.0.0.0")` directly: that bypasses the D20 bind guard in `listen()`
+  // entirely, while `config.bindAddress` still reads "127.0.0.1" and the enrolment gate happily
+  // concluded "loopback, therefore unreachable". Measured — an approver key registered anonymously
+  // through exactly that path.
+  //
+  // `null` until OUR `listen()` runs. A request arriving while it is still null means the socket was
+  // opened by someone other than this function, so we do not know the bind address and must not
+  // guess: the sentinel below is non-loopback, which fails CLOSED.
+  let actualBindAddress: string | null = null;
+  const effectiveConfig = (): RelayConfig =>
+    actualBindAddress === null
+      ? { ...config, bindAddress: "0.0.0.0" } // unknown provenance ⇒ treat as exposed
+      : { ...config, bindAddress: actualBindAddress };
+
   const httpServer = createServer((req, res) => {
-    handle(req, res, engine, config, limiter).catch(() => {
+    handle(req, res, engine, effectiveConfig(), limiter).catch(() => {
       if (!res.headersSent) sendJson(res, 500, { error: "INTERNAL" });
       else res.end();
     });
@@ -78,8 +94,15 @@ export function createRelay(opts: CreateRelayOptions = {}): Relay {
           sweepTimer = setInterval(() => engine.sweepExpired(), config.expirySweepMs);
           if (typeof sweepTimer.unref === "function") sweepTimer.unref();
           const addr = httpServer.address();
-          if (addr && typeof addr === "object") resolve({ address: addr.address, port: addr.port });
-          else resolve({ address: config.bindAddress, port: config.port });
+          // Record what the OS actually bound, not what we asked for. This is the value the
+          // enrolment gate classifies against; see `actualBindAddress` above.
+          if (addr && typeof addr === "object") {
+            actualBindAddress = addr.address;
+            resolve({ address: addr.address, port: addr.port });
+          } else {
+            actualBindAddress = config.bindAddress;
+            resolve({ address: config.bindAddress, port: config.port });
+          }
         });
       });
     },

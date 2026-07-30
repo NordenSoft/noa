@@ -174,3 +174,36 @@ test("R-1: the idempotent-replay body publishes no verdict (the FOURTH leak site
     await relay.close();
   }
 });
+
+test("R-1 shape (A): an embedder listening on httpServer directly is treated as EXPOSED", async () => {
+  // `Relay.httpServer` is a public field, so an embedder can open the socket itself. That bypasses
+  // the D20 bind guard in `listen()` entirely, and `config.bindAddress` still reads "127.0.0.1" —
+  // which is exactly how QA registered an approver key anonymously through a 0.0.0.0 socket while
+  // the gate concluded "loopback, therefore unreachable".
+  //
+  // Our `listen()` is never called here, so the server cannot know what was bound and must not
+  // guess. Unknown provenance fails CLOSED.
+  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+  await new Promise<void>((resolve) => relay.httpServer.listen(0, "0.0.0.0", () => resolve()));
+  const addr = relay.httpServer.address();
+  const port = addr && typeof addr === "object" ? addr.port : 0;
+  try {
+    assert.equal(relay.config.bindAddress, "127.0.0.1",
+      "the premise of this test: config still SAYS loopback while the real socket is 0.0.0.0");
+
+    const anon = await httpJson(port, "POST", "/v1/devices", {
+      body: { kid: "shape-a", publicKeyHex: "b".repeat(64) },
+    });
+    assert.equal(anon.status, 503,
+      "an approver key was registered anonymously through a socket this process did not open — " +
+      "exposure was read from config instead of from reality");
+    assert.equal((anon.json as { error: string }).error, "ENROLMENT_NOT_CONFIGURED");
+
+    // ANTI-VACUITY: the same relay still serves a NON-enrolment route, so the 503 above is the
+    // enrolment gate biting and not the server being broken.
+    const health = await httpJson(port, "GET", "/health", {});
+    assert.equal(health.status, 200, "non-enrolment routes must be unaffected");
+  } finally {
+    await new Promise<void>((resolve) => relay.httpServer.close(() => resolve()));
+  }
+});
