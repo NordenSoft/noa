@@ -854,3 +854,152 @@ test("bytes-in: the gate's signed decisionArtifactHash commits to the VERIFIED d
   assert.notEqual(signedHash, refHash({ ...(after.decisionArtifact as Record<string, unknown>), reasonCode: "ATTACKER-CHOSEN" }),
     "the signed hash commits to the ATTACKER's never-verified form of the artifact");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// ADR-0005 SLICE 2 — argv CAPTURE-ONCE + THE RENDER NODE.
+//
+// M7 above pins the defect at the ENGINE boundary. These pin it at the PROJECTION boundary, which is a
+// separate and independently reachable surface: `getProjection` is a public export (`index.ts`), so
+// `run()` is callable in-process by any consumer, with no HTTP body and no parse in between.
+//
+// THE DEFECT, MEASURED through that public surface on the tree Slice 2 replaces:
+//
+//     class Hostile extends Array { join() { return "--help"; } }
+//     argv = ["-rf", "/srv"]; argv.constructor = { [Symbol.species]: Hostile };
+//
+//     display.Args (human reads) : "--help"
+//     paramsHash (gate binds)    : sha256:2234882…   === the hash of "-rf /srv"
+//
+// `Array.prototype.slice` calls ArraySpeciesCreate, which reads `argv.constructor[Symbol.species]` —
+// caller-controlled — so the "immutable snapshot" was an ATTACKER INSTANCE. `Object.freeze` on it froze
+// its properties; the split lived in `join()`, which is a METHOD. The human authorized `--help` while
+// the grant bound `rm -rf /srv`.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+const CMD_BASE = { executable: "/bin/rm", cwd: "/srv", targetEnv: "production" } as const;
+
+async function projection(): Promise<{ run: (p: unknown) => Record<string, unknown> }> {
+  const m = await import("../src/projections.js");
+  const p = m.getProjection("noa.command.exec");
+  assert.ok(p, "fixture precondition: the reviewed adapter is registered");
+  // ⚠ BOUND, NOT DESTRUCTURED. `run()` reads `this.canonical` / `this.actionSchema`, so
+  // `const { run } = p` drops the receiver and every call throws
+  // "Cannot read properties of undefined (reading 'canonical')". My first version of this helper did
+  // exactly that: all five tests below failed IDENTICALLY, including the anti-vacuity control — which
+  // is the only reason it read as a broken fixture rather than as five security findings. Recorded
+  // because that is precisely what rule 2 at the top of this file is for.
+  const proj = p as unknown as { run: (params: unknown) => Record<string, unknown> };
+  return { run: (params: unknown) => proj.run.call(proj, params) };
+}
+
+/** THE property, stated once and reused: what the human is SHOWN must be what the digest BINDS. */
+function assertDisplayBindsWhatItShows(res: Record<string, unknown>, run: (p: unknown) => Record<string, unknown>, label: string): void {
+  assert.equal(res["ok"], true, `${label}: expected an accepted result, got ${JSON.stringify(res["error"])}`);
+  const shown = String((res["display"] as Record<string, unknown>)["Args"] ?? "");
+  // Re-run the adapter on EXACTLY the argv the human read. If the display and the digest describe the
+  // same command, the two hashes are identical. This is the M7 lesson: comparing the digest to a
+  // hard-coded reference survives its own knockout, because the split lands between the HASH and the
+  // DISPLAY, not between validation and the hash.
+  const reference = run({ ...CMD_BASE, argv: shown.length === 0 ? [] : shown.split(" ") });
+  assert.equal(reference["ok"], true, `${label}: the reference run must succeed`);
+  assert.equal(res["paramsHash"], reference["paramsHash"],
+    `${label}: the human is shown Args="${shown}" but the authorized digest commits to a DIFFERENT ` +
+      "command. The display and the paramsHash must be derived from one immutable value.");
+}
+
+test("Slice 2 / species: a caller-chosen Symbol.species cannot split the display from the digest", async () => {
+  const { run } = await projection();
+  class Hostile extends Array {
+    override join(): string { return "--help"; }
+  }
+  const argv: unknown[] = ["-rf", "/srv"];
+  (argv as { constructor: unknown }).constructor = { [Symbol.species]: Hostile };
+
+  const res = run({ ...CMD_BASE, argv });
+  assertDisplayBindsWhatItShows(res, run, "species");
+  assert.equal(res["derivedRisk"], "CRITICAL",
+    "`-rf` must still classify CRITICAL — the classifier reads the render node's array, and a species " +
+      "attack must not be able to hide a destructive flag from it");
+});
+
+test("Slice 2 / capture-once: an index is read EXACTLY once, so a flip has nothing to split", async () => {
+  const { run } = await projection();
+  let indexReads = 0;
+  const argv = new Proxy(["-rf", "/srv"], {
+    get(t, k) {
+      if (k === "0") { indexReads += 1; return indexReads <= 1 ? "-rf" : "--help"; }
+      return Reflect.get(t, k);
+    },
+  });
+
+  const res = run({ ...CMD_BASE, argv });
+  assert.ok(indexReads >= 1, `the poison never fired (reads=${indexReads}) — inconclusive, not a pass`);
+  assert.equal(indexReads, 1,
+    `argv[0] was read ${indexReads} times. The previous shape read every index TWICE — once to type-check ` +
+      "it, once inside `Array.prototype.slice` — so the value VALIDATED was not the value COPIED. " +
+      "Capture and validation must be the same read.");
+  assertDisplayBindsWhatItShows(res, run, "capture-once");
+});
+
+test("Slice 2 / length drift: argv.length is read once, so it cannot grow mid-walk", async () => {
+  const { run } = await projection();
+  let lengthReads = 0;
+  // A real Array's `length` is non-configurable, so a Proxy is the only way to express this attack.
+  const argv = new Proxy(["-rf", "/srv"], {
+    get(t, k) {
+      if (k === "length") { lengthReads += 1; return lengthReads <= 1 ? 2 : 5; }
+      return Reflect.get(t, k);
+    },
+  });
+  const res = run({ ...CMD_BASE, argv });
+  assert.ok(lengthReads >= 1, `length was never read (reads=${lengthReads}) — inconclusive`);
+  assert.equal(lengthReads, 1, `argv.length was read ${lengthReads} times; the walk's extent must not be revisable`);
+  assertDisplayBindsWhatItShows(res, run, "length-drift");
+});
+
+test("Slice 2 / iterator: a poisoned Symbol.iterator cannot hide a destructive flag from the classifier", async () => {
+  const { run } = await projection();
+  // `for..of` dispatches through Symbol.iterator. The risk classifier used one; this iterator omits
+  // `-rf`, which would have classified the command below down from CRITICAL and admitted a weaker
+  // approver. Index walks do not consult it.
+  const argv: unknown[] = ["-rf", "/srv"];
+  (argv as unknown as Record<PropertyKey, unknown>)[Symbol.iterator] = function* (): Generator<string> { yield "/srv"; };
+
+  const res = run({ ...CMD_BASE, argv });
+  assert.equal(res["ok"], true, "the honest values are all strings, so the call must succeed");
+  assert.equal(res["derivedRisk"], "CRITICAL",
+    "a skipping iterator hid `-rf` from the risk classifier. The classifier must index-walk, or the " +
+      "caller chooses its own approver tier by supplying an iterator.");
+});
+
+test("Slice 2 / holes and nesting are refused, and the bound is enforced", async () => {
+  const { run } = await projection();
+  const holed = new Array(3) as unknown[];
+  holed[0] = "-rf";
+  assert.equal(run({ ...CMD_BASE, argv: holed })["ok"], false, "a sparse argv must be refused, not read as undefined");
+  assert.equal(run({ ...CMD_BASE, argv: [["-rf", "/srv"]] })["ok"], false,
+    "a NESTED array must be refused — it used to render as `-rf,/srv` and classify below CRITICAL (F-05)");
+  const over = run({ ...CMD_BASE, argv: new Array(5000).fill("-x") as unknown[] });
+  assert.equal(over["ok"], false, "argv beyond MAX_ARGV must be refused");
+  assert.match(String(over["error"]), /argv length/, "the refusal must name the bound it hit");
+});
+
+test("Slice 2 anti-vacuity: the honest paths still work and the reviewed floor is still granted", async () => {
+  const { run } = await projection();
+  // If every input above is refused for some unrelated reason, none of those tests proves anything.
+  const honest = run({ ...CMD_BASE, argv: ["-rf", "/srv"] });
+  assert.equal(honest["ok"], true, "an ordinary destructive command must still be processable");
+  assert.equal((honest["display"] as Record<string, unknown>)["Args"], "-rf /srv", "the display must show the real argv");
+  assert.equal(honest["derivedRisk"], "CRITICAL");
+
+  const deploy = run({ executable: "/usr/local/bin/deploy", argv: ["--service", "api"], cwd: "/srv", targetEnv: "production" });
+  assert.equal(deploy["ok"], true, "the reviewed deploy path must still work");
+  assert.equal((deploy["display"] as Record<string, unknown>)["Args"], "--service api");
+  assert.equal(deploy["derivedRisk"], "HIGH",
+    "the allowlist must still grant its reviewed floor — otherwise everything is CRITICAL and the " +
+      "classifier is a refusal, not a classifier");
+
+  const empty = run({ ...CMD_BASE, argv: [] });
+  assert.equal(empty["ok"], true, "an empty argv is legitimate (a bare command) and must not be refused");
+  assert.equal((empty["display"] as Record<string, unknown>)["Args"], "", "an empty argv renders as an empty string");
+});
