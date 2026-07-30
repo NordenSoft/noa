@@ -68,7 +68,7 @@ test("a decision signed by an UNREGISTERED key is rejected — hold stays PENDIN
   const res = h.engine.decide(d.device, holdId, { receipt: forged });
   assert.equal(res.status, 422);
   assert.equal(bodyOf<{ error: string }>(res).error, "UNKNOWN_SIGNER_KID");
-  assert.equal(bodyOf<{ status: string }>(h.engine.getHold(agent, holdId)).status, "PENDING");
+  assert.equal(h.store.getHold(holdId)!.status, "PENDING");
 });
 
 test("a TAMPERED signature is rejected (never approves)", () => {
@@ -90,7 +90,7 @@ test("a TAMPERED signature is rejected (never approves)", () => {
   const res = h.engine.decide(d.device, holdId, { receipt: tampered });
   assert.equal(res.status, 422);
   assert.equal(bodyOf<{ error: string }>(res).error, "UNVERIFIED_SIGNATURE");
-  assert.equal(bodyOf<{ status: string }>(h.engine.getHold(agent, holdId)).status, "PENDING");
+  assert.equal(h.store.getHold(holdId)!.status, "PENDING");
 });
 
 test("a missing receipt is rejected", () => {

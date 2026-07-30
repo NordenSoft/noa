@@ -306,7 +306,9 @@ export class RelayEngine {
 
     return {
       status: 201,
-      body: { holdId: hold.id, status: hold.status, expiresAt: new Date(hold.expiresAt).toISOString() },
+      // `lifecycle`, not `status` — one name for the published field across every route, so the two
+      // surfaces cannot drift into one publishing a verdict again. Always PENDING here anyway.
+      body: { holdId: hold.id, lifecycle: hold.status, expiresAt: new Date(hold.expiresAt).toISOString() },
     };
   }
 
@@ -432,8 +434,13 @@ export class RelayEngine {
     if (hold.status !== "PENDING") {
       // D17 / Red Line 6: late-or-duplicate decision is rejected, never silently dropped.
       this.log("hold.decision_rejected", { holdId, currentStatus: hold.status });
+      // BLIND TRANSPORT applies to the REFUSAL too. This used to return `status: hold.status`, so a
+      // second decision post answered `409 { status: "APPROVED" }` — the verdict, leaked through an
+      // error body on the device route. The error CODE already distinguishes the only thing the
+      // caller legitimately needs (expired vs already-resolved); the outcome still requires the
+      // signed receipt.
       const code = hold.status === "EXPIRED" ? "HOLD_EXPIRED" : "HOLD_ALREADY_RESOLVED";
-      return err(409, code, { status: hold.status });
+      return err(409, code, { lifecycle: hold.status === "EXPIRED" ? "EXPIRED" : "DECIDED" });
     }
 
     if (!isRecord(input)) return err(400, "BAD_REQUEST");
@@ -762,11 +769,32 @@ export class RelayEngine {
   }
 
   // ── views + waiter plumbing ────────────────────────────────────────────────
+  /**
+   * BLIND TRANSPORT (owner decision, 2026-07-30). The relay does not publish a verdict.
+   *
+   * WHY. The relay's keyring has no root: `POST /v1/devices` is open, so anyone who can reach the
+   * server registers an approver key and drives a hold to APPROVED. No real approval is forged —
+   * the gate re-verifies from its own keyring at `gate/src/engine.ts:713-716` and never reads relay
+   * state — but this view used to publish `status: "APPROVED"` and `reasonCode: "HUMAN_APPROVED"`,
+   * which is indistinguishable from a real approval to anyone who reads it and does not re-verify.
+   * The docstring at the top of this file said "never a forged approval" while this method handed
+   * one out. A document cannot carry that guarantee; the wire format has to.
+   *
+   * WHAT REPLACES IT. `lifecycle` reports only what the relay legitimately owns — whether a decision
+   * has ARRIVED, not what it SAID. APPROVED and DENIED both collapse to `DECIDED`, so the outcome is
+   * unlearnable without verifying `decisionReceipt` against a registered key. EXPIRED survives
+   * because it is not a human verdict: Red Line 6 makes it a distinct terminal state the relay owns,
+   * and erasing it would blind operators without removing any impersonation.
+   *
+   * The internal state machine is UNCHANGED — `hold.status` still holds APPROVED/DENIED and is still
+   * asserted directly against the store in tests. Only the PUBLISHED surface narrowed.
+   */
   private holdView(hold: HoldRecord): Record<string, unknown> {
+    const lifecycle =
+      hold.status === "APPROVED" || hold.status === "DENIED" ? "DECIDED" : hold.status;
     return {
       holdId: hold.id,
-      status: hold.status,
-      reasonCode: hold.reasonCode,
+      lifecycle,
       action: hold.action,
       expiresAt: new Date(hold.expiresAt).toISOString(),
       decidedAt: hold.decidedAt !== null ? new Date(hold.decidedAt).toISOString() : null,

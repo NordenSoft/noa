@@ -125,9 +125,13 @@ export class GateRelayBridge {
   async readDecision(relayHoldId: string): Promise<{ decisionReceipt: unknown; decisionArtifact: unknown } | undefined> {
     const res = await getJson(`${this.relayUrl}/v1/holds/${encodeURIComponent(relayHoldId)}`, this.auth());
     if (res.status !== 200 || !res.body) return undefined;
-    const status = res.body['status'];
+    // BLIND TRANSPORT (owner decision, 2026-07-30). This used to gate on the relay's own
+    // `status === 'APPROVED' || status === 'DENIED'` — i.e. it believed the relay's word about what a
+    // human decided. The relay no longer publishes a verdict, so the only thing readable here is
+    // whether a decision has ARRIVED. What it SAYS comes from verifying the signed receipt, which the
+    // gate does on its own parse against its own keyring.
     const decisionReceipt = res.body['decisionReceipt'];
-    if ((status === 'APPROVED' || status === 'DENIED') && decisionReceipt) {
+    if (decisionReceipt) {
       return { decisionReceipt, decisionArtifact: res.body['decisionArtifact'] ?? null };
     }
     return undefined;

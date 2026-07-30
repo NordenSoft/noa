@@ -52,7 +52,7 @@ test("localhost end-to-end: hold → phone approval → agent learns the signed 
     });
     assert.equal(hold.status, 201);
     const holdId = (hold.json as { holdId: string }).holdId;
-    assert.equal((hold.json as { status: string }).status, "PENDING");
+    assert.equal((hold.json as { lifecycle: string }).lifecycle, "PENDING");
 
     // idempotency over HTTP: same key+body → same hold
     const holdAgain = await httpJson(port, "POST", "/v1/holds", {
@@ -81,17 +81,27 @@ test("localhost end-to-end: hold → phone approval → agent learns the signed 
       body: { receipt },
     });
     assert.equal(decision.status, 200);
-    assert.equal((decision.json as { status: string }).status, "APPROVED");
+    // BLIND TRANSPORT: the relay reports that a decision ARRIVED, never what it SAID.
+    assert.equal((decision.json as { lifecycle: string }).lifecycle, "DECIDED");
 
     // 7. agent long-polls and learns the signed decision
     const waited = await httpJson(port, "GET", `/v1/holds/${holdId}/wait?timeout=1`, { headers: agentAuth });
     assert.equal(waited.status, 200);
-    const body = waited.json as { status: string; decisionReceipt: Receipt } & Record<string, unknown>;
-    assert.equal(body.status, "APPROVED");
+    const body = waited.json as { lifecycle: string; decisionReceipt: Receipt } & Record<string, unknown>;
+    assert.equal(body.lifecycle, "DECIDED");
 
-    // the returned receipt is the phone's, and it verifies against the device PUBLIC key
+    // The relay publishes NO verdict, so an APPROVED hold is indistinguishable from a DENIED one on
+    // the wire. This is the whole point: the outcome is unlearnable without verifying the signature.
+    assert.equal((body as Record<string, unknown>)["status"], undefined,
+      "the relay must not publish a verdict-shaped status field");
+    assert.equal((body as Record<string, unknown>)["reasonCode"], undefined,
+      "the relay must not publish HUMAN_APPROVED — it has no root of trust to vouch for it");
+
+    // The ONLY way to learn the outcome: verify the phone's receipt against the device PUBLIC key.
     assert.ok(body.decisionReceipt);
     assert.equal(verifyReceiptSignature(body.decisionReceipt, publicKeyHex), true);
+    assert.equal(body.decisionReceipt.governance.verdict, "ALLOWED",
+      "the verdict comes from the SIGNED receipt, not from anything the relay said");
 
     // relay ≠ gate: the relay never issues a grant/consumption — none appear in the response
     for (const gateOnly of ["grant", "executionGrant", "grantId", "consumption", "executionConsumption"]) {
