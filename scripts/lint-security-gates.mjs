@@ -32,6 +32,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { analyzeDispatchSurfaces } from "./lib/dispatch-ast.mjs";
+import { EVASION_MATRIX } from "./lib/dispatch-ast-matrix.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rel = (p) => path.relative(ROOT, p);
@@ -54,6 +56,11 @@ const OUT_OF_TCB = {
   "src/builder.ts": "PRODUCER — the signer's own data, trusted by definition (ADR §3.3)",
   "src/cli.ts": "calls the boundary; takes no verdict of its own",
   "src/pii.ts": "advisory helper, not on any verdict path",
+  "src/serve.ts":
+    "Stage 0.5 IPC PROTOCOL REHEARSAL transport (docs/kernel-wire-protocol.md): framing + signed-envelope " +
+    "assembly only; calls the boundary (verifyChain) and takes no verdict of its own. Same-realm TS that " +
+    "carries NO security claim by its own label — in the target architecture the envelope signer moves " +
+    "kernel-side and IS kernel TCB (ADR-0002 §4.2); this module is the part that stays transport.",
 };
 
 const TCB = [
@@ -303,6 +310,125 @@ function L3() {
   return n;
 }
 
+// ── L8 — THE DISPATCH-SURFACE GATE, NOW AN AST WALK (rewritten 2026-07-29, round-4, A5) ──────────
+/**
+ * WHAT CHANGED, AND WHY A LONGER REGEX WAS NOT AN OPTION.
+ *
+ * L8 was a LINE-BASED text scan. It shipped at BLOCK/0, was false-green within one round, was
+ * extended with four more construct classes and four spelling evasions, shipped at BLOCK/0 again —
+ * and round 4 measured it clean while SEVEN live dispatches sat in the TCB, one of them
+ * (`Object.prototype.hasOwnProperty` at call time in `src/opts.ts:163`) on the options-validation
+ * decision path and another (`new WeakSet()` in a parameter default in `src/inert.ts`) on the
+ * policy-table audit path. Each round's answer had been another alternation; that strategy cannot
+ * terminate, because the subject is a property of the PROGRAM and the instrument was reading
+ * characters.
+ *
+ * The scan is now `scripts/lib/dispatch-ast.mjs`: a TypeScript compiler-API walk that matches on
+ * NODE KINDS and RESOLVED SYMBOLS. Formatting is not information it consumes, so multi-line,
+ * computed, optional-chained and globalThis-prefixed spellings are all the same node; and the type
+ * checker answers "is this identifier the ambient global or one of ours?", which is the question no
+ * text scan can ask — it removes the false negatives and the false positives at the same time.
+ *
+ * SCOPE IS UNCHANGED AND NOT NARROWED: every TCB file except `src/intrinsics.ts`, which is the
+ * capture mechanism itself. What DID change is the load-time exemption. It used to be "only inspect
+ * INDENTED lines" — a formatting proxy that a declaration at column 0 walked straight through. It is
+ * now structural: a node is exempt only if no function-like ancestor DEFERS its evaluation, with an
+ * IIFE at module level still counting as load-time and a PARAMETER DEFAULT correctly counting as
+ * call-time. That is strictly more subject matter, not less.
+ */
+const TCB_EXEMPT_FROM_L8 = new Set(["src/intrinsics.ts"]);
+
+function l8Sources() {
+  return TCB
+    .filter((f) => !TCB_EXEMPT_FROM_L8.has(f) && fs.existsSync(path.join(ROOT, f)))
+    .map((f) => ({ fileName: path.join(ROOT, f), text: read(f), rel: f }));
+}
+
+/** De-duplicate: one construct can be reported by two rules at the same position. */
+function dedupe(findings) {
+  const seen = new Set();
+  const out = [];
+  for (const f of findings) {
+    const k = `${f.file}:${f.line}:${f.rule}`;
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(f);
+  }
+  return out;
+}
+
+function L8() {
+  const sources = l8Sources();
+  const relOf = new Map(sources.map((s) => [s.fileName, s.rel]));
+  const found = dedupe(analyzeDispatchSurfaces(sources, {
+    exempt: new Set(),
+    srcRoot: path.join(ROOT, "src"),
+    loadTimeExemption: true,
+  }));
+  for (const f of found) {
+    add("L8", relOf.get(f.file) ?? f.file, f.line, `${f.what} — ${f.why}  [${f.rule}: \`${f.text}\`]`);
+  }
+  return found.length;
+}
+
+/**
+ * ── L8 SELF-TEST: THE EVASION MATRIX ──────────────────────────────────────────────────────────────
+ *
+ * Every construct carries a POSITIVE sample the analyser MUST flag and a NEGATIVE (captured) sample
+ * it must NOT. It runs on EVERY invocation, through the SAME `analyzeDispatchSurfaces` the gate
+ * itself calls — a self-test that re-implements the scan proves only that the copy works, which is a
+ * defect this file has shipped before.
+ *
+ * The entries flagged `evasion: true` are spellings the previous LINE-BASED gate was measured to
+ * miss. They are the reason the rewrite happened, so they are the reason the matrix exists.
+ */
+function L8SelfTest() {
+  let n = 0;
+  const sources = [];
+  for (const c of EVASION_MATRIX) {
+    if (c.positive !== null) sources.push({ fileName: path.join(ROOT, "src", `__matrix_pos_${c.id}.ts`), text: c.positive, id: c.id, kind: "positive" });
+    if (c.negative !== null) sources.push({ fileName: path.join(ROOT, "src", `__matrix_neg_${c.id}.ts`), text: c.negative, id: c.id, kind: "negative" });
+  }
+  const found = dedupe(analyzeDispatchSurfaces(sources, {
+    exempt: new Set(),
+    srcRoot: path.join(ROOT, "src", "__never_matches__"), // no sample file counts as "ours"
+    loadTimeExemption: true,
+  }));
+  const byFile = new Map();
+  for (const f of found) byFile.set(f.file, [...(byFile.get(f.file) ?? []), f]);
+
+  for (const src of sources) {
+    const c = EVASION_MATRIX.find((x) => x.id === src.id);
+    const hits = byFile.get(src.fileName) ?? [];
+    if (src.kind === "positive") {
+      const matched = c.rule === null || hits.some((h) => h.rule === c.rule);
+      if (!matched) {
+        add("L8-selftest", "scripts/lib/dispatch-ast.mjs", 0,
+          `construct "${c.id}" does NOT flag its own known-positive sample (expected rule \`${c.rule}\`, got [${hits.map((h) => h.rule).join(", ") || "nothing"}]) — ` +
+          `the gate reads 0 because it measures nothing. ${c.evasion ? "This is a spelling the previous line-based gate was MEASURED to miss: " : ""}${c.why}`);
+        n++;
+      }
+    } else if (hits.length > 0) {
+      add("L8-selftest", "scripts/lib/dispatch-ast.mjs", 0,
+        `construct "${c.id}" fires on the CAPTURED/clean form [${hits.map((h) => h.rule).join(", ")}] — a rule that flags the fix teaches everyone to route around the gate. ${c.why}`);
+      n++;
+    }
+  }
+  // Every rule the analyser can emit must be covered by at least one positive sample, or it has
+  // never been observed to bite.
+  const RULES = ["live-builtin-member", "bare-global-call", "value-dispatch", "computed-dispatch",
+    "accessor-read", "for-of", "spread", "array-destructuring", "instanceof", "regex-literal",
+    "live-constructor", "builtin-import", "dynamic-import"];
+  for (const r of RULES) {
+    if (!EVASION_MATRIX.some((c) => c.rule === r && c.positive !== null)) {
+      add("L8-selftest", "scripts/lib/dispatch-ast-matrix.mjs", 0,
+        `analyser rule \`${r}\` has NO positive sample in the evasion matrix — it has never been observed to bite`);
+      n++;
+    }
+  }
+  return n;
+}
+
 // ── L5 — VERDICTS PINNED ─────────────────────────────────────────────────────────────────────────
 // H-03: the poison suite compared AGGREGATE accept/reject counts, so a poison that flipped one
 // fixture from VALID to TAMPERED and another from TAMPERED to VALID netted to zero and passed. A
@@ -410,6 +536,49 @@ function L7() {
  * THE LINT TABLE. `mode` is enforcement, never strength. `budget` is the measured violation count
  * at the moment the lint landed; exceeding it fails even in warn mode, so the number only falls.
  */
+
+// ── L10 — RELAY DECISION-PATH COVERAGE ───────────────────────────────────────────────────────────
+// `packages/relay/src` — 2,552 lines — was covered by NOTHING. Every layer above walks the ROOT
+// package's `src/`, so the relay's 36-finding adversarial round, and the eight defects closed after
+// it, could all be reintroduced by a refactor and no gate would notice. That is not a hypothetical:
+// this round found a verdict leak in a function a previous commit had already "fixed", and the test
+// suite walked past it because the leaking field shared a name with an HTTP status.
+//
+// Deliberately WARN with a MEASURED budget, not BLOCK. The relay is not the root package: its
+// decision paths are transport-shaped, and several constructs that are genuine findings in the
+// signing kernel are ordinary in an HTTP adapter. Flipping this to BLOCK before the residue is
+// understood would either wedge the branch or invite exactly the budget-inflation this file forbids.
+// The budget ratchets DOWN as the residue is classified, and flips to BLOCK at 0 per the rule at the
+// top of this file.
+const RELAY_TCB = [
+  "packages/relay/src/engine.ts",   // the hold state machine and every trust decision it makes
+  "packages/relay/src/crypto.ts",   // the relay's ONLY cryptographic check
+  "packages/relay/src/server.ts",   // auth, routing, the enrolment gate, body ingest
+  "packages/relay/src/config.ts",   // exposure classification and the enrolment refusal
+  "packages/relay/src/auth.ts",     // bearer parsing and constant-time comparison
+  "packages/relay/src/store.ts",    // manifest equivocation and monotonicity
+  "packages/relay/src/file-store.ts", // the persistence round trip
+];
+const L10_EXTRA = [
+  { re: /\bstructuredClone\s*\(/, what: "structuredClone(", why: "a WRITABLE GLOBAL on a decision path — the C-01 class; measured to move signed bytes" },
+];
+function L10() {
+  let n = 0;
+  for (const f of RELAY_TCB) {
+    if (!fs.existsSync(path.join(ROOT, f))) {
+      add("L10", f, 0, "a file on the relay's declared decision path is missing — the list is stale, which makes this layer's number meaningless");
+      n++;
+      continue;
+    }
+    strip(read(f)).split("\n").forEach((line, i) => {
+      for (const c of [...L2_CONSTRUCTS, ...L10_EXTRA]) {
+        if (c.re.test(line)) { add("L10", f, i + 1, `${c.what} on a relay decision path — ${c.why}`); n++; }
+      }
+    });
+  }
+  return n;
+}
+
 const LINTS = [
   // L0 runs FIRST and BLOCKS unconditionally. It is deliberately not part of any budget: if an
   // unclassified file could be absorbed by L3's allowance, then fixing one mutable table would buy
@@ -438,8 +607,29 @@ const LINTS = [
   // "blocking" for a gate the code does not yet satisfy is the failure mode this table exists to
   // prevent. The earlier note here recorded a RAISE 63 → 64 when `src/ingest.ts` moved into the TCB;
   // that file no longer exists, and `src/scan.ts` took its place in the subject set.
-  { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "warn", budget: 35,
-    ratchet: "blocks when the decision path stops calling includes/has/HOFs/for-of/regex (ADR §5.5, P3)." },
+  // Budget RATCHETED 35 -> 33 -> 29 on 2026-07-29. 35->33: `src/jcs.ts` lost two `for…of` loops
+  // when its key walk and code-point walk became index loops. 33->29: `src/verify.ts` lost four more
+  // when the chain-partition, seq-map, hash/signature and distinct-agent walks became index loops —
+  // those were not style changes, they closed a substituting-iterator forgery. The ratchet only ever
+  // moves down: lowering it locks the gain in so a later change cannot quietly spend it.
+  // Budget RATCHETED 29 -> 17 on 2026-07-29 (round-2). The drop is the substituting-iterator closure of
+  // R3-04/R3-05/R3-06/R3-08: `for…of` over parsed arrays became index walks and the policy `and/or/in`
+  // quantifiers (`.some`/`.every`) became captured wrappers in `src/nfc.ts`, `src/schema.ts`,
+  // `src/policy/eval.ts` and `src/federation/verify-witnessed.ts`. The ratchet only ever moves down.
+  // Budget RATCHETED 17 -> 11 on 2026-07-29 (round-3, measured). The drop is the T19 closure: the
+  // three protected/unprotected COSE header walks in `src/cose/cose-sign1.ts`, the `clauses`/`rules`
+  // walks in `src/policy/validate.ts` and `src/policy/dsl.ts`, and the identity-manifest `.every` in
+  // `src/verify.ts` became index walks and captured wrappers. The ratchet only ever moves down;
+  // lowering it locks the gain in so a later change cannot quietly spend it.
+  // FLIPPED warn(11) -> BLOCK on 2026-07-29 (round-4), and the budget is DELETED rather than set to 0,
+  // per the rule at the top of this file. Measured 0. The last eleven went in one pass: nine `for…of`
+  // walks became index walks (policy/validate, verify ×3, policy/compliance, cose/receipt-cose,
+  // inert ×3) and the twelfth-hour finding was `src/inert.ts`'s own audit deciding cycle-membership
+  // with a live `WeakSet.prototype.has` — the control that hunts runtime-mutable policy tables was
+  // silenced by the intrinsic class it exists to hunt (measured: `has -> true` made inertViolations
+  // return `[]`). Budgets move DOWNWARD only; locking this at 0 means a later change cannot spend it.
+  { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "block" },
+  { id: "L10", name: "relay decision-path coverage (packages/relay/src)", run: L10, mode: "warn", budget: 39 },
   // FLIPPED warn(10) -> BLOCK on 2026-07-28, budget deleted. Measured 0: every module-level table in
   // the TCB is now built frozen and null-rooted at construction. The last three were CHECKPOINT_KEYS
   // (verify.ts), MUTATORS (inert.ts) and INVALID_HEAD (verify-witnessed.ts) — a shared sentinel any
@@ -450,7 +640,59 @@ const LINTS = [
   { id: "L5", name: "verdicts pinned by exact value", run: L5, mode: "block" },
   { id: "L6", name: "declared cases actually execute", run: L6, mode: "block" },
   { id: "L7", name: "corpus parity across five implementations", run: L7, mode: "block" },
+  // ADDED 2026-07-29 (round-2). Enters at BLOCK/0: R3-03..R3-09 were all closed at the source in this
+  // pass (spread/instanceof/live-static/live-proto counts across the TCB = 0, measured), so per the
+  // rule at the top of this file a zero-count gate ships blocking with no budget — any regression is a
+  // hard failure, never an in-budget warning.
+  // EXTENDED 2026-07-29 (round-3) with the four construct classes it was MEASURED to miss —
+  // bare-global calls, array HOFs, live builtin ESM import bindings and live accessor reads — plus the
+  // four spelling evasions of its own original rules (globalThis./["x"]/?./detached binding). Stays at
+  // BLOCK with no budget: measured 0 across the TCB after the fixes in this pass. `--selftest` proves
+  // every rule still BITES, because a rule that has never been observed to fail is not a rule.
+  // Runs BEFORE L8 in the table so a defanged rule is reported before its count of 0 is printed.
+  { id: "L8-selftest", name: "evasion matrix — every construct bites its positive sample, none fires on the captured form", run: L8SelfTest, mode: "block" },
+  { id: "L8", name: "dispatch-surface AST gate (compiler-API walk: node kinds + resolved symbols)", run: L8, mode: "block" },
 ];
+
+// The legacy regex self-test that stood here was DELETED with the regexes it tested (round-4, A5).
+// Its replacement is the evasion matrix in `scripts/lib/dispatch-ast-matrix.mjs`, driven by
+// `L8SelfTest` above through the SAME analyser the gate calls. Every case it used to assert is
+// carried there — including the two false-positive guards it earned the hard way (a COMMENT
+// discussing the import, and a type-only import) — and an AST has no comment statements at all,
+// so the first of those is now structurally impossible rather than defended against.
+
+/**
+ * `--matrix` prints the evasion matrix as a table: for every construct, which rule fired on the
+ * POSITIVE sample and that nothing fired on the NEGATIVE one. The gate asserts this on every run;
+ * this flag only makes the assertion READABLE, so a reviewer can re-derive it without reading code.
+ */
+if (process.argv.includes("--matrix")) {
+  const sources = [];
+  for (const c of EVASION_MATRIX) {
+    if (c.positive !== null) sources.push({ fileName: path.join(ROOT, "src", `__m_pos_${c.id}.ts`), text: c.positive, id: c.id, kind: "positive" });
+    if (c.negative !== null) sources.push({ fileName: path.join(ROOT, "src", `__m_neg_${c.id}.ts`), text: c.negative, id: c.id, kind: "negative" });
+  }
+  const found = dedupe(analyzeDispatchSurfaces(sources, { exempt: new Set(), srcRoot: "", loadTimeExemption: true }));
+  const byFile = new Map();
+  for (const f of found) byFile.set(f.file, [...(byFile.get(f.file) ?? []), f]);
+  console.log("EVASION MATRIX — positive sample must be FLAGGED, negative (captured) sample must be CLEAN\n");
+  console.log(`  ${"construct".padEnd(34)} ${"expected rule".padEnd(22)} ${"positive".padEnd(26)} negative`);
+  console.log(`  ${"-".repeat(34)} ${"-".repeat(22)} ${"-".repeat(26)} ${"-".repeat(20)}`);
+  let bad = 0;
+  for (const c of EVASION_MATRIX) {
+    const pos = c.positive === null ? null : (byFile.get(path.join(ROOT, "src", `__m_pos_${c.id}.ts`)) ?? []);
+    const neg = c.negative === null ? null : (byFile.get(path.join(ROOT, "src", `__m_neg_${c.id}.ts`)) ?? []);
+    const posOk = pos === null ? "—" : (pos.some((h) => h.rule === c.rule) ? `FLAGGED ${pos.length}` : "*** MISSED ***");
+    const negOk = neg === null ? "—" : (neg.length === 0 ? "clean" : `*** FIRED ${neg.map((h) => h.rule).join(",")} ***`);
+    if (posOk.startsWith("***") || negOk.startsWith("***")) bad++;
+    const tag = c.evasion ? " [EVASION]" : "";
+    console.log(`  ${(c.id + tag).padEnd(34)} ${String(c.rule ?? "(none)").padEnd(22)} ${posOk.padEnd(26)} ${negOk}`);
+  }
+  const evasions = EVASION_MATRIX.filter((c) => c.evasion).length;
+  console.log(`\n  ${EVASION_MATRIX.length} constructs, ${evasions} of them spellings the previous LINE-BASED gate was measured to miss.`);
+  console.log(bad === 0 ? "  MATRIX PASS — every positive flagged, every negative clean." : `  MATRIX FAIL — ${bad} construct(s) wrong.`);
+  process.exit(bad === 0 ? 0 : 1);
+}
 
 let exitCode = 0;
 const summary = [];
