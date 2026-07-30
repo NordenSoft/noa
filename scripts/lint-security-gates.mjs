@@ -551,25 +551,86 @@ function L7() {
 // The budget ratchets DOWN as the residue is classified, and flips to BLOCK at 0 per the rule at the
 // top of this file.
 const RELAY_TCB = [
-  "packages/relay/src/engine.ts",   // the hold state machine and every trust decision it makes
-  "packages/relay/src/crypto.ts",   // the relay's ONLY cryptographic check
-  "packages/relay/src/server.ts",   // auth, routing, the enrolment gate, body ingest
-  "packages/relay/src/config.ts",   // exposure classification and the enrolment refusal
-  "packages/relay/src/auth.ts",     // bearer parsing and constant-time comparison
-  "packages/relay/src/store.ts",    // manifest equivocation and monotonicity
+  "packages/relay/src/engine.ts",     // the hold state machine and every trust decision it makes
+  "packages/relay/src/crypto.ts",     // the relay's ONLY cryptographic check
+  "packages/relay/src/server.ts",     // auth, routing, the enrolment gate, body ingest, exposure
+  "packages/relay/src/config.ts",     // exposure classification and the enrolment refusal
+  "packages/relay/src/cli.ts",        // THE ONLY WRITER of bindAddress/unsafeListen/tlsTerminated/
+                                      // enrolmentSecret — the four inputs config.ts classifies on.
+                                      // Omitting it while gating config.ts was the gap QA named.
+  "packages/relay/src/auth.ts",       // bearer parsing and the constant-time comparison
+  "packages/relay/src/store.ts",      // manifest equivocation and monotonicity
   "packages/relay/src/file-store.ts", // the persistence round trip
+  "packages/relay/src/push.ts",       // Red Line 11 — a push payload must never carry PII
 ];
+/**
+ * Exempted, each with a REASON. An unclassified file is a finding; an exemption without a stated
+ * reason is how a decision path hides in plain sight.
+ */
+const RELAY_OUT_OF_TCB = {
+  "packages/relay/src/index.ts": "re-export surface only — declares no rule and makes no decision",
+  "packages/relay/src/ratelimit.ts": "a token bucket over an opaque key; carries no verdict and reads no caller document",
+  "packages/relay/src/types.ts": "type declarations only — erased at compile time, no runtime behaviour",
+};
 const L10_EXTRA = [
   { re: /\bstructuredClone\s*\(/, what: "structuredClone(", why: "a WRITABLE GLOBAL on a decision path — the C-01 class; measured to move signed bytes" },
 ];
+
+/**
+ * RELAY RECONCILIATION — every file under `packages/relay/src` is either declared a decision path
+ * (and linted) or explicitly exempted (with a reason).
+ *
+ * This exists because QA measured the escape and it was not budget inflation: a NEW FILE containing
+ * `structuredClone(`, `for…of`, `.includes(` and an array HOF left the count at exactly 39. And
+ * REMOVING `file-store.ts` from the declared list — 20 of the 39 — dropped the count to 19 and the
+ * gate exited 0, silently. The cheap way past L10 was never to raise the budget; it was to move a
+ * file.
+ *
+ * `scripts/lint-security-gates.mjs` already documented this exact failure for L2/L3 — "a hardcoded
+ * subject list that nothing reconciles is the poison matrix again, wearing a different hat: correct
+ * on the day it was written, silent thereafter" — and L10 shipped without it.
+ *
+ * RECONCILIATION FINDINGS ARE RETURNED SEPARATELY AND BLOCK OUTSIDE THE BUDGET, for the same reason
+ * L0 is not budgeted: if an unclassified file could be absorbed by the residue allowance, then
+ * fixing one `for…of` would buy the right to hide a whole module, and the scoreboard would net to
+ * zero while the blind spot grew.
+ */
+function reconcileRelay() {
+  const seen = new Set();
+  const dir = "packages/relay/src";
+  const abs = path.join(ROOT, dir);
+  if (fs.existsSync(abs)) {
+    for (const e of fs.readdirSync(abs, { withFileTypes: true })) {
+      if (e.isFile() && e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) seen.add(`${dir}/${e.name}`);
+    }
+  }
+  let n = 0;
+  for (const f of seen) {
+    if (!RELAY_TCB.includes(f) && !(f in RELAY_OUT_OF_TCB)) {
+      add("L10-reconcile", f, 0,
+        "file under packages/relay/src is in neither RELAY_TCB nor RELAY_OUT_OF_TCB — an " +
+        "unclassified relay module is a decision path L10 cannot see. Classify it in " +
+        "scripts/lint-security-gates.mjs.");
+      n++;
+    }
+  }
+  // A DECLARED file that no longer exists is equally fatal: the layer keeps reporting a number while
+  // the subject it described is gone, which is how L9 cleared five roots by not reading them.
+  for (const f of [...RELAY_TCB, ...Object.keys(RELAY_OUT_OF_TCB)]) {
+    if (!seen.has(f)) {
+      add("L10-reconcile", f, 0,
+        "a file declared on the relay's decision path (or exempted from it) no longer exists — the " +
+        "list is stale, which makes L10's number meaningless.");
+      n++;
+    }
+  }
+  return n;
+}
+
 function L10() {
   let n = 0;
   for (const f of RELAY_TCB) {
-    if (!fs.existsSync(path.join(ROOT, f))) {
-      add("L10", f, 0, "a file on the relay's declared decision path is missing — the list is stale, which makes this layer's number meaningless");
-      n++;
-      continue;
-    }
+    if (!fs.existsSync(path.join(ROOT, f))) continue; // reported by reconcileRelay, not counted twice
     strip(read(f)).split("\n").forEach((line, i) => {
       for (const c of [...L2_CONSTRUCTS, ...L10_EXTRA]) {
         if (c.re.test(line)) { add("L10", f, i + 1, `${c.what} on a relay decision path — ${c.why}`); n++; }
@@ -629,6 +690,8 @@ const LINTS = [
   // silenced by the intrinsic class it exists to hunt (measured: `has -> true` made inertViolations
   // return `[]`). Budgets move DOWNWARD only; locking this at 0 means a later change cannot spend it.
   { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "block" },
+  // Reconciliation BLOCKS and is deliberately not budgeted — see reconcileRelay()'s comment.
+  { id: "L10-reconcile", name: "relay TCB coverage (every packages/relay/src file is classified)", run: reconcileRelay, mode: "block" },
   { id: "L10", name: "relay decision-path coverage (packages/relay/src)", run: L10, mode: "warn", budget: 39 },
   // FLIPPED warn(10) -> BLOCK on 2026-07-28, budget deleted. Measured 0: every module-level table in
   // the TCB is now built frozen and null-rooted at construction. The last three were CHECKPOINT_KEYS
