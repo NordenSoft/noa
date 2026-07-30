@@ -207,3 +207,68 @@ test("R-1 shape (A): an embedder listening on httpServer directly is treated as 
     await new Promise<void>((resolve) => relay.httpServer.close(() => resolve()));
   }
 });
+
+/**
+ * R-1 shape (A), SECOND ATTEMPT — QA rejected the first one and reproduced the bypass on it.
+ *
+ * The first fix RECORDED the bound address in the `listen()` callback. A recorded address outlives
+ * the socket it describes: `listen()` on loopback, then `close()`, then the embedder calls
+ * `httpServer.listen(0,"0.0.0.0")` — and the recorded "127.0.0.1" was still doing the classifying
+ * while the real socket faced the world. Reproduced by me before fixing:
+ *
+ *     step 3  embedder listen() -> REAL socket is 0.0.0.0:52118
+ *     step 4  anonymous POST /v1/devices -> 201  deviceSecret: noa_device_a6oL3rSO...
+ *
+ * Resetting on `close()` would have fixed only the first variant, because the embedder owns the
+ * server object and need not call ours. So the invariant is not "did OUR listen run?" but "is the
+ * socket serving THIS request still the one our listen opened?" — a LIVE read, per request.
+ *
+ * The original shipped test passed because it never listened first, i.e. it exercised the one
+ * ordering where the flag was still null. Both orderings are pinned below.
+ */
+async function mintAnonymously(port: number, kid: string): Promise<number> {
+  const r = await httpJson(port, "POST", "/v1/devices", { body: { kid, publicKeyHex: "c".repeat(64) } });
+  return r.status;
+}
+
+test("R-1 shape (A) variant 1: listen -> close -> embedder re-listens on 0.0.0.0", async () => {
+  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+  await relay.listen();
+  await relay.close();
+  await new Promise<void>((r) => relay.httpServer.listen(0, "0.0.0.0", () => r()));
+  const addr = relay.httpServer.address();
+  const port = addr && typeof addr === "object" ? addr.port : 0;
+  try {
+    assert.equal(await mintAnonymously(port, "stale-v1"), 503,
+      "the recorded loopback address outlived the socket — an approver key was minted through a " +
+      "world-facing socket");
+  } finally {
+    await new Promise<void>((r) => relay.httpServer.close(() => r()));
+  }
+});
+
+test("R-1 shape (A) variant 2: our close() is never called; the embedder closes and re-listens", async () => {
+  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+  await relay.listen();
+  await new Promise<void>((r) => relay.httpServer.close(() => r()));
+  await new Promise<void>((r) => relay.httpServer.listen(0, "0.0.0.0", () => r()));
+  const addr = relay.httpServer.address();
+  const port = addr && typeof addr === "object" ? addr.port : 0;
+  try {
+    assert.equal(await mintAnonymously(port, "stale-v2"), 503,
+      "resetting only in our close() is not enough — the embedder owns the server object");
+
+    // ANTI-VACUITY: a relay whose socket IS the one we opened still enrols on loopback, so the two
+    // 503s above are the live-tuple check biting rather than the gate being stuck closed.
+    const honest = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+    const { port: hp } = await honest.listen();
+    try {
+      assert.equal(await mintAnonymously(hp, "honest"), 201,
+        "an untouched loopback relay must still enrol, or this test proves only that enrolment is broken");
+    } finally {
+      await honest.close();
+    }
+  } finally {
+    await new Promise<void>((r) => relay.httpServer.close(() => r()));
+  }
+});

@@ -54,11 +54,27 @@ export function createRelay(opts: CreateRelayOptions = {}): Relay {
   // `null` until OUR `listen()` runs. A request arriving while it is still null means the socket was
   // opened by someone other than this function, so we do not know the bind address and must not
   // guess: the sentinel below is non-loopback, which fails CLOSED.
-  let actualBindAddress: string | null = null;
-  const effectiveConfig = (): RelayConfig =>
-    actualBindAddress === null
-      ? { ...config, bindAddress: "0.0.0.0" } // unknown provenance ⇒ treat as exposed
-      : { ...config, bindAddress: actualBindAddress };
+  // A RECORDED address is not enough — it outlives the socket it describes. QA reproduced the
+  // bypass on the first version of this fix: `listen()` on loopback, then `close()`, then the
+  // embedder calls `httpServer.listen(0, "0.0.0.0")` — the recorded "127.0.0.1" survived and an
+  // approver key was minted anonymously through a world-facing socket. A second variant skipped our
+  // `close()` entirely and went straight through `httpServer.close()`. Resetting on `close()` would
+  // have fixed only the first, because the embedder owns the server object and need not call ours.
+  //
+  // So the invariant is not "did OUR listen run?" but "is the socket serving THIS request still the
+  // one our listen opened?" — which is a LIVE read, checked per request against what we recorded.
+  let ourSocket: { address: string; port: number } | null = null;
+  const effectiveConfig = (): RelayConfig => {
+    const live = httpServer.address();
+    // `null` = not listening · `string` = unix socket (our listen() always passes host+port, so a
+    // string here means someone else opened it) · object = TCP, compare the whole tuple.
+    // One sentinel for every untrusted case — never listened, re-listened, closed and reopened,
+    // unix socket. Non-loopback, so exposure classification fails CLOSED.
+    const UNTRUSTED = { ...config, bindAddress: "0.0.0.0" };
+    if (ourSocket === null || live === null || typeof live !== "object") return UNTRUSTED;
+    if (live.address !== ourSocket.address || live.port !== ourSocket.port) return UNTRUSTED;
+    return { ...config, bindAddress: ourSocket.address };
+  };
 
   const httpServer = createServer((req, res) => {
     handle(req, res, engine, effectiveConfig(), limiter).catch(() => {
@@ -97,10 +113,13 @@ export function createRelay(opts: CreateRelayOptions = {}): Relay {
           // Record what the OS actually bound, not what we asked for. This is the value the
           // enrolment gate classifies against; see `actualBindAddress` above.
           if (addr && typeof addr === "object") {
-            actualBindAddress = addr.address;
+            // Record the WHOLE tuple. `effectiveConfig()` compares against it live on every request,
+            // so a socket that is closed and reopened elsewhere stops matching and fails closed.
+            ourSocket = { address: addr.address, port: addr.port };
             resolve({ address: addr.address, port: addr.port });
           } else {
-            actualBindAddress = config.bindAddress;
+            // A non-object address means this is not the TCP socket we asked for. Leave `ourSocket`
+            // null rather than guessing — untrusted, and `effectiveConfig()` will use the sentinel.
             resolve({ address: config.bindAddress, port: config.port });
           }
         });
