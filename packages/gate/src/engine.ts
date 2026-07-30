@@ -259,12 +259,35 @@ export class GateEngine {
       });
     }
 
-    // An unregistered CRITICAL/IRREVERSIBLE action fails CLOSED. There is no derivation available for
-    // it, so there is nothing a human could meaningfully approve.
-    if (mode === "RAW" && (riskClass === "CRITICAL" || riskClass === "IRREVERSIBLE")) {
+    // ─── B-1 MIGRATION CLAUSE, IMPLEMENTED (2026-07-30) ───────────────────────────────────────────
+    // The owner decision register (docs/OWNER-DECISION-REGISTER.md, B-1) requires, verbatim:
+    // "An unmatched action must classify to the HIGHEST tier and fail closed — otherwise the default
+    // is the vulnerability."
+    //
+    // WHAT USED TO STAND HERE tested the CALLER's `riskClass` and refused only when the caller
+    // volunteered CRITICAL/IRREVERSIBLE. So the fail-closed branch was reachable only by an HONEST
+    // caller. An unregistered action declared `LOW` sailed past it, and `effectiveRisk` below then
+    // defaulted to that same caller hint — so the caller CHOSE its own tier on exactly the path with
+    // no derivation to check it against.
+    //
+    // THE MEASURED CONSEQUENCE, and the reason this is not merely untidy: `engine.ts` feeds
+    // `hold.action.riskClass` into `verifyArtifact`, and `approval-artifacts/src/verify.ts:133-138`
+    // turns it into `requiredApproverRole`. On a RAW hold a caller-set `LOW` therefore let an
+    // UNDER-TIER approver produce a gate-SIGNED `APPROVED` Hold Resolution. No grant and no dispatch
+    // (:712-713, :739-742 still hold) — but a signed artefact that an evidence consumer reads as
+    // approval. The old comment below claimed the RAW hint was "metadata, not an authorization
+    // input". That claim was false: it selected the approver.
+    //
+    // Unmatched ⇒ no projection ⇒ no derivation ⇒ HIGHEST tier ⇒ and by this branch's own reasoning a
+    // critical action cannot be approved without a derived display. So the honest resolution of the
+    // register's two requirements together is that an unregistered action is REFUSED, whatever tier
+    // the caller names. RAW remains what its own comment says it is — diagnostic, never authorization
+    // — and it is no longer a hold-creation path.
+    if (mode === "RAW") {
       return err(422, "UNREGISTERED_CRITICAL_ACTION", {
-        detail: `no trusted projection is registered for "${canonical}"; a critical action cannot be ` +
-          `approved without a derived display. RAW is diagnostic only and is never authorization.`,
+        detail: `no trusted projection is registered for "${canonical}"; an unmatched action ` +
+          `classifies to the highest tier and fails closed (owner decision B-1). It cannot be ` +
+          `approved without a derived display, and its approver tier is not caller-selectable.`,
       });
     }
     if (!canonical || !riskClass) return err(422, "INCOMPLETE_ACTION");
@@ -275,9 +298,13 @@ export class GateEngine {
     // Resolve the display + paramsHash per mode.
     let paramsHash: string;
     let display: Record<string, unknown>;
-    // Defaults to the caller's hint ONLY on the RAW/unenforced path, which cannot carry a grant or
-    // claim HUMAN_APPROVED at all — so the hint there is metadata, not an authorization input.
-    let effectiveRisk: string = riskClass;
+    // Seeded to the HIGHEST tier, not to the caller's hint. Only the ENFORCED path reaches this line
+    // now — RAW returned above — and ENFORCED overwrites it from `run.derivedRisk`. Seeding it
+    // `CRITICAL` rather than `riskClass` means that if a future branch ever reaches the consumers at
+    // `:381`/`:449` without deriving, it fails CLOSED at the strictest tier instead of silently
+    // adopting whatever the caller asked for. A default is a security decision (owner decision B-1:
+    // "otherwise the default is the vulnerability").
+    let effectiveRisk: string = "CRITICAL";
     let actionSchema: ProjectionId | null = null;
     let displayProjection: ProjectionId | null = null;
 

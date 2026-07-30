@@ -113,7 +113,26 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
   assert.equal(resolution.verdictReceiptHash, receiptRefHash(allowed as unknown as Record<string, unknown>));
 });
 
-test("RAW mode: caller supplies paramsHash + display; envelope labels it RAW with null projection", () => {
+/** BEHAVIOUR CHANGE, 2026-07-30 (owner decision B-1's migration clause, now implemented) —
+ *  CONVERTED, NOT DELETED.
+ *
+ *  This test used to assert that RAW mode SUCCEEDS with 201: an unregistered action, a caller-supplied
+ *  `paramsHash` and a caller-authored `display`, labelled RAW with a null projection.
+ *
+ *  B-1 states verbatim: "An unmatched action must classify to the HIGHEST tier and fail closed —
+ *  otherwise the default is the vulnerability." The old code tested only the CALLER's `riskClass` and
+ *  refused when the caller VOLUNTEERED CRITICAL/IRREVERSIBLE, so the fail-closed branch was reachable
+ *  only by an honest caller. This request — `riskClass: "MEDIUM"` on an unregistered action — walked
+ *  straight past it, and `effectiveRisk` then defaulted to that same hint. Since
+ *  `verify.ts:133-138` turns `riskClass` into `requiredApproverRole`, the caller was choosing its own
+ *  approver tier on precisely the path with no derivation to check it against.
+ *
+ *  The assertion is INVERTED, not relaxed: the same request that used to get a 201 now gets a 422, so
+ *  the refused set is strictly larger. RAW remains what its own comment always claimed — diagnostic,
+ *  never authorization — but it is no longer a hold-creation path. The `mode`/`actionSchema`/
+ *  `displayProjection` envelope shape this test used to pin is now unreachable through a caller and is
+ *  covered for the ENFORCED path by the tests above. */
+test("RAW mode is refused outright: an unmatched action fails closed at the highest tier (B-1)", () => {
   const fx = setupGate();
   const paramsHash = "sha256:" + "b".repeat(64);
   const created = fx.engine.createHold(fx.agent, "idem-raw", body({
@@ -122,12 +141,22 @@ test("RAW mode: caller supplies paramsHash + display; envelope labels it RAW wit
     display: { Amount: "$500", To: "Mercury Treasury" },
     chain: "chain-raw",
   }));
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const env = (created.body as { holdEnvelope: Record<string, unknown> }).holdEnvelope;
-  assert.equal(env["mode"], "RAW");
-  assert.equal(env["actionSchema"], null);
-  assert.equal(env["displayProjection"], null);
-  assert.equal(env["gateKid"], fx.trust.gate.kid);
+  assert.equal(created.status, 422, JSON.stringify(created.body));
+  assert.equal((created.body as { error: string }).error, "UNREGISTERED_CRITICAL_ACTION");
+  assert.match(String((created.body as { detail?: string }).detail), /highest tier and fails closed/,
+    "the refusal must name the rule it is enforcing, so a caller can act on it");
+  // No hold may exist: a refused request must not leave state behind for a later route to find.
+  assert.equal(fx.store.getHold("chain-raw"), undefined, "a refused RAW request must create no hold");
+
+  // ANTI-VACUITY: the ENFORCED path on a REGISTERED action still succeeds in this same run, so the
+  // 422 above is the unmatched-action rule biting — not the fixture being broken.
+  const ok = fx.engine.createHold(fx.agent, "idem-raw-control", body({
+    mode: "ENFORCED",
+    action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
+    params: sampleCommandParams(),
+    chain: "chain-raw-control",
+  }));
+  assert.equal(ok.status, 201, `the registered control must still be accepted: ${JSON.stringify(ok.body)}`);
 });
 
 test("DENY path: gate resolves DENIED with a BLOCKED verdict receipt, issues NO grant", () => {

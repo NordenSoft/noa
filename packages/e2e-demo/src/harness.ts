@@ -406,22 +406,36 @@ export interface EncryptedDisplayProbe {
 export async function runEncryptedDisplayRoundTrip(ctx: HarnessContext): Promise<EncryptedDisplayProbe> {
   const chain = 'chain-' + ctx.ids();
   const idem = 'idem-' + ctx.ids();
-  const knownDisplay: J = {
-    title: 'Wire transfer approval',
-    amountMinor: 420000, // integer minor units (€4,200.00)
-    currency: 'EUR',
-    to: 'ACME GmbH',
-    memo: 'invoice 2026-0715',
+  // ─── MIGRATED OFF RAW, 2026-07-30 (owner decision B-1's migration clause) ──────────────────────
+  // This probe used to create a RAW hold on the unregistered `noa.custom.wire` and hand the gate a
+  // caller-authored `display`. Both of those are now refused: an unmatched action classifies to the
+  // highest tier and fails closed, and a caller no longer authors what the human reads.
+  //
+  // The probe's SUBJECT is unchanged and is not RAW mode — it is the HPKE round trip: the gate seals a
+  // display, the phone opens it locally, the plaintext is EXACT, and a tampered ciphertext is refused.
+  // That is now exercised on the ENFORCED path, which is the only path that can reach a sealer, so the
+  // probe covers the shape that actually ships rather than a diagnostic one.
+  //
+  // `expectedDisplay` is re-derived HERE, by hand, from the params being sent — deliberately NOT read
+  // back from the gate. The gate keeps no plaintext copy (only `encryptedDisplay`), so comparing the
+  // phone's decrypted view against an independent derivation is a genuine oracle. Reading both sides
+  // from one source would be the tautology this project keeps catching.
+  const params = deployCommandParams();
+  const expectedDisplay: J = {
+    Action: PILOT_CANONICAL,
+    Command: params['executable'] as string,
+    Args: (params['argv'] as string[]).join(' '),
+    Cwd: params['cwd'] as string,
+    Env: params['targetEnv'] as string,
   };
-  const paramsHash = 'sha256:' + 'a'.repeat(64);
   const res = await fetch(`${ctx.gateBaseUrl}/v1/holds`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${GATE_AGENT_KEY}`, 'idempotency-key': idem },
-    body: JSON.stringify({ mode: 'RAW', action: { canonical: 'noa.custom.wire', riskClass: 'HIGH', paramsHash }, display: knownDisplay, chain }),
+    body: JSON.stringify({ mode: 'ENFORCED', action: { canonical: PILOT_CANONICAL, riskClass: PILOT_RISK }, params, chain }),
   });
   const body = (await res.json().catch(() => null)) as J | null;
   const gateHoldId = body && typeof body['holdId'] === 'string' ? (body['holdId'] as string) : '';
-  if (res.status !== 201 || !gateHoldId) throw new DemoError('GATE', 'GATE_HOLD_FAILED', 'RAW hold for the encrypted-display probe failed', { status: res.status, body });
+  if (res.status !== 201 || !gateHoldId) throw new DemoError('GATE', 'GATE_HOLD_FAILED', 'ENFORCED hold for the encrypted-display probe failed', { status: res.status, body });
 
   const hold = ctx.gate.store.getHold(gateHoldId);
   if (!hold || !hold.holdEnvelope || !hold.deferredReceipt || !hold.encryptedDisplay) {
@@ -458,5 +472,5 @@ export async function runEncryptedDisplayRoundTrip(ctx: HarnessContext): Promise
     tamperErrorCode = e instanceof DemoError ? e.code : 'UNKNOWN';
   }
 
-  return { knownDisplay, openedDisplay: view.display, isRealHpke, actualDisplayHash, envelopeDisplayHash, tamperRejected, tamperErrorCode };
+  return { knownDisplay: expectedDisplay, openedDisplay: view.display, isRealHpke, actualDisplayHash, envelopeDisplayHash, tamperRejected, tamperErrorCode };
 }

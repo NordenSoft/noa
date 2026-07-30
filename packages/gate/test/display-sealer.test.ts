@@ -48,7 +48,18 @@ test("fail-closed: NO sealer wired → freezing a hold is DISPLAY_SEALER_UNCONFI
   assert.equal(store.listHolds({}).length, 0, "no hold is stored when sealing fails closed");
 });
 
-test("RAW mode also fails closed with no sealer (caller display is never shipped in the clear)", () => {
+/** BEHAVIOUR CHANGE, 2026-07-30 (owner decision B-1's migration clause) — CONVERTED, NOT DELETED.
+ *
+ *  This used to assert `500 DISPLAY_SEALER_UNCONFIGURED`: a RAW hold reached the display-sealing step
+ *  and failed closed there because no sealer was wired. RAW is now refused earlier, at the
+ *  unmatched-action check, so the refusal moved from 500 to 422 and from the sealer to the front door.
+ *
+ *  THE SECURITY PROPERTY THIS TEST EXISTS FOR IS UNCHANGED AND STILL ASSERTED BELOW: a caller-authored
+ *  display must never appear in the clear in a response. It is now protected STRICTLY EARLIER — the
+ *  request dies before any display handling occurs at all — so the guarantee is stronger, not weaker.
+ *  The 500-with-no-sealer path is still covered for ENFORCED holds by the test above it, which is the
+ *  path that can actually reach a sealer now. */
+test("an unmatched action is refused before display handling, and the caller's display never leaks", () => {
   const clock = makeClock();
   const now = () => clock.t;
   const trust = createAlphaTrust({ tenant: "fc-tenant", now });
@@ -63,10 +74,12 @@ test("RAW mode also fails closed with no sealer (caller display is never shipped
     chain: "chain-fc-raw",
   }));
 
-  assert.equal(res.status, 500, JSON.stringify(res.body));
-  assert.equal((res.body as { error: string }).error, "DISPLAY_SEALER_UNCONFIGURED");
-  assert.ok(!JSON.stringify(res.body).includes(secret), "RAW caller display must NEVER appear in the clear");
-  assert.equal(store.listHolds({}).length, 0);
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  assert.equal((res.body as { error: string }).error, "UNREGISTERED_CRITICAL_ACTION");
+  // The reason this test is worth keeping: the refusal must not echo the caller's own display back.
+  assert.ok(!JSON.stringify(res.body).includes(secret),
+    "a caller-authored display must NEVER appear in the clear, not even inside an error body");
+  assert.equal(store.listHolds({}).length, 0, "a refused request must leave no hold behind");
 });
 
 test("sealer PRESENT → the same hold succeeds and the envelope binds the sealed display (contrast)", () => {
