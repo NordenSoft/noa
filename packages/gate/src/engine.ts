@@ -421,7 +421,27 @@ export class GateEngine {
         deferredReceiptHash,
         expiresAt,
         display,
-        recipients: [{ kid: this.trust.approver.kid, hpkePublicKey: this.trust.approverHpkePublicKey }],
+        // ─── ADR-0005 SLICE 4: THE AUDIT KEY IS ALWAYS A RECIPIENT ─────────────────────────────────
+        // This list held the approver ALONE, while `createAlphaTrust` provisioned an AUDIT key with
+        // `roles: ["audit-decrypt"]` and published its HPKE public half on `GateTrust` — and NOTHING
+        // EVER READ IT. Its kid existed only as a string literal inside the key-manifest entry, so the
+        // engine could not have named it as a recipient even if it had tried.
+        //
+        // The consequence is not a leak; it is the opposite, and it is worse than it looks for an audit
+        // system. Every display the gate sealed was decryptable by EXACTLY ONE PARTY — the approver
+        // device. So the human-visible text that a HUMAN_APPROVED receipt attests to could never be
+        // independently recovered by anyone: not an auditor, not an incident responder, not the tenant
+        // whose money moved. The gate signs `displayCiphertextHash` to bind what the human saw, and
+        // then nobody but the approver's phone could ever open it and check. A binding no third party
+        // can ever verify is a binding that has to be taken on trust, which is the thing this project
+        // exists not to ask for.
+        //
+        // ALWAYS, not conditionally: an audit recipient a caller or a code path can omit is an audit
+        // recipient that will be missing from precisely the display someone later needs.
+        recipients: [
+          { kid: this.trust.approver.kid, hpkePublicKey: this.trust.approverHpkePublicKey },
+          { kid: this.trust.auditKid, hpkePublicKey: this.trust.auditHpkePublicKey },
+        ],
       });
     }
 

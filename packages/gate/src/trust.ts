@@ -63,6 +63,11 @@ export interface GateTrust {
    *  the phone (see test/helpers.ts). */
   approver: GateKeyPair;
   approverHpkePublicKey: string;
+  /** The AUDIT recipient's kid + HPKE public half (`roles: ["audit-decrypt"]` in the key manifest).
+   *  The kid is exposed because the engine must be able to NAME this recipient when it seals a display;
+   *  before ADR-0005 Slice 4 the key was provisioned and never used, so no auditor could decrypt
+   *  anything the gate sealed. */
+  auditKid: string;
   auditHpkePublicKey: string;
 
   keyManifestVersion: number;
@@ -97,6 +102,10 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
   const approver = generateKeyPair("approver-1-device-1");
   const approverHpke = generateX25519Public();
   const auditHpke = generateX25519Public();
+  // The audit kid was a bare string literal inside the key-manifest entry below and existed NOWHERE
+  // else, so nothing could name the audit recipient (ADR-0005 Slice 4). Bound once here and used by
+  // both the manifest and `auditKid`, so the manifest entry and the recipient list cannot drift.
+  const auditKidValue = "audit-1";
 
   const iso = (ms: number) => new Date(ms).toISOString();
   const t0 = now();
@@ -146,7 +155,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
           revokedAt: null,
         },
         {
-          kid: "audit-1",
+          kid: auditKidValue,
           type: "AUDIT",
           roles: ["audit-decrypt"],
           hpkePublicKey: auditHpke,
@@ -179,6 +188,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
     gate,
     approver,
     approverHpkePublicKey: approverHpke,
+    auditKid: auditKidValue,
     auditHpkePublicKey: auditHpke,
     keyManifestVersion: keyManifest.version as number,
     keyManifestHash,

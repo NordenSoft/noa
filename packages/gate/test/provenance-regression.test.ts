@@ -1003,3 +1003,65 @@ test("Slice 2 anti-vacuity: the honest paths still work and the reviewed floor i
   assert.equal(empty["ok"], true, "an empty argv is legitimate (a bare command) and must not be refused");
   assert.equal((empty["display"] as Record<string, unknown>)["Args"], "", "an empty argv renders as an empty string");
 });
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+// ADR-0005 SLICE 4 — THE AUDIT KEY IS ALWAYS A RECIPIENT.
+//
+// `createAlphaTrust` provisions an AUDIT key with `roles: ["audit-decrypt"]` and publishes its HPKE
+// public half on `GateTrust`. NOTHING EVER READ IT: `engine.ts` sealed every display to the approver
+// alone, and the audit kid existed only as a string literal inside the key-manifest entry.
+//
+// So every display the gate sealed was openable by EXACTLY ONE PARTY. The gate signs
+// `displayCiphertextHash` to bind what the human saw — and then no auditor, no incident responder and
+// no tenant could ever open it to check what that was. A binding no third party can verify has to be
+// taken on trust, which is the thing this project exists not to ask for.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────
+
+test("Slice 4: every sealed display carries the AUDIT recipient, not the approver alone", () => {
+  const fx = setupGate({ approverRole: "approve-critical" });
+  const created = fx.engine.createHold(fx.agent, "idem-audit", body({
+    action: ACTION, params: sampleCommandParams(), chain: "chain-audit",
+  }));
+  assert.equal(created.status, 201, `fixture precondition: hold created (got ${created.status})`);
+  const hold = fx.store.getHold((created.body as { holdId: string }).holdId)!;
+  const recipients = (hold.encryptedDisplay as unknown as Record<string, unknown>)["recipients"] as Array<{ kid: string }>;
+
+  assert.ok(Array.isArray(recipients), "the sealed display must carry a recipients array");
+  const kids = recipients.map((r) => r.kid);
+
+  // The audit key is provisioned by the trust root; assert against THAT, never against a literal —
+  // a hardcoded "audit-1" here would pass even if the engine sealed to a key the manifest never named.
+  assert.ok(fx.trust.auditKid, "fixture precondition: the trust root provisions an audit kid");
+  assert.ok(kids.includes(fx.trust.auditKid),
+    `the sealed display is openable only by ${JSON.stringify(kids)}. The AUDIT key ` +
+      `(${fx.trust.auditKid}) is provisioned with roles ["audit-decrypt"] and must ALWAYS be a ` +
+      "recipient: otherwise the display the gate signs a commitment to can never be independently " +
+      "recovered, and displayCiphertextHash binds something nobody but the approver can ever read.");
+});
+
+test("Slice 4 anti-vacuity: the APPROVER is still a recipient, and the honest flow still completes", () => {
+  // Adding the audit recipient must not displace the approver — if it did, the human could no longer
+  // read the request at all and the test above would pass on a completely broken gate.
+  const fx = setupGate({ approverRole: "approve-critical" });
+  const created = fx.engine.createHold(fx.agent, "idem-audit-av", body({
+    action: ACTION, params: sampleCommandParams(), chain: "chain-audit-av",
+  }));
+  assert.equal(created.status, 201);
+  const holdId = (created.body as { holdId: string }).holdId;
+  const hold = fx.store.getHold(holdId)!;
+  const kids = ((hold.encryptedDisplay as unknown as Record<string, unknown>)["recipients"] as Array<{ kid: string }>).map((r) => r.kid);
+
+  assert.ok(kids.includes(fx.trust.approver.kid),
+    `the approver (${fx.trust.approver.kid}) must remain a recipient; got ${JSON.stringify(kids)}`);
+  assert.notEqual(fx.trust.auditKid, fx.trust.approver.kid, "sanity: the two recipients are distinct keys");
+
+  // And the whole approval path still works with the widened recipient list — the sealed blob is bound
+  // into the envelope via displayCiphertextHash, so a recipient change that broke the binding would
+  // surface here rather than at a verifier months later.
+  const { receipt, decisionArtifact } = signPhoneDecision({
+    trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "APPROVE",
+  });
+  const decided = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
+  assert.equal(decided.status, 200, `the honest approval must still succeed: ${JSON.stringify(decided.body)}`);
+  assert.equal(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED");
+});
