@@ -102,14 +102,36 @@ export function enrolmentRefusal(
   presented: string | undefined,
 ): { status: number; body: { error: string; detail?: string } } | null {
   if (config.enrolmentSecret === null) {
-    if (isLoopbackAddress(config.bindAddress)) return null; // unreachable from outside; see above
+    // EXPOSURE IS NOT `bindAddress`. `bindAddress` describes this process's own socket; it does not
+    // describe REACHABILITY, which is not knowable from inside the process. Measured, on the frozen
+    // tree, two shapes where the old test said "loopback, therefore safe" and enrolment ran anyway:
+    //
+    //   (A) `Relay.httpServer` is a public field. An embedder calling
+    //       `httpServer.listen(port, "0.0.0.0")` bypasses the D20 bind guard entirely, while
+    //       `config.bindAddress` still reads "127.0.0.1".
+    //   (B) THE STANDARD PRODUCTION SHAPE — the relay bound correctly to loopback with a reverse
+    //       proxy in front. D20 passes, `bindAddress` is loopback, and the full anonymous pipeline
+    //       ran end to end through the proxy: approver key, pairing token, agent API key.
+    //
+    // (B) is the shape this very file names two lines up: `tlsTerminated` is documented as "set true
+    // when deployed behind Railway/HTTPS". So the operator ALREADY declares the exposure — the flag
+    // was sitting right there and this function did not read it. `unsafeListen` is the same
+    // declaration for a direct bind.
+    //
+    // So: either flag being set means EXPOSED, whatever the bind address says. Loopback-with-neither
+    // remains open, because on a genuinely unreachable dev box a secret protects nothing, and a
+    // control that protects nothing teaches people to route around controls.
+    const declaredExposed = config.tlsTerminated || config.unsafeListen;
+    if (!declaredExposed && isLoopbackAddress(config.bindAddress)) return null;
     return {
       status: 503,
       body: {
         error: "ENROLMENT_NOT_CONFIGURED",
         detail:
-          "this relay is bound off loopback, so credential enrolment requires an operator-provisioned " +
-          "enrolmentSecret. Anonymous enrolment is permitted only when nothing outside the host can reach it.",
+          "this relay is reachable from outside the host, so credential enrolment requires an " +
+          "operator-provisioned enrolment secret. Set NOA_RELAY_ENROLMENT_SECRET, or pass " +
+          "--enrolment-secret. Anonymous enrolment is permitted only on a loopback bind with neither " +
+          "--tls-terminated nor --unsafe-listen — i.e. only when nothing outside the host can reach it.",
       },
     };
   }

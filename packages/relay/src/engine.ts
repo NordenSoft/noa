@@ -235,7 +235,18 @@ export class RelayEngine {
           status: 200,
           body: {
             holdId: existing.id,
-            status: existing.status,
+            // THE FOURTH LEAK, and it was in the same function as one of the three I "fixed".
+            // This 200 idempotent-replay body kept BOTH the old field name and the verdict:
+            // `status: "APPROVED"` vs `"DENIED"`, relay-authored, over HTTP, with the agent's own
+            // credential — fully distinguishing a human's approve from a deny.
+            //
+            // The suite walked straight past it because `http-e2e.test.ts` makes exactly this
+            // request and asserts `assert.equal(holdAgain.status, 200)` — the HTTP status, while the
+            // leaking BODY field is also called `status`. The name collision is the entire trap, and
+            // it is why "I fixed three sites" was a claim about the sites I looked at rather than
+            // about the function.
+            lifecycle:
+              existing.status === "APPROVED" || existing.status === "DENIED" ? "DECIDED" : existing.status,
             expiresAt: new Date(existing.expiresAt).toISOString(),
             idempotent: true,
           },

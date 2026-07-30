@@ -100,3 +100,77 @@ test("R-1 over HTTP: a configured secret gates the real /v1/devices route end to
     await relay.close();
   }
 });
+
+/**
+ * R-1 FOLLOW-UP — the premise was false, and QA proved it with two reproductions.
+ *
+ * `bindAddress` describes this process's own socket. It does NOT describe REACHABILITY, which is not
+ * knowable from inside the process. Two measured shapes where "loopback, therefore safe" was wrong:
+ *
+ *   (A) `Relay.httpServer` is a public field, so an embedder can `httpServer.listen(port,"0.0.0.0")`,
+ *       bypassing the D20 bind guard entirely while `config.bindAddress` still reads "127.0.0.1".
+ *   (B) THE STANDARD PRODUCTION SHAPE — bound correctly to loopback behind a reverse proxy. D20
+ *       passes, the bind is loopback, and the full anonymous pipeline ran through the proxy:
+ *       approver key, pairing token, agent API key.
+ *
+ * The operator already DECLARES (B) by setting `tlsTerminated` — documented in config.ts as "set true
+ * when deployed behind Railway/HTTPS". The flag was there; the guard did not read it.
+ */
+test("R-1: a loopback bind behind a declared TLS terminator counts as EXPOSED", () => {
+  const behindProxy = resolveConfig({ bindAddress: "127.0.0.1", tlsTerminated: true });
+  const refusal = enrolmentRefusal(behindProxy, undefined);
+  assert.ok(refusal, "a relay fronted by a proxy is reachable — anonymous enrolment must be refused");
+  assert.equal(refusal.status, 503);
+
+  // `unsafeListen` is the same declaration for a direct bind.
+  const unsafe = resolveConfig({ bindAddress: "127.0.0.1", unsafeListen: true });
+  assert.ok(enrolmentRefusal(unsafe, undefined), "an unsafeListen declaration also means exposed");
+
+  // ANTI-VACUITY: a genuine dev box — loopback with NEITHER declaration — is still open, because on
+  // an unreachable host a secret protects nothing and a control that protects nothing gets routed
+  // around. If this flipped, the test above would pass for the wrong reason.
+  assert.equal(enrolmentRefusal(resolveConfig({ bindAddress: "127.0.0.1" }), undefined), null);
+
+  // And a configured secret still admits the operator in the exposed shape.
+  const withSecret = resolveConfig({ bindAddress: "127.0.0.1", tlsTerminated: true, enrolmentSecret: "op" });
+  assert.equal(enrolmentRefusal(withSecret, "op"), null, "the operator must still be able to enrol");
+  assert.ok(enrolmentRefusal(withSecret, "wrong"));
+});
+
+test("R-1: the idempotent-replay body publishes no verdict (the FOURTH leak site)", async () => {
+  // QA found this one. I had fixed the 201 create body and the 409 refusal and MISSED the 200
+  // replay body 73 lines away, which kept both the old field name and the verdict. The suite walked
+  // past it because http-e2e asserts `holdAgain.status === 200` — the HTTP status — while the
+  // leaking BODY field was also called `status`.
+  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+  const { port } = await relay.listen();
+  try {
+    const pair = await httpJson(port, "POST", "/v1/pairings", { body: {} });
+    const token = (pair.json as { token: string }).token;
+    const red = await httpJson(port, "POST", "/v1/pair", { body: { token, name: "a" } });
+    const apiKey = (red.json as { apiKey: string }).apiKey;
+    const auth = { authorization: `Bearer ${apiKey}` };
+    const action = { canonical: "wire.transfer", riskClass: "CRITICAL", paramsHash: "sha256:" + "a".repeat(64) };
+
+    const first = await httpJson(port, "POST", "/v1/holds", {
+      headers: { ...auth, "Idempotency-Key": "idem-leak" },
+      body: { action },
+    });
+    assert.equal(first.status, 201);
+
+    const replay = await httpJson(port, "POST", "/v1/holds", {
+      headers: { ...auth, "Idempotency-Key": "idem-leak" },
+      body: { action },
+    });
+    assert.equal(replay.status, 200);
+    const body = replay.json as Record<string, unknown>;
+    assert.equal(body["idempotent"], true, "this must be the replay path, or the test proves nothing");
+    assert.equal(body["status"], undefined,
+      "the replay body still publishes a relay-authored `status` — approve and deny are " +
+      "distinguishable over HTTP with the agent's own credential");
+    assert.equal(body["reasonCode"], undefined);
+    assert.equal(body["lifecycle"], "PENDING", "it may report lifecycle, which carries no verdict");
+  } finally {
+    await relay.close();
+  }
+});
