@@ -135,6 +135,74 @@ test("after a full approval flow, NO private-key material is ever at rest (relay
   }
 });
 
+/**
+ * R-ING-01 — PERMANENT REGRESSION. A human's DENIAL must never be recorded as an approval.
+ *
+ * MEASURED BEFORE THE FIX: `decide()` read `receipt.governance.verdict` once to choose the status,
+ * and the signature check re-read the same property (through `noa-signer`'s `receiptHashInput`,
+ * which uses `structuredClone` and therefore invokes accessors). A getter answering ALLOWED on the
+ * first read and BLOCKED on the second produced:
+ *
+ *     what the human signed : BLOCKED  (a real Ed25519 denial)
+ *     verdict reads         : 2
+ *     RECORDED status       : APPROVED / HUMAN_APPROVED
+ *
+ * NOT reachable over HTTP — `server.ts` uses `JSON.parse`, so the serialized attack freezes the
+ * getter's FIRST answer into the bytes and the signature check then refuses it (422). Kept and fixed
+ * anyway: it inverts a human decision, which is this product's entire purpose.
+ */
+test("R-ING-01: a two-faced verdict cannot turn a signed DENIAL into an approval", () => {
+  const h = makeHarness();
+  const { agent } = makeAgent(h);
+  const d = makeDevice(h);
+  const { holdId } = bodyOf<{ holdId: string }>(h.engine.createHold(agent, "idem-ring01", { action: ACTION }));
+
+  // A REAL signature over a receipt whose verdict is BLOCKED. The human said NO.
+  const honestDenial = signDecisionReceipt({
+    kid: d.kid, privateKey: d.privateKey,
+    canonical: ACTION.canonical, paramsHash: ACTION.paramsHash, verdict: "BLOCKED",
+  });
+
+  let verdictReads = 0;
+  const gov = honestDenial.governance as unknown as Record<string, unknown>;
+  const twoFaced: Record<string, unknown> = {};
+  for (const k of Object.keys(gov)) if (k !== "verdict") twoFaced[k] = gov[k];
+  Object.defineProperty(twoFaced, "verdict", {
+    enumerable: true, configurable: true,
+    get() { verdictReads += 1; return verdictReads === 1 ? "ALLOWED" : "BLOCKED"; },
+  });
+  const attack = { ...honestDenial, governance: twoFaced } as unknown as typeof honestDenial;
+
+  h.engine.decide(d.device, holdId, { receipt: attack });
+  const hold = h.store.getHold(holdId)!;
+
+  assert.notEqual(hold.status, "APPROVED",
+    "a cryptographically valid DENIAL was recorded as an APPROVAL — the verdict that authorized is " +
+    "not the verdict the signature covered");
+  assert.notEqual(hold.reasonCode, "HUMAN_APPROVED", "the human denied; no approval reason may be recorded");
+
+  // ANTI-VACUITY, both directions — without these the assertions above would also pass on a relay
+  // that simply refused everything, or on a broken fixture that never reached decide().
+  const h2 = makeHarness();
+  const a2 = makeAgent(h2);
+  const d2 = makeDevice(h2);
+  const { holdId: denyId } = bodyOf<{ holdId: string }>(h2.engine.createHold(a2.agent, "idem-deny", { action: ACTION }));
+  const inertDenial = signDecisionReceipt({
+    kid: d2.kid, privateKey: d2.privateKey,
+    canonical: ACTION.canonical, paramsHash: ACTION.paramsHash, verdict: "BLOCKED",
+  });
+  assert.equal(h2.engine.decide(d2.device, denyId, { receipt: inertDenial }).status, 200);
+  assert.equal(h2.store.getHold(denyId)!.status, "DENIED", "an honest denial must still be recorded as DENIED");
+
+  const { holdId: allowId } = bodyOf<{ holdId: string }>(h2.engine.createHold(a2.agent, "idem-allow", { action: ACTION }));
+  const inertApproval = signDecisionReceipt({
+    kid: d2.kid, privateKey: d2.privateKey,
+    canonical: ACTION.canonical, paramsHash: ACTION.paramsHash, verdict: "ALLOWED",
+  });
+  assert.equal(h2.engine.decide(d2.device, allowId, { receipt: inertApproval }).status, 200);
+  assert.equal(h2.store.getHold(allowId)!.status, "APPROVED", "an honest approval must still be recorded as APPROVED");
+});
+
 test("#64-S5: a self-revoke never touches key material — no private key at rest after revokeSelf", () => {
   const h = makeHarness();
   const d = makeDevice(h);

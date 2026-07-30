@@ -22,7 +22,7 @@ import { randomUUID, randomBytes } from "node:crypto";
 import type { RelayConfig } from "./config.js";
 import { classifyManifestPut, ManifestPutConflictError, type Store } from "./store.js";
 import type { PushProvider, PushMessage } from "./push.js";
-import { verifyReceiptSignature, safeRefHash } from "./crypto.js";
+import { verifyReceiptSignature, safeRefHash, inertSnapshot } from "./crypto.js";
 import { hashSecret } from "./auth.js";
 import type {
   AgentRecord,
@@ -437,7 +437,36 @@ export class RelayEngine {
     }
 
     if (!isRecord(input)) return err(400, "BAD_REQUEST");
-    const receipt = this.parseReceiptOrNull(input["receipt"]);
+
+    // ─── R-ING-01 — ONE SNAPSHOT, TAKEN BEFORE ANYTHING READS THE RECEIPT ────────────────────────
+    // MEASURED on the tree this replaces: `governance.verdict` was read here and re-read inside the
+    // signature check below (via noa-signer's `receiptHashInput`, which uses `structuredClone` and
+    // so invokes accessors). A getter answering ALLOWED first and BLOCKED second made this method
+    // record APPROVED / HUMAN_APPROVED over a cryptographically VALID human DENIAL — reproduced
+    // in-process, with the honest inert denial recorded as DENIED in the same run as the control.
+    // The same split reached `sig.kid`, the action binding, and the receipt that gets stored.
+    //
+    // Reads after this line cannot disagree, because there is no second answer left to give. This is
+    // also why the store can no longer invoke an accessor while persisting (PERSIST-1): the accessor
+    // is gone before the record is built, not guarded against at the write path.
+    //
+    // NOT reachable over HTTP — `server.ts` parses bodies with `JSON.parse`, which yields plain data,
+    // and the serialized attack self-destructs (the getter's FIRST answer is frozen into the bytes,
+    // so the signature check refuses it). Fixed anyway: it inverts a human decision, which is this
+    // product's entire purpose, and the gate closed this exact class at `gate/src/engine.ts:185-198`.
+    // ABSENT is checked before MALFORMED, and the distinction is kept deliberately: an absent receipt
+    // is a caller that sent nothing, a malformed one is a caller that sent something unrepresentable.
+    // Collapsing them would have changed `BAD_OR_MISSING_RECEIPT` into `MALFORMED_RECEIPT` for every
+    // empty body — the existing suite caught exactly that, and the code was fixed rather than the test.
+    const rawReceipt = input["receipt"];
+    if (!isRecord(rawReceipt)) return err(422, "BAD_OR_MISSING_RECEIPT");
+    const inertReceipt = inertSnapshot(rawReceipt);
+    if (inertReceipt === null) {
+      return err(422, "MALFORMED_RECEIPT", {
+        detail: "the receipt is not JCS-canonicalizable plain data",
+      });
+    }
+    const receipt = this.parseReceiptOrNull(inertReceipt);
     if (!receipt) return err(422, "BAD_OR_MISSING_RECEIPT");
     if (!isRecord(receipt.sig) || asString(receipt.sig.kid) === undefined) {
       return err(422, "RECEIPT_MISSING_SIG");
@@ -466,7 +495,11 @@ export class RelayEngine {
     }
 
     hold.decisionReceipt = receipt;
-    hold.decisionArtifact = input["decisionArtifact"] ?? null;
+    // Same class as the receipt above: this is stored verbatim, persisted, and served back at :764,
+    // so a live caller object here re-reads at every one of those points. `null` on a
+    // non-canonicalizable value is the fail-closed answer and matches the existing `?? null` default
+    // — the field is optional, and a malformed one is recorded as absent rather than as itself.
+    hold.decisionArtifact = inertSnapshot(input["decisionArtifact"] ?? null) ?? null;
     hold.status = verdict === "ALLOWED" ? "APPROVED" : "DENIED";
     hold.reasonCode = verdict === "ALLOWED" ? "HUMAN_APPROVED" : "HUMAN_DENIED";
     hold.decidedAt = this.now();
