@@ -19,7 +19,7 @@
  *     receivedAt (never the phone's decidedAt).
  */
 
-import { verifyArtifact, refHash, receiptRefHash } from "noa-approval-artifacts";
+import { parseDocument, verifyArtifact, refHash, receiptRefHash } from "noa-approval-artifacts";
 import { verifyChain } from "noa-receipt";
 import type { GateConfig } from "./config.js";
 import type { Store } from "./store.js";
@@ -70,6 +70,19 @@ interface Waiter {
 }
 
 const RISK_CLASSES: ReadonlySet<string> = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL", "IRREVERSIBLE"]);
+
+/** Total order over risk classes. Used ONLY to take a maximum: a caller hint may RAISE the derived
+ *  floor and may never lower it (B-1, owner decision 2026-07-30). Frozen so no code — ours or a
+ *  dependency's — can reorder severity at runtime and thereby invert the max. */
+const RISK_ORDER: Readonly<Record<string, number>> = Object.freeze(
+  Object.assign(Object.create(null) as Record<string, number>, {
+    LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3, IRREVERSIBLE: 4,
+  }),
+);
+const riskRank = (r: string): number =>
+  Object.prototype.hasOwnProperty.call(RISK_ORDER, r) ? RISK_ORDER[r]! : Number.MAX_SAFE_INTEGER;
+/** The caller may only tighten. An UNRECOGNISED hint ranks as maximum, so it cannot be used to lower. */
+const maxRisk = (a: string, b: string): string => (riskRank(a) >= riskRank(b) ? a : b);
 
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -161,15 +174,48 @@ export class GateEngine {
     if (!idempotencyKey) return err(400, "MISSING_IDEMPOTENCY_KEY");
     if (!isRecord(input)) return err(400, "BAD_REQUEST");
 
-    const rawMode = input["mode"];
-    if (rawMode !== "RAW" && rawMode !== "ENFORCED") return err(422, "BAD_MODE", { detail: "mode must be RAW or ENFORCED" });
-    const mode: Mode = rawMode;
+    // ─── OWNER DECISION 2026-07-30: RAW IS NOT CALLER-SELECTABLE ───────────────────────────────
+    // `mode` used to be read straight from caller input, which made every mechanical prohibition
+    // keyed on mode worthless: a caller facing a registered ENFORCED projection simply asked for RAW
+    // and supplied its own paramsHash and its own display, unbound to each other. The mode is now
+    // DERIVED from the projection registry, and a caller-supplied `mode` is refused outright rather
+    // than ignored — accepting a field is the vulnerability, not disagreeing with it.
+    // A caller MAY still send `mode` (compatibility), but it can never CHOOSE the enforcement level:
+    // the effective mode is derived below, and a request that disagrees with the derivation is
+    // refused rather than honoured. So RAW cannot be selected to escape a registered projection.
+    const requestedMode = input["mode"];
+    if (requestedMode !== undefined && requestedMode !== "RAW" && requestedMode !== "ENFORCED") {
+      return err(422, "BAD_MODE", { detail: "mode must be RAW or ENFORCED" });
+    }
 
     const rawAction = input["action"];
     if (!isRecord(rawAction)) return err(422, "MISSING_ACTION");
     const canonical = asString(rawAction["canonical"]);
     const riskClass = asString(rawAction["riskClass"]);
     const reversible = asBool(rawAction["reversible"], false);
+    if (!canonical) return err(422, "INCOMPLETE_ACTION");
+
+    // Registered ⇒ ENFORCED. Unregistered ⇒ RAW, and RAW is UNENFORCED: it may not carry a grant,
+    // may not claim HUMAN_APPROVED, and may not authorize or dispatch anything (owner decision 1).
+    const mode: Mode = getProjection(canonical) ? "ENFORCED" : "RAW";
+
+    // The only thing a caller may not do is DISAGREE with the derivation. Asking for RAW on an action
+    // that has a registered trusted projection is the downgrade the owner prohibited outright.
+    if (requestedMode !== undefined && requestedMode !== mode) {
+      return err(422, "MODE_NOT_CALLER_SELECTABLE", {
+        detail: `mode is derived from the trusted projection registry (${mode} for "${canonical}"); ` +
+          `a caller may not select ${String(requestedMode)}`,
+      });
+    }
+
+    // An unregistered CRITICAL/IRREVERSIBLE action fails CLOSED. There is no derivation available for
+    // it, so there is nothing a human could meaningfully approve.
+    if (mode === "RAW" && (riskClass === "CRITICAL" || riskClass === "IRREVERSIBLE")) {
+      return err(422, "UNREGISTERED_CRITICAL_ACTION", {
+        detail: `no trusted projection is registered for "${canonical}"; a critical action cannot be ` +
+          `approved without a derived display. RAW is diagnostic only and is never authorization.`,
+      });
+    }
     if (!canonical || !riskClass) return err(422, "INCOMPLETE_ACTION");
     if (!RISK_CLASSES.has(riskClass)) return err(422, "BAD_RISK_CLASS");
 
@@ -178,6 +224,9 @@ export class GateEngine {
     // Resolve the display + paramsHash per mode.
     let paramsHash: string;
     let display: Record<string, unknown>;
+    // Defaults to the caller's hint ONLY on the RAW/unenforced path, which cannot carry a grant or
+    // claim HUMAN_APPROVED at all — so the hint there is metadata, not an authorization input.
+    let effectiveRisk: string = riskClass;
     let actionSchema: ProjectionId | null = null;
     let displayProjection: ProjectionId | null = null;
 
@@ -193,10 +242,29 @@ export class GateEngine {
       display = run.display;
       actionSchema = run.actionSchema;
       displayProjection = run.displayProjection;
-      // A caller-supplied paramsHash that disagrees with the gate's own is REJECTED (never trusted).
+
+      // ─── B-1: THE TRUSTED FLOOR WINS ────────────────────────────────────────────────────────────
+      // `run.derivedRisk` was computed inside the boundary from the params the adapter itself
+      // validated. The caller's `riskClass` is a HINT: it may raise the floor and can never lower it.
+      // Everything downstream — including the required approver role at
+      // `approval-artifacts/src/verify.ts:133-138` — is derived from `effectiveRisk`, never from the hint.
+      effectiveRisk = maxRisk(run.derivedRisk, riskClass);
+      // ─── DIGEST (owner decision 2026-07-30): A CALLER-SUPPLIED paramsHash IS REFUSED OUTRIGHT ────
+      // Previously only a DISAGREEING hash was rejected, so a caller could still supply one as long as
+      // it happened to match. That is the wrong test: ACCEPTANCE is the vulnerability, not
+      // disagreement. A field accepted today with a matching value is accepted tomorrow with a
+      // mismatching one, and the equality check that catches it is one reordering away from being
+      // bypassed. The commitment is derived inside the boundary; there is nothing for a caller to send.
+      //
+      // INTEROP UNCHANGED: this does not alter `docs/carlos.md` §3, which governs and states that
+      // `action.paramsHash` is NOT a shared cross-producer action digest. Refusing the request FIELD
+      // says nothing about the receipt field's meaning.
       const claimed = asString(rawAction["paramsHash"]);
-      if (claimed && claimed !== paramsHash) {
-        return err(422, "PARAMS_HASH_MISMATCH", { detail: "ENFORCED: gate-computed paramsHash != caller-supplied" });
+      if (claimed) {
+        return err(422, "PARAMS_HASH_NOT_CALLER_SUPPLIED", {
+          detail: "the action digest is derived inside the trusted boundary; remove action.paramsHash. " +
+            "It is refused even when it matches, because accepting the field is the defect.",
+        });
       }
     } else {
       // RAW: caller supplies paramsHash + display; the gate can't tamper it (it signs the envelope)
@@ -209,7 +277,7 @@ export class GateEngine {
       display = rawDisplay;
     }
 
-    const action: HoldAction = { canonical, riskClass: riskClass as RiskClass, paramsHash, reversible };
+    const action: HoldAction = { canonical, riskClass: effectiveRisk as RiskClass, paramsHash, reversible };
 
     // requestHash (idempotency-conflict detection): mode + action + chain (the durable identity of the request).
     let requestHash: string;
@@ -259,7 +327,7 @@ export class GateEngine {
       tenant: this.trust.tenant,
       chain,
       agentId: agent.id,
-      action: { id: actionId, canonical, riskClass: riskClass as RiskClass, paramsHash, reversible },
+      action: { id: actionId, canonical, riskClass: effectiveRisk as RiskClass, paramsHash, reversible },
       gate: this.trust.gate,
     });
     const deferredReceiptHash = receiptRefHash(deferredReceipt as unknown as Record<string, unknown>);
@@ -267,6 +335,29 @@ export class GateEngine {
     // Seal the display (RAW-plaintext or ENFORCED-derived) → the gate never emits plaintext (Red Line 11).
     let encryptedDisplay: EncryptedDisplay;
     const suppliedEnc = input["encryptedDisplay"];
+
+    // ─── B-2 (owner decision 2026-07-30): A CALLER-SUPPLIED SEALED DISPLAY IS REFUSED ON ANY
+    //     ENFORCED OR CRITICAL PATH — rejected, never "silently preferred".
+    //
+    // WHAT WAS HERE. These lines sat OUTSIDE the RAW/ENFORCED branch (which closes ~:250), so the
+    // pinned projection ran, derived a display — and that derived display was then DISCARDED, because
+    // `display` is only consumed in the `else` below. The gate signed a Hold Envelope carrying
+    // `mode: ENFORCED` and the reviewed `displayProjection` identity while sealing the ATTACKER's
+    // plaintext. Measured over plain HTTP with an ordinary API credential, no forgery required:
+    // the human saw "Check disk usage / /bin/df" while paramsHash bound `/bin/rm -rf /srv`
+    // (`docs/GATE-PROVENANCE-FINDINGS-2026-07-30.md` M1/M6).
+    //
+    // Refusing rather than ignoring matters for the reason the digest finding taught: a field that is
+    // ACCEPTED today with a harmless value is accepted tomorrow with a hostile one, and the check that
+    // would have caught it is one reordering away from being bypassed.
+    const criticalRisk = effectiveRisk === "CRITICAL" || effectiveRisk === "IRREVERSIBLE";
+    if (suppliedEnc !== undefined && (mode === "ENFORCED" || criticalRisk)) {
+      return err(422, "DISPLAY_NOT_CALLER_SUPPLIED", {
+        detail: "the human-visible display is derived inside the trusted boundary and sealed there; " +
+          "a caller-supplied encryptedDisplay is refused on enforced and critical paths",
+      });
+    }
+
     if (isRecord(suppliedEnc) && suppliedEnc["spec"] === "noa.encrypted-display/0.1") {
       encryptedDisplay = suppliedEnc as EncryptedDisplay;
     } else {
@@ -445,7 +536,16 @@ export class GateEngine {
 
     // 1. Verify the Decision Artifact: signature (approver), F15 role tier (from the held riskClass),
     //    and its binding to THIS Hold Envelope (holdEnvelopeHash), transitively enforcing tenant (F7b).
-    const daCheck = verifyArtifact(encodeDocument(decisionArtifact), encodeDocument({
+    // ADR-0005 — SERIALIZE ONCE, VERIFY THOSE BYTES, AUTHORIZE FROM THE PARSE OF THOSE BYTES.
+    // `encodeDocument` is JSON.stringify, which INVOKES ACCESSORS. Re-reading `decisionArtifact`
+    // after this point let a caller-owned getter answer "DENY" to the signature check and "APPROVE"
+    // to the authorization read — a genuinely-signed denial that authorized an approval (M3).
+    const daBytes = encodeDocument(decisionArtifact);
+    const daParsed = parseDocument(daBytes, "decisionArtifact");
+    if (!daParsed.ok) return err(422, "BAD_OR_MISSING_DECISION_ARTIFACT", { detail: daParsed.reason });
+    if (!isRecord(daParsed.value)) return err(422, "BAD_OR_MISSING_DECISION_ARTIFACT");
+    const daDoc: Record<string, unknown> = daParsed.value;
+    const daCheck = verifyArtifact(daBytes, encodeDocument({
       schemas: this.schemas,
       keyring: this.trust.keyring,
       now: receivedAt,
@@ -457,19 +557,30 @@ export class GateEngine {
     }));
     if (!daCheck.ok) return err(422, "DECISION_ARTIFACT_INVALID", { detail: daCheck.reason });
 
-    const decisionVal = decisionArtifact["decision"];
-    const approverKid = asString(decisionArtifact["approverKid"]);
+    // Read ONLY from the parsed snapshot. `daDoc` was built by our own parser from `daBytes`, so no
+    // accessor, Proxy trap, inherited property or mutable alias of the caller's object reaches it.
+    const decisionVal = daDoc["decision"];
+    const approverKid = asString(daDoc["approverKid"]);
     if (decisionVal !== "APPROVE" && decisionVal !== "DENY") return err(422, "BAD_DECISION");
 
     // 2. Verify the ALLOWED/BLOCKED verdict receipt: it must chain onto the DEFERRED and authenticate
     //    against the trusted keyring (approver key), fail-closed on tenant drift.
-    const verdict = isRecord(receipt.governance) ? (receipt.governance as Record<string, unknown>)["verdict"] : undefined;
+    // Same discipline for the receipt: one serialization, parsed once, read only from the snapshot.
+    const rBytes = encodeDocument(receipt);
+    const rParsed = parseDocument(rBytes, "receipt");
+    if (!rParsed.ok) return err(422, "BAD_OR_MISSING_RECEIPT", { detail: rParsed.reason });
+    if (!isRecord(rParsed.value)) return err(422, "BAD_OR_MISSING_RECEIPT");
+    const rDoc: Record<string, unknown> = rParsed.value;
+    const verdict = isRecord(rDoc["governance"]) ? (rDoc["governance"] as Record<string, unknown>)["verdict"] : undefined;
     if (verdict !== "ALLOWED" && verdict !== "BLOCKED") return err(422, "UNEXPECTED_VERDICT");
     // G11: decision ↔ verdict must agree.
     if ((decisionVal === "APPROVE") !== (verdict === "ALLOWED")) {
       return err(422, "DECISION_VERDICT_MISMATCH", { detail: "APPROVE↔ALLOWED / DENY↔BLOCKED" });
     }
-    const rSig = isRecord(receipt.sig) ? (receipt.sig as Record<string, unknown>) : undefined;
+    // L9-D: read the signer from the PARSED SNAPSHOT, never from the caller-owned receipt. This is the
+    // same class as M3 one field over: `receipt` is authenticated at :573 and this decides WHICH KEY
+    // signed it, which is a trust decision.
+    const rSig = isRecord(rDoc["sig"]) ? (rDoc["sig"] as Record<string, unknown>) : undefined;
     const receiptKid = rSig ? asString(rSig["kid"]) : undefined;
     if (!receiptKid || receiptKid !== approverKid) {
       return err(422, "APPROVER_KID_MISMATCH", { detail: "decision.approverKid must equal the verdict-receipt signer kid" });
@@ -480,9 +591,16 @@ export class GateEngine {
         detail: "artifact and receipt keyrings must resolve the approver kid to the same public key",
       });
     }
-    // BYTES-IN: the chain and the keyring go to the kernel as DOCUMENTS. Both are the gate's own
-    // data — a receipt it stored and a keyring it resolved — so this is a pure serialization.
-    const chainCheck = verifyChain(encodeDocument([hold.deferredReceipt, receipt]), {
+    // ─── ADR-0005 (corrected 2026-07-30 after three-voice adjudication) ───────────────────────────
+    // THE COMMENT THAT WAS HERE WAS FALSE. It read: "Both are the gate's own data — a receipt it
+    // stored and a keyring it resolved — so this is a pure serialization." `receipt` is the CALLER's
+    // object, not the gate's. That false claim is why `rBytes` was parsed but never verified, and why
+    // the actually-authenticated serialization was a THIRD one built here from the live object.
+    //
+    // The chain is now built from `rDoc` — the parse of the bytes we hold — so the bytes the signature
+    // authenticates and the bytes every later read comes from are the same value. Only `receiptKeyring`
+    // is genuinely the gate's own data.
+    const chainCheck = verifyChain(encodeDocument([hold.deferredReceipt, rDoc]), {
       keyring: encodeDocument(this.trust.receiptKeyring),
       requireTenantConsistency: true,
     });
@@ -490,40 +608,53 @@ export class GateEngine {
       return err(422, "VERDICT_RECEIPT_CHAIN_INVALID", { detail: chainCheck.reason ?? chainCheck.status });
     }
     // 3. Exact-action binding: the verdict receipt is for THIS held action.
-    const ra = isRecord(receipt.action) ? (receipt.action as Record<string, unknown>) : undefined;
+    // L9-D: the exact-action binding is a trust decision — read it from the parsed snapshot.
+    const ra = isRecord(rDoc["action"]) ? (rDoc["action"] as Record<string, unknown>) : undefined;
     if (!ra || ra["canonical"] !== hold.action.canonical || ra["paramsHash"] !== hold.action.paramsHash) {
       return err(422, "ACTION_BINDING_MISMATCH");
     }
 
-    hold.decisionReceipt = receipt;
-    hold.decisionArtifact = decisionArtifact;
+    // Store the SNAPSHOTS. Storing the live caller objects let `report()` — a LATER HTTP REQUEST —
+    // re-read them, and the gate signed an attacker-chosen chain link from reads 5 and 6.
+    hold.decisionReceipt = rDoc as unknown as typeof receipt;
+    hold.decisionArtifact = daDoc as unknown as typeof decisionArtifact;
     hold.decidedAt = receivedAtMs;
-    hold.verdictReceipt = receipt;
+    hold.verdictReceipt = rDoc as unknown as typeof receipt;
 
     if (decisionVal === "APPROVE") {
       hold.status = "APPROVED";
-      hold.reasonCode = "HUMAN_APPROVED";
+      // OWNER DECISION 2026-07-30: RAW is UNENFORCED. It may never claim HUMAN_APPROVED and may never
+      // carry an execution grant, because in RAW nothing derived the display the human saw — so the
+      // receipt would attest an approval of something the boundary never computed.
+      const enforced = hold.mode === "ENFORCED";
+      hold.reasonCode = enforced ? "HUMAN_APPROVED" : "HUMAN_ACK_UNENFORCED";
       // F10 Hold Resolution (trusted receivedAt).
       hold.holdResolution = buildHoldResolution({
         holdId: hold.id,
         holdEnvelope: hold.holdEnvelope,
         decisionArtifact,
-        verdictReceipt: receipt,
+        verdictReceipt: rDoc as unknown as typeof receipt,
         status: "APPROVED",
-        reasonCode: "HUMAN_APPROVED",
+        reasonCode: enforced ? "HUMAN_APPROVED" : "HUMAN_ACK_UNENFORCED",
         receivedAt,
         keyManifestVersion: this.trust.keyManifestVersion,
         keyManifestHash: this.trust.keyManifestHash,
         gate: this.trust.gate,
       });
       // D13/D18: the GATE (never the phone) issues the pre-execution Execution Grant.
+      // OWNER DECISION 2026-07-30: only an ENFORCED hold may carry one. A grant is authorization to
+      // act, and RAW derived nothing — there is no bound intent for a grant to authorize.
+      if (!enforced) {
+        this.store.putHold(hold);
+        return { status: 200, body: this.holdView(hold) };
+      }
       const grantId = this.trust.newId();
       const grant = issueGrant({
         grantId,
         holdId: hold.id,
         paramsHash: hold.action.paramsHash,
         holdEnvelope: hold.holdEnvelope,
-        allowedReceipt: receipt,
+        allowedReceipt: rDoc as unknown as typeof receipt,
         issuedAt: receivedAt,
         expiresAt: this.iso(receivedAtMs + this.cfg.grantTtlMs),
         nonce: this.trust.newId(),
@@ -552,7 +683,7 @@ export class GateEngine {
         holdId: hold.id,
         holdEnvelope: hold.holdEnvelope,
         decisionArtifact,
-        verdictReceipt: receipt,
+        verdictReceipt: rDoc as unknown as typeof receipt,
         status: "DENIED",
         reasonCode: "HUMAN_DENIED",
         receivedAt,

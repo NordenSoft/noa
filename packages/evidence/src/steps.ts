@@ -12,7 +12,7 @@
  * the cross-artifact bindings, the outcome branching, and the by-principle negative-outcome rule
  * (step 15) that no single-artifact verifier can express.
  */
-import { verifyArtifact, refHash, receiptRefHash, type KeyEntry } from "noa-approval-artifacts";
+import { verifyArtifact, parseDocument, refHash, receiptRefHash, type KeyEntry } from "noa-approval-artifacts";
 import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type Keyring, type VerifyResult } from "noa-receipt";
 import { encodeDocument } from "./bytes.js";
 
@@ -59,6 +59,21 @@ export interface Ctx {
    */
   rolesAsserted: Set<ReceiptRole>;
   // populated across the pipeline:
+  /**
+   * The decisionArtifact snapshot parsed from the EXACT bytes step 4 authenticated. Step 5 (and any
+   * later step) MUST read from this and MUST NOT re-serialize `bundle.decisionArtifact`.
+   *
+   * ⚠ WHY THIS FIELD EXISTS. My first F-1 fix had step 5 build its own snapshot via
+   * `parseDocument(encodeDocument(decision))` — a SECOND `JSON.stringify` of the caller-owned object,
+   * which no signature covers, and which invokes accessors again. The justifying comment I wrote said
+   * "parsing the same bytes twice yields two identical snapshots"; they were NOT the same bytes. Step 5
+   * is the ONLY place the F15 approver-tier check happens (step 4's `verifyArtifact` is not passed
+   * `riskClass`), so a two-faced `approverKid` made a CRITICAL action approved by an `approve-high`
+   * device verify as VALID. Found by the Fable adjudication (F-01, executed PoC) and reproduced here.
+   *
+   * RULE: exactly ONE serialization per artifact per pipeline run, owned by the step that authenticates it.
+   */
+  decisionSnapshot?: Record<string, unknown>;
   tenant?: string;
   receivedAt?: string; // holdResolution.receivedAt (trusted time, F10) — read raw in step 0, authenticated in step 3
   riskClass?: string;
@@ -535,7 +550,28 @@ export function step4_decision(ctx: Ctx): StepResult {
   // NOTE: the F15 approver-TIER check (approve-high vs approve-critical for the action's riskClass)
   // is deliberately OWNED by step 5, not here — so a tier violation is attributed to step 5. Here we
   // verify only that the signer is a valid APPROVER (any tier) + schema + binding to THIS envelope.
-  const dv = verifyArtifact(encodeDocument(decision), encodeDocument({
+  // L9-D (2026-07-30): serialize ONCE, verify those bytes, and read every trust-relevant field from
+  // the PARSE of those same bytes. `encodeDocument` is JSON.stringify and invokes accessors, so a
+  // caller-owned `decision` can answer the signature check and the authorization read differently —
+  // the same class as the gate's M3, one package over.
+  const dBytes = encodeDocument(decision);
+
+  // ⚠ F-1 (codex adjudication, CRITICAL, lead-reproduced 2026-07-30). My earlier fix here patched the
+  // two reads in `step5_approverRole` and MISSED THIS PATH ENTIRELY, because the caller-owned object
+  // reaches the trust decision through an ALIAS: `const d = asObj(decision)!` at :533, then
+  // `asStr(d.decision)` below. An alias is not a different object — `d` IS the caller's `decision`.
+  // The L9-D gate also missed it, because its regex only follows the exact identifier passed to
+  // `encodeDocument(...)` on the same line. Two independent misses of one defect, both mine.
+  //
+  // `dSnap` is the parse of the bytes that were authenticated. Every trust-relevant read below uses it.
+  const dParsed = parseDocument(dBytes, "decisionArtifact");
+  if (!dParsed.ok) return fail(S, "E_DECISION", dParsed.reason);
+  if (!dParsed.value || typeof dParsed.value !== "object") {
+    return fail(S, "E_DECISION", "decisionArtifact is not a JSON object");
+  }
+  const dSnap: Record<string, unknown> = dParsed.value as Record<string, unknown>;
+
+  const dv = verifyArtifact(dBytes, encodeDocument({
     schemas: ctx.schemas,
     keyring: ctx.resolvedKeyring!,
     now: ctx.now,
@@ -543,8 +579,11 @@ export function step4_decision(ctx: Ctx): StepResult {
   }));
   if (!dv.ok) return fail(S, "E_DECISION", `decisionArtifact invalid: ${dv.reason}`);
 
+  // Publish the AUTHENTICATED snapshot. Downstream steps consume this; they never re-serialize.
+  ctx.decisionSnapshot = dSnap;
+
   // decision ↔ verdict receipt mapping (APPROVE↔ALLOWED / DENY↔BLOCKED).
-  const decisionVal = asStr(d.decision);
+  const decisionVal = asStr(dSnap["decision"]);
   if (b.outcome === "DENIED") {
     if (decisionVal !== "DENY") return fail(S, "E_DECISION", `DENIED outcome requires decision=DENY, got ${JSON.stringify(decisionVal)}`);
   } else {
@@ -565,8 +604,16 @@ export function step5_approverRole(ctx: Ctx): StepResult {
   const vrRole = roleReceipt(ctx, verdictRoleFor(b.outcome), S); // BOUNDARY 1
   if (vrRole.fail) return vrRole.fail;
   const verdictReceipt = vrRole.receipt;
-  const approverKid = asStr(decision.approverKid);
-  const sigKid = asStr(getPath(decision, "sig.kid"));
+  // Consume the snapshot step 4 AUTHENTICATED. Never re-serialize the caller's object: a second
+  // `encodeDocument` is a second accessor pass that no signature covers (F-01).
+  const d5 = ctx.decisionSnapshot;
+  if (!d5) {
+    return fail(S, "E_APPROVER_ROLE",
+      "no authenticated decisionArtifact snapshot — step 4 must run and authenticate before the " +
+      "approver-tier check. Failing closed rather than re-serializing the caller's object.");
+  }
+  const approverKid = asStr(d5["approverKid"]);
+  const sigKid = asStr(getPath(d5, "sig.kid"));
   if (approverKid === null || approverKid !== sigKid) {
     return fail(S, "E_APPROVER_ROLE", "decision.approverKid != decision.sig.kid");
   }
