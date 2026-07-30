@@ -66,7 +66,8 @@ for (const [name, makeStore] of STORE_FACTORIES) {
 
   test(`[${name}] a second device registration with the SAME kid is rejected (KID_ALREADY_REGISTERED)`, () => {
     const h = makeHarness({}, makeStore());
-    makeDevice(h, "dup-kid", 1);
+    const { agent } = makeAgent(h);
+    makeDevice(h, agent, "dup-kid", 1);
     const res = h.engine.registerDevice({ kid: "dup-kid", publicKeyHex: "b".repeat(64) });
     assert.equal(res.status, 409);
     assert.equal(bodyOf<{ error: string }>(res).error, "KID_ALREADY_REGISTERED");
@@ -74,7 +75,8 @@ for (const [name, makeStore] of STORE_FACTORIES) {
 
   test(`[${name}] revokeSelf is idempotent — a second call does not re-stamp revokedAt`, () => {
     const h = makeHarness({}, makeStore());
-    const d = makeDevice(h);
+    const { agent } = makeAgent(h);
+    const d = makeDevice(h, agent);
     assert.equal(d.device.revokedAt, null);
     assert.equal(h.engine.revokeSelf(d.device).status, 204);
     const revokedAt = h.store.getDeviceById(d.device.id)!.revokedAt;
@@ -88,7 +90,7 @@ for (const [name, makeStore] of STORE_FACTORIES) {
   test(`[${name}] a revoked device's decision is rejected 403 DEVICE_REVOKED`, () => {
     const h = makeHarness({}, makeStore());
     const { agent } = makeAgent(h);
-    const d = makeDevice(h);
+    const d = makeDevice(h, agent);
     const { holdId } = bodyOf<{ holdId: string }>(
       h.engine.createHold(agent, "idem-1", { action: ACTION }),
     );
@@ -207,7 +209,7 @@ for (const [name, makeStore] of STORE_FACTORIES) {
   test(`[${name}] no private-key material is ever at rest, after a full create->decide flow`, () => {
     const h = makeHarness({}, makeStore());
     const { agent, apiKey } = makeAgent(h);
-    const d = makeDevice(h);
+    const d = makeDevice(h, agent);
     const { holdId } = bodyOf<{ holdId: string }>(
       h.engine.createHold(agent, "idem-1", { action: ACTION }),
     );

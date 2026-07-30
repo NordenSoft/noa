@@ -41,6 +41,12 @@ async function bootWithAgentAndDevice(port: number): Promise<{
   const kp = generateKeyPair("approver-ctx", new Uint8Array(32).fill(13));
   const publicKeyHex = bytesToHex(spkiEd25519ToRawPublicKey(kp.publicKey));
   const dev = await httpJson(port, "POST", "/v1/devices", { body: { kid: "approver-ctx", publicKeyHex } });
+  // CLAIM the device for this agent. Enrolment proves possession of a keypair; it proves nothing
+  // about whose approvals the device may see, so an unclaimed device reads and decides nothing.
+  const claimed = await httpJson(port, "POST", `/v1/devices/${(dev.json as { deviceId: string }).deviceId}/claim`, {
+    headers: agentAuth,
+  });
+  assert.equal(claimed.status, 200, `claim failed: ${JSON.stringify(claimed.json)}`);
   assert.equal(dev.status, 201);
   const deviceSecret = (dev.json as { deviceSecret: string }).deviceSecret;
   const deviceAuth = { Authorization: `Bearer ${deviceSecret}` };

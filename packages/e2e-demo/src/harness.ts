@@ -114,7 +114,7 @@ export async function setupHarness(opts: { echo?: boolean; sink?: string[] } = {
   // 4. Onboard the transport bridge (relay agent) + the phone (relay device).
   const { apiKey: relayAgentKey } = await registerRelayAgent(relayBaseUrl, 'demo-bridge');
   const bridge = new GateRelayBridge(relayBaseUrl, relayAgentKey, logger.child('bridge'));
-  const { deviceSecret } = await registerRelayDevice(relayBaseUrl, phone.approverKid, phone.approverPublicKeyRawHex);
+  const { deviceSecret } = await registerRelayDevice(relayBaseUrl, phone.approverKid, phone.approverPublicKeyRawHex, relayAgentKey);
   const phoneClient = new PhoneRelayClient(relayBaseUrl, deviceSecret, logger.child('phone'));
 
   logger.event('harness.ready', { gate: g.port, relay: r.port, tenant: TENANT, approverKid: phone.approverKid });

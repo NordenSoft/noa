@@ -46,7 +46,7 @@ test("unanswered hold expires to EXPIRED (distinct from DENY), and NO receipt is
 test("a decision arriving AFTER expiry is rejected fail-closed (never approves)", () => {
   const h = makeHarness();
   const { agent } = makeAgent(h);
-  const d = makeDevice(h);
+  const d = makeDevice(h, agent);
   const { holdId } = bodyOf<{ holdId: string }>(
     h.engine.createHold(agent, "idem-1", { action: ACTION, ttlMs: h.config.minTtlMs }),
   );
@@ -80,7 +80,7 @@ test("sweepExpired() marks overdue PENDING holds without a read", () => {
 test("an approval BEFORE expiry works; a SECOND decision is rejected (D17 first-wins)", () => {
   const h = makeHarness();
   const { agent } = makeAgent(h);
-  const d = makeDevice(h);
+  const d = makeDevice(h, agent);
   const { holdId } = bodyOf<{ holdId: string }>(
     h.engine.createHold(agent, "idem-1", { action: ACTION, ttlMs: h.config.minTtlMs }),
   );
@@ -119,7 +119,7 @@ test("an approval BEFORE expiry works; a SECOND decision is rejected (D17 first-
 test("a human DENY is DENIED (distinct reasonCode) — separate from EXPIRED", () => {
   const h = makeHarness();
   const { agent } = makeAgent(h);
-  const d = makeDevice(h);
+  const d = makeDevice(h, agent);
   const { holdId } = bodyOf<{ holdId: string }>(
     h.engine.createHold(agent, "idem-1", { action: ACTION }),
   );

@@ -178,6 +178,22 @@ function resolveStoreFromEnv(log?: (event: string, fields: Record<string, unknow
   throw new Error(`unknown NOA_RELAY_STORE "${mode}" (expected "memory" or "file")`);
 }
 
+/**
+ * `/v1/devices/<id>/claim` WITHOUT a regex literal. `RegExp.prototype.test` performs a dynamic lookup
+ * of `exec` on the receiver, which is why L10 counts regex literals on a relay decision path — and
+ * adding two new ones for this route pushed the gate over its budget. A segment comparison decides
+ * the same thing and dispatches through nothing. Returns the device id, or null when it does not match.
+ */
+function claimTarget(method: string, path: string): string | null {
+  if (method !== "POST") return null;
+  const parts = path.split("/");
+  // ["", "v1", "devices", "<id>", "claim"]
+  if (parts.length !== 5) return null;
+  if (parts[0] !== "" || parts[1] !== "v1" || parts[2] !== "devices" || parts[4] !== "claim") return null;
+  const id = parts[3];
+  return id !== undefined && id.length > 0 ? id : null;
+}
+
 // ── request handling ─────────────────────────────────────────────────────────
 
 type Body = { ok: true; value: unknown } | { ok: false };
@@ -276,13 +292,13 @@ async function handle(
       return respond(res, engine.registerPush(device.id, b.value));
     }
     if (path === "/v1/holds") {
-      return respond(res, engine.listPending());
+      return respond(res, engine.listPending(device));
     }
     if (path.endsWith("/display")) {
-      return respond(res, engine.getDisplay(holdIdFrom(path)));
+      return respond(res, engine.getDisplay(device, holdIdFrom(path)));
     }
     if (path.endsWith("/context")) {
-      return respond(res, engine.getHoldContext(holdIdFrom(path)));
+      return respond(res, engine.getHoldContext(device, holdIdFrom(path)));
     }
     if (path.endsWith("/decision")) {
       const b = await readBody(req, res, config);
@@ -296,7 +312,11 @@ async function handle(
     (method === "POST" && path === "/v1/holds") ||
     (method === "POST" && path === "/v1/manifest") ||
     (method === "GET" && /^\/v1\/holds\/[^/]+\/wait$/.test(path)) ||
-    (method === "GET" && /^\/v1\/holds\/[^/]+$/.test(path));
+    (method === "GET" && /^\/v1\/holds\/[^/]+$/.test(path)) ||
+    // An agent CLAIMS a device, binding it to that agent's holds. Agent-authenticated on purpose:
+    // the agent already holds this credential and is the only party that can say which device
+    // speaks for it, so no new trusted party and no key custody is introduced.
+    claimTarget(method, path) !== null;
 
   if (isAgentRoute) {
     if (!bearer || bearer.scheme !== "agent") return sendJson(res, 401, { error: "AGENT_AUTH_REQUIRED" });
@@ -308,6 +328,10 @@ async function handle(
       const b = await readBody(req, res, config);
       if (!b.ok) return;
       return respond(res, engine.createHold(agent, idem, b.value));
+    }
+    const claimId = claimTarget(method, path);
+    if (claimId !== null) {
+      return respond(res, engine.claimDevice(agent, claimId));
     }
     if (method === "POST" && path === "/v1/manifest") {
       const b = await readBody(req, res, config);

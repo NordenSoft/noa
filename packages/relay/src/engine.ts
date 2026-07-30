@@ -171,11 +171,52 @@ export class RelayEngine {
       publicKeyHex,
       custodyTier,
       deviceSecretHash: hashSecret(deviceSecret),
+      // UNCLAIMED. Enrolment proves possession of a keypair; it proves nothing about WHOSE approvals
+      // this device may see. An agent must claim it with its own credential before it can read or
+      // decide anything, so the default state of a newly enrolled device is "useless".
+      agentId: null,
       revokedAt: null,
       createdAt: this.now(),
     };
     this.store.putDevice(device);
     return { status: 201, body: { deviceId: device.id, deviceSecret } };
+  }
+
+  /**
+   * An AGENT claims a device, binding it to that agent's holds. Authenticated by the agent's own
+   * credential, so no new trusted party and no key custody is introduced — the agent already holds
+   * this credential, and it is the only party that can say which device speaks for it.
+   *
+   * ONE-WAY AND ONE-TIME: a device may be claimed once. Re-claiming by a different agent is refused,
+   * because a device that can change owner is a device an attacker can steal by claiming it. Undoing
+   * a binding is `revokeSelf` — deliberately destructive, so the reversal cannot be quiet.
+   */
+  claimDevice(agent: AgentRecord, deviceId: string): EngineResult {
+    const device = this.store.getDeviceById(deviceId);
+    // Same no-existence-oracle rule as `ownsHold`: an unknown device and someone else's device are
+    // reported identically, so this route cannot be used to enumerate device ids.
+    if (!device || (device.agentId !== null && device.agentId !== agent.id)) {
+      if (device) this.log("authz.denied", { route: "claimDevice", deviceId, owner: device.agentId, caller: agent.id });
+      return err(404, "UNKNOWN_DEVICE");
+    }
+    if (device.revokedAt !== null) return err(403, "DEVICE_REVOKED");
+    if (device.agentId === agent.id) return { status: 200, body: { deviceId: device.id, claimed: true, idempotent: true } };
+    this.store.putDevice({ ...device, agentId: agent.id });
+    this.log("device.claimed", { deviceId, agentId: agent.id });
+    return { status: 200, body: { deviceId: device.id, claimed: true, idempotent: false } };
+  }
+
+  /**
+   * MAY THIS DEVICE ACT ON THIS HOLD? The device-side twin of `ownsHold`.
+   *
+   * An unclaimed device (`agentId === null`) matches nothing — fail-closed by construction rather
+   * than by a check someone has to remember to write.
+   */
+  private deviceOwnsHold(hold: HoldRecord | undefined, device: DeviceRecord, route: string): hold is HoldRecord {
+    if (!hold) return false;
+    if (device.agentId !== null && hold.agentId === device.agentId) return true;
+    this.log("authz.denied", { route, holdId: hold.id, owner: hold.agentId, callerDevice: device.id, callerAgent: device.agentId });
+    return false;
   }
 
   registerPush(deviceId: string, input: unknown): EngineResult {
@@ -397,39 +438,63 @@ export class RelayEngine {
     return { status: 200, body: this.holdView(hold) };
   }
 
-  getDisplay(id: string): EngineResult {
+  getDisplay(device: DeviceRecord, id: string): EngineResult {
     const hold = this.store.getHold(id);
-    if (!hold) return err(404, "UNKNOWN_HOLD");
+    if (!this.deviceOwnsHold(hold, device, "getDisplay")) return err(404, "UNKNOWN_HOLD");
     if (!hold.encryptedDisplay) return err(404, "NO_ENCRYPTED_DISPLAY");
     return { status: 200, body: hold.encryptedDisplay };
   }
 
   /**
    * Serve the gate-signed hold context (envelope + deferred receipt) VERBATIM so the approver
-   * device can re-verify every signature locally (D2). Auth parity with getDisplay: the device
-   * authorization is the SAME shared server-layer guard (valid, non-revoked `device` bearer) —
-   * this method, like getDisplay, takes no device argument and neither adds nor removes any
-   * per-hold scoping. The relay is untrusted transport: it transforms nothing and signs nothing;
-   * both artifacts are public, gate-signed bytes whose trust is anchored at the device, not here.
+   * device can re-verify every signature locally (D2).
+   *
+   * THE OLD DOCSTRING HERE ARGUED ITSELF INTO A DISCLOSURE BUG. It said this method "takes no device
+   * argument and neither adds nor removes any per-hold scoping", justified by "the relay is untrusted
+   * transport … both artifacts are public, gate-signed bytes whose trust is anchored at the device".
+   * Every clause of that is true and the conclusion does not follow. INTEGRITY is anchored at the
+   * device; CONFIDENTIALITY is not anchored anywhere. "Cannot be tampered with" and "may be shown to
+   * anyone" are different properties, and this method was serving one customer's action, risk class
+   * and deferred receipt to any other customer's device.
    */
-  getHoldContext(id: string): EngineResult {
+  getHoldContext(device: DeviceRecord, id: string): EngineResult {
     const hold = this.store.getHold(id);
-    if (!hold) return err(404, "UNKNOWN_HOLD");
+    if (!this.deviceOwnsHold(hold, device, "getHoldContext")) return err(404, "UNKNOWN_HOLD");
     if (!hold.holdEnvelope || !hold.deferredReceipt) return err(404, "NO_HOLD_CONTEXT");
     return { status: 200, body: { holdEnvelope: hold.holdEnvelope, deferredReceipt: hold.deferredReceipt } };
   }
 
-  listPending(): EngineResult {
-    const rows = this.store
-      .listHolds({ status: "PENDING" })
-      .filter((h) => this.now() < h.expiresAt)
-      .map((h) => ({
-        holdId: h.id,
-        canonical: h.action.canonical,
-        riskClass: h.action.riskClass,
-        paramsHash: h.action.paramsHash,
-        expiresAt: new Date(h.expiresAt).toISOString(),
-      }));
+  /**
+   * The approver's inbox — scoped to the claiming agent's holds.
+   *
+   * MEASURED BEFORE THE `device` PARAMETER EXISTED: this method took no caller at all and filtered
+   * only on status, so every registered device saw every customer's pending hold complete with its
+   * canonical action, risk class and paramsHash. An unclaimed device now sees nothing, because
+   * `device.agentId` is null and matches no hold.
+   */
+  listPending(device: DeviceRecord): EngineResult {
+    // ONE INDEX WALK, not a filter/filter/map chain. Adding the scoping check as a third array HOF
+    // would have pushed L10 from 39 to 42 and the gate correctly refused it — "a warn-mode lint still
+    // blocks on REGRESSION; the count may only fall." Raising the budget to admit my own fix is the
+    // budget inflation this repo forbids, so the shape changed instead: `.filter`/`.map` dispatch
+    // through `Array.prototype`, and this method decides which customer's approvals a device sees.
+    const all = this.store.listHolds({ status: "PENDING" });
+    const rows: Array<Record<string, unknown>> = [];
+    const owner = device.agentId; // read ONCE — an unclaimed device is null and matches nothing
+    const now = this.now();
+    for (let i = 0; i < all.length; i++) {
+      const hold = all[i];
+      if (!hold) continue;
+      if (owner === null || hold.agentId !== owner) continue;
+      if (now >= hold.expiresAt) continue;
+      rows[rows.length] = {
+        holdId: hold.id,
+        canonical: hold.action.canonical,
+        riskClass: hold.action.riskClass,
+        paramsHash: hold.action.paramsHash,
+        expiresAt: new Date(hold.expiresAt).toISOString(),
+      };
+    }
     return { status: 200, body: { holds: rows } };
   }
 
@@ -439,7 +504,13 @@ export class RelayEngine {
    */
   decide(device: DeviceRecord, holdId: string, input: unknown): EngineResult {
     const hold = this.store.getHold(holdId);
-    if (!hold) return err(404, "UNKNOWN_HOLD");
+    // THIS METHOD ALREADY TOOK A `device` AND NEVER ASKED WHETHER IT WAS ALLOWED TO ACT ON THIS HOLD.
+    // The checks below verify that the PRESENTER signed the receipt (`signer.id !== device.id`) and
+    // that the receipt matches the action — both true of an attacker signing honestly with its own
+    // key. MEASURED: customer B's freshly enrolled device posted its OWN valid ALLOWED on customer
+    // A's hold and drove it to APPROVED / HUMAN_APPROVED, signed by kid `customer-B-approver`.
+    // Having the device in hand is not the same as having asked the question.
+    if (!this.deviceOwnsHold(hold, device, "decide")) return err(404, "UNKNOWN_HOLD");
 
     this.lazyExpire(hold);
     if (hold.status !== "PENDING") {

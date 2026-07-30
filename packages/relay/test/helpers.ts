@@ -64,13 +64,33 @@ export interface TestDevice {
   privateKey: string;
 }
 
-/** Register a device with a real Ed25519 keypair; return record + the private key for signing. */
-export function makeDevice(h: Harness, kid = "approver-1", seedByte = 7): TestDevice {
+/**
+ * Register a device with a real Ed25519 keypair AND bind it to an agent; return record + private key.
+ *
+ * `agent` IS REQUIRED, and that is the point. Enrolment proves possession of a keypair; it proves
+ * nothing about whose approvals the device may see. An unclaimed device can read and decide nothing,
+ * so a test that forgets to bind one is testing an inert object. Making the parameter required means
+ * the COMPILER finds every call site rather than leaving 20 suites silently exercising a device that
+ * happens to work by accident.
+ *
+ * Pass `claim: false` to get a genuinely unclaimed device — that is what the cross-customer tests use.
+ */
+export function makeDevice(
+  h: Harness,
+  agent: AgentRecord,
+  kid = "approver-1",
+  seedByte = 7,
+  opts: { claim?: boolean } = {},
+): TestDevice {
   const kp = generateKeyPair(kid, new Uint8Array(32).fill(seedByte));
   const publicKeyHex = bytesToHex(spkiEd25519ToRawPublicKey(kp.publicKey));
   const reg = bodyOf<{ deviceId: string; deviceSecret: string }>(
     h.engine.registerDevice({ kid, publicKeyHex }),
   );
+  if (opts.claim !== false) {
+    const claimed = h.engine.claimDevice(agent, reg.deviceId);
+    if (claimed.status !== 200) throw new Error(`claimDevice failed: ${JSON.stringify(claimed.body)}`);
+  }
   const device = h.store.getDeviceById(reg.deviceId);
   if (!device) throw new Error("device not stored");
   return { device, deviceSecret: reg.deviceSecret, kid, publicKeyHex, privateKey: kp.privateKey };

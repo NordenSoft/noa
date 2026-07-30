@@ -127,6 +127,24 @@ export interface DeviceRecord {
   custodyTier: string;
   /** sha256 hex of "noa_device_<secret>" for non-signing session calls. */
   deviceSecretHash: string;
+  /**
+   * WHICH AGENT'S HOLDS THIS DEVICE MAY SEE AND DECIDE. `null` until an agent CLAIMS it with its own
+   * credential, and an unclaimed device can do nothing — it cannot list, read or decide any hold.
+   *
+   * MEASURED BEFORE THIS FIELD EXISTED: a device belonging to customer B, freshly enrolled and
+   * unrelated to customer A, called `listPending()` and received A's hold with its canonical action,
+   * risk class and paramsHash; then posted its OWN honestly-signed ALLOWED on A's hold and drove it
+   * to APPROVED / HUMAN_APPROVED. No forgery and no stolen credential — B simply approved someone
+   * else's action. With several customers on one relay that is one customer resolving another's
+   * approvals.
+   *
+   * `AgentRecord.ownerDevice` already existed for this and was never populated or read — a control
+   * that was designed and never wired. The binding is put here, on the DEVICE, because the question
+   * every device route must answer is "whose holds is THIS caller allowed to see", and answering it
+   * from the device record makes the check impossible to forget: there is no code path that reads a
+   * hold for a device without having the device in hand.
+   */
+  agentId: string | null;
   revokedAt: number | null;
   createdAt: number;
 }

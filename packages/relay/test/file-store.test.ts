@@ -56,7 +56,7 @@ test("RESTART-PERSISTENCE: rich state written, then a FRESH FileStore over the S
   const h = makeHarness({}, store1);
 
   const { agent } = makeAgent(h);
-  const d = makeDevice(h, "restart-device", 42);
+  const d = makeDevice(h, agent, "restart-device", 42);
   assert.equal(h.engine.registerPush(d.device.id, { subscription: { fcmToken: "tok-abc" } }).status, 204);
   const { holdId } = bodyOf<{ holdId: string }>(h.engine.createHold(agent, "idem-1", { action: ACTION }));
   const receipt = signDecisionReceipt({
@@ -149,8 +149,8 @@ test("D2: TRUNCATED file (valid snapshot cut mid-write, simulating a crash) -> F
   const path = join(tmpDir(), "store.json");
   const store1 = new FileStore(path);
   const h = makeHarness({}, store1);
-  makeAgent(h);
-  makeDevice(h);
+  const { agent } = makeAgent(h);
+  makeDevice(h, agent);
   const full = readFileSync(path, "utf8");
   assert.ok(full.length > 10, "precondition: the snapshot must be non-trivial to truncate meaningfully");
   const truncated = full.slice(0, Math.floor(full.length / 2));
@@ -234,14 +234,14 @@ test("the file on disk is valid, parseable JSON immediately after every mutation
   const store = new FileStore(path);
   const h = makeHarness({}, store);
 
-  makeAgent(h);
+  const { agent } = makeAgent(h);
   assert.doesNotThrow(() => JSON.parse(readFileSync(path, "utf8")));
 
-  makeDevice(h);
+  makeDevice(h, agent);
   assert.doesNotThrow(() => JSON.parse(readFileSync(path, "utf8")));
 
-  const { agent } = makeAgent(h, "second-agent");
-  h.engine.createHold(agent, "idem-atomic", { action: ACTION });
+  const { agent: agent2 } = makeAgent(h, "second-agent");
+  h.engine.createHold(agent2, "idem-atomic", { action: ACTION });
   assert.doesNotThrow(() => JSON.parse(readFileSync(path, "utf8")));
   store.close();
 });
@@ -324,6 +324,7 @@ test("D1: putDevice rolls back BOTH indexes (devices + devicesByKid) on a persis
     publicKeyHex: "a".repeat(64),
     custodyTier: "software-browser",
     deviceSecretHash: "h",
+    agentId: null,
     revokedAt: null,
     createdAt: 1,
   };

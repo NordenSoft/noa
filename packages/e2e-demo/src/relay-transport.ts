@@ -47,13 +47,31 @@ export async function registerRelayAgent(relayUrl: string, name: string): Promis
   return { agentId, apiKey };
 }
 
-/** Register the approver device's PUBLIC key (raw hex) with the relay. */
-export async function registerRelayDevice(relayUrl: string, kid: string, publicKeyHex: string): Promise<{ deviceId: string; deviceSecret: string }> {
+/**
+ * Register the approver device's PUBLIC key (raw hex) with the relay, then have the AGENT CLAIM it.
+ *
+ * The claim is not ceremony. Enrolment proves possession of a keypair; it proves nothing about whose
+ * approvals the device may see, and an unclaimed device now reads and decides nothing. Before the
+ * claim existed, this demo's device could have listed and resolved any other customer's holds —
+ * measured, and the reason `agentApiKey` is now required here rather than optional.
+ */
+export async function registerRelayDevice(
+  relayUrl: string,
+  kid: string,
+  publicKeyHex: string,
+  agentApiKey: string,
+): Promise<{ deviceId: string; deviceSecret: string }> {
   const res = await postJson(`${relayUrl}/v1/devices`, { kid, publicKeyHex, custodyTier: 'software-native' });
   const deviceId = res.body?.['deviceId'];
   const deviceSecret = res.body?.['deviceSecret'];
   if (res.status !== 201 || typeof deviceId !== 'string' || typeof deviceSecret !== 'string') {
     throw new DemoError('RELAY', 'RELAY_DEVICE_REGISTER_FAILED', 'could not register the device with the relay', { status: res.status });
+  }
+  const claim = await postJson(`${relayUrl}/v1/devices/${encodeURIComponent(deviceId)}/claim`, {}, {
+    authorization: `Bearer ${agentApiKey}`,
+  });
+  if (claim.status !== 200) {
+    throw new DemoError('RELAY', 'RELAY_DEVICE_CLAIM_FAILED', 'the agent could not claim the device', { status: claim.status, body: claim.body });
   }
   return { deviceId, deviceSecret };
 }

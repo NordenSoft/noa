@@ -41,6 +41,12 @@ test("localhost end-to-end: hold → phone approval → agent learns the signed 
       body: { kid: "approver-e2e", publicKeyHex },
     });
     assert.equal(dev.status, 201);
+    // CLAIM the device for this agent. Enrolment proves possession of a keypair; it proves nothing
+    // about whose approvals the device may see, so an unclaimed device reads and decides nothing.
+    const claimed = await httpJson(port, "POST", `/v1/devices/${(dev.json as { deviceId: string }).deviceId}/claim`, {
+      headers: agentAuth,
+    });
+    assert.equal(claimed.status, 200, `claim failed: ${JSON.stringify(claimed.json)}`);
     const deviceSecret = (dev.json as { deviceSecret: string }).deviceSecret;
     const deviceAuth = { Authorization: `Bearer ${deviceSecret}` };
 

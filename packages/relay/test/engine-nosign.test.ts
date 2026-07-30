@@ -50,7 +50,7 @@ test("the relay public API exposes NO signing capability", () => {
 test("a decision signed by an UNREGISTERED key is rejected — hold stays PENDING (no forged approval)", () => {
   const h = makeHarness();
   const { agent } = makeAgent(h);
-  const d = makeDevice(h, "approver-1", 7);
+  const d = makeDevice(h, agent, "approver-1", 7);
   const { holdId } = bodyOf<{ holdId: string }>(
     h.engine.createHold(agent, "idem-1", { action: ACTION }),
   );
@@ -74,7 +74,7 @@ test("a decision signed by an UNREGISTERED key is rejected — hold stays PENDIN
 test("a TAMPERED signature is rejected (never approves)", () => {
   const h = makeHarness();
   const { agent } = makeAgent(h);
-  const d = makeDevice(h);
+  const d = makeDevice(h, agent);
   const { holdId } = bodyOf<{ holdId: string }>(
     h.engine.createHold(agent, "idem-1", { action: ACTION }),
   );
@@ -96,7 +96,7 @@ test("a TAMPERED signature is rejected (never approves)", () => {
 test("a missing receipt is rejected", () => {
   const h = makeHarness();
   const { agent } = makeAgent(h);
-  const d = makeDevice(h);
+  const d = makeDevice(h, agent);
   const { holdId } = bodyOf<{ holdId: string }>(
     h.engine.createHold(agent, "idem-1", { action: ACTION }),
   );
@@ -108,7 +108,7 @@ test("a missing receipt is rejected", () => {
 test("after a full approval flow, NO private-key material is ever at rest (relay stores zero private keys)", () => {
   const h = makeHarness();
   const { agent, apiKey } = makeAgent(h);
-  const d = makeDevice(h);
+  const d = makeDevice(h, agent);
   const { holdId } = bodyOf<{ holdId: string }>(
     h.engine.createHold(agent, "idem-1", { action: ACTION }),
   );
@@ -154,7 +154,7 @@ test("after a full approval flow, NO private-key material is ever at rest (relay
 test("R-ING-01: a two-faced verdict cannot turn a signed DENIAL into an approval", () => {
   const h = makeHarness();
   const { agent } = makeAgent(h);
-  const d = makeDevice(h);
+  const d = makeDevice(h, agent);
   const { holdId } = bodyOf<{ holdId: string }>(h.engine.createHold(agent, "idem-ring01", { action: ACTION }));
 
   // A REAL signature over a receipt whose verdict is BLOCKED. The human said NO.
@@ -185,7 +185,7 @@ test("R-ING-01: a two-faced verdict cannot turn a signed DENIAL into an approval
   // that simply refused everything, or on a broken fixture that never reached decide().
   const h2 = makeHarness();
   const a2 = makeAgent(h2);
-  const d2 = makeDevice(h2);
+  const d2 = makeDevice(h2, a2.agent, "approver-2", 8);
   const { holdId: denyId } = bodyOf<{ holdId: string }>(h2.engine.createHold(a2.agent, "idem-deny", { action: ACTION }));
   const inertDenial = signDecisionReceipt({
     kid: d2.kid, privateKey: d2.privateKey,
@@ -205,7 +205,8 @@ test("R-ING-01: a two-faced verdict cannot turn a signed DENIAL into an approval
 
 test("#64-S5: a self-revoke never touches key material — no private key at rest after revokeSelf", () => {
   const h = makeHarness();
-  const d = makeDevice(h);
+  const { agent } = makeAgent(h);
+  const d = makeDevice(h, agent);
   assert.equal(h.engine.revokeSelf(d.device).status, 204);
 
   const dumpStr = JSON.stringify((h.store as InMemoryStore).dump());

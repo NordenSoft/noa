@@ -692,7 +692,12 @@ const LINTS = [
   { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "block" },
   // Reconciliation BLOCKS and is deliberately not budgeted — see reconcileRelay()'s comment.
   { id: "L10-reconcile", name: "relay TCB coverage (every packages/relay/src file is classified)", run: reconcileRelay, mode: "block" },
-  { id: "L10", name: "relay decision-path coverage (packages/relay/src)", run: L10, mode: "warn", budget: 39 },
+  // 39 -> 38 on 2026-07-30. The CRITICAL-1 device-authorization fix rewrote `listPending` from an
+  // array-HOF chain into an index walk (the guard has to read `device.agentId` exactly ONCE, and a
+  // `.filter` callback re-reads it per element), which removed two findings; the new `claimDevice`
+  // path and the regex-free `claimTarget` matcher added one. Net -1, and it is ratcheted here rather
+  // than left slack because slack is what the next change spends without anyone noticing.
+  { id: "L10", name: "relay decision-path coverage (packages/relay/src)", run: L10, mode: "warn", budget: 38 },
   // FLIPPED warn(10) -> BLOCK on 2026-07-28, budget deleted. Measured 0: every module-level table in
   // the TCB is now built frozen and null-rooted at construction. The last three were CHECKPOINT_KEYS
   // (verify.ts), MUTATORS (inert.ts) and INVALID_HEAD (verify-witnessed.ts) — a shared sentinel any
