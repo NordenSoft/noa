@@ -169,10 +169,61 @@ export class GateEngine {
     };
   }
 
+  /**
+   * ─── ADR-0005 SLICE 1: THE BYTE BOUNDARY IS THE ENTRY SIGNATURE ─────────────────────────────────
+   *
+   * THE ONE place a request body becomes data this engine will reason about. Every trusted entry
+   * point below (`createHold`, `decide`, `report`) calls this FIRST and never sees anything else.
+   *
+   * WHY THE SIGNATURE AND NOT THE LEAVES. Three previous rounds fixed this defect class at the
+   * leaves, and each produced a new instance of it, because the shape of the code kept the defect
+   * WRITABLE: an entry point that takes a live object holds a caller reference and its parsed
+   * snapshot in the SAME SCOPE, so every call site is a coin flip between two identifiers that look
+   * equally correct. Measured on the tree immediately before this change, with both bindings in
+   * scope inside `decide()`:
+   *
+   *     engine.ts:636  verdictReceipt: rDoc            <- the snapshot. correct.
+   *     engine.ts:635  decisionArtifact                <- the LIVE caller object. one line up.
+   *
+   *   `buildHoldResolution` hands that live object to `refHash` (`resolution.ts:32`), which
+   *   canonicalizes it and therefore INVOKES ITS ACCESSORS. A two-faced `reasonCode` — signed value
+   *   to read #1, attacker value to every later read — produced this:
+   *
+   *     gate-SIGNED holdResolution.decisionArtifactHash : sha256:8efd3224...
+   *     refHash(the VERIFIED snapshot)                  : sha256:0141ca02...
+   *     signed hash commits to the VERIFIED doc?        false
+   *     signed hash commits to the ATTACKER's doc?      true
+   *
+   *   The gate signed a commitment to a document it never verified. Nothing was forged; the
+   *   approver's signature is genuine and covers the honest artifact.
+   *
+   * MOVING THE BOUNDARY TO THE SIGNATURE DOES NOT DEFEND AGAINST THAT DEFECT — IT MAKES IT
+   * UNWRITABLE. Once the parameter is `Uint8Array`, the identifier `decisionArtifact` does not exist
+   * in `decide()`, so the line above is a COMPILE ERROR rather than a code-review question. That is
+   * the whole reason this is a signature change and not another leaf patch.
+   *
+   * A non-bytes argument needs no separate check here: the core boundary's type test reads an
+   * internal slot, is total and trap-free, and refuses an object WITH A REASON instead of coercing
+   * it — so a caller that still passes a live object gets a 422 naming what a document is.
+   */
+  private parseBody(body: unknown): { ok: true; doc: Record<string, unknown> } | { ok: false; res: EngineResult } {
+    const parsed = parseDocument(body, "request body");
+    // The parser's OWN reason is forwarded. It is safe to put on the wire in a way an arbitrary
+    // thrown value's `.message` would not be: `parseDocument` never throws, and the reason is built
+    // from `safe-json.ts`'s own literals plus a numeric position — nothing the caller owns.
+    if (!parsed.ok) return { ok: false, res: err(422, "BODY_NOT_STRICT_JSON", { detail: parsed.reason }) };
+    if (!isRecord(parsed.value)) return { ok: false, res: err(400, "BAD_REQUEST") };
+    return { ok: true, doc: parsed.value };
+  }
+
   // ── holds ─────────────────────────────────────────────────────────────────
-  createHold(agent: AgentRecord, idempotencyKey: string | undefined, input: unknown): EngineResult {
+  createHold(agent: AgentRecord, idempotencyKey: string | undefined, body: Uint8Array): EngineResult {
     if (!idempotencyKey) return err(400, "MISSING_IDEMPOTENCY_KEY");
-    if (!isRecord(input)) return err(400, "BAD_REQUEST");
+    // Parsed ONCE, at the top. Every `input[...]` read below is of a frozen, null-prototype,
+    // accessor-free snapshot built from the bytes — so no read of it can differ from any other.
+    const parsedBody = this.parseBody(body);
+    if (!parsedBody.ok) return parsedBody.res;
+    const input = parsedBody.doc;
 
     // ─── OWNER DECISION 2026-07-30: RAW IS NOT CALLER-SELECTABLE ───────────────────────────────
     // `mode` used to be read straight from caller input, which made every mechanical prohibition
@@ -511,7 +562,7 @@ export class GateEngine {
    * The phone's signed ALLOWED/BLOCKED receipt + Decision Artifact arrive (via the relay in prod;
    * directly in alpha/tests). The gate RE-VERIFIES everything (D18) and only then resolves + grants.
    */
-  decide(holdId: string, input: unknown): EngineResult {
+  decide(holdId: string, body: Uint8Array): EngineResult {
     const hold = this.store.getHold(holdId);
     if (!hold) return err(404, "UNKNOWN_HOLD");
     // Capture the request's trusted arrival time once. Expiry and revocation must be evaluated
@@ -524,12 +575,30 @@ export class GateEngine {
       this.log("hold.decision_rejected", { holdId, currentStatus: hold.status });
       return err(409, "HOLD_ALREADY_RESOLVED", { status: hold.status });
     }
-    if (!isRecord(input)) return err(400, "BAD_REQUEST");
+    const parsedBody = this.parseBody(body);
+    if (!parsedBody.ok) return parsedBody.res;
 
-    const receipt = isRecord(input["receipt"]) ? (input["receipt"] as unknown as Receipt) : null;
-    const decisionArtifact = isRecord(input["decisionArtifact"]) ? (input["decisionArtifact"] as Record<string, unknown>) : null;
-    if (!receipt) return err(422, "BAD_OR_MISSING_RECEIPT");
-    if (!decisionArtifact) return err(422, "BAD_OR_MISSING_DECISION_ARTIFACT");
+    // ─── THE LIVE BINDINGS ARE GONE, AND THAT IS THE FIX ───────────────────────────────────────────
+    // What stood here was:
+    //
+    //     const receipt          = isRecord(input["receipt"])          ? ... : null;
+    //     const decisionArtifact = isRecord(input["decisionArtifact"]) ? ... : null;
+    //
+    // Two live caller references, held in scope for the remaining 120 lines alongside the `rDoc` /
+    // `daDoc` snapshots parsed from them. Every later line then had two identifiers available that
+    // looked equally correct, and the file used the wrong one twice (the Hold Resolution on both the
+    // APPROVE and the DENY branch). Deleting the bindings is not tidying: it is what turns those two
+    // lines from a code-review question into a compile error.
+    //
+    // `rDoc`/`daDoc` are bound DIRECTLY from the body snapshot. They are frozen, null-prototype and
+    // accessor-free, so there is no longer a "live" and a "snapshot" version of anything to choose
+    // between — there is one value, and it is the only one in scope.
+    const rDocRaw = parsedBody.doc["receipt"];
+    const daDocRaw = parsedBody.doc["decisionArtifact"];
+    if (!isRecord(rDocRaw)) return err(422, "BAD_OR_MISSING_RECEIPT");
+    if (!isRecord(daDocRaw)) return err(422, "BAD_OR_MISSING_DECISION_ARTIFACT");
+    const rDoc: Record<string, unknown> = rDocRaw;
+    const daDoc: Record<string, unknown> = daDocRaw;
     // The same verifier-controlled arrival-time snapshot drives revocation, the Hold Resolution,
     // and the grant timestamps. Never authorize against the phone's self-asserted decidedAt.
     const receivedAt = this.iso(receivedAtMs);
@@ -537,14 +606,11 @@ export class GateEngine {
     // 1. Verify the Decision Artifact: signature (approver), F15 role tier (from the held riskClass),
     //    and its binding to THIS Hold Envelope (holdEnvelopeHash), transitively enforcing tenant (F7b).
     // ADR-0005 — SERIALIZE ONCE, VERIFY THOSE BYTES, AUTHORIZE FROM THE PARSE OF THOSE BYTES.
-    // `encodeDocument` is JSON.stringify, which INVOKES ACCESSORS. Re-reading `decisionArtifact`
-    // after this point let a caller-owned getter answer "DENY" to the signature check and "APPROVE"
-    // to the authorization read — a genuinely-signed denial that authorized an approval (M3).
-    const daBytes = encodeDocument(decisionArtifact);
-    const daParsed = parseDocument(daBytes, "decisionArtifact");
-    if (!daParsed.ok) return err(422, "BAD_OR_MISSING_DECISION_ARTIFACT", { detail: daParsed.reason });
-    if (!isRecord(daParsed.value)) return err(422, "BAD_OR_MISSING_DECISION_ARTIFACT");
-    const daDoc: Record<string, unknown> = daParsed.value;
+    // `encodeDocument` is `JSON.stringify` and DOES invoke accessors — but `daDoc` has none: it came
+    // out of our own parser, so re-serializing it is a pure function of the bytes that arrived. The
+    // inner re-parse that used to sit here (`parseDocument(encodeDocument(liveObject))`) is gone
+    // because it was only ever compensating for the live binding above.
+    const daBytes = encodeDocument(daDoc);
     const daCheck = verifyArtifact(daBytes, encodeDocument({
       schemas: this.schemas,
       keyring: this.trust.keyring,
@@ -565,12 +631,8 @@ export class GateEngine {
 
     // 2. Verify the ALLOWED/BLOCKED verdict receipt: it must chain onto the DEFERRED and authenticate
     //    against the trusted keyring (approver key), fail-closed on tenant drift.
-    // Same discipline for the receipt: one serialization, parsed once, read only from the snapshot.
-    const rBytes = encodeDocument(receipt);
-    const rParsed = parseDocument(rBytes, "receipt");
-    if (!rParsed.ok) return err(422, "BAD_OR_MISSING_RECEIPT", { detail: rParsed.reason });
-    if (!isRecord(rParsed.value)) return err(422, "BAD_OR_MISSING_RECEIPT");
-    const rDoc: Record<string, unknown> = rParsed.value;
+    // `rDoc` is the body snapshot, bound above. The `encodeDocument(receipt)` + re-parse that used to
+    // stand here produced a THIRD serialization of the caller's live object; there is now exactly one.
     const verdict = isRecord(rDoc["governance"]) ? (rDoc["governance"] as Record<string, unknown>)["verdict"] : undefined;
     if (verdict !== "ALLOWED" && verdict !== "BLOCKED") return err(422, "UNEXPECTED_VERDICT");
     // G11: decision ↔ verdict must agree.
@@ -616,10 +678,11 @@ export class GateEngine {
 
     // Store the SNAPSHOTS. Storing the live caller objects let `report()` — a LATER HTTP REQUEST —
     // re-read them, and the gate signed an attacker-chosen chain link from reads 5 and 6.
-    hold.decisionReceipt = rDoc as unknown as typeof receipt;
-    hold.decisionArtifact = daDoc as unknown as typeof decisionArtifact;
+    // There is nothing else left to store: the live objects no longer exist in this scope.
+    hold.decisionReceipt = rDoc as unknown as Receipt;
+    hold.decisionArtifact = daDoc;
     hold.decidedAt = receivedAtMs;
-    hold.verdictReceipt = rDoc as unknown as typeof receipt;
+    hold.verdictReceipt = rDoc as unknown as Receipt;
 
     if (decisionVal === "APPROVE") {
       hold.status = "APPROVED";
@@ -629,11 +692,20 @@ export class GateEngine {
       const enforced = hold.mode === "ENFORCED";
       hold.reasonCode = enforced ? "HUMAN_APPROVED" : "HUMAN_ACK_UNENFORCED";
       // F10 Hold Resolution (trusted receivedAt).
+      // ⚠ THIS LINE WAS THE DEFECT, AND ITS FIX IS NOW ENFORCED BY THE COMPILER. It read
+      // `decisionArtifact,` — the live caller object — while the line below it correctly used the
+      // `rDoc` snapshot. `buildHoldResolution` passes it to `refHash` (`resolution.ts:32`), which
+      // canonicalizes it and invokes its accessors, so the gate signed a `decisionArtifactHash` over
+      // bytes it never verified. After Slice 1 that identifier does not exist in this scope and
+      // `tsc` refuses the file outright:
+      //     src/engine.ts(698,9): error TS18004: No value exists in scope for the shorthand
+      //                           property 'decisionArtifact'.
+      // A defect that cannot be written does not need a reviewer to catch it.
       hold.holdResolution = buildHoldResolution({
         holdId: hold.id,
         holdEnvelope: hold.holdEnvelope,
-        decisionArtifact,
-        verdictReceipt: rDoc as unknown as typeof receipt,
+        decisionArtifact: daDoc,
+        verdictReceipt: rDoc as unknown as Receipt,
         status: "APPROVED",
         reasonCode: enforced ? "HUMAN_APPROVED" : "HUMAN_ACK_UNENFORCED",
         receivedAt,
@@ -654,7 +726,7 @@ export class GateEngine {
         holdId: hold.id,
         paramsHash: hold.action.paramsHash,
         holdEnvelope: hold.holdEnvelope,
-        allowedReceipt: rDoc as unknown as typeof receipt,
+        allowedReceipt: rDoc as unknown as Receipt,
         issuedAt: receivedAt,
         expiresAt: this.iso(receivedAtMs + this.cfg.grantTtlMs),
         nonce: this.trust.newId(),
@@ -682,8 +754,8 @@ export class GateEngine {
       hold.holdResolution = buildHoldResolution({
         holdId: hold.id,
         holdEnvelope: hold.holdEnvelope,
-        decisionArtifact,
-        verdictReceipt: rDoc as unknown as typeof receipt,
+        decisionArtifact: daDoc,
+        verdictReceipt: rDoc as unknown as Receipt,
         status: "DENIED",
         reasonCode: "HUMAN_DENIED",
         receivedAt,
@@ -739,14 +811,17 @@ export class GateEngine {
     return { status: 200, body: { grant: rec.grant, status: "RESERVED" } };
   }
 
-  report(grantId: string, input: unknown, agent: AgentRecord): EngineResult {
+  report(grantId: string, body: Uint8Array, agent: AgentRecord): EngineResult {
     const rec = this.store.getGrant(grantId);
     if (!rec) return err(404, "UNKNOWN_GRANT");
     // F29-authz — ownership BEFORE any state transition or signature. This is the route whose abuse
-    // produced a gate-signed EXECUTED receipt on a foreign chain; the check belongs first.
+    // produced a gate-signed EXECUTED receipt on a foreign chain; the check belongs first. It also
+    // stays ahead of the body parse deliberately: an unauthorized caller must not be able to tell a
+    // malformed body (422) from a foreign grant (404), or the 404 becomes an existence oracle.
     if (!this.ownsHold(this.store.getHold(rec.holdId), agent, "report")) return err(404, "UNKNOWN_GRANT");
-    if (!isRecord(input)) return err(400, "BAD_REQUEST");
-    const result = input["result"];
+    const parsedBody = this.parseBody(body);
+    if (!parsedBody.ok) return parsedBody.res;
+    const result = parsedBody.doc["result"];
     if (result !== "DISPATCHED" && result !== "FAILED_BEFORE_DISPATCH" && result !== "UNKNOWN") {
       return err(422, "BAD_RESULT");
     }

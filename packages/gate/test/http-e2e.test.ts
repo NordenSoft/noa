@@ -12,7 +12,7 @@ import { createAlphaTrust } from "../src/trust.js";
 import { InMemoryStore } from "../src/store.js";
 import { hashSecret } from "../src/auth.js";
 import { guard, HttpGateClient } from "../src/wrapper.js";
-import { testSealer, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { testSealer, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
 import { b } from "./helpers/bytes.js";
 
 test("localhost HTTP: full ENFORCED round-trip returns a verifyChain-VALID chain over the wire", async () => {
@@ -112,7 +112,7 @@ test("HttpGateClient + guard(): the exact-execution wrapper runs a command end-t
       const pending = store.listHolds({ status: "PENDING" }).find((h) => h.chain === "wrap-http-chain");
       if (pending) {
         const { receipt, decisionArtifact } = signPhoneDecision({ trust, deferredReceipt: pending.deferredReceipt, holdEnvelope: pending.holdEnvelope, decision: "APPROVE" });
-        gate.engine.decide(pending.id, { receipt, decisionArtifact });
+        gate.engine.decide(pending.id, body({ receipt, decisionArtifact }));
         break;
       }
       await new Promise((r) => setTimeout(r, 2));

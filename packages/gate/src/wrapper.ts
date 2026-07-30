@@ -22,16 +22,27 @@ import { ToolOutcomeNotRecorded } from "noa-mcp-adapter-core/tool-outcome-not-re
 // about a throw AFTER dispatch: it cannot claim it knows the dispatch did not happen.
 import { next as nextSideEffectState } from "noa-mcp-adapter-core/side-effect-state";
 import { getProjection } from "./projections.js";
+// KURAL 5 — the package's ONE document encoder, not a second local TextEncoder.
+import { encodeDocument } from "./bytes.js";
 import type { EngineResult, GateEngine } from "./engine.js";
 import type { AgentRecord } from "./types.js";
 
 /** Transport abstraction — the wrapper talks to the gate through this. In-process (tests / embedded
- *  library) or over localhost HTTP (a real daemon). */
+ *  library) or over localhost HTTP (a real daemon).
+ *
+ *  ─── ADR-0005 SLICE 1: `body` IS BYTES ON BOTH IMPLEMENTATIONS ─────────────────────────────────────
+ *  It was `unknown`, and the two implementations then disagreed about what the document WAS.
+ *  `HttpGateClient` did its own `JSON.stringify` on the wire while `InProcessGateClient` handed the
+ *  live object straight to the engine — so the in-process path carried accessors, prototypes and
+ *  mutable aliases that the HTTP path had already flattened away. Two transports, two different
+ *  documents, one test suite covering mostly the safer of them. With `Uint8Array` the caller
+ *  serializes ONCE and both transports carry the identical byte string, so a defect reachable over
+ *  HTTP is reachable in-process and the suite can no longer be accidentally blind to it. */
 export interface GateClient {
-  createHold(idempotencyKey: string, body: unknown): Promise<EngineResult>;
+  createHold(idempotencyKey: string, body: Uint8Array): Promise<EngineResult>;
   wait(holdId: string, timeoutMs: number): Promise<EngineResult>;
   reserve(grantId: string): Promise<EngineResult>;
-  report(grantId: string, body: unknown): Promise<EngineResult>;
+  report(grantId: string, body: Uint8Array): Promise<EngineResult>;
 }
 
 /** HTTP client — talks to a running gate over localhost (the real `noa hold-and-run` transport).
@@ -46,8 +57,10 @@ export class HttpGateClient implements GateClient {
     const body = await res.json().catch(() => null);
     return { status: res.status, body };
   }
-  async createHold(idempotencyKey: string, body: unknown): Promise<EngineResult> {
-    const res = await fetch(`${this.baseUrl}/v1/holds`, { method: "POST", headers: { ...this.headers(), "idempotency-key": idempotencyKey }, body: JSON.stringify(body) });
+  async createHold(idempotencyKey: string, body: Uint8Array): Promise<EngineResult> {
+    // The caller's bytes go on the wire UNCHANGED — no re-serialization here. That is the point of the
+    // signature change: the document the caller committed to is the document the gate parses.
+    const res = await fetch(`${this.baseUrl}/v1/holds`, { method: "POST", headers: { ...this.headers(), "idempotency-key": idempotencyKey }, body });
     return this.toResult(res);
   }
   async wait(holdId: string, timeoutMs: number): Promise<EngineResult> {
@@ -59,8 +72,8 @@ export class HttpGateClient implements GateClient {
     const res = await fetch(`${this.baseUrl}/v1/grants/${encodeURIComponent(grantId)}/reserve`, { method: "POST", headers: this.headers(), body: "{}" });
     return this.toResult(res);
   }
-  async report(grantId: string, body: unknown): Promise<EngineResult> {
-    const res = await fetch(`${this.baseUrl}/v1/grants/${encodeURIComponent(grantId)}/report`, { method: "POST", headers: this.headers(), body: JSON.stringify(body) });
+  async report(grantId: string, body: Uint8Array): Promise<EngineResult> {
+    const res = await fetch(`${this.baseUrl}/v1/grants/${encodeURIComponent(grantId)}/report`, { method: "POST", headers: this.headers(), body });
     return this.toResult(res);
   }
 }
@@ -68,7 +81,7 @@ export class HttpGateClient implements GateClient {
 /** In-process client — drives a GateEngine directly (no socket). The `agent` is resolved once. */
 export class InProcessGateClient implements GateClient {
   constructor(private readonly engine: GateEngine, private readonly agent: AgentRecord) {}
-  createHold(idempotencyKey: string, body: unknown): Promise<EngineResult> {
+  createHold(idempotencyKey: string, body: Uint8Array): Promise<EngineResult> {
     return Promise.resolve(this.engine.createHold(this.agent, idempotencyKey, body));
   }
   wait(holdId: string, timeoutMs: number): Promise<EngineResult> {
@@ -77,7 +90,7 @@ export class InProcessGateClient implements GateClient {
   reserve(grantId: string): Promise<EngineResult> {
     return Promise.resolve(this.engine.reserve(grantId, this.agent));
   }
-  report(grantId: string, body: unknown): Promise<EngineResult> {
+  report(grantId: string, body: Uint8Array): Promise<EngineResult> {
     return Promise.resolve(this.engine.report(grantId, body, this.agent));
   }
 }
@@ -167,7 +180,10 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
     ...(input.chain ? { chain: input.chain } : {}),
   };
 
-  const created = await input.client.createHold(input.idempotencyKey, holdBody);
+  // ENCODED EXACTLY ONCE (ADR-0005 Slice 1). `holdBody` is built from the frozen `snapshot` above and
+  // becomes bytes here; every transport carries these same bytes, and nothing downstream re-reads the
+  // object graph they came from.
+  const created = await input.client.createHold(input.idempotencyKey, encodeDocument(holdBody));
   if (created.status !== 201 && created.status !== 200) {
     return { outcome: "ERROR", ran: false, detail: `createHold ${created.status}: ${JSON.stringify(created.body)}` };
   }
@@ -292,7 +308,7 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
   // command that ran; otherwise it is an ordinary reporting error.
   let reported: EngineResult;
   try {
-    reported = await input.client.report(grantId, { result: reportResult });
+    reported = await input.client.report(grantId, encodeDocument({ result: reportResult }));
   } catch (e) {
     if (sideEffectMayHaveHappened) {
       throw new ToolOutcomeNotRecorded(input.action.canonical, {

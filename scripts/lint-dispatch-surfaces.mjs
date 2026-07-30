@@ -40,7 +40,16 @@ const DISPATCH_PATTERNS = [
   { id: "gate-wrapper-execute", re: /await\s+input\.execute\(\)/ },
   { id: "framework-adapter-fn", re: /result\s*=\s*await\s+fn\(args\)/ },
   { id: "mcp-proxy-calltool", re: /await\s+downstream\.callTool\(/ },
-  { id: "gate-engine-report", re: /\breport\(grantId: string, input: unknown/ },
+  // ADR-0005 Slice 1 rotted the previous literal (`report(grantId: string, input: unknown`) when the
+  // entry point moved to bytes. The gate CAUGHT it as a STALE REGISTRY ENTRY, which is the behaviour
+  // this layer exists for; the pattern is re-pinned to the new signature rather than broadened, because
+  // a loose regex here would match a renamed method and quietly stop measuring the surface.
+  // The trailing `agent: AgentRecord` is what distinguishes the ENGINE's dispatch surface from the two
+  // TRANSPORT clients in wrapper.ts. Slice 1 unified their signatures on `Uint8Array`, so a pattern
+  // keyed on the body type alone matched all three and the gate reported REGISTRY DRIFT three times —
+  // correctly. `agent` is the engine's authorization parameter, so keying on it is narrower AND more
+  // meaningful than the pre-Slice-1 `input: unknown`, which distinguished them only by accident.
+  { id: "gate-engine-report", re: /\breport\(grantId: string, body: Uint8Array, agent: AgentRecord/ },
 ];
 
 /**

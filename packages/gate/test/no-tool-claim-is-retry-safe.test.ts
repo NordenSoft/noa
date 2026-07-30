@@ -21,6 +21,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { guard, type GateClient, type GuardResult } from "../src/wrapper.js";
 import type { EngineResult } from "../src/engine.js";
+// ADR-0005 Slice 1: the report body is BYTES on the wire; decode it to assert its content.
+import { doc } from "./helpers/bytes.js";
 
 const PARAMS_HASH = "sha256:" + "ab".repeat(32);
 
@@ -108,7 +110,7 @@ for (const behaviour of TOOL_BEHAVIOURS) {
     try {
       result = await guard({
         client: client({
-          report: async (_g: string, body: unknown) => {
+          report: async (_g: string, body: Uint8Array) => {
             reported = body;
             return { status: 202, body: { status: "UNCERTAINTY_PENDING_GATE_CORROBORATION" } } as EngineResult;
           },
@@ -126,14 +128,15 @@ for (const behaviour of TOOL_BEHAVIOURS) {
 
     // (a) the gate must never SIGN a determinate no-side-effect.
     if (reported !== undefined) {
+      const wire = doc(reported) as { result?: string };
       assert.notDeepEqual(
-        reported,
+        wire,
         { result: "FAILED_BEFORE_DISPATCH" },
         "a determinate FAILED_BEFORE_DISPATCH is a signed 'it did not run' the gate cannot know",
       );
       assert.ok(
-        (reported as { result?: string }).result === "DISPATCHED" || (reported as { result?: string }).result === "UNKNOWN",
-        `post-dispatch reports are DISPATCHED or UNKNOWN only, got ${JSON.stringify(reported)}`,
+        wire.result === "DISPATCHED" || wire.result === "UNKNOWN",
+        `post-dispatch reports are DISPATCHED or UNKNOWN only, got ${JSON.stringify(wire)}`,
       );
     }
     // (b) the gate must never TELL the caller nothing ran.

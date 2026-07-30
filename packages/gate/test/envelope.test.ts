@@ -8,19 +8,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { verifyArtifact, virtualHash } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
-import { setupGate, sampleCommandParams } from "./helpers.js";
+import { setupGate, sampleCommandParams, body } from "./helpers.js";
 import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
 
 test("F2: displayCiphertextHash covers the WHOLE encrypted-display; a relay-added recipient breaks it", () => {
   const fx = setupGate({ approverRole: "approve-high" });
-  const created = fx.engine.createHold(fx.agent, "idem-f2", {
+  const created = fx.engine.createHold(fx.agent, "idem-f2", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-f2",
-  });
+  }));
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
   const boundHash = (created.body as { holdEnvelope: { displayCiphertextHash: string } }).holdEnvelope.displayCiphertextHash;
@@ -40,12 +40,12 @@ test("F2: displayCiphertextHash covers the WHOLE encrypted-display; a relay-adde
 
 test("the Hold Envelope itself verifies as GATE + hold-signer (F15)", () => {
   const fx = setupGate({ approverRole: "approve-high" });
-  const created = fx.engine.createHold(fx.agent, "idem-env", {
+  const created = fx.engine.createHold(fx.agent, "idem-env", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-env",
-  });
+  }));
   const env = (created.body as { holdEnvelope: Record<string, unknown> }).holdEnvelope;
   const check = verifyArtifact(b(env), b({ schemas, keyring: fx.trust.keyring, now: new Date(fx.trust.now()).toISOString() }));
   assert.ok(check.ok, check.reason);

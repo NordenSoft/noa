@@ -36,7 +36,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
 import { hashSecret } from "../src/auth.js";
 import type { AgentRecord, Receipt } from "../src/types.js";
 
@@ -54,12 +54,12 @@ function coTenant(fx: ReturnType<typeof setupGate>): AgentRecord {
 
 /** Drive a hold to an APPROVED grant as the VICTIM (fx.agent). */
 function victimGrant(fx: ReturnType<typeof setupGate>, chain: string): { holdId: string; grantId: string } {
-  const created = fx.engine.createHold(fx.agent, `idem-${chain}`, {
+  const created = fx.engine.createHold(fx.agent, `idem-${chain}`, body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain,
-  });
+  }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
@@ -69,7 +69,7 @@ function victimGrant(fx: ReturnType<typeof setupGate>, chain: string): { holdId:
     holdEnvelope: hold.holdEnvelope,
     decision: "APPROVE",
   });
-  const decided = fx.engine.decide(holdId, { receipt, decisionArtifact });
+  const decided = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   assert.equal(decided.status, 200, JSON.stringify(decided.body));
   return { holdId, grantId: (decided.body as { grantId: string }).grantId };
 }
@@ -97,8 +97,8 @@ test("a foreign agent cannot REPORT on another agent's grant — no forged EXECU
   // The victim reserves legitimately (pre-dispatch) and then stalls — a crash, a slow command.
   assert.equal(fx.engine.reserve(grantId, fx.agent).status, 200);
 
-  const foreign = fx.engine.report(grantId, { result: "DISPATCHED" }, attacker);
-  const absent = fx.engine.report("id-does-not-exist", { result: "DISPATCHED" }, attacker);
+  const foreign = fx.engine.report(grantId, body({ result: "DISPATCHED" }), attacker);
+  const absent = fx.engine.report("id-does-not-exist", body({ result: "DISPATCHED" }), attacker);
   assert.equal(foreign.status, 404, `foreign report must be refused, got ${foreign.status}`);
   assert.deepEqual(foreign.body, absent.body, "no existence oracle on /report either");
 
@@ -108,22 +108,22 @@ test("a foreign agent cannot REPORT on another agent's grant — no forged EXECU
   assert.equal(rec.consumption, null, "a refused foreign report must never mint a gate-signed Execution Consumption");
 
   // The rightful owner still completes normally — the fix is authorization, not new behaviour.
-  const own = fx.engine.report(grantId, { result: "DISPATCHED" }, fx.agent);
+  const own = fx.engine.report(grantId, body({ result: "DISPATCHED" }), fx.agent);
   assert.equal(own.status, 200, JSON.stringify(own.body));
-  const body = own.body as { consumption: unknown; attemptReceipt: Receipt };
-  assert.ok(body.consumption);
-  assert.equal(body.attemptReceipt.governance.verdict, "EXECUTED");
+  const resBody = own.body as { consumption: unknown; attemptReceipt: Receipt };
+  assert.ok(resBody.consumption);
+  assert.equal(resBody.attemptReceipt.governance.verdict, "EXECUTED");
 });
 
 test("a foreign agent cannot CANCEL another agent's pending hold", () => {
   const fx = setupGate({ approverRole: "approve-high" });
   const attacker = coTenant(fx);
-  const created = fx.engine.createHold(fx.agent, "idem-cancel-authz", {
+  const created = fx.engine.createHold(fx.agent, "idem-cancel-authz", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-cancel-authz",
-  });
+  }));
   const holdId = (created.body as { holdId: string }).holdId;
 
   assert.equal(fx.engine.cancelLocalStateLost(holdId, attacker).status, 404);
@@ -151,7 +151,7 @@ test("the owner's full happy path is unchanged with a co-tenant registered on th
   coTenant(fx); // merely existing must change nothing for the owner
   const { grantId } = victimGrant(fx, "chain-happy-authz");
   assert.equal(fx.engine.reserve(grantId, fx.agent).status, 200);
-  const reported = fx.engine.report(grantId, { result: "DISPATCHED" }, fx.agent);
+  const reported = fx.engine.report(grantId, body({ result: "DISPATCHED" }), fx.agent);
   assert.equal(reported.status, 200, JSON.stringify(reported.body));
   assert.equal((reported.body as { attemptReceipt: Receipt }).attemptReceipt.governance.verdict, "EXECUTED");
 });

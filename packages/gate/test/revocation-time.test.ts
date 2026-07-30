@@ -1,17 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, refHash, signArtifact } from "noa-approval-artifacts";
-import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
 import { b } from "./helpers/bytes.js";
 
 function createPendingHighRiskHold(label: string) {
   const fx = setupGate({ approverRole: "approve-high" });
-  const created = fx.engine.createHold(fx.agent, `idem-${label}`, {
+  const created = fx.engine.createHold(fx.agent, `idem-${label}`, body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: `chain-${label}`,
-  });
+  }));
   assert.equal(created.status, 201);
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
@@ -32,7 +32,7 @@ test("a revoked approver cannot backdate a genuine decision to mint an execution
     decision: "APPROVE",
     at: new Date(gateNow - 2_000).toISOString(),
   });
-  const result = fx.engine.decide(holdId, signed);
+  const result = fx.engine.decide(holdId, body(signed));
 
   assert.equal(result.status, 422);
   assert.equal((result.body as { error?: string }).error, "DECISION_ARTIFACT_INVALID");
@@ -54,7 +54,7 @@ test("a decision received before a future revocation remains authorized", () => 
     decision: "APPROVE",
     at: new Date(gateNow).toISOString(),
   });
-  const result = fx.engine.decide(holdId, signed);
+  const result = fx.engine.decide(holdId, body(signed));
 
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.equal(fx.store.getHold(holdId)!.status, "APPROVED");
@@ -96,10 +96,10 @@ test("a live Decision signer cannot claim the revoked receipt signer's approverK
     active,
   );
 
-  const result = fx.engine.decide(holdId, {
+  const result = fx.engine.decide(holdId, body({
     receipt: signedByRevoked.receipt,
     decisionArtifact,
-  });
+  }));
   assert.equal(result.status, 422);
   assert.equal((result.body as { error?: string }).error, "DECISION_ARTIFACT_INVALID");
   assert.match(String((result.body as { detail?: string }).detail), /signer identity mismatch/);
@@ -121,12 +121,12 @@ test("expiry and authorization share one arrival-time snapshot at the boundary",
       },
     },
   });
-  const created = fx.engine.createHold(fx.agent, "idem-expiry-snapshot", {
+  const created = fx.engine.createHold(fx.agent, "idem-expiry-snapshot", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-expiry-snapshot",
-  });
+  }));
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
   boundaryStart = hold.expiresAt - 1;
@@ -139,7 +139,7 @@ test("expiry and authorization share one arrival-time snapshot at the boundary",
     decision: "APPROVE",
     at: new Date(boundaryStart).toISOString(),
   });
-  const result = fx.engine.decide(holdId, signed);
+  const result = fx.engine.decide(holdId, body(signed));
 
   assert.equal(result.status, 200, JSON.stringify(result.body));
   assert.equal(boundaryCalls, 1, "decide must read the trusted clock exactly once");

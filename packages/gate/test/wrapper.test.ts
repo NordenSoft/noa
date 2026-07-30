@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { guard, InProcessGateClient, type GateClient } from "../src/wrapper.js";
-import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
 
 /** After guard() posts a hold and parks on wait(), find the PENDING hold on `chain` and approve it,
  *  waking the long-poll (mirrors the phone deciding out-of-band). */
@@ -15,7 +15,7 @@ async function approveWhenPending(fx: ReturnType<typeof setupGate>, chain: strin
     const pending = fx.store.listHolds({ status: "PENDING" }).find((h) => h.chain === chain);
     if (pending) {
       const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: pending.deferredReceipt, holdEnvelope: pending.holdEnvelope, decision: "APPROVE" });
-      fx.engine.decide(pending.id, { receipt, decisionArtifact });
+      fx.engine.decide(pending.id, body({ receipt, decisionArtifact }));
       return;
     }
     await new Promise((r) => setTimeout(r, 1));
@@ -84,16 +84,26 @@ test("D14: a grant whose paramsHash disagrees with the snapshot → REFUSED, exe
   assert.equal(executed, false, "the command must NEVER run on a params-hash mismatch");
 });
 
-test("gate-level ENFORCED: a caller-supplied paramsHash that disagrees with the gate's → 422 PARAMS_HASH_MISMATCH", () => {
+/** BEHAVIOUR CHANGE, 2026-07-30 (owner digest decision) — STRICTER, NOT WEAKENED.
+ *
+ *  This test used to assert `422 PARAMS_HASH_MISMATCH`: a caller COULD supply `action.paramsHash`, and
+ *  it was rejected only when it DISAGREED with the gate's own. The field is now refused outright with
+ *  `422 PARAMS_HASH_NOT_CALLER_SUPPLIED`, matching or not, because accepting the field is the defect —
+ *  a value accepted today because it matches is accepted tomorrow when it does not, and the equality
+ *  check that caught it is one reordering away from being bypassed.
+ *
+ *  The assertion is updated, NOT relaxed: the request is still refused with 422, and now on a strictly
+ *  larger set of inputs. `PARAMS_HASH_MISMATCH` no longer exists anywhere in the source. */
+test("gate-level ENFORCED: a caller-supplied paramsHash is refused outright → 422 PARAMS_HASH_NOT_CALLER_SUPPLIED", () => {
   const fx = setupGate({ approverRole: "approve-high" });
-  const created = fx.engine.createHold(fx.agent, "idem-badhash", {
+  const created = fx.engine.createHold(fx.agent, "idem-badhash", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false, paramsHash: "sha256:" + "9".repeat(64) },
     params: sampleCommandParams(),
     chain: "chain-badhash",
-  });
+  }));
   assert.equal(created.status, 422);
-  assert.equal((created.body as { error: string }).error, "PARAMS_HASH_MISMATCH");
+  assert.equal((created.body as { error: string }).error, "PARAMS_HASH_NOT_CALLER_SUPPLIED");
 });
 
 test("guard(): a DENY resolves to outcome DENIED, execute() never called", async () => {
@@ -117,7 +127,7 @@ test("guard(): a DENY resolves to outcome DENIED, execute() never called", async
     const pending = fx.store.listHolds({ status: "PENDING" }).find((h) => h.chain === "chain-wdeny");
     if (pending) {
       const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: pending.deferredReceipt, holdEnvelope: pending.holdEnvelope, decision: "DENY", reasonCode: "suspicious" });
-      fx.engine.decide(pending.id, { receipt, decisionArtifact });
+      fx.engine.decide(pending.id, body({ receipt, decisionArtifact }));
       break;
     }
     await new Promise((r) => setTimeout(r, 1));

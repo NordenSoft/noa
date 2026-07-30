@@ -10,7 +10,7 @@ import assert from "node:assert/strict";
 import { verifyChain } from "noa-receipt";
 import { verifyArtifact, refHash, receiptRefHash, virtualHash } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
-import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
 import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
@@ -20,12 +20,12 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
   const { engine, trust, store } = fx;
 
   // 1. Agent freezes a HIGH infra action (ENFORCED — the gate computes paramsHash + derives display).
-  const created = engine.createHold(fx.agent, "idem-1", {
+  const created = engine.createHold(fx.agent, "idem-1", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-A",
-  });
+  }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const holdId = (created.body as { holdId: string }).holdId;
   const holdEnvelope = (created.body as { holdEnvelope: Record<string, unknown> }).holdEnvelope;
@@ -39,7 +39,7 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
 
   // 2. Phone approves: signs the ALLOWED receipt + Decision Artifact (no ticket, D18).
   const { receipt: allowed, decisionArtifact } = signPhoneDecision({ trust, deferredReceipt: deferred, holdEnvelope: holdEnvelope as never, decision: "APPROVE" });
-  const decided = engine.decide(holdId, { receipt: allowed, decisionArtifact });
+  const decided = engine.decide(holdId, body({ receipt: allowed, decisionArtifact }));
   assert.equal(decided.status, 200, JSON.stringify(decided.body));
   const dv = decided.body as { status: string; executionGrant: Record<string, unknown>; grantId: string };
   assert.equal(dv.status, "APPROVED");
@@ -52,7 +52,7 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
   assert.equal(reserved.status, 200);
   assert.equal((reserved.body as { status: string }).status, "RESERVED");
 
-  const reported = engine.report(grantId, { result: "DISPATCHED" }, fx.agent);
+  const reported = engine.report(grantId, body({ result: "DISPATCHED" }), fx.agent);
   assert.equal(reported.status, 200, JSON.stringify(reported.body));
   const rb = reported.body as { consumption: Record<string, unknown>; attemptReceipt: Record<string, unknown> };
   const consumption = rb.consumption;
@@ -116,12 +116,12 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
 test("RAW mode: caller supplies paramsHash + display; envelope labels it RAW with null projection", () => {
   const fx = setupGate();
   const paramsHash = "sha256:" + "b".repeat(64);
-  const created = fx.engine.createHold(fx.agent, "idem-raw", {
+  const created = fx.engine.createHold(fx.agent, "idem-raw", body({
     mode: "RAW",
     action: { canonical: "vendor.custom.op", riskClass: "MEDIUM", reversible: true, paramsHash },
     display: { Amount: "$500", To: "Mercury Treasury" },
     chain: "chain-raw",
-  });
+  }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const env = (created.body as { holdEnvelope: Record<string, unknown> }).holdEnvelope;
   assert.equal(env["mode"], "RAW");
@@ -132,16 +132,16 @@ test("RAW mode: caller supplies paramsHash + display; envelope labels it RAW wit
 
 test("DENY path: gate resolves DENIED with a BLOCKED verdict receipt, issues NO grant", () => {
   const fx = setupGate({ approverRole: "approve-critical" });
-  const created = fx.engine.createHold(fx.agent, "idem-deny", {
+  const created = fx.engine.createHold(fx.agent, "idem-deny", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "CRITICAL", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-deny",
-  });
+  }));
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
   const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "DENY", reasonCode: "suspicious" });
-  const decided = fx.engine.decide(holdId, { receipt, decisionArtifact });
+  const decided = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   assert.equal(decided.status, 200);
   const dv = decided.body as { status: string; grantId: string | null; executionGrant: unknown };
   assert.equal(dv.status, "DENIED");
@@ -153,12 +153,12 @@ test("DENY path: gate resolves DENIED with a BLOCKED verdict receipt, issues NO 
 test("D17: a second hold on the same chain while one is unresolved → 409 HOLD_ALREADY_PENDING", () => {
   const fx = setupGate();
   const mk = (idem: string) =>
-    fx.engine.createHold(fx.agent, idem, {
+    fx.engine.createHold(fx.agent, idem, body({
       mode: "ENFORCED",
       action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
       params: sampleCommandParams(),
       chain: "chain-dup",
-    });
+    }));
   assert.equal(mk("a").status, 201);
   const second = mk("b");
   assert.equal(second.status, 409);
@@ -173,12 +173,12 @@ test("idempotency: same key+body → same hold (200 idempotent); same key+differ
     params: sampleCommandParams(),
     chain: "chain-idem",
   };
-  const first = fx.engine.createHold(fx.agent, "same-key", base);
+  const first = fx.engine.createHold(fx.agent, "same-key", body(base));
   assert.equal(first.status, 201);
-  const repeat = fx.engine.createHold(fx.agent, "same-key", base);
+  const repeat = fx.engine.createHold(fx.agent, "same-key", body(base));
   assert.equal(repeat.status, 200);
   assert.equal((repeat.body as { idempotent: boolean }).idempotent, true);
-  const conflict = fx.engine.createHold(fx.agent, "same-key", { ...base, chain: "chain-other" });
+  const conflict = fx.engine.createHold(fx.agent, "same-key", body({ ...base, chain: "chain-other" }));
   assert.equal(conflict.status, 409);
   assert.equal((conflict.body as { error: string }).error, "IDEMPOTENCY_CONFLICT");
 });

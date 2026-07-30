@@ -9,19 +9,19 @@ import assert from "node:assert/strict";
 import { verifyChain } from "noa-receipt";
 import { verifyArtifact } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
-import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
 import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
 
 function freeze(fx: ReturnType<typeof setupGate>, chain: string, ttlMs = 60_000): string {
-  const created = fx.engine.createHold(fx.agent, `idem-${chain}`, {
+  const created = fx.engine.createHold(fx.agent, `idem-${chain}`, body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain,
     ttlMs,
-  });
+  }));
   return (created.body as { holdId: string }).holdId;
 }
 
@@ -71,7 +71,7 @@ test("a decision arriving AFTER expiry is rejected fail-closed (409), never over
   fx.engine.getHold(holdId, fx.agent); // trip lazyExpire
 
   const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "APPROVE" });
-  const late = fx.engine.decide(holdId, { receipt, decisionArtifact });
+  const late = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   assert.equal(late.status, 409);
   assert.equal((late.body as { error: string }).error, "HOLD_ALREADY_RESOLVED");
   assert.equal(fx.store.getHold(holdId)!.status, "EXPIRED");

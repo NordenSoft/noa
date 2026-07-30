@@ -23,6 +23,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { guard, type GateClient } from "../src/wrapper.js";
+// ADR-0005 Slice 1: `report` now carries BYTES, so the captured body is decoded before it is
+// compared. The assertion is on the actual wire content rather than on a passed-along object.
+import { doc } from "./helpers/bytes.js";
 import type { EngineResult } from "../src/engine.js";
 import { ToolOutcomeNotRecorded } from "noa-mcp-adapter-core/tool-outcome-not-recorded";
 
@@ -92,7 +95,7 @@ for (const entry of THROWN_CORPUS) {
       },
     });
     assert.equal(result.outcome, "UNKNOWN_AFTER_DISPATCH", `got ${result.outcome}: ${result.detail ?? ""}`);
-    assert.deepEqual(reportedBody, { result: "UNKNOWN" }, "a bare throw must be reported as UNKNOWN, never FAILED_BEFORE_DISPATCH");
+    assert.deepEqual(doc(reportedBody), { result: "UNKNOWN" }, "a bare throw must be reported as UNKNOWN, never FAILED_BEFORE_DISPATCH");
     assert.equal(result.ran, true, "UNKNOWN_AFTER_DISPATCH is conservatively ran:true — a side effect MAY have occurred; do not retry");
     assert.equal(typeof result.detail, "string");
   });
@@ -171,7 +174,7 @@ test("C4 reproduction: a tool that causes a side effect and THEN throws is UNKNO
   });
   assert.equal(sideEffects, 1, "the side effect really happened — that is what makes the old signed FAILED a lie");
   assert.equal(result.outcome, "UNKNOWN_AFTER_DISPATCH");
-  assert.deepEqual(reportedBody, { result: "UNKNOWN" }, "the gate must NOT sign FAILED_BEFORE_DISPATCH for a side effect that may have happened");
+  assert.deepEqual(doc(reportedBody), { result: "UNKNOWN" }, "the gate must NOT sign FAILED_BEFORE_DISPATCH for a side effect that may have happened");
 });
 
 // ── C4 (review #6): NO CLAIM BY THE EXECUTED TOOL PRODUCES A RETRY-SAFE VERDICT ───────────────────
@@ -201,7 +204,7 @@ test("C4: a FORGED pre-side-effect mark buys nothing — the marker API is gone 
   assert.equal(sideEffects, 1, "the side effect really happened — that is what makes a signed FAILED a lie");
   assert.equal(result.outcome, "UNKNOWN_AFTER_DISPATCH");
   assert.equal(result.ran, true, "a post-dispatch outcome is never reported as not-run");
-  assert.deepEqual(reportedBody, { result: "UNKNOWN" }, "a forged mark must not reach a determinate FAILED_BEFORE_DISPATCH");
+  assert.deepEqual(doc(reportedBody), { result: "UNKNOWN" }, "a forged mark must not reach a determinate FAILED_BEFORE_DISPATCH");
 });
 
 test("C4: a clean { ok: false } return is an unverifiable self-report — UNKNOWN, not a retryable failure", async () => {
@@ -216,5 +219,5 @@ test("C4: a clean { ok: false } return is an unverifiable self-report — UNKNOW
   assert.equal(result.outcome, "UNKNOWN_AFTER_DISPATCH");
   assert.equal(result.ran, true);
   assert.equal(result.detail, "exit 1", "the tool's account is kept as DETAIL — recorded, never believed as a verdict");
-  assert.deepEqual(reportedBody, { result: "UNKNOWN" });
+  assert.deepEqual(doc(reportedBody), { result: "UNKNOWN" });
 });

@@ -7,19 +7,19 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
 
 function approveAndGrant(fx: ReturnType<typeof setupGate>, chain: string, idem = `idem-${chain}`): string {
-  const created = fx.engine.createHold(fx.agent, idem, {
+  const created = fx.engine.createHold(fx.agent, idem, body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain,
-  });
+  }));
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
   const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "APPROVE" });
-  const decided = fx.engine.decide(holdId, { receipt, decisionArtifact });
+  const decided = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   return (decided.body as { grantId: string }).grantId;
 }
 
@@ -38,7 +38,7 @@ test("two racing reservations: first wins RESERVED, the loser gets 409 GRANT_ALR
 test("report before reserve is refused (409 GRANT_NOT_RESERVED) — reserve strictly pre-dispatch (F8a)", () => {
   const fx = setupGate({ approverRole: "approve-high" });
   const grantId = approveAndGrant(fx, "chain-noreserve");
-  const r = fx.engine.report(grantId, { result: "DISPATCHED" }, fx.agent);
+  const r = fx.engine.report(grantId, body({ result: "DISPATCHED" }), fx.agent);
   assert.equal(r.status, 409);
   assert.equal((r.body as { error: string }).error, "GRANT_NOT_RESERVED");
 });
@@ -47,9 +47,9 @@ test("a second TERMINAL report → 409 GRANT_ALREADY_REPORTED (one-shot, F8c)", 
   const fx = setupGate({ approverRole: "approve-high" });
   const grantId = approveAndGrant(fx, "chain-oneshot");
   assert.equal(fx.engine.reserve(grantId, fx.agent).status, 200);
-  const first = fx.engine.report(grantId, { result: "DISPATCHED" }, fx.agent);
+  const first = fx.engine.report(grantId, body({ result: "DISPATCHED" }), fx.agent);
   assert.equal(first.status, 200);
-  const second = fx.engine.report(grantId, { result: "DISPATCHED" }, fx.agent);
+  const second = fx.engine.report(grantId, body({ result: "DISPATCHED" }), fx.agent);
   assert.equal(second.status, 409);
   assert.equal((second.body as { error: string }).error, "GRANT_ALREADY_REPORTED");
 });
@@ -89,14 +89,14 @@ test("C-04: a RESERVED grant's FAILED_BEFORE_DISPATCH report is an ATTRIBUTED CL
   // The CAS ran: the gate AUTHORIZED a dispatch and from here cannot observe what followed.
   assert.equal(fx.engine.reserve(grantId, fx.agent).status, 200);
 
-  const r = fx.engine.report(grantId, { result: "FAILED_BEFORE_DISPATCH" }, fx.agent);
+  const r = fx.engine.report(grantId, body({ result: "FAILED_BEFORE_DISPATCH" }), fx.agent);
 
   assert.equal(r.status, 202, "an unverifiable claim is acknowledged (202), never signed as fact (200)");
-  const body = r.body as Record<string, unknown>;
-  assert.equal(body["status"], "UNCERTAINTY_PENDING_GATE_CORROBORATION", "it routes through the EXISTING uncertainty mechanism — no new wire outcome");
-  assert.equal(body["claimRecorded"], "FAILED_BEFORE_DISPATCH", "the claim is not discarded; it is recorded as a claim");
-  assert.equal(body["consumption"], undefined, "no consumption is signed");
-  assert.equal(body["attemptReceipt"], undefined, "no FAILED attempt receipt is signed");
+  const resBody = r.body as Record<string, unknown>;
+  assert.equal(resBody["status"], "UNCERTAINTY_PENDING_GATE_CORROBORATION", "it routes through the EXISTING uncertainty mechanism — no new wire outcome");
+  assert.equal(resBody["claimRecorded"], "FAILED_BEFORE_DISPATCH", "the claim is not discarded; it is recorded as a claim");
+  assert.equal(resBody["consumption"], undefined, "no consumption is signed");
+  assert.equal(resBody["attemptReceipt"], undefined, "no FAILED attempt receipt is signed");
 
   // The claim is attributed in gate-local state — "X said this", never "this is what happened".
   const rec = fx.engine.getGrant(grantId)!;
@@ -135,7 +135,7 @@ test("C-04: an UNUSED grant signs NOTHING — the gate authorized at decide(), s
   assert.equal(typeof grant.sig.value, "string");
   assert.ok(grant.sig.value.length > 0, "the grant is signed and released BEFORE any reservation");
 
-  const r = fx.engine.report(grantId, { result: "FAILED_BEFORE_DISPATCH" }, fx.agent);
+  const r = fx.engine.report(grantId, body({ result: "FAILED_BEFORE_DISPATCH" }), fx.agent);
 
   assert.equal(r.status, 409, "no state of this method observes non-dispatch, so none may sign a determinate negative");
   assert.equal((r.body as { error: string }).error, "GRANT_NOT_RESERVED");
@@ -156,7 +156,7 @@ test("C-04 did not over-correct: a caller that never reserved is refused, not si
   const fx = setupGate({ approverRole: "approve-high" });
   for (const result of ["DISPATCHED", "FAILED_BEFORE_DISPATCH", "UNKNOWN"] as const) {
     const grantId = approveAndGrant(fx, `chain-nores-${result}`, `idem-nores-${result}`);
-    const r = fx.engine.report(grantId, { result }, fx.agent);
+    const r = fx.engine.report(grantId, body({ result }), fx.agent);
     assert.equal(r.status, 409, `${result} on an UNUSED grant must be refused`);
     assert.equal((r.body as { error: string }).error, "GRANT_NOT_RESERVED");
     assert.equal(fx.engine.getGrant(grantId)!.consumption, null, "and must sign nothing");
@@ -188,10 +188,10 @@ test("NC-2.7: two invocations of the SAME action stay distinguishable by grant b
   const grantB = approveAndGrant(fx, "chain-corr", "idem-B");
   assert.notEqual(grantB, grantA, "a second hold yields its own grant");
   assert.equal(fx.engine.reserve(grantB, fx.agent).status, 200);
-  const rB = fx.engine.report(grantB, { result: "DISPATCHED" }, fx.agent);
+  const rB = fx.engine.report(grantB, body({ result: "DISPATCHED" }), fx.agent);
   assert.equal(rB.status, 200);
 
-  const body = rB.body as { consumption: Record<string, unknown>; attemptReceipt: Record<string, unknown> };
+  const resBody = rB.body as { consumption: Record<string, unknown>; attemptReceipt: Record<string, unknown> };
   const recA = fx.engine.getGrant(grantA)!;
   const recB = fx.engine.getGrant(grantB)!;
 
@@ -203,13 +203,13 @@ test("NC-2.7: two invocations of the SAME action stay distinguishable by grant b
   // identical by construction, so the grant binding is the ONLY thing that keeps two invocations of
   // one action distinguishable to a consumer.
   assert.notEqual(
-    body.consumption["grantHash"],
+    resBody.consumption["grantHash"],
     undefined,
     "the consumption MUST bind its grant — without it the two invocations become indistinguishable",
   );
   assert.notEqual(recB.grant.grantId, recA.grant.grantId);
   assert.notEqual(
-    (body.attemptReceipt["chain"] as { seq: number }).seq,
+    (resBody.attemptReceipt["chain"] as { seq: number }).seq,
     undefined,
     "the terminal receipt MUST carry a chain position",
   );

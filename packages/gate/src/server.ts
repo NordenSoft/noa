@@ -100,7 +100,15 @@ export function createGate(opts: CreateGateOptions): Gate {
 
 // ── request handling ─────────────────────────────────────────────────────────
 
-type Body = { ok: true; value: unknown } | { ok: false };
+/**
+ * ADR-0005 Slice 1 — a request body is BYTES on the way to the engine, never a parsed object.
+ *
+ * This shim used to `JSON.parse` the body and hand the engine a live JavaScript object, which is the
+ * upstream half of the defect Slice 1 closes: the engine then held a caller reference and its own
+ * snapshot in one scope. The socket layer's job is to deliver bytes; deciding whether those bytes are
+ * a document belongs to the ONE parse boundary inside the engine.
+ */
+type Body = { ok: true; bytes: Uint8Array } | { ok: false };
 
 async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEngine, config: GateConfig, limiter: RateLimiter): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
@@ -128,7 +136,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEng
     const idem = header(req, "idempotency-key");
     const b = await readBody(req, res, config);
     if (!b.ok) return;
-    return respond(res, engine.createHold(agent, idem, b.value));
+    return respond(res, engine.createHold(agent, idem, b.bytes));
   }
   // F29-authz: every route below acts on an object OWNED by an agent, so the authenticated
   // `agent` is passed through and the engine enforces ownership. Authentication alone used to be
@@ -162,7 +170,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEng
   if (method === "POST" && /^\/v1\/holds\/[^/]+\/decision$/.test(path)) {
     const b = await readBody(req, res, config);
     if (!b.ok) return;
-    return respond(res, engine.decide(seg(path, 3), b.value));
+    return respond(res, engine.decide(seg(path, 3), b.bytes));
   }
   if (method === "POST" && /^\/v1\/holds\/[^/]+\/cancel$/.test(path)) {
     return respond(res, engine.cancelLocalStateLost(seg(path, 3), agent));
@@ -176,7 +184,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEng
   if (method === "POST" && /^\/v1\/grants\/[^/]+\/report$/.test(path)) {
     const b = await readBody(req, res, config);
     if (!b.ok) return;
-    return respond(res, engine.report(seg(path, 3), b.value, agent));
+    return respond(res, engine.report(seg(path, 3), b.bytes, agent));
   }
 
   return sendJson(res, 404, { error: "NOT_FOUND" });
@@ -239,13 +247,19 @@ async function readBody(req: IncomingMessage, res: ServerResponse, config: GateC
     });
     req.on("end", () => {
       if (done) return;
-      if (chunks.length === 0) return finish({ ok: true, value: {} });
-      try {
-        finish({ ok: true, value: JSON.parse(Buffer.concat(chunks).toString("utf8")) });
-      } catch {
-        sendJson(res, 400, { error: "BAD_JSON" });
-        finish({ ok: false });
-      }
+      // COPIED INTO A PLAIN `Uint8Array` DELIBERATELY. `Buffer.concat` returns a `Buffer`, which is a
+      // Uint8Array SUBCLASS carrying a large extra prototype surface (`readUInt32BE`, `toJSON`,
+      // `utf8Slice`, an overridden `toString`, …) plus whatever a dependency has monkey-patched onto
+      // `Buffer.prototype`. None of it is needed to carry bytes, and all of it would ride into the
+      // trusted path on the object the signature check reasons about. The kernel's type test is an
+      // internal-slot read so it accepts a Buffer perfectly well — this copy is not about passing the
+      // test, it is about not handing the boundary a value with methods on it.
+      //
+      // NO `BAD_JSON` BRANCH ANY MORE, and no synthesized `{}` for an empty body. Both were this layer
+      // making a judgement about document validity that belongs to the engine's parse boundary. An
+      // empty body is now zero-length bytes and comes back as `422 BODY_NOT_STRICT_JSON` carrying the
+      // parser's own reason — which is a truer answer than pretending the caller sent `{}`.
+      finish({ ok: true, bytes: new Uint8Array(Buffer.concat(chunks)) });
     });
     req.on("error", () => {
       if (!res.headersSent) sendJson(res, 400, { error: "BODY_READ_ERROR" });

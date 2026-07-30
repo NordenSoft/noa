@@ -13,7 +13,7 @@ import { InMemoryStore } from "../src/store.js";
 import { hashSecret } from "../src/auth.js";
 import { loadSchemas } from "../src/schemas.js";
 import type { AgentRecord } from "../src/types.js";
-import { makeClock, sampleCommandParams, testSealer } from "./helpers.js";
+import { makeClock, sampleCommandParams, testSealer, body } from "./helpers.js";
 
 function makeAgent(now: () => number): { store: InMemoryStore; agent: AgentRecord; apiKey: string } {
   const store = new InMemoryStore();
@@ -31,12 +31,12 @@ test("fail-closed: NO sealer wired → freezing a hold is DISPLAY_SEALER_UNCONFI
   // Deliberately construct the engine WITHOUT sealDisplay (the production fail-closed default).
   const engine = new GateEngine({ store, config: resolveGateConfig({ now }), trust, schemas: loadSchemas() });
 
-  const res = engine.createHold(agent, "idem-fc-1", {
+  const res = engine.createHold(agent, "idem-fc-1", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-fc",
-  });
+  }));
 
   assert.equal(res.status, 500, JSON.stringify(res.body));
   assert.equal((res.body as { error: string }).error, "DISPLAY_SEALER_UNCONFIGURED");
@@ -56,12 +56,12 @@ test("RAW mode also fails closed with no sealer (caller display is never shipped
   const engine = new GateEngine({ store, config: resolveGateConfig({ now }), trust, schemas: loadSchemas() });
 
   const secret = "top-secret-wire-instruction";
-  const res = engine.createHold(agent, "idem-fc-raw", {
+  const res = engine.createHold(agent, "idem-fc-raw", body({
     mode: "RAW",
     action: { canonical: "noa.custom.wire", riskClass: "HIGH", paramsHash: "sha256:" + "a".repeat(64) },
     display: { memo: secret },
     chain: "chain-fc-raw",
-  });
+  }));
 
   assert.equal(res.status, 500, JSON.stringify(res.body));
   assert.equal((res.body as { error: string }).error, "DISPLAY_SEALER_UNCONFIGURED");
@@ -76,12 +76,12 @@ test("sealer PRESENT → the same hold succeeds and the envelope binds the seale
   const { store, agent } = makeAgent(now);
   const engine = new GateEngine({ store, config: resolveGateConfig({ now }), trust, schemas: loadSchemas(), sealDisplay: testSealer });
 
-  const res = engine.createHold(agent, "idem-ok", {
+  const res = engine.createHold(agent, "idem-ok", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-ok",
-  });
+  }));
   assert.equal(res.status, 201, JSON.stringify(res.body));
   const holdId = (res.body as { holdId: string }).holdId;
   const hold = store.getHold(holdId)!;

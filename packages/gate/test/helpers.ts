@@ -15,6 +15,15 @@ import { loadSchemas } from "../src/schemas.js";
 import type { AgentRecord, HoldEnvelope } from "../src/types.js";
 import { b } from "./helpers/bytes.js";
 
+/**
+ * A REQUEST BODY, as bytes (ADR-0005 Slice 1 — `createHold`/`decide`/`report` take `Uint8Array`).
+ *
+ * KURAL 5: this is the SAME encoder as `b()`, re-exported under the name a request body reads as. A
+ * second `TextEncoder` here would be a second answer to "what are these bytes", which is the whole
+ * class of defect this slice closes — so `body` and `b` are one function, not two.
+ */
+export { b, b as body } from "./helpers/bytes.js";
+
 /** A mutable clock so timeout + uncertainty-sweep windows are deterministically testable. */
 export interface Clock {
   t: number;
