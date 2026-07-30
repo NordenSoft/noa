@@ -1,5 +1,6 @@
 import { sha256Hex } from "./hash.js";
 import { receiptHashInput } from "./receipt-hash.js";
+import { inertDeepCopy } from "./deep-copy.js";
 import { signReceipt, type SignerKey } from "./sign.js";
 import { RECEIPT_SPEC } from "./types.js";
 import type { Receipt, ReceiptAction, ReceiptAgent, ReceiptGovernance, ReceiptScope } from "./types.js";
@@ -28,7 +29,12 @@ export interface BuildInput {
  * `noa-receipt`'s own `validateReceiptShape`/`verifyChain` before trusting it.
  */
 export function buildReceiptDraft(input: BuildInput, prev: Receipt | null, kid: string): Receipt {
-  const cloned = structuredClone({
+  // C-01 sibling, producer half. This was `structuredClone`, a writable global, snapshotting
+  // caller-supplied fields that are then hashed into the draft. Poisoned, it substituted the entire
+  // payload before hashing — so the draft, and every signature later taken over it, described an
+  // action the caller never submitted. `inertDeepCopy` uses intrinsics captured at module load,
+  // invokes no accessor, and refuses anything that is not JSON-shaped rather than reshaping it.
+  const cloned = inertDeepCopy({
     id: input.id,
     ts: input.ts,
     scope: input.scope,

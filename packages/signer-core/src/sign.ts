@@ -2,6 +2,7 @@ import { ed25519 } from "@noble/curves/ed25519.js";
 import { bytesToBase64 } from "./bytes.js";
 import { pkcs8Ed25519ToRawSeed } from "./der.js";
 import { receiptHashInput } from "./receipt-hash.js";
+import { inertDeepCopy } from "./deep-copy.js";
 import { RECEIPT_SIG_DOMAIN, signingMessageBytes } from "./signing.js";
 import type { Receipt } from "./types.js";
 
@@ -59,7 +60,13 @@ export function signReceipt(core: Receipt, signer: SignerKey): Receipt {
   const message = signingMessageBytes(RECEIPT_SIG_DOMAIN, hashInput);
   const signature = ed25519.sign(message, seed);
 
-  const signed = structuredClone(core);
+  // ─── WHAT IS SIGNED MUST BE WHAT IS RETURNED (C-01 sibling, producer half) ───────────────────
+  // This was `structuredClone(core)`. `hashInput` above is computed from `core`, so a poisoned
+  // global here made the RETURNED receipt a different document from the one the signature covers —
+  // a genuine Ed25519 signature over content the receipt does not contain, which is precisely the
+  // forgery this package exists to make impossible. `inertDeepCopy` touches no global and invokes
+  // no accessor, and it fails closed on anything it cannot represent.
+  const signed = inertDeepCopy(core);
   signed.sig.value = bytesToBase64(signature);
   return signed;
 }
