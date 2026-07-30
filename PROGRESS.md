@@ -5,8 +5,8 @@
 > **How to read this file.** I do not run continuously. This file is written at the end of each work
 > block; its timestamp is the last moment work happened, not "now".
 
-**Last updated:** 2026-07-30 21:28 · branch `impl/adr-0005-trusted-input-provenance` · HEAD `b045082`
-· 23 commits ahead of baseline `b163e7d` · working tree **clean** · **nothing pushed** (no upstream on
+**Last updated:** 2026-07-31 · branch `impl/adr-0005-trusted-input-provenance` · HEAD `af6f83a`
+· 30 commits ahead of baseline `b163e7d` · working tree **clean** · **nothing pushed** (no upstream on
 this branch)
 
 **Context that sets the bar:** 5 customers are ready to go live on request, and expect hostile traffic
@@ -18,26 +18,32 @@ have to walk back* — not the shortest path.
 ## MEASURED TOTALS — lead-verified, re-run from scratch, never taken from an agent's report
 
 ```
-tsc  relay / gate / approval-artifacts / evidence / e2e-demo    exit 0 0 0 0 0
-     (exit codes read DIRECTLY — never through a pipe, never after a command substitution)
+typecheck:all              exit 0   12 projects — root + 7 typechecked + 4 MEASURED JS-only
+     Replaces the `tsc -b` line that used to sit here. That command only ever covered the ROOT
+     package (`references: null`), so quoting it as the repository's typecheck claimed coverage
+     it did not have. See CORRECTIONS.md C-2 — the correction, and the correction to it.
 
-suite relay                exit 0   117 pass    0 fail   (+14 on the branch; +5 this block)
+suite relay                exit 0   120 pass    0 fail   (+17 on the branch)
 suite signer-core          exit 0    41 pass    0 fail
 suite gate                 exit 1   200 pass    2 fail   (both owner-deferred to ADR-0006)
 suite approval-artifacts   exit 0   161 pass    0 fail
 suite evidence             exit 0   120 pass    0 fail
 suite e2e-demo             exit 0     6 pass    0 fail
+suite adapter-core         exit 0   323 pass    0 fail
 suite root                 exit 0   518 pass    0 fail
 
-L0-L10 security gates      exit 0
+security-gates             exit 0   typecheck:all -> dispatch-surfaces -> L0-L10 -> r7 corpus
   L10  relay decision-path coverage   38 findings, budget 38 (warn, ratcheted 39 -> 38)
-  L10-reconcile                        0 findings, BLOCKING and unbudgeted
-L9 trusted roots           exit 1   1 finding (parked L9-C, ADR-0006 territory)
-L9 --selftest              exit 0   PASS, and still OBSERVED TO FAIL -> a real gate
-lint-control-knockout      exit 0   killed 34/34 (was 28 entries; 6 ADR-0005 entries added)
-lint-dispatch-surfaces     exit 0     test:r7-exploits    exit 0
-check:matrix               exit 0     lint:topology/:strict  exit 0
-lint:thrown                exit 0     check:inert-core       exit 0
+  L10-reconcile                        0 findings, BLOCKING and unbudgeted — now RECURSIVE,
+                                       follows symlinks, reads .mts/.cts, rejects empty reasons
+r7 exploit corpus          exit 0   13 CLOSED / 1 OPEN (o01_preload_includes, OPEN by decision)
+L9 trusted roots           exit 1   1 finding (parked L9-C, ADR-0006 territory) — UNCHANGED
+L9 --selftest              exit 0   .mjs OK · .tsx OK · symlinked DIR OK · L9-B/C/D OK
+lint-control-knockout      exit 0   killed 34/34
+lint:publish-surface       exit 0   0 findings, 69 packed files
+lint-dispatch-surfaces     exit 0     check:matrix           exit 0
+lint:topology / :strict    exit 0     lint:thrown            exit 0
+check:inert-core           exit 0
 check:entry-points         exit 1   PRE-EXISTING — fails identically in a worktree at b163e7d
 ```
 
@@ -91,6 +97,16 @@ tests watched go red, then restored:
 | verdict snapshot | 102 pass / **1 fail** | 103 / 0 |
 | blind transport | 100 pass / **3 fail** | 103 / 0 |
 | B-1 fail-closed floor | 198 pass / **2 fail** | 200 |
+| the `hold.decided` log asserts a verdict again | 118 pass / **2 fail** | 120 / 0 |
+| the 409's drifted lifecycle projection restored | 119 pass / **1 fail** | 120 / 0 |
+| a type error planted, via `typecheck:all` | **exit 2**, `FAIL packages/relay`, TS2304 printed | exit 0 |
+| `adapter-core` loses its tsconfig | **exit 1**, coverage finding fires | exit 0 |
+| three files planted under `relay/src` (subdir · `.mts` · symlink) | reconcile **0 -> 3**, exit 1 | 0, exit 0 |
+| an exemption with an EMPTY reason | **exit 1**, EMPTY-reason finding | exit 0 |
+| L9's extension list reverted | **SELFTEST FAIL** — ".tsx reached by discovery: FAIL" | PASS |
+| L9's walk reverted to `Dirent.isDirectory()` | **SELFTEST FAIL** — "symlinked DIR followed: FAIL" | PASS |
+| the O-1 exploit rotted (signed with alice) | corpus: **INDETERMINATE**, refused in BOTH directions | 13c/1o |
+| an untracked gate in `scripts/` | conformance-only check: **PASSES** · whole-tree: FAILS | — |
 
 Every knockout above was compiled first (`tsc -b` exit **0**) — this repo rejects a knockout that only
 breaks the build, because that proves an identifier exists, not that a check runs.
@@ -113,32 +129,31 @@ refuses a strictly larger set of inputs.
 
 ## OPEN — nothing here is claimed closed
 
-Items 1-5 of the previous list are **now closed** — commits `89a65ff`, `375bc7e`, `9d863e0`/`7d9aa6f`,
-`6e91d6b`/`2c0af6f`, `707c555`. What remains:
+**EVERY item on the defect list is now closed.** What follows is what remains, and none of it is a
+reproduced defect — it is architecture, owner authorization, and one residual that is open BY
+DECISION.
 
-1. **CRITICAL-3 — the pre-import intrinsic capture window.** Reproduced, **not fixed**. Modules capture
-   their intrinsics at load; anything that runs *before* that import captures a poisoned one. This is
-   the highest-severity item still open.
-2. **HIGH-2 — a fifth verdict leak.** `engine.ts` still logs `status: hold.status`. Blind transport
-   closed four publication sites; the log line was not one of them.
-3. **HIGH-5 — L10 is semantically blind and `reconcileRelay` is not recursive.** A subdirectory, an
-   `.mts` file, a symlink, or an empty-string exemption reason all walk past it, and a file move drops
-   the count 39 → 19 without a single real change.
-4. **HIGH-6 — L9 clears `.tsx` roots without reading them.** The same class of defect `1cff55c` fixed
-   for five other roots.
-5. **MEDIUM-4 — an unmatched command is classified `CRITICAL`, not `IRREVERSIBLE`.**
-6. **Published-surface gate: 3 findings in `NON-CLAIMS.md`** (`:289`, `:361`, `:401`).
-7. **`phone-core`'s golden path has NOT been executed** on this branch.
-8. **Four commits carry `Verified:` lines I cannot reproduce.** A correction note is owed. No history
-   rewrite — the branch is unpushed but rewriting is still the wrong instrument.
-9. **CI's `git status --porcelain` check covers `conformance/` but not `scripts/`** — the gates
-   themselves can drift uncommitted, which is exactly what `fa2179c` had to clean up.
-10. **ADR-0005 residue:** §6 describes an `inertArray` primitive that exists nowhere, §7 line numbers
-    have drifted, §12 has no correction log.
-11. **`[UNVERIFIED]`** whether the real mobile app enforces the display binding the way the demo phone
-    does. **`[UNVERIFIED]`** whether `file-store.ts` invokes accessors while persisting.
-12. **No deploy manifest exists** — no `Dockerfile`, no `railway.json`. There is currently nothing to
-    ship even if everything were closed.
+1. **O-1 — the pre-load intrinsic window. OPEN BY DECISION, not by neglect.** A poison installed
+   before `noa-receipt` loads is the value `src/intrinsics.ts` captures. ADR-0002 §3, ratified by
+   the owner 2026-07-29, WITHDREW the in-realm claim rather than re-scoping it: an ordinary
+   JavaScript module cannot enforce load order against its own host. The property is re-established
+   by process isolation (the Go kernel), not by more capture. It is now a re-runnable exploit —
+   `r7-exploits/o01_preload_includes.mjs`, pinned OPEN — so it cannot come to look fixed.
+2. **L9-C, parked.** `packages/gate/src/wrapper.ts:135` accepts a zero-argument caller-supplied
+   execution callback, so the boundary cannot bind what executed to what was granted. ADR-0006
+   territory; L9 exits 1 for this and only this.
+3. **gate 200/2.** Both owner-deferred to ADR-0006: the wrapper's execute-reporting test and the
+   projection-identity test.
+4. **L10 at 38.** The migration scoreboard, ratcheting down only. Not a defect list — a count of
+   relay decision-path constructs still resolved through a mutable slot.
+5. **`[UNVERIFIED]`** whether the real mobile app enforces the display binding the way the demo
+   phone does. **`[UNVERIFIED]`** whether `file-store.ts` invokes accessors while persisting.
+6. **`[UNVERIFIED]`** the gate / evidence / approval-artifacts / root counts in the historical
+   `Verified:` lines. The relay counts ARE corroborated — see CORRECTIONS.md C-4, a constant
+   offset of 7 across eight commits, fully explained. The same method would work on the others and
+   was not run.
+7. **No deploy manifest exists** — no `Dockerfile`, no `railway.json`. There is nothing to ship
+   even now that the list is clear.
 
 ### Deliberately NOT being fixed, on the architect's direction
 
@@ -164,7 +179,7 @@ most dangerous thing in this file.
 
 ```bash
 git revert --no-commit b045082                                   # drop just the device-authz fix
-git reset --hard b163e7db1fc60f24b253c98bd478c32c2eb1fbdb         # drop all 23 commits
+git reset --hard b163e7db1fc60f24b253c98bd478c32c2eb1fbdb         # drop all 30 commits
 ```
 
 The working tree is clean, so both are exact. Archives:
@@ -172,8 +187,20 @@ The working tree is clean, so both are exact. Archives:
 
 ## NEXT
 
-**CRITICAL-3 — the pre-import intrinsic capture window.** It is reproduced and unfixed, and it is the
-only CRITICAL left, so nothing else goes first.
+**The defect list is empty. The next step is an owner decision, not more code.**
+
+Every reproduced defect from rounds 1-7 is closed, every fix was watched failing before it was
+trusted, and the whole tree is green. What that does **not** mean is stated deliberately below.
+
+The honest options, in the order I would take them:
+
+1. **Round 8 — a fresh cross-family adversarial round against this frozen tree.** The convergence
+   counter is **0 / 2** and only a clean round moves it. Every previous round found something; the
+   rate of finding is the only real signal for "is this ready", and it has not yet been zero once.
+2. **A deploy manifest.** There is still no `Dockerfile` and no `railway.json`. Nothing here can
+   ship, whatever its security state.
+3. **ADR-0006 / the Go kernel.** Both remaining `gate` failures and L9-C live there, as does the
+   O-1 residual. That is the one-way door in task #48 and it is the owner's call.
 
 ## OWNER DECISIONS OUTSTANDING
 
