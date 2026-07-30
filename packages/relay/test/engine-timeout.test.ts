@@ -27,7 +27,7 @@ test("unanswered hold expires to EXPIRED (distinct from DENY), and NO receipt is
 
   h.clock.t += h.config.minTtlMs + 1; // past expiry
   const view = bodyOf<{ status: string; reasonCode: string; decisionReceipt: unknown }>(
-    h.engine.getHold(holdId),
+    h.engine.getHold(agent, holdId),
   );
   assert.equal(view.status, "EXPIRED");
   assert.equal(view.reasonCode, "APPROVAL_TIMEOUT");
@@ -55,7 +55,7 @@ test("a decision arriving AFTER expiry is rejected fail-closed (never approves)"
   assert.equal(res.status, 409);
   assert.equal(bodyOf<{ error: string }>(res).error, "HOLD_EXPIRED");
   // The hold stays EXPIRED — a timed-out approval is NEVER dressed up as ALLOWED.
-  assert.equal(bodyOf<{ status: string }>(h.engine.getHold(holdId)).status, "EXPIRED");
+  assert.equal(bodyOf<{ status: string }>(h.engine.getHold(agent, holdId)).status, "EXPIRED");
 });
 
 test("sweepExpired() marks overdue PENDING holds without a read", () => {
@@ -66,7 +66,7 @@ test("sweepExpired() marks overdue PENDING holds without a read", () => {
   );
   h.clock.t += h.config.minTtlMs + 1;
   assert.equal(h.engine.sweepExpired(), 1);
-  assert.equal(bodyOf<{ status: string }>(h.engine.getHold(holdId)).status, "EXPIRED");
+  assert.equal(bodyOf<{ status: string }>(h.engine.getHold(agent, holdId)).status, "EXPIRED");
 });
 
 test("an approval BEFORE expiry works; a SECOND decision is rejected (D17 first-wins)", () => {
@@ -99,7 +99,7 @@ test("an approval BEFORE expiry works; a SECOND decision is rejected (D17 first-
   assert.equal(second.status, 409);
   assert.equal(bodyOf<{ error: string }>(second).error, "HOLD_ALREADY_RESOLVED");
   // still APPROVED — the later decision never overrides the resolved outcome
-  assert.equal(bodyOf<{ status: string }>(h.engine.getHold(holdId)).status, "APPROVED");
+  assert.equal(bodyOf<{ status: string }>(h.engine.getHold(agent, holdId)).status, "APPROVED");
 });
 
 test("a human DENY is DENIED (distinct reasonCode) — separate from EXPIRED", () => {

@@ -351,9 +351,35 @@ export class RelayEngine {
     return n;
   }
 
-  getHold(id: string): EngineResult {
+  /**
+   * AUTHORIZATION (E-3). Authenticating an agent is not authorizing it. Every hold is OWNED by the
+   * agent that created it (`HoldRecord.agentId`, set at `:288`); a different agent — legitimately
+   * registered, correctly authenticated — has no business reading it.
+   *
+   * MEASURED BEFORE THIS EXISTED: a second registered agent called `getHold(victimHoldId)` and got
+   * `200` carrying `status: APPROVED`, `reasonCode: HUMAN_APPROVED`, the victim's `action.canonical`
+   * and the victim's phone-signed `decisionReceipt` including its Ed25519 signature. `/wait` returned
+   * `200` on the same id. With multiple tenants on one relay that is one customer reading another
+   * customer's approvals.
+   *
+   * NO EXISTENCE ORACLE: a foreign hold is reported as `404 UNKNOWN_HOLD` — byte-identical to a
+   * genuinely absent one — so an unauthorized caller cannot use the relay to confirm that an id
+   * exists. A `403` here would BE the oracle. The denial is logged server-side, so an operator
+   * debugging a misconfiguration can still see it; only the wire response is indistinguishable.
+   *
+   * This is a port of the gate's F29-authz control (`gate/src/engine.ts:155-160`), same shape and
+   * same log event, because the relay had the identical gap and the gate had already solved it.
+   */
+  private ownsHold(hold: HoldRecord | undefined, agent: AgentRecord, route: string): hold is HoldRecord {
+    if (!hold) return false;
+    if (hold.agentId === agent.id) return true;
+    this.log("authz.denied", { route, holdId: hold.id, owner: hold.agentId, caller: agent.id });
+    return false;
+  }
+
+  getHold(agent: AgentRecord, id: string): EngineResult {
     const hold = this.store.getHold(id);
-    if (!hold) return err(404, "UNKNOWN_HOLD");
+    if (!this.ownsHold(hold, agent, "getHold")) return err(404, "UNKNOWN_HOLD");
     this.lazyExpire(hold);
     return { status: 200, body: this.holdView(hold) };
   }
@@ -452,18 +478,25 @@ export class RelayEngine {
   }
 
   /** Long-poll for the gate to learn the decision (routing only — never returns a grant). */
-  wait(id: string, timeoutMs: number): Promise<EngineResult> {
+  wait(agent: AgentRecord, id: string, timeoutMs: number): Promise<EngineResult> {
     const hold = this.store.getHold(id);
-    if (!hold) return Promise.resolve(err(404, "UNKNOWN_HOLD"));
+    if (!this.ownsHold(hold, agent, "wait")) return Promise.resolve(err(404, "UNKNOWN_HOLD"));
     this.lazyExpire(hold);
     if (hold.status !== "PENDING") return Promise.resolve({ status: 200, body: this.holdView(hold) });
 
     return new Promise<EngineResult>((resolve) => {
       const timer = setTimeout(() => {
         this.removeWaiter(id, waiter);
+        // RE-CHECK OWNERSHIP HERE, not only at entry. This callback re-reads the hold from the store
+        // minutes later; checking only on the way in would leave the long-poll path unscoped for the
+        // whole timeout window, which is the larger half of this route's lifetime.
         const cur = this.store.getHold(id);
-        if (cur) this.lazyExpire(cur);
-        resolve({ status: 200, body: cur ? this.holdView(cur) : err(404, "UNKNOWN_HOLD").body });
+        if (!this.ownsHold(cur, agent, "wait.timeout")) {
+          resolve(err(404, "UNKNOWN_HOLD"));
+          return;
+        }
+        this.lazyExpire(cur);
+        resolve({ status: 200, body: this.holdView(cur) });
       }, Math.max(0, timeoutMs));
       if (typeof timer.unref === "function") timer.unref();
       const waiter: Waiter = {

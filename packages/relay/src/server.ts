@@ -256,12 +256,15 @@ async function handle(
       if (!b.ok) return;
       return respond(res, engine.putManifest(b.value));
     }
+    // E-3: both read routes are now scoped to the OWNING agent. `agent` is already resolved above at
+    // the top of this block, so this costs one argument and no new lookup. A foreign hold answers
+    // `404 UNKNOWN_HOLD`, identical to an absent one — see `ownsHold`.
     if (path.endsWith("/wait")) {
       const timeoutSec = clampInt(url.searchParams.get("timeout"), 25, 0, 25);
-      return respond(res, await engine.wait(holdIdFrom(path), timeoutSec * 1000));
+      return respond(res, await engine.wait(agent, holdIdFrom(path), timeoutSec * 1000));
     }
     // GET /v1/holds/:id
-    return respond(res, engine.getHold(holdIdFrom(path)));
+    return respond(res, engine.getHold(agent, holdIdFrom(path)));
   }
 
   return sendJson(res, 404, { error: "NOT_FOUND" });
