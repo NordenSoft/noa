@@ -1,7 +1,7 @@
 {
   "name": "noa-receipt",
   "version": "0.5.0",
-  "description": "NOA Agent Action Receipt \u2014 open, offline-verifiable provenance for AI-agent actions. The governance/receipt organ only; the NOA brain is separate and proprietary.",
+  "description": "NOA Agent Action Receipt — open, offline-verifiable provenance for AI-agent actions. The governance/receipt organ only; the NOA brain is separate and proprietary.",
   "license": "Apache-2.0",
   "type": "module",
   "homepage": "https://noatrust.com",
@@ -73,7 +73,8 @@
     "lint:topology": "node scripts/lint-dependency-topology.mjs",
     "lint:topology:strict": "node scripts/lint-dependency-topology.mjs --strict",
     "lint:tarball-deps": "node scripts/lint-publish-tarball-deps.mjs",
-    "security-gates": "npm run lint:dispatch-surfaces && npm run lint:security-gates && npm run test:r7-exploits"
+    "security-gates": "npm run typecheck:all && npm run lint:dispatch-surfaces && npm run lint:security-gates && npm run test:r7-exploits",
+    "typecheck:all": "node scripts/typecheck-all.mjs"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

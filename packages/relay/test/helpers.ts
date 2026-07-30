@@ -34,6 +34,20 @@ export interface Harness {
   store: Store;
   push: NoopLogPushProvider;
   engine: RelayEngine;
+  /**
+   * Every structured log event the engine emitted, in order.
+   *
+   * ADDED 2026-07-30, because the log surface had NO assertions anywhere in the suite. Blind
+   * transport narrowed four published surfaces and each one is pinned by a test; the two `this.log`
+   * lines carrying the same information were pinned by nothing, so the rule held on the routes
+   * somebody remembered to check. `makeHarness` previously passed no `log` at all, which made the
+   * sink a no-op and the omission invisible.
+   *
+   * Purely additive: the engine treats `log` as optional and every existing caller ignores this
+   * field. Collecting is not asserting — what it buys is that a test CAN now assert, and
+   * `blind-transport-log.test.ts` does.
+   */
+  logs: Array<{ event: string; fields: Record<string, unknown> }>;
 }
 
 export function makeHarness(overrides: Partial<RelayConfig> = {}, storeOverride?: Store): Harness {
@@ -41,8 +55,16 @@ export function makeHarness(overrides: Partial<RelayConfig> = {}, storeOverride?
   const config = resolveConfig({ now: () => clock.t, ...overrides });
   const store = storeOverride ?? new InMemoryStore();
   const push = new NoopLogPushProvider();
-  const engine = new RelayEngine({ store, push, config });
-  return { clock, config, store, push, engine };
+  const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];
+  const engine = new RelayEngine({
+    store,
+    push,
+    config,
+    log: (event, fields) => {
+      logs[logs.length] = { event, fields };
+    },
+  });
+  return { clock, config, store, push, engine, logs };
 }
 
 /** Register an agent through the real pairing flow; return the AgentRecord + its api key. */

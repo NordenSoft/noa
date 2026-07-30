@@ -31,6 +31,7 @@ import type {
   HoldAction,
   HoldEnvelope,
   HoldRecord,
+  HoldStatus,
   KeyManifestRecord,
   Receipt,
   RiskClass,
@@ -86,6 +87,31 @@ function asString(v: unknown): string | undefined {
 
 function err(status: number, error: string, extra: Record<string, unknown> = {}): EngineResult {
   return { status, body: { error, ...extra } };
+}
+
+/**
+ * THE ONE LIFECYCLE PROJECTION — internal `HoldStatus` → the field the relay is entitled to publish.
+ *
+ * Blind transport says the relay may report THAT a decision arrived, never WHAT it was: its keyring
+ * has no root, so a verdict in its own voice is indistinguishable from a real one to any reader who
+ * does not re-verify the signed receipt. `APPROVED` and `DENIED` therefore both project to `DECIDED`;
+ * every other state is the relay's own operational status and passes through.
+ *
+ * IT IS A FUNCTION BECAUSE THE COPIES HAD ALREADY DISAGREED. The rule was written out by hand at four
+ * sites, and one of them — the `409` refusal on a re-decide — spelled it
+ * `status === "EXPIRED" ? "EXPIRED" : "DECIDED"`. For a `CANCELLED_LOCAL_STATE_LOST` hold that
+ * publishes `DECIDED`, while `holdView` publishes `CANCELLED_LOCAL_STATE_LOST` for the identical
+ * record: two routes, one hold, two different lifecycles, and a client that believes a decision
+ * exists when the local state was lost and no decision was ever made. Small, real, and exactly the
+ * defect shape a hand-copied invariant produces.
+ *
+ * The two operational LOG lines route through here as well. A log is not a wire surface — nothing in
+ * this repository consumes those events and they never reach an HTTP response — but the relay writing
+ * "APPROVED" in its own voice into a stream a compliance pipeline may read is the same overreach one
+ * step removed, and there is no reason to keep a second spelling of the rule alive to permit it.
+ */
+function lifecycleOf(status: HoldStatus): string {
+  return status === "APPROVED" || status === "DENIED" ? "DECIDED" : status;
 }
 
 export interface RelayEngineDeps {
@@ -286,8 +312,7 @@ export class RelayEngine {
             // leaking BODY field is also called `status`. The name collision is the entire trap, and
             // it is why "I fixed three sites" was a claim about the sites I looked at rather than
             // about the function.
-            lifecycle:
-              existing.status === "APPROVED" || existing.status === "DENIED" ? "DECIDED" : existing.status,
+            lifecycle: lifecycleOf(existing.status),
             expiresAt: new Date(existing.expiresAt).toISOString(),
             idempotent: true,
           },
@@ -515,14 +540,22 @@ export class RelayEngine {
     this.lazyExpire(hold);
     if (hold.status !== "PENDING") {
       // D17 / Red Line 6: late-or-duplicate decision is rejected, never silently dropped.
-      this.log("hold.decision_rejected", { holdId, currentStatus: hold.status });
+      // Same treatment as `hold.decided` below: the relay logs the LIFECYCLE it published, not a
+      // verdict it is not entitled to author. `hasDecisionReceipt` keeps the one distinction an
+      // operator actually needs out of this line — "already decided, evidence is on file" versus
+      // "expired with nothing on file" — without the relay naming what a human chose.
+      this.log("hold.decision_rejected", {
+        holdId,
+        currentLifecycle: lifecycleOf(hold.status),
+        hasDecisionReceipt: hold.decisionReceipt !== null,
+      });
       // BLIND TRANSPORT applies to the REFUSAL too. This used to return `status: hold.status`, so a
       // second decision post answered `409 { status: "APPROVED" }` — the verdict, leaked through an
       // error body on the device route. The error CODE already distinguishes the only thing the
       // caller legitimately needs (expired vs already-resolved); the outcome still requires the
       // signed receipt.
       const code = hold.status === "EXPIRED" ? "HOLD_EXPIRED" : "HOLD_ALREADY_RESOLVED";
-      return err(409, code, { lifecycle: hold.status === "EXPIRED" ? "EXPIRED" : "DECIDED" });
+      return err(409, code, { lifecycle: lifecycleOf(hold.status) });
     }
 
     if (!isRecord(input)) return err(400, "BAD_REQUEST");
@@ -593,7 +626,25 @@ export class RelayEngine {
     hold.reasonCode = verdict === "ALLOWED" ? "HUMAN_APPROVED" : "HUMAN_DENIED";
     hold.decidedAt = this.now();
     this.store.putHold(hold);
-    this.log("hold.decided", { holdId, status: hold.status });
+    // THE FIFTH PUBLICATION SITE, and the one that is NOT a wire leak — recorded precisely because
+    // the difference is easy to lose. Blind transport narrowed four PUBLISHED surfaces (holdView, the
+    // 201, the 409 body, the bridge read). This is a server-side operational log, consumed by nothing
+    // in this repository and never routed into an HTTP response, so a remote party cannot read it and
+    // the finding that called it "a fifth verdict leak" overstates the reach. Downgraded on
+    // measurement, not on argument.
+    //
+    // What is real, and is why the line changed anyway: it read `status: hold.status`, i.e. the RELAY
+    // asserting "APPROVED" in a stream an operator or a compliance pipeline may treat as an approval
+    // record. `gate/src/engine.ts:815` writes the identical field and is entirely correct to — the
+    // gate holds the keys and signs that verdict. The relay's keyring has no root. Same field, same
+    // value, different entitlement.
+    //
+    // So the information is kept in full (deleting it would make "why was this approved at 3am"
+    // unanswerable from logs) and only the AUTHORSHIP changes: the relay now records what it
+    // OBSERVED — a signed receipt arrived, its verdict field said X, this kid signed it — instead of
+    // what it CONCLUDED. `signerKid` makes the line a pointer to evidence rather than a substitute
+    // for it.
+    this.log("hold.decided", { holdId, lifecycle: "DECIDED", receiptVerdict: verdict, signerKid: signer.kid });
     this.wake(hold);
 
     return { status: 200, body: this.holdView(hold) };
@@ -893,11 +944,9 @@ export class RelayEngine {
    * asserted directly against the store in tests. Only the PUBLISHED surface narrowed.
    */
   private holdView(hold: HoldRecord): Record<string, unknown> {
-    const lifecycle =
-      hold.status === "APPROVED" || hold.status === "DENIED" ? "DECIDED" : hold.status;
     return {
       holdId: hold.id,
-      lifecycle,
+      lifecycle: lifecycleOf(hold.status),
       action: hold.action,
       expiresAt: new Date(hold.expiresAt).toISOString(),
       decidedAt: hold.decidedAt !== null ? new Date(hold.decidedAt).toISOString() : null,
