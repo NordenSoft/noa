@@ -59,6 +59,7 @@ export interface DemoAuthority {
   root: KP;
   authority: KP; // the root-DELEGATED manifest signer
   gate: KP;
+  auditKid: string;
   auditHpkePublicKey: string;
   keyDelegation: KeyDelegation; // root-signed root → authority
   bootstrapManifest: KeyManifest; // v1: gate + audit only (pre-approver) — its hash anchors the CHALLENGE
@@ -75,6 +76,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
   const gate = generateKeyPair('gate-prod-1') as KP;
   // A structurally-valid X25519 HPKE public key (hex) for the audit recipient. Real HPKE ops are
   // @noa/signer's injected job; this is a recipient identity, unused by §8 itself.
+  const auditKid = 'audit-1';
   const auditHpkePublicKey = 'a'.repeat(64);
 
   const t0 = clock.now();
@@ -106,7 +108,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
       previousManifestHash: null,
       keys: [
         { kid: gate.kid, type: 'GATE', roles: ['hold-signer', 'execution-signer'], publicKey: gate.publicKey, validFrom, revokedAt: null },
-        { kid: 'audit-1', type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auditHpkePublicKey, validFrom, revokedAt: null },
+        { kid: auditKid, type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auditHpkePublicKey, validFrom, revokedAt: null },
       ],
     }),
     KEY_MANIFEST_DOMAIN,
@@ -118,6 +120,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
     root,
     authority,
     gate,
+    auditKid,
     auditHpkePublicKey,
     keyDelegation,
     bootstrapManifest,
@@ -226,7 +229,7 @@ export function acceptPairing(
       keys: [
         { kid: auth.gate.kid, type: 'GATE', roles: ['hold-signer', 'execution-signer'], publicKey: auth.gate.publicKey, validFrom: auth.validFrom, revokedAt: null },
         { kid: phone.approverKid, type: 'APPROVER', roles: ['approve-high'], publicKey: phone.approverPublicKey, hpkePublicKey: phone.approverHpkePublicKey, validFrom: auth.validFrom, revokedAt: null },
-        { kid: 'audit-1', type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auth.auditHpkePublicKey, validFrom: auth.validFrom, revokedAt: null },
+        { kid: auth.auditKid, type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auth.auditHpkePublicKey, validFrom: auth.validFrom, revokedAt: null },
       ],
     }),
     KEY_MANIFEST_DOMAIN,
@@ -289,6 +292,7 @@ export function assembleGateTrust(
     gate,
     approver,
     approverHpkePublicKey: phone.approverHpkePublicKey,
+    auditKid: auth.auditKid,
     auditHpkePublicKey: auth.auditHpkePublicKey,
     keyManifestVersion: 2,
     keyManifestHash: manifestHash,
