@@ -7,6 +7,7 @@ import { receiptToCose, receiptFromCose } from "../../src/cose/receipt-cose.js";
 import { coseSign1, coseSign1Verify } from "../../src/cose/cose-sign1.js";
 import { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, CborError } from "../../src/cose/cbor.js";
 import { sha256Prefixed } from "../../src/hash.js";
+import { isInertArray } from "../../src/inert.js";
 import { canonicalize } from "../../src/jcs.js";
 import { b } from "../helpers/bytes.js";
 
@@ -31,9 +32,16 @@ test("CBOR: deterministic canonical encoding round-trips (int/bstr/tstr/array/ma
     const firstKey = d.v[0]![0];
     assert.equal(firstKey.t === "int" ? firstKey.v : NaN, 1);
   }
-  assert.deepEqual(decode(encArray([encTstr("Signature1"), encInt(0)])), {
-    t: "array", v: [{ t: "tstr", v: "Signature1" }, { t: "int", v: 0 }],
-  });
+  const rt = decode(encArray([encTstr("Signature1"), encInt(0)]));
+  assert.equal(rt.t, "array");
+  // `Array.from` because the decoder re-roots its arrays onto INERT_ARRAY_PROTOTYPE (T19) and
+  // `deepStrictEqual` compares prototypes. The re-rooting is what stops a substituting
+  // `Array.prototype[Symbol.iterator]` from rewriting the protected header's alg at CHECK time; the
+  // rooting itself is asserted below so this test measures the property rather than tolerating it.
+  assert.deepEqual(Array.from(rt.t === "array" ? rt.v : []), [{ t: "tstr", v: "Signature1" }, { t: "int", v: 0 }]);
+  assert.equal(isInertArray(rt.t === "array" ? rt.v : null), true, "decoded arrays must be inert-rooted");
+  assert.equal(isInertArray(d.t === "map" ? d.v : null), true, "decoded maps must be inert-rooted");
+  assert.equal(isInertArray(d.t === "map" ? d.v[0] : null), true, "each decoded map PAIR must be inert-rooted too — destructuring dispatches through the pair's own iterator");
 });
 
 test("receipt → COSE_Sign1 → verify round-trips, returns the receipt", () => {

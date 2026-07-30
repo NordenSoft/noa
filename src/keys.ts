@@ -1,11 +1,17 @@
+// ── NO LIVE `node:crypto` BINDING SURVIVES IN THIS FILE (T17, 2026-07-29) ─────────────────────────
+// The previous round moved `createPublicKey` into `./intrinsics.js` and wrote the reason six lines
+// above the four bindings it left behind: an ESM import binding for a builtin is REPOINTABLE by
+// `syncBuiltinESMExports()`. `verify` was one of those four and it was **the** signature verdict, so
+// `crypto.verify = () => true` + one `syncBuiltinESMExports()` turned a garbage 64-byte signature
+// into VALID under an honest keyring. The fix is not "capture verify too" — it is that this file may
+// not hold a live builtin binding at all, which `lint-security-gates.mjs` L8 now enforces for every
+// TCB file so the next author cannot re-open the class by adding one import.
 import {
-  generateKeyPairSync,
-  sign as cryptoSign,
-  verify as cryptoVerify,
-  createPrivateKey,
-  createPublicKey,
-} from "node:crypto";
-import { bufferFrom, bufToString, bufEquals, bufSubarray } from "./intrinsics.js";
+  bufferFrom, bufToString, bufEquals, bufSubarray, byteLength,
+  createPublicKeyCaptured, keyExportSpkiDer, keyExportPkcs8Der,
+  createPrivateKeyCaptured, generateEd25519KeyPair, ed25519Sign, ed25519Verify,
+  asymmetricKeyType, toBigInt,
+} from "./intrinsics.js";
 import { membership } from "./inert.js";
 
 /**
@@ -59,25 +65,28 @@ const isSmallOrderPubkey = membership([
  */
 
 export function generateKeyPair(kid: string): KeyPair {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+  const { publicKey, privateKey } = generateEd25519KeyPair();
+  // `keyExportSpkiDer` for the public key and captured `bufToString` for the base64 — producer side,
+  // but the enumerator holds the whole TCB to one rule and there is no reason to keep a live lookup here.
   return {
     kid,
-    publicKey: (publicKey.export({ type: "spki", format: "der" }) as Buffer).toString("base64"),
-    privateKey: (privateKey.export({ type: "pkcs8", format: "der" }) as Buffer).toString("base64"),
+    publicKey: bufToString(keyExportSpkiDer(publicKey), "base64"),
+    privateKey: bufToString(keyExportPkcs8Der(privateKey), "base64"),
   };
 }
 
 /** Sign a message (the receipt digest) with an Ed25519 private key. Returns base64. */
 export function signEd25519(privateKeyB64: string, message: Buffer): string {
-  const key = createPrivateKey({
+  const key = createPrivateKeyCaptured({
     key: bufferFrom(privateKeyB64, "base64"),
     format: "der",
     type: "pkcs8",
   });
-  // Pin the curve: cryptoSign(null, …) dispatches on the KEY type, so an Ed448/EC/RSA key would
+  // Pin the curve: sign(null, …) dispatches on the KEY type, so an Ed448/EC/RSA key would
   // silently produce a non-Ed25519 signature under a receipt that declares sig.alg="ed25519".
-  if (key.asymmetricKeyType !== "ed25519") throw new Error("signEd25519: key is not an Ed25519 key");
-  return bufToString(cryptoSign(null, message, key), "base64");
+  // `asymmetricKeyType` is read through the CAPTURED accessor — see the verify path for why.
+  if (asymmetricKeyType(key) !== "ed25519") throw new Error("signEd25519: key is not an Ed25519 key");
+  return bufToString(ed25519Sign(message, key), "base64");
 }
 
 /** Verify an Ed25519 signature. Never throws — malformed key/sig returns false. */
@@ -88,19 +97,29 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // (whitespace / URL-safe / missing padding), so a non-canonical key STRING would verify VALID in TS
     // while the strict Python reference rejects it — a consensus divergence on a logically-identical key.
     if (bufToString(der, "base64") !== publicKeyB64) return false;
-    const key = createPublicKey({ key: der, format: "der", type: "spki" });
-    // PIN THE CURVE. cryptoVerify(null, …) dispatches the verification algorithm on the KEY's type,
+    // R3-02: captured constructor — a `syncBuiltinESMExports()` poison that substituted an attacker
+    // key object for the honest DER cannot reach this snapshot.
+    const key = createPublicKeyCaptured({ key: der, format: "der", type: "spki" });
+    // PIN THE CURVE. verify(null, …) dispatches the verification algorithm on the KEY's type,
     // NOT on a fixed Ed25519. Without this, an Ed448 (or any verify(null)-compatible) public key in
     // the keyring + a genuine signature under it verifies TRUE even though the receipt declares
     // sig.alg="ed25519" — algorithm/key confusion (CWE-347). The COSE path pins the curve-specific
     // Ed25519 alg-id (-19, RFC 9864) — unlike the generic EdDSA (-8) it does NOT admit Ed448 — but
     // this key-type pin remains the durable defense on BOTH verifyChain and COSE paths.
-    if (key.asymmetricKeyType !== "ed25519") return false;
+    // T18, one property-access over: `asymmetricKeyType` is an ACCESSOR on
+    // `AsymmetricKeyObject.prototype` (measured — configurable, `get` is a function), NOT a data
+    // property. `Object.defineProperty(proto, "asymmetricKeyType", { get: () => "ed25519" })` makes
+    // this pin bless an Ed448 key holding a genuine Ed448 signature. Read through the captured getter.
+    if (asymmetricKeyType(key) !== "ed25519") return false;
     // Reject NON-CANONICAL SPKI (e.g. valid key + trailing garbage): OpenSSL's DER parser
     // accepts trailing bytes, so one logical key could have many encodings. A trust layer must
     // treat a key's encoding as canonical, so any future key-bytes-based logic (fingerprints,
     // dedup, byte-pinning) cannot be bypassed by re-encoding. Re-export and require byte-equality.
-    const canonical = key.export({ type: "spki", format: "der" }) as Buffer;
+    // R3-09: captured `export`. This round-trip (re-export the parsed key and byte-compare against the
+    // input DER) is the ONLY check that rejects a noncanonical SPKI, because OpenSSL re-exports it to
+    // canonical form. A live `key.export -> der` poison turned the compare into a tautology and let a
+    // 45-byte noncanonical key through; the captured method restores the real re-encoding.
+    const canonical = keyExportSpkiDer(key);
     if (!bufEquals(canonical, der)) return false;
     // CROSS-IMPL CONSENSUS on the PUBLIC KEY. node:crypto/OpenSSL verify is COFACTORED and
     // accepts public keys the independent strict-equation Python reference rejects — splitting VALID(TS) /
@@ -118,7 +137,12 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     yBytes[31] = yBytes[31]! & 0x7f;
     const Q = (1n << 255n) - 19n;
     let y = 0n;
-    for (let i = 31; i >= 0; i--) y = (y << 8n) | BigInt(yBytes[i]!);
+    // T18: `BigInt` is a bare global and this loop is the ONLY control that rejects a y >= q key
+    // (OpenSSL accepts it AND re-exports it unchanged, so the canonical-SPKI round-trip above does
+    // not catch it, and a y = q+1 encoding is not one of the 8 small-order encodings either).
+    // `globalThis.BigInt = () => 0n` collapses y to 0 and the gate passes everything; measured end to
+    // end, a universal `R = identity, S = 0` signature then verified an arbitrary message.
+    for (let i = 31; i >= 0; i--) y = (y << 8n) | toBigInt(yBytes[i]!);
     if (y >= Q) return false;
     // (b) small-order torsion subgroup (the canonical encodings; non-canonical variants already rejected by (a)).
     if (isSmallOrderPubkey(bufToString(raw, "hex"))) return false;
@@ -130,7 +154,10 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // Python reference (base64decode validate=True), breaking the cross-impl consensus bar.
     // Require exactly 64 bytes AND that the input round-trips to its own canonical base64 encoding.
     const sigBytes = bufferFrom(signatureB64, "base64");
-    if (sigBytes.length !== 64 || bufToString(sigBytes, "base64") !== signatureB64) return false;
+    // `byteLength`, not `.length`: on a Buffer, `length` is a CONFIGURABLE ACCESSOR on
+    // `%TypedArray%.prototype` (measured), so `sigBytes.length` is a poisonable read, not the own
+    // data property a plain array has.
+    if (byteLength(sigBytes) !== 64 || bufToString(sigBytes, "base64") !== signatureB64) return false;
     // EXPLICIT S < L scalar check (RFC 8032 §5.1.7 / T14). sigBytes = R (32 bytes) || S (32 bytes,
     // little-endian). A malleated signature S' = S + L (for any valid (R, S)) verifies under the SAME
     // equation as the original (the group has order L, so S and S+L are congruent mod L) — S' is a
@@ -142,9 +169,13 @@ export function verifyEd25519(publicKeyB64: string, message: Buffer, signatureB6
     // and matches the independent Python reference, which performs the identical check (impl-py/noa_verify.py).
     const L = 2n ** 252n + 27742317777372353535851937790883648493n;
     let S = 0n;
-    for (let i = 63; i >= 32; i--) S = (S << 8n) | BigInt(sigBytes[i]!);
+    // Same captured `BigInt` as the y<q gate. (This gate alone does NOT flip under the poison —
+    // OpenSSL rejects S >= L independently — which is exactly why it must not be reported as the
+    // proof of T18; the y<q gate is where the poison actually buys an acceptance.)
+    for (let i = 63; i >= 32; i--) S = (S << 8n) | toBigInt(sigBytes[i]!);
     if (S >= L) return false;
-    return cryptoVerify(null, message, key, sigBytes);
+    // THE SIGNATURE VERDICT, through the load-time snapshot of `crypto.verify` (T17).
+    return ed25519Verify(message, key, sigBytes);
   } catch {
     return false;
   }

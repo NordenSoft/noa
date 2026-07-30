@@ -42,6 +42,7 @@
 
 import {
   ARRAY_PROTOTYPE,
+  INERT_ARRAY_PROTOTYPE,
   OBJECT_PROTOTYPE,
   arrayIndexOf,
   arrayPush,
@@ -54,71 +55,32 @@ import {
   objectDefineProperty,
   objectFreeze,
   objectGetOwnPropertyNames,
+  collectionBrand,
+  objectIsFrozen,
   objectSetPrototypeOf,
-  ownKeys,
+  newWeakSet,
+  weakSetHas,
+  weakSetAdd,
+  publishArray,
 } from "./intrinsics.js";
 
 /**
- * `Array.prototype` methods that MUTATE. An inert array does not carry them at all.
+ * ── MOVED 2026-07-29 (round-4 containment, A1) ───────────────────────────────────────────────────
+ * `INERT_ARRAY_PROTOTYPE` and the `MUTATORS` list it is built from now live in `src/intrinsics.ts`,
+ * and this module RE-EXPORTS the binding so every existing importer is unchanged.
  *
- * Frozen at construction like every other table in the TCB. It cannot go through `makeInertArray`
- * (that function is defined below and depends on the prototype this list helps build), so it is
- * frozen directly — the invariant is "cannot be rewritten after load", and `Object.freeze` on an
- * array of primitives delivers exactly that.
- */
-const MUTATORS: readonly string[] = objectFreeze([
-  "push", "pop", "shift", "unshift", "splice", "sort", "reverse", "fill", "copyWithin",
-]);
-
-/**
- * A frozen, null-rooted stand-in for `Array.prototype`, built once from the pristine intrinsic.
+ * The move is not tidying. Round 4 measured the iterator/HOF class one call further out than round 3
+ * closed it: the captured wrappers `objectKeys`, `objectGetOwnPropertyNames`, `ownKeys`, `arraySlice`
+ * and `strSplit` MANUFACTURE a fresh ordinary array on every call, and a fresh ordinary array is
+ * rooted on the live `Array.prototype`. Making those wrappers hand back inert-rooted arrays is the
+ * fix, and a wrapper cannot re-root through a prototype defined in a module that imports it — the
+ * cycle would leave the captured `const`s in TDZ while this file's module-level construction ran.
+ * So the prototype moved DOWN to the capture module, which imports nothing.
  *
- * Every non-mutating method is copied by DESCRIPTOR, so a later `Array.prototype.includes = ...`
- * cannot reach an array that carries this prototype. `constructor` is deliberately NOT copied: the
- * species protocol then falls back to `ArrayCreate`, so a derived array (`map`, `filter`, `slice`)
- * is an ordinary array rather than something that pretends to be inert while inheriting again.
+ * Its construction — including the refusal to copy accessor descriptors — is unchanged; see the
+ * docstring at the construction site in `src/intrinsics.ts`.
  */
-export const INERT_ARRAY_PROTOTYPE: object = (() => {
-  const proto = objectCreateNull<Record<PropertyKey, unknown>>();
-  for (const key of ownKeys(ARRAY_PROTOTYPE)) {
-    if (key === "constructor" || key === "length") continue;
-    if (typeof key === "string" && arrayIndexOf(MUTATORS, key) !== -1) continue;
-    if (key === Symbol.iterator || key === Symbol.unscopables) continue;
-    const d = getOwnPropertyDescriptor(ARRAY_PROTOTYPE, key);
-    if (d === undefined) continue;
-    // A descriptor may be a DATA or an ACCESSOR descriptor, never both — copy the right shape.
-    const nd: PropertyDescriptor = hasOwn(d, "value")
-      ? { value: d.value, writable: false, enumerable: false, configurable: false }
-      : { get: d.get, set: d.set, enumerable: false, configurable: false };
-    objectDefineProperty(proto as object, key, nd);
-  }
-  // A SELF-CONTAINED iterator. `Array.prototype[Symbol.iterator]` yields an object whose `next`
-  // lives on the globally-mutable `%ArrayIteratorPrototype%`, so `for (const x of frozenSnapshot)`
-  // would still dispatch through a slot the attacker can rewrite. This iterator's `next` is an own
-  // closure on a null-prototype object: there is no shared slot left to poison.
-  objectDefineProperty(proto as object, Symbol.iterator, {
-    value: function inertIterator(this: ArrayLike<unknown>): Iterator<unknown> {
-      const self = this;
-      let i = 0;
-      const it = objectCreateNull<Record<PropertyKey, unknown>>();
-      objectDefineProperty(it as object, "next", {
-        value: () => {
-          const n = (self as { length: number }).length;
-          const r = objectCreateNull<{ value: unknown; done: boolean }>();
-          if (i < n) { r.value = self[i++]; r.done = false; } else { r.value = undefined; r.done = true; }
-          return objectFreeze(r);
-        },
-        enumerable: false, writable: false, configurable: false,
-      });
-      objectDefineProperty(it as object, Symbol.iterator, {
-        value: () => it as unknown as Iterator<unknown>, enumerable: false, writable: false, configurable: false,
-      });
-      return objectFreeze(it) as unknown as Iterator<unknown>;
-    },
-    enumerable: false, writable: false, configurable: false,
-  });
-  return objectFreeze(proto) as object;
-})();
+export { INERT_ARRAY_PROTOTYPE } from "./intrinsics.js";
 
 /**
  * Re-root a real array onto `INERT_ARRAY_PROTOTYPE` and freeze it. `Array.isArray` still answers
@@ -128,6 +90,32 @@ export const INERT_ARRAY_PROTOTYPE: object = (() => {
 export function makeInertArray<T>(values: T[]): readonly T[] {
   objectSetPrototypeOf(values, INERT_ARRAY_PROTOTYPE);
   return objectFreeze(values);
+}
+
+/**
+ * RE-ROOT ONLY — no freeze. For arrays the PARSER emits (`safeParse`), where the security property
+ * and the ownership property point in opposite directions:
+ *
+ *   • the security property is the PROTOTYPE. Every `for…of`, spread, destructuring and HOF over
+ *     parsed data dispatches through the array's prototype, so re-rooting is what removes the
+ *     attacker's slot. That is delivered here in full.
+ *
+ *   • freezing delivers nothing against THIS threat model — the parsed array is a fresh object the
+ *     adversary holds no reference to; a prototype poison is a poison of the SHARED slot, not of our
+ *     private data — and it breaks a documented affordance: a caller owns its own parse and may
+ *     mutate it (`test/ingest.test.ts`, "re-verifying the same bytes always re-derives the same
+ *     tree"). `makeInertArray` freezes because a POLICY TABLE must not change after load; a parse
+ *     result is not a policy table.
+ *
+ * Measured, not assumed: with this prototype a poisoned `Array.prototype.forEach` / `[Symbol.iterator]`
+ * is not consulted, `Array.isArray` still answers true, and `JSON.stringify` is unchanged. What DOES
+ * change, and is asserted directly in `test/safe-json.test.ts` rather than left to be discovered:
+ * `parsed instanceof Array` is now false and `deepStrictEqual` against an array literal no longer
+ * matches, exactly as was already true for the null-prototype OBJECTS this parser has always emitted.
+ */
+export function inertArray<T>(values: T[]): T[] {
+  objectSetPrototypeOf(values, INERT_ARRAY_PROTOTYPE);
+  return values;
 }
 
 /** True iff `v` is an array that has been re-rooted onto the inert prototype. */
@@ -227,7 +215,14 @@ function describe(v: unknown): string {
   if (t === "function") return "a function";
   const proto = getPrototypeOf(v as object);
   if (proto === null) return "a null-prototype object";
-  const ctorName = (proto as { constructor?: { name?: string } }).constructor?.name;
+  // CAPTURED (round-4, found by the AST gate). `proto.constructor?.name` walks two live property
+  // slots to build an ERROR MESSAGE. The message is not a verdict, but a value that decides what a
+  // human reads about a rejected policy table should not itself be attacker-steerable, and the read
+  // is the same class this module exists to close. Own-descriptor probes: no chain walk, no getter.
+  const ctorDesc = getOwnPropertyDescriptor(proto as object, "constructor");
+  const ctor = ctorDesc === undefined ? undefined : ctorDesc.value;
+  const nameDesc = ctor === undefined || ctor === null ? undefined : getOwnPropertyDescriptor(ctor as object, "name");
+  const ctorName = nameDesc === undefined ? undefined : nameDesc.value;
   return typeof ctorName === "string" ? `a ${ctorName}` : "an exotic object";
 }
 
@@ -281,7 +276,9 @@ function freezeInert(v: unknown, path: string): unknown {
       path,
     );
   }
-  for (const k of objectGetOwnPropertyNames(v as object)) {
+  const names = objectGetOwnPropertyNames(v as object);
+  for (let i = 0; i < names.length; i++) {
+    const k = names[i] as string;
     const d = getOwnPropertyDescriptor(v as object, k);
     if (d === undefined) continue;
     if (d.get !== undefined || d.set !== undefined) {
@@ -300,17 +297,26 @@ function freezeInert(v: unknown, path: string): unknown {
  * a package that predates this module, an export from a dependency). Returns the list of violations
  * instead of throwing, so a test can report every offending export in one run.
  */
-export function inertViolations(v: unknown, path: string, seen: WeakSet<object> = new WeakSet()): string[] {
+export function inertViolations(v: unknown, path: string, seen: WeakSet<object> = newWeakSet()): string[] {
   const out: string[] = [];
   const walk = (value: unknown, at: string): void => {
     if (value === null) return;
     const t = typeof value;
     if (t !== "object" && t !== "function") return;
     if (t === "function") return; // an exported FUNCTION is code, not a policy table
-    if (seen.has(value as object)) return;
-    seen.add(value as object);
+    // CAPTURED (round-4). This cycle guard used to be `seen.has(...)` / `seen.add(...)`, i.e. the
+    // policy-table AUDIT decided whether it had already seen a node by calling a method it did not
+    // own. Measured: `WeakSet.prototype.has = () => true` makes the very first node look already-
+    // visited, so `inertViolations` returns `[]` — the control that hunts runtime-mutable policy
+    // tables reports CLEAN precisely when an attacker is present, which is the worst direction for a
+    // gate to fail in. It is the same intrinsic class this module exists to close, in the file that
+    // closes it.
+    if (weakSetHas(seen, value as object)) return;
+    weakSetAdd(seen, value as object);
     if (isFrozenSet(value)) return;
-    if (value instanceof Set || value instanceof Map || value instanceof WeakSet || value instanceof WeakMap) {
+    // `collectionBrand` (captured proto-chain walk) instead of `instanceof`, whose
+    // Symbol.hasInstance lookup a poison could make lie and hide a mutable Set/Map table.
+    if (collectionBrand(value) !== null) {
       arrayPush(out, `${at} is ${describe(value)} — its mutators survive Object.freeze, so it is runtime-mutable policy state`);
       return;
     }
@@ -329,7 +335,9 @@ export function inertViolations(v: unknown, path: string, seen: WeakSet<object> 
       for (let i = 0; i < arr.length; i++) walk(arr[i], `${at}[${i}]`);
       return;
     }
-    for (const k of objectGetOwnPropertyNames(value as object)) {
+    const names = objectGetOwnPropertyNames(value as object);
+    for (let i = 0; i < names.length; i++) {
+      const k = names[i] as string;
       const d = getOwnPropertyDescriptor(value as object, k);
       if (d === undefined) continue;
       if (d.get !== undefined || d.set !== undefined) { arrayPush(out, `${at}.${k} is an accessor`); continue; }
@@ -337,11 +345,14 @@ export function inertViolations(v: unknown, path: string, seen: WeakSet<object> 
     }
   };
   walk(v, path);
-  return arraySlice(out);
+  // PUBLISHED as an ordinary array (round-4, A1) — same reasoning as `verifyChain`'s `warnings`:
+  // this is a caller-facing report, and the decision (whether a table is inert) was already taken
+  // over the inert working copy above.
+  return publishArray(out);
 }
 
 function objectIsFrozenSafe(v: unknown): boolean {
-  try { return Object.isFrozen(v); } catch { return false; }
+  try { return objectIsFrozen(v); } catch { return false; }
 }
 
 /**
@@ -362,11 +373,13 @@ function objectIsFrozenSafe(v: unknown): boolean {
  */
 export function deepFreeze<T>(o: T): T {
   if (o === null || (typeof o !== "object" && typeof o !== "function")) return o;
-  for (const key of objectGetOwnPropertyNames(o as object)) {
+  const names = objectGetOwnPropertyNames(o as object);
+  for (let i = 0; i < names.length; i++) {
+    const key = names[i] as string;
     const d = getOwnPropertyDescriptor(o as object, key);
     if (d === undefined || d.get !== undefined || d.set !== undefined) continue;
     const v = d.value;
-    if (v !== null && (typeof v === "object" || typeof v === "function") && !Object.isFrozen(v)) {
+    if (v !== null && (typeof v === "object" || typeof v === "function") && !objectIsFrozen(v)) {
       deepFreeze(v);
     }
   }

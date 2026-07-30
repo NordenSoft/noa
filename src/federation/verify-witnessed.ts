@@ -22,6 +22,7 @@ import { safeParse } from "../safe-json.js";
 import { parseDocument } from "../bytes.js";
 import { inertOptions, type OptionSchema } from "../opts.js";
 import { frozenTable } from "../inert.js";
+import { isArray, arrayLength, isFiniteNumber } from "../intrinsics.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
 import type { Checkpoint } from "../types.js";
 import {
@@ -69,15 +70,22 @@ const INVALID_HEAD: ChainHead = frozenTable({ chain: "", seq: -1, hash: "" }) as
  * field) yields a head verifyCompleteness rejects as INVALID_INPUT — fail-closed, never a throw.
  */
 function deriveHead(parsed: unknown): ChainHead {
-  if (!Array.isArray(parsed) || parsed.length === 0) return INVALID_HEAD;
+  // CAPTURED (2026-07-29, round-2, R3-06). `for (const r of parsed)` dispatched through
+  // `%ArrayIteratorPrototype%.next`; a SUBSTITUTING iterator injected a forged receipt so the derived
+  // head matched the witnesses' anchors, flipping the witness verdict FORK/false -> QUORUM_CONFIRMED/true
+  // over the same presented chain. Walked by index with the captured `arrayLength`; `deriveHead` now sees
+  // exactly the parsed array `verifyChain` saw.
+  if (!isArray(parsed) || arrayLength(parsed) === 0) return INVALID_HEAD;
+  const pn = arrayLength(parsed);
   let head: Record<string, unknown> | null = null;
   let maxSeq = -Infinity;
-  for (const r of parsed) {
+  for (let pi = 0; pi < pn; pi++) {
+    const r = parsed[pi];
     if (typeof r !== "object" || r === null) continue;
     const chainField = (r as { chain?: unknown }).chain;
     if (typeof chainField !== "object" || chainField === null) continue;
     const seq = (chainField as { seq?: unknown }).seq;
-    if (typeof seq !== "number" || !Number.isFinite(seq)) continue;
+    if (typeof seq !== "number" || !isFiniteNumber(seq)) continue;
     if (seq > maxSeq) {
       maxSeq = seq;
       head = r as Record<string, unknown>;
@@ -168,7 +176,7 @@ export function verifyChainWitnessed(
   const maxReceipts = o.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
   let head: ChainHead = INVALID_HEAD;
   const parsed = parseDocument(chain, "receipts");
-  if (parsed.ok && Array.isArray(parsed.value) && parsed.value.length <= maxReceipts) {
+  if (parsed.ok && isArray(parsed.value) && arrayLength(parsed.value) <= maxReceipts) {
     head = deriveHead(parsed.value);
   }
   const witness = verifyCompletenessParsed(

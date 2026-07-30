@@ -1,4 +1,8 @@
 import { sha256Digest } from "./hash.js";
+// Captured 2026-07-29: `signingMessage` builds the exact bytes that get Ed25519-signed. Assembling
+// them through the live `Buffer.concat`/`Buffer.from` let a rewriting poison swap the pre-image for
+// a genuine one, so a forged receipt verified under the real signature.
+import { bufferFrom, bufferConcat } from "./intrinsics.js";
 
 /**
  * Domain-separated signing preimage.
@@ -16,5 +20,5 @@ export const CHECKPOINT_SIG_DOMAIN = "NOA-Checkpoint-v0.1-sig";
 
 /** Build the exact bytes that get Ed25519-signed/verified for a given artifact. */
 export function signingMessage(domain: string, hashInputJcs: string): Buffer {
-  return Buffer.concat([Buffer.from(domain + ":", "utf8"), sha256Digest(hashInputJcs)]);
+  return bufferConcat([bufferFrom(domain + ":", "utf8"), sha256Digest(hashInputJcs)]);
 }

@@ -58,10 +58,13 @@
  *
  * Like every other boundary in this kernel: it never throws. A failure is a returned reason.
  */
-import { types as nodeTypes } from "node:util";
+// `node:util`'s `types` was the last LIVE builtin ESM import binding outside `src/intrinsics.ts`.
+// The value was already snapshotted on the next line, so this is not a behaviour change — but the
+// rule L8 now enforces is structural ("no TCB file except the capture module holds a live builtin
+// binding"), and a rule with one prose-justified exception is a rule the next author will add a
+// second exception to. `isProxy` is captured in `src/intrinsics.ts` with every other builtin.
+import { isProxy as _isProxy, hasOwn as _hasOwn, arrayJoin as _arrayJoin } from "./intrinsics.js";
 import { decodeDocument } from "./bytes.js";
-
-const _isProxy = nodeTypes.isProxy;
 const _apply: <T, A extends readonly unknown[], R>(fn: (this: T, ...a: A) => R, thisArg: T, args: A) => R =
   Reflect.apply as never;
 const _ownKeys = Reflect.ownKeys;
@@ -166,7 +169,13 @@ function admit<T extends InertRecord>(schema: OptionSchema, input: unknown, what
     if (typeof key === "symbol") {
       return { ok: false, reason: `${what}: symbol-keyed options are not accepted` };
     }
-    const field = _apply(Object.prototype.hasOwnProperty, schema, [key]) ? schema[key] : undefined;
+    // CAPTURED (round-4, found by the AST gate). This was `_apply(Object.prototype.hasOwnProperty, …)`
+    // — a LIVE read of `Object.prototype.hasOwnProperty` taken at CALL time and then handed to the
+    // captured `_apply`, which protects the INVOCATION and not the LOOKUP. It decides whether an
+    // option key is known, so a poisoned slot answers that question. The dotted-dotted spelling
+    // matched none of L8's regexes (no call follows `Object.<name>`, and it is not a detached
+    // binding); the AST gate resolves the leftmost `Object` to the ambient global and sees it.
+    const field = _hasOwn(schema, key) ? schema[key] : undefined;
     if (field === undefined) {
       return { ok: false, reason: `${what}: unknown option "${key}" — an unrecognised member is a misconfiguration, not a default` };
     }

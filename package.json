@@ -67,6 +67,8 @@
     "lint:dispatch-surfaces": "node scripts/lint-dispatch-surfaces.mjs",
     "lint:security-gates": "node scripts/lint-security-gates.mjs",
     "lint:knockout": "node scripts/lint-control-knockout.mjs",
+    "lint:trusted-roots": "node scripts/lint-trusted-roots.mjs",
+    "lint:trusted-roots:selftest": "node scripts/lint-trusted-roots.mjs --selftest",
     "test:r7-exploits": "node scripts/run-r7-exploits.mjs",
     "lint:topology": "node scripts/lint-dependency-topology.mjs",
     "lint:topology:strict": "node scripts/lint-dependency-topology.mjs --strict",

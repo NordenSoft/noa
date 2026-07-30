@@ -198,10 +198,54 @@ mapping documents, if any exist, are self-assessments.
 
 ## 6. The trust boundary itself
 
+### NC-6.0 — The same-realm TypeScript verifier does not meet the security objective
+**Added 2026-07-29. Ratified. This is the strongest non-claim in this document and it supersedes the
+narrower NC-6.1 below.**
+
+The TypeScript package does **not** guarantee that a verdict is unaffected by an attacker who can run
+code in the same JavaScript realm. It previously claimed, in `THREAT-MODEL.md`, that *"no mutation of
+any shared intrinsic may make a verdict more permissive."* **That claim is withdrawn.**
+
+Four independent cross-vendor adversarial rounds (2026-07-28/29) produced sixteen CRITICAL findings
+and **zero clean rounds**. Each round's fix closed the call sites the review named; each following
+round found the identical class one call further out — the parse layer, then the hash layer, then the
+live `node:crypto` binding, then arrays manufactured downstream by `Object.keys`. Every one was found
+while the project's own gates reported green.
+
+The reason is structural, not a backlog item:
+
+> **In a shared realm, the set of operations trusted code performs is not enumerable by that trusted
+> code.** A capture list records the spellings someone thought of; the adversary picks the spelling
+> afterwards. A defence whose completeness cannot be decided is not a boundary.
+
+What the package *does* offer in-realm is real and measured: captured intrinsics, inert data,
+AST-enforced dispatch gates, ~74 poisons, a durable exploit corpus. It raises the cost of an in-realm
+attack substantially. **It does not meet the objective.**
+
+**The isolated Go kernel (`ADR-0002`) is SPECIFIED AND NOT YET BUILT.** This document must not be
+read as offering it as an available remedy — doing so would trade one unmet claim for another, which
+is the exact failure mode §0 of this document describes.
+
+**What exists today:** the CLI (`npx noa verify`) runs in its own process, and this package declares
+`"dependencies": {}`, so nothing third-party is evaluated before it and a hostile *document* cannot
+poison that realm. Against a data-only attacker the CLI boundary holds now. Its ceiling is NC-6.2
+below: the output is unauthenticated, so a compromised caller can still discard or misreport a
+correct verdict. TypeScript's in-process API is best-effort and makes no security claim of its own.
+
+*This non-claim was added because the evidence demanded it, not because a review asked for it. Per
+§7, weakening or removing it requires running the proof that makes the stronger claim true — and four
+rounds have now measured the stronger claim as false.*
+
 ### NC-6.1 — A host that runs untrusted code before `noa-receipt` loads is outside the boundary
-The library captures its intrinsics when its own modules are evaluated. A host application that
-mutates an intrinsic in a module evaluated **before** `noa-receipt` defeats that, and nothing in a
-library can fix it — it is a property of the host's module graph.
+*Retained for history; **subsumed by NC-6.0**, which is broader.* The library captures its intrinsics
+when its own modules are evaluated. A host application that mutates an intrinsic in a module evaluated
+**before** `noa-receipt` defeats that, and nothing in a library can fix it — it is a property of the
+host's module graph.
+
+**Why the original framing understated it:** "a host that runs untrusted code first" reads as an
+exotic configuration. It is not. It covers any dependency, bundler output, instrumentation shim or
+test harness that happens to evaluate first, in an order the library does not control. Reproduced: a
+pre-load `Proxy` on `Number` yields `VALID` on a forged document.
 
 ### NC-6.2 — Isolation does not protect the verdict, and a same-realm "isolated realm" protects nothing
 Superseded advice, withdrawn 2026-07-28: a `ShadowRealm` or `vm` context constructed by a compromised
@@ -217,17 +261,146 @@ argued (ADR-0001 §2.3). Against a data-only attacker, parsing from text does cl
 because it removes the only route by which untrusted *data* obtains code execution. Against an
 attacker with independent code execution it closes nothing.
 
-### NC-6.4 — Ten of eleven reproduced R7 exploits are still open, and are pinned open
-`scripts/run-r7-exploits.mjs` runs them on every CI build with their disposition pinned in **both**
-directions. Only C-04 is closed today. The rest require the bytes-in boundary and the closed
-primitive set (ADR-0001 §3, §5.5, §5.6), which are **not implemented**. They all require the attacker
-to already hold same-realm code execution — see NC-6.1 — but "requires a stronger attacker" is not
-"closed", and this document will not describe it as closed.
+### NC-6.4 — The reproduced R7 exploits are pinned in BOTH directions, and are all closed today
+**CORRECTED 2026-07-29.** This entry previously read *"Ten of eleven reproduced R7 exploits are still
+open… Only C-04 is closed today,"* and cited the bytes-in boundary and closed primitive set as *"not
+implemented."* All three statements are now false. Measured:
+
+```console
+$ npm run test:r7-exploits
+closed 13 / open 0
+```
+
+The bytes-in boundary and the closed primitive set shipped on this branch, and the corpus grew from
+11 to 13. `scripts/run-r7-exploits.mjs` runs on every CI build with each disposition pinned in
+**both** directions, so a silent re-opening fails the build.
+
+*Why this entry survived stale, and it is worth recording:* it was wrong in the **conservative**
+direction — it understated our position. Every review process here is tuned to catch overclaims, and
+was structurally blind to an underclaim. §7's rule ("when a mechanical control contradicts a
+non-claim, the control wins and moves in the same commit") is symmetric; our attention was not. A
+document whose value rests on being unimprovable by wishful editing cannot carry an entry its own
+gate contradicts, in either direction.
+
+*(Three lines were deleted here on 2026-07-29. They read: "They all require the attacker to already
+hold same-realm code execution — see NC-6.1 — but 'requires a stronger attacker' is not 'closed', and
+this document will not describe it as closed." That tail survived an earlier correction of this
+entry's title and body, leaving `They all` with no antecedent and the final clause asserting the exact
+opposite of the entry's own measured result of `closed 13 / open 0`. Found by the round-5 QA panel.)*
 
 ### NC-6.5 — An in-process guard is advisory
 `createToolGuard` and friends govern only calls that actually go through the wrapped function. Install
 them where the credentials live, or a framework can bypass them by calling the underlying API
 directly.
+
+### NC-6.6 — A verdict returned to a compromised caller is not an enforcement control (owner-ratified 2026-07-29)
+
+**We do not claim that an out-of-process verdict — signed or unsigned — protects a caller whose own
+JavaScript realm, transport primitives, signature verification, or action path is compromised.**
+
+This withdraws beneficiary **B-1** ("an honest application defending against its own dependency
+graph") as previously stated in `docs/WHO-IS-PROTECTED.md`. B-1 was the primary justification for the
+isolated-kernel migration. It was refuted by measurement in round 5 and the withdrawal was ratified by
+the owner the same day.
+
+The measurement, reproducible at
+`~/.claude/doctrine/artifacts-2026-07-29-round1/round5/repro/run2.mjs`:
+
+```
+baseline (honest kernel, no attacker): blocked | action ran: false
+ambient attacker poisons transport  : ACTION PERFORMED | action ran: true
+```
+
+An attacker who replaced only `child_process.spawnSync` caused the protected action to execute while
+the honest kernel returned `DENY`, with the application source unmodified and the call site intact.
+The signed envelope does not close this: the envelope check runs in the same poisoned realm, measured
+separately in `docs/T7-trust-root.md` §1. The two compose — forge the transport, then neutralise the
+check that would catch the forgery.
+
+**The caller, and all verdict handling inside the caller, are untrusted and advisory.**
+
+**Replacement invariant — what the boundary must actually provide** *(amended by the owner
+2026-07-29 after the QA panel proved the first version insufficient):*
+
+> **1. Authority.** A critical action must be technically impossible without authority controlled by
+> the independent boundary. *(Necessary, not sufficient.)*
+>
+> **2. Intent binding.** The exact canonical intent **shown to and approved by the human**, the intent
+> **authorized by the grant**, and the parameters **executed by the external target** must be
+> cryptographically bound to the same action-intent commitment:
+>
+> ```
+> approval_intent_digest == grant_intent_digest == execution_intent_digest
+> ```
+>
+> **No component may claim `HUMAN_APPROVED` unless that equality has been independently
+> established.**
+
+Eight consequences are owner-ratified and binding: caller-supplied display text and caller-supplied
+`paramsHash` **cannot** be independent authoritative inputs; the trusted boundary **must** derive the
+canonical intent and its digest from the structured snapshot; approval UI content **must** be
+deterministically rendered from that same canonical intent; unknown or unregistered projections
+**must fail closed**, and RAW mode **must not** issue a `HUMAN_APPROVED` grant or approval receipt for
+a critical action; grant-signing key custody **must** move outside the caller-controlled Node process;
+a non-exportable KMS/HSM key **alone is insufficient** if the compromised process retains unrestricted
+online signing authority — the signing operation itself must be policy-gated and validate the approval
+proof and canonical intent; the external target or trusted dispatch boundary **must** independently
+ensure the executed action matches the granted intent; and the failed design **must be preserved**,
+not silently rewritten.
+
+Architecture: `docs/ADR-0004-intent-binding.md`. The failed predecessor and its refutation are
+retained at `docs/ADR-0003-enforcement-boundary.md` and `docs/ROUND5-FINDINGS.md`.
+
+**NECESSARY, NOT SUFFICIENT.** Candidate mechanisms: (a) credentials and provider access held
+**exclusively** by the kernel, with the kernel dispatching the action; (b) a short-lived, single-use,
+request-bound capability that the **external target** independently validates; (c) another mechanism
+that makes bypassing the kernel infeasible rather than merely detectable. Anything that hands a
+decision back to the caller and hopes it complies is **not** in this set.
+
+> 🔴 **CORRECTED 2026-07-29, hours after this entry was written.** It originally read *"Satisfied by
+> exactly one of: (a)…(b)…(c)"* — a **sufficiency** claim, and the round-5 QA panel falsified it with
+> an executed proof-of-concept against this project's own shipped gate code.
+>
+> **The hole: authority is not intent.** In the gate's RAW mode the `display` a human approves and
+> the `paramsHash` a grant authorizes are two unrelated caller-supplied fields
+> (`packages/gate/src/engine.ts:202-209`). An attacker who controls the caller shows the approver
+> *"Transfer funds → alice → 10.00 DKK"*, binds the hash to *mallory / 9999*, and the action executes
+> under authority issued **entirely by the boundary**. Every clause of the invariant is obeyed at
+> every step; the attacker never forges a grant, never poisons the gate, never bypasses anything.
+> They author the question the human is asked.
+>
+> **And it is worse than the status quo in one specific way.** Today such an attack is unlogged.
+> Under enforcement it produces a gate-signed receipt bearing `reasonCode: HUMAN_APPROVED` — turning
+> a deniable attack into one that is notarised *in the victim's name*. An enforcement boundary that
+> lacks intent binding does not merely fail to help; it manufactures exculpatory evidence for the
+> attacker.
+>
+> **Therefore: `intent binding` is a missing prerequisite, not a refinement.** Authority controlled by
+> the boundary is necessary. It becomes sufficient only when the thing the human approved is
+> cryptographically bound to the thing the authority permits. Tracked for `docs/ADR-0003` as a
+> required sixth stage.
+
+**Corollary non-claim — the display.** We do not claim that an approval receipt proves the approver
+saw an accurate description of the action. In RAW mode it proves only that a key-holder approved
+**the display bytes**. The signed `holdEnvelope` self-describes `"mode":"RAW"` with
+`"displayProjection":null`, so a relying party *can* detect this case mechanically — but until now no
+document told them what it means.
+
+**Corollary non-claim — the authority root itself.** We do not claim that the grant-signing key is
+protected against the adversary the grants are meant to stop. The gate's grant-signing key is held as
+a plain base64 string in the gate's Node process (`packages/gate/src/trust.ts:23-29`,
+`privateKey: string`), on a loopback-by-default host. **The same ambient attacker who motivates this
+entire architecture can read that key from process memory and mint grants that are cryptographically
+indistinguishable from genuine ones** — correct signature, correct `paramsHash` for the attacker's
+params, fresh `grantId`s no replay store has seen.
+
+The signer-sidecar holds the *receipt* signing key out of process
+(`packages/signer-sidecar/src/sidecar.mjs:4-5`); nothing holds the *grant* signing key that way,
+and grant custody is the single most important key in the capability architecture. **An enforcement
+boundary whose own authority root sits in the process it is defending against is not yet a
+boundary.** Found by the round-5 QA panel; no fix attempted here, because the fix is architectural.
+
+Architecture options and their surviving claims: `docs/ADR-0003-enforcement-boundary.md`.
 
 ---
 

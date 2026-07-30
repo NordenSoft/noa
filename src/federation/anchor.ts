@@ -25,7 +25,7 @@
 import { signEd25519 } from "../keys.js";
 import { verifyChain } from "../verify.js";
 import { jsonStringify } from "../intrinsics.js";
-import { arrayLength, arrayPush, isSafeInteger, isArray } from "../intrinsics.js";
+import { arrayLength, arrayPush, arrayJoin, isSafeInteger, isArray } from "../intrinsics.js";
 import { safeParse } from "../safe-json.js";
 import { isSha256Hash, isRfc3339 } from "../scan.js";
 import type { Receipt } from "../types.js";
@@ -145,7 +145,7 @@ export function buildAnchor(frontier: AnchorFrontier, signer: Signer): Anchor {
   }
   const inErrors = frontierInputErrors(surface, { kid: signerKid, privateKey: signerKey } as Signer);
   if (inErrors.length > 0) {
-    throw new AnchorError(`buildAnchor: invalid frontier/signer input: ${inErrors.join("; ")}`, inErrors);
+    throw new AnchorError(`buildAnchor: invalid frontier/signer input: ${arrayJoin(inErrors, "; ")}`, inErrors);
   }
 
   // The signed surface is only primitives — copy the exact four fields (never the whole caller object, so a
@@ -158,7 +158,7 @@ export function buildAnchor(frontier: AnchorFrontier, signer: Signer): Anchor {
   const errors = anchorDraftErrors(draft);
   if (errors.length > 0) {
     throw new AnchorError(
-      `buildAnchor: refusing to return a signed anchor that fails the acceptance verifier's structural check: ${errors.join("; ")}`,
+      `buildAnchor: refusing to return a signed anchor that fails the acceptance verifier's structural check: ${arrayJoin(errors, "; ")}`,
       errors,
     );
   }

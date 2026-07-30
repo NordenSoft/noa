@@ -7,7 +7,7 @@ import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./sig
 import { nonNfcPaths, isNFC } from "./nfc.js";
 import { parseDocument } from "./bytes.js";
 import { inertOptions, type OptionSchema } from "./opts.js";
-import { arrayPush, arrayIncludes, dateParse, mapHas, mapGet, mapSet, objectKeys, objectGetOwnPropertyNames, isSafeInteger, arraySlice, setAdd, setSize } from "./intrinsics.js";
+import { arrayPush, arrayIncludes, arrayEvery, arrayLength, arrayJoin, publishArray, dateParse, mapHas, mapGet, mapSet, newMap, newSet, objectKeys, objectGetOwnPropertyNames, isSafeInteger, arraySlice, setAdd, setSize, isArray, isNaNValue, jsonStringify } from "./intrinsics.js";
 import { isSha256Hash, isRfc3339 } from "./scan.js";
 import { frozenTable } from "./inert.js";
 
@@ -123,7 +123,7 @@ function fail(
 
 /** Human/machine-readable label for a `scope.tenant` value in a drift message: quoted string, or `(none)`. */
 function describeTenant(t: string | undefined): string {
-  return t === undefined ? "(none)" : JSON.stringify(t);
+  return t === undefined ? "(none)" : (jsonStringify(t) as string);
 }
 
 /**
@@ -202,7 +202,7 @@ const VERIFY_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.cr
 function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResult {
   const maxReceipts = o.maxReceipts ?? DEFAULT_MAX_RECEIPTS;
 
-  if (!Array.isArray(receipts)) return fail("MALFORMED", "input is not an array of receipts", null, 0);
+  if (!isArray(receipts)) return fail("MALFORMED", "input is not an array of receipts", null, 0);
   // No guard is needed around `receipts.length` any more, and the absence is the point: this array
   // came out of `safeParse`, so `length` is an ordinary own data property. The old code read it
   // inside a try/catch because a caller-supplied array-like could carry `get length(){ throw }`.
@@ -230,7 +230,7 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
   // accessors to flip and no second read to disagree with the first. The per-entry Map is retained
   // because it is the natural shape for the lookup, not because it is defending anything.
   const haveManifest = o.identityManifest !== undefined;
-  const manifest = new Map<string, string[]>();
+  const manifest = newMap<string, string[]>();
   let list!: Receipt[];
   let chainId!: string;
   let ordered!: Receipt[];
@@ -240,19 +240,28 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
       const mParsed = parseDocument(o.identityManifest, "identityManifest");
       if (!mParsed.ok) return fail("MALFORMED", mParsed.reason, null, n);
       const live = mParsed.value;
-      if (typeof live !== "object" || live === null || Array.isArray(live)) {
+      if (typeof live !== "object" || live === null || isArray(live)) {
         return fail("MALFORMED", "identityManifest must be an object (agent.id -> kid[])", null, 0);
       }
       // Own names — `safeParse` emits null-prototype objects with enumerable own data properties
       // only, so this and `Object.entries` would now agree; own-names is kept because it is the
       // stricter of the two and costs nothing.
-      for (const aid of objectGetOwnPropertyNames(live)) {
+      // INDEX WALK (round-4, A2). Measured before the fix: a skipping iterator hid a manifest entry
+      // whose VALUE was invalid, so the only control that rejects a malformed manifest never ran and
+      // `MALFORMED` became `VALID` (1 poison hit). Substituting a VALID key fails closed here — the
+      // read and the write both use the same yielded `aid` — which is why this site was reported
+      // twice with opposite conclusions; the SKIP shape is the one that flips it.
+      const aids = objectGetOwnPropertyNames(live);
+      for (let ai = 0; ai < aids.length; ai++) {
+        const aid = aids[ai] as string;
         const kidsLive = (live as Record<string, unknown>)[aid];
-        if (!Array.isArray(kidsLive)) {
+        if (!isArray(kidsLive)) {
           return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
         }
         const kids = arraySlice(kidsLive) as unknown[];
-        if (!kids.every((k) => typeof k === "string")) {
+        // `arrayEvery` (captured), not `.every` on the copy: a poisoned `every` answering `true`
+        // admits a non-string kid into the identity manifest, which is the attribution trust root.
+        if (!arrayEvery(kids, (k) => typeof k === "string")) {
           return fail("MALFORMED", `identityManifest["${aid}"] must be an array of kid strings`, null, 0);
         }
         mapSet(manifest, aid, kids as string[]);
@@ -263,22 +272,37 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
     for (let idx = 0; idx < receiptsSnap.length; idx++) {
       const res = validateReceiptShapeParsed(receiptsSnap[idx]);
       if (!res.ok) {
-        return fail("MALFORMED", `receipt[${idx}]: ${res.errors.join("; ")}`, null, receiptsSnap.length, idx);
+        return fail("MALFORMED", `receipt[${idx}]: ${arrayJoin(res.errors, "; ")}`, null, receiptsSnap.length, idx);
       }
     }
     list = receiptsSnap as Receipt[];
 
     // 2. Single chain partition.
+    //
+    // ── INDEX WALK, NOT `for…of` (2026-07-29, round-1 re-run) ────────────────────────────────────
+    // These two loops are what populate `bySeq`, and `bySeq` is what the hash and signature checks
+    // below actually run over. Iterating with `for…of` resolves `next` through
+    // `%ArrayIteratorPrototype%`, so a poison that SUBSTITUTES a genuine receipt object for the
+    // forged one as it is yielded gets the genuine object into `bySeq` -> `ordered` -> every
+    // cryptographic check, and a forged input document verifies VALID with signaturesVerified:true.
+    //
+    // Note the shape distinction, because it is why this survived one review: a poison that merely
+    // SKIPS the forged element is caught by the seq-contiguity check below (`seq gap`), and a
+    // reviewer testing only that shape correctly reported the finding as refuted. Substitution is
+    // not caught by contiguity — the count and the sequence numbers are all still perfect.
+    // `list` is a real array here (`receiptsSnap`), so an indexed read dispatches through nothing.
     chainId = list[0]!.scope.chain;
-    for (const r of list) {
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i] as Receipt;
       if (r.scope.chain !== chainId) {
         return fail("TAMPERED", "multiple chain partitions in one input", chainId, list.length);
       }
     }
 
     // 3. Order by seq; require contiguous 0..n-1, unique.
-    const bySeq = new Map<number, Receipt>();
-    for (const r of list) {
+    const bySeq = newMap<number, Receipt>();
+    for (let i = 0; i < list.length; i++) {
+      const r = list[i] as Receipt;
       if (mapHas(bySeq, r.chain.seq)) return fail("TAMPERED", `duplicate seq ${r.chain.seq}`, chainId, list.length, r.chain.seq);
       mapSet(bySeq, r.chain.seq, r);
     }
@@ -371,7 +395,7 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
     const kParsed = parseDocument(o.keyring, "keyring");
     if (!kParsed.ok) return fail("MALFORMED", kParsed.reason, chainId, list.length);
     const kv = kParsed.value;
-    if (typeof kv !== "object" || kv === null || Array.isArray(kv)) {
+    if (typeof kv !== "object" || kv === null || isArray(kv)) {
       return fail("MALFORMED", "keyring must be an object (kid -> base64 SPKI)", chainId, list.length);
     }
     // ONE parse, shared by BOTH authenticated surfaces — the chain walk (`keyring[r.sig.kid]`) and
@@ -380,15 +404,26 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
     // checkpoint" split has nothing to split.
     keyring = kv as Keyring;
   }
-  const warnings: string[] = [...tenantDriftMessages];
+  // PUBLISHED as an ordinary array (round-4, A1). `arraySlice` returns an INERT-rooted copy now, and
+  // `warnings` is a documented field of a PUBLIC result object — shipping an array whose
+  // `instanceof Array` is false and whose `deepStrictEqual` against a literal fails is a silent
+  // backward-compatibility break for every consumer. The copy is still taken through the captured
+  // `arraySlice` (no live iterator spread); only the prototype of the value handed to the caller is
+  // restored. Caught by measuring the public array-returning surface rather than assuming it.
+  const warnings: string[] = publishArray(arraySlice(tenantDriftMessages));
 
   // 4. Walk the chain: hash, key-pinning, signature, linkage, timestamp monotonicity.
-  const pinnedKid = new Map<string, string>(); // agent.id -> kid (key continuity)
+  const pinnedKid = newMap<string, string>(); // agent.id -> kid (key continuity)
   let prev: Receipt | null = null;
 
   // Fail-closed backstop for our own helpers, not a hostile-accessor guard (see above).
   try {
-  for (const r of ordered) {
+  // Index walk, not `for…of` (2026-07-29): this is THE hash-integrity and signature loop. A
+  // substituting iterator poison hands it a genuine receipt object in place of the forged one and
+  // every cryptographic check below then passes on the wrong object. `ordered` is a real array
+  // built by `arrayPush`, so an indexed read dispatches through nothing.
+  for (let oi = 0; oi < ordered.length; oi++) {
+    const r = ordered[oi] as Receipt;
     const seq = r.chain.seq;
 
     // 4a. Hash integrity.
@@ -417,17 +452,22 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
     // precisely a field relying parties match and index on, so two kids that render identically and
     // differ in bytes is the hazard, not a nit. `sig.value` and the `chain` hashes stay out: base64
     // and hex are ASCII by construction, so normalization cannot apply to them.
-    const nonNfc = [
-      ...nonNfcPaths({
-        id: r.id, ts: r.ts, scope: r.scope, agent: r.agent, action: r.action, governance: r.governance,
-      }),
-      ...(isNFC(r.sig.kid) ? [] : ["sig.kid"]),
-    ];
-    if (nonNfc.length > 0) {
+    // CAPTURED (2026-07-29, round-2, R3-04 second sink). This used a SPREAD (`[...nonNfcPaths(...)]`)
+    // and `.join`/`for…of`, every one of which dispatches through `%ArrayIteratorPrototype%.next`: an
+    // empty-iterator poison collapsed the spread so the offending path never reached the length gate
+    // and the non-NFC receipt passed `requireNFC:true` as VALID. `nonNfcPaths` returns a fresh array
+    // built with the captured `arrayPush`, so the kid is appended into it directly and it is walked by
+    // index — no spread, no `for…of`, no live `.join`.
+    const nonNfc = nonNfcPaths({
+      id: r.id, ts: r.ts, scope: r.scope, agent: r.agent, action: r.action, governance: r.governance,
+    });
+    if (!isNFC(r.sig.kid)) arrayPush(nonNfc, "sig.kid");
+    if (arrayLength(nonNfc) > 0) {
       if (o.requireNFC) {
-        return fail("MALFORMED", `non-NFC string(s) at seq ${seq}: ${nonNfc.join(", ")}`, chainId, list.length, seq);
+        return fail("MALFORMED", `non-NFC string(s) at seq ${seq}: ${arrayJoin(nonNfc, ", ")}`, chainId, list.length, seq);
       }
-      for (const p of nonNfc) arrayPush(warnings, `non-nfc: seq ${seq} field ${p}`);
+      const wn = arrayLength(nonNfc);
+      for (let wi = 0; wi < wn; wi++) arrayPush(warnings, `non-nfc: seq ${seq} field ${nonNfc[wi]}`);
     }
 
     // 4b. Key continuity per agent.id (rejects mid-chain key swap).
@@ -477,7 +517,7 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
       // dispatch through the globally-mutable `Date.parse`.
       const a = dateParse(prev.ts);
       const b = dateParse(r.ts);
-      if (!Number.isNaN(a) && !Number.isNaN(b) && b < a) {
+      if (!isNaNValue(a) && !isNaNValue(b) && b < a) {
         arrayPush(warnings, `non-monotonic timestamp at seq ${seq} (ts went backwards)`);
       }
     }
@@ -498,7 +538,7 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
     // verdict on the SAME malformed input. Reject it here as MALFORMED so both impls agree. (`checkpoint:null`
     // already reached MALFORMED-class via this path historically; this makes array /
     // number / string explicit and canonical too.)
-    if (typeof checkpointSnap !== "object" || checkpointSnap === null || Array.isArray(checkpointSnap)) {
+    if (typeof checkpointSnap !== "object" || checkpointSnap === null || isArray(checkpointSnap)) {
       return fail("MALFORMED", "checkpoint must be an object", chainId, list.length);
     }
     // ONE parsed checkpoint, read by every surface: `verifyCheckpointParsed` validates it and
@@ -551,8 +591,8 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
       // The checkpoint authority is opener-scoped: it certifies the opener's view of the head, but a
       // co-agent's tail on the same shared chain is NOT separately certified by it. Surface that the
       // opener could still have dropped a co-agent's tail (the residual that needs the v1.0 anchor).
-      const distinctAgents = new Set<string>();
-      for (const rr of ordered) setAdd(distinctAgents, rr.agent.id);
+      const distinctAgents = newSet<string>();
+      for (let ai = 0; ai < ordered.length; ai++) setAdd(distinctAgents, (ordered[ai] as Receipt).agent.id);
       if (setSize(distinctAgents) > 1) {
         arrayPush(warnings, "checkpoint completeness is opener-scoped: the chain has more than one agent.id, and a co-agent's tail is NOT separately certified by the opener's checkpoint (the opener dropping a co-agent's tail needs the v1.0 external anchor)");
       }
@@ -643,7 +683,7 @@ export function verifyCheckpoint(cp: Uint8Array | string, keyring?: Uint8Array |
     const kParsed = parseDocument(keyring, "keyring");
     if (!kParsed.ok) return "malformed checkpoint";
     const kv = kParsed.value;
-    if (typeof kv !== "object" || kv === null || Array.isArray(kv)) return "malformed checkpoint";
+    if (typeof kv !== "object" || kv === null || isArray(kv)) return "malformed checkpoint";
     ring = kv as Keyring;
   }
   return verifyCheckpointParsed(cpParsed.value as Checkpoint, ring);
@@ -661,9 +701,15 @@ function verifyCheckpointParsed(cp: Checkpoint, keyring?: Keyring): CheckpointVe
   // threat-model T9 "no smuggled field at any level"), and bad-typed/format fields are MALFORMED. Never a
   // raw throw (verifyCheckpoint(null) used to TypeError), never silently honored.
   const c = snap;
-  if (typeof c !== "object" || c === null || Array.isArray(c)) return "malformed checkpoint";
-  for (const k of objectKeys(c)) {
-    if (!arrayIncludes(CHECKPOINT_KEYS, k)) return "malformed checkpoint";
+  if (typeof c !== "object" || c === null || isArray(c)) return "malformed checkpoint";
+  // INDEX WALK (round-4, A2). This closed-schema walk is the ONLY control that rejects a checkpoint
+  // carrying a smuggled field — the smuggled field is covered by the signature (`checkpointHashInput`
+  // copies every own key), so re-signing keeps the signature honest and this loop is what stands in
+  // the way. Measured before the fix: a skipping iterator hid `extraSmuggled` + `extraSigField` and
+  // `TAMPERED` became `VALID` with `tailChecked:true` (2 poison hits).
+  const cKeys = objectKeys(c);
+  for (let i = 0; i < cKeys.length; i++) {
+    if (!arrayIncludes(CHECKPOINT_KEYS, cKeys[i] as string)) return "malformed checkpoint";
   }
   if (c.spec !== "noa.checkpoint/0.1") return "bad spec";
   if (typeof c.chain !== "string" || c.chain.length === 0) return "malformed checkpoint";
@@ -674,8 +720,9 @@ function verifyCheckpointParsed(cp: Checkpoint, keyring?: Keyring): CheckpointVe
   // sig sub-object is ALSO strict (top-level strictness alone isn't enough): exactly
   // {alg,kid,value}, alg="ed25519" — closes a smuggled-field channel inside the SIGNED surface + an
   // unvalidated alg, symmetric with the receipt sig discipline (schema.ts).
-  if (!sig || typeof sig !== "object" || Array.isArray(sig)) return "malformed checkpoint";
-  for (const k of objectKeys(sig)) { if (k !== "alg" && k !== "kid" && k !== "value") return "malformed checkpoint"; }
+  if (!sig || typeof sig !== "object" || isArray(sig)) return "malformed checkpoint";
+  const sigKeys = objectKeys(sig);
+  for (let i = 0; i < sigKeys.length; i++) { const k = sigKeys[i] as string; if (k !== "alg" && k !== "kid" && k !== "value") return "malformed checkpoint"; }
   if (sig.alg !== "ed25519") return "malformed checkpoint";
   if (typeof sig.kid !== "string" || sig.kid.length === 0 || typeof sig.value !== "string" || sig.value.length === 0) {
     return "malformed checkpoint";

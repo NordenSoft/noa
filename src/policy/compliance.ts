@@ -40,7 +40,7 @@ import { validateReceiptShapeParsed } from "../schema.js";
 import { receiptHashInput } from "../canonicalize.js";
 import { verifyEd25519, type Keyring, type IdentityManifest } from "../keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../signing.js";
-import { arrayIncludes, mapGet, mapSet, arraySlice, arrayEvery, objectGetOwnPropertyNames } from "../intrinsics.js";
+import { arrayIncludes, arrayJoin, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray } from "../intrinsics.js";
 
 export interface ComplianceCommit {
   policyHash: string;
@@ -193,7 +193,7 @@ export function verifyReceiptCompliance(
     if (haveKeyring) {
       const kParsed = parseDocument(o.keyring, "keyring");
       if (!kParsed.ok) return { ok: false, reason: kParsed.reason };
-      if (typeof kParsed.value !== "object" || kParsed.value === null || Array.isArray(kParsed.value)) {
+      if (typeof kParsed.value !== "object" || kParsed.value === null || isArray(kParsed.value)) {
         return { ok: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
       }
       keyringParsed = kParsed.value as Keyring;
@@ -226,7 +226,7 @@ export function verifyReceiptCompliance(
     {
       const keyring = keyringParsed as Keyring;
       const shape = validateReceiptShapeParsed(snap);
-      if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
+      if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${arrayJoin(shape.errors, "; ")}` };
       const hashInput = receiptHashInput(snap);
       if ("sha256:" + sha256Hex(hashInput) !== snap.chain.hash) {
         return { ok: false, reason: "carrier receipt hash mismatch — not authentic" };
@@ -248,13 +248,16 @@ export function verifyReceiptCompliance(
         const mParsed = parseDocument(o.identityManifest, "identityManifest");
         if (!mParsed.ok) return { ok: false, reason: mParsed.reason };
         const live = mParsed.value;
-        if (typeof live !== "object" || live === null || Array.isArray(live)) {
+        if (typeof live !== "object" || live === null || isArray(live)) {
           return { ok: false, reason: "identityManifest must be an object (agent.id -> kid[])" };
         }
-        const manifest = new Map<string, string[]>();
-        for (const aid of objectGetOwnPropertyNames(live)) {
+        const manifest = newMap<string, string[]>();
+        // INDEX WALK (round-4, A2) — same class and same shape as the verify.ts manifest walk.
+        const aids = objectGetOwnPropertyNames(live);
+        for (let ai = 0; ai < aids.length; ai++) {
+          const aid = aids[ai] as string;
           const kidsLive = (live as Record<string, unknown>)[aid]; // ONE read of the entry
-          if (!Array.isArray(kidsLive)) {
+          if (!isArray(kidsLive)) {
             return { ok: false, reason: `identityManifest["${aid}"] must be an array of kid strings` };
           }
           const kids = arraySlice(kidsLive) as unknown[]; // copy by value

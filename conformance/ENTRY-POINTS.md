@@ -41,7 +41,7 @@ Source: `src/index.ts` value exports, resolved through the TypeScript compiler A
 | `frozenSet` | INERT_CONSTRUCTOR | `readonly T[]` | n/a | `src/inert.ts` | builds THIS package's literal membership table (ADR §5.6); its subject is prototype+mutability, which bytes cannot express |
 | `frozenTable` | INERT_CONSTRUCTOR | `T` | n/a | `src/inert.ts` | builds THIS package's literal policy table (ADR §5.6); serializing it would produce a different table, not a safer one |
 | `generateKeyPair` | PRODUCER | `string` | n/a | `src/keys.ts` | generates the caller's own key |
-| `INERT_ARRAY_PROTOTYPE` | CONSTANT | `—` | n/a | `src/inert.ts` |  |
+| `INERT_ARRAY_PROTOTYPE` | CONSTANT | `—` | n/a | `src/intrinsics.ts` |  |
 | `inertViolations` | INERT_CONSTRUCTOR | `unknown` | n/a | `src/inert.ts` | the audit walker BEHIND the policy-table control (test/security/policy-tables-inert.test.ts); reports findings, decides nothing |
 | `intrinsics` | SECURITY_SENSITIVE | `—` | n/a | `src/intrinsics.ts` |  |
 | `isFrozenSet` | INERT_CONSTRUCTOR | `unknown` | n/a | `src/inert.ts` | pure brand predicate; carries no verdict |

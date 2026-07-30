@@ -224,14 +224,78 @@ truth or safety.
     boundary produces inherits from anything writable;
   * policy tables are built with `frozenTable`, which REFUSES a `Set`/`Map`/accessor at construction;
   * `test/security/intrinsic-poisoning.test.ts` asserts the class property over every entry point,
-    every fixture and ~70 poisoned intrinsics: **no mutation of any shared intrinsic may make a
-    verdict more permissive.**
+    every fixture and ~74 poisoned intrinsics.
 
-  **The residual, stated plainly.** This library captures its intrinsics when its own modules are
-  evaluated. A HOST APPLICATION that mutates an intrinsic in a module evaluated BEFORE `noa-receipt`
-  is outside that boundary and defeats it — the capture is honest but it captures whatever was there.
-  Nothing in a library can fix that; it is a property of the host's module graph. Callers embedding
-  this in an environment that loads untrusted code should load `noa-receipt` first.
+  > ## 🔴 SECOND WITHDRAWAL — THE OUT-OF-PROCESS VERDICT IS NOT AN ENFORCEMENT CONTROL (owner-ratified 2026-07-29)
+  >
+  > The withdrawal immediately below removed the *in-realm* claim and pointed at an isolated kernel
+  > as the answer. **Round 5 removed that answer too, for the caller-protection case.** An ambient
+  > attacker poisoning only `child_process.spawnSync` made a protected action execute while the
+  > honest out-of-process kernel returned `DENY` — application source unmodified, call site intact
+  > (`docs/ROUND5-FINDINGS.md` R5-01). The signed envelope does not close it, because the envelope
+  > check runs in the same poisoned realm (`docs/T7-trust-root.md` §1).
+  >
+  > **Beneficiary B-1 is withdrawn.** We do not claim that a separate kernel verdict protects a
+  > caller whose realm, transport, signature verification, or action path is compromised. The
+  > replacement invariant — *a critical action must be technically impossible without authority
+  > controlled by the independent boundary* — is normative in `NON-CLAIMS.md` NC-6.6, with the
+  > architecture options in `docs/ADR-0003-enforcement-boundary.md`.
+  >
+  > Both withdrawals stand. Neither is retracted by the other; they remove two different claims.
+
+  > ## ⚠ THE SECURITY OBJECTIVE IS NOT MET IN-REALM — WITHDRAWN CLAIM (ratified 2026-07-29)
+  >
+  > This section previously asserted, as a property of the shipped TypeScript library:
+  > *"no mutation of any shared intrinsic may make a verdict more permissive."*
+  >
+  > **That claim is WITHDRAWN. It is not true of same-realm TypeScript, and it cannot be made true
+  > by this library.**
+  >
+  > Four independent cross-vendor adversarial rounds (2026-07-28/29) each closed the call sites a
+  > review named and each found the identical class one call further out: the parse layer, then the
+  > hash layer, then the live `node:crypto` binding, then arrays manufactured *downstream* of the
+  > fix by `Object.keys`. Sixteen CRITICAL findings, four rounds, **zero clean rounds.** Every one
+  > was found while the project's own gates reported green.
+  >
+  > The generalisation is not "some primitives were missed". It is structural:
+  >
+  > **In a shared realm, the set of operations trusted code performs is not enumerable by that
+  > trusted code.** A capture list is a snapshot of the spellings someone thought of; the adversary
+  > chooses the spelling afterwards. A defence whose completeness cannot be decided is not a
+  > boundary.
+  >
+  > **What this library actually offers in-realm:** substantial, measured, best-effort hardening —
+  > captured intrinsics, inert data, AST-enforced dispatch gates, ~74 poisons and a durable exploit
+  > corpus. That raises the cost of an in-realm attack considerably. It does **not** meet the
+  > objective, and this document will not say that it does.
+  >
+  > **Where the objective is to be met — and what exists TODAY.** The isolated **Go kernel**
+  > (ADR-0002) is **SPECIFIED AND NOT YET BUILT.** There is no kernel directory in this repository.
+  > Do not read the paragraphs above as pointing at a shipped remedy; that would replace one unmet
+  > claim with another.
+  >
+  > What ships today is the **CLI**: `npx noa verify` runs in its own process and this package
+  > declares `"dependencies": {}`, so no third-party module is evaluated before it and a hostile
+  > *document* cannot poison that process's realm. **Against an attacker who controls only the data
+  > being verified, the CLI boundary holds now.** Its limit is NC-6.2: the CLI's output is not
+  > authenticated, so a compromised caller can still discard or misreport a correct verdict.
+  >
+  > *(This sentence used to end "— which is precisely what the kernel's signed-response envelope
+  > exists to close." **Withdrawn 2026-07-29**, same withdrawal as `README.md`. A signed verdict
+  > returned into a compromised caller is not an enforcement control. This survivor was missed by
+  > the first sweep because the sweep went document-by-document instead of claim-by-claim; the
+  > withdrawal block sits ~45 lines above and said "both withdrawals stand" while this line still
+  > asserted the withdrawn claim.)*
+  >
+  > TypeScript's in-process API is a best-effort compatibility and orchestration layer and makes no
+  > security claim of its own.
+  >
+  > **Pre-load compromise, specifically.** A host that mutates an intrinsic in a module evaluated
+  > BEFORE `noa-receipt` defeats the capture entirely — reproduced: a pre-load `Proxy` on `Number`
+  > yields `VALID` on a forged document. This was previously filed as a narrow residual. It is not
+  > narrow: it covers any dependency, bundler output, instrumentation shim or test harness that
+  > loads first, in an order the library does not control. An ordinary JavaScript module cannot
+  > enforce load order against its own host.
 
   > **CORRECTION (review #7, 2026-07-28) — the advice to "run the verifier in a separate realm" is
   > WITHDRAWN.** The first half (load `noa-receipt` first) is sound and stands. The second half was

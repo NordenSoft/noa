@@ -52,7 +52,9 @@ function usage(msg?: string): never {
   if (msg) process.stderr.write(`error: ${msg}\n`);
   process.stderr.write(
     "usage: noa verify <receipts.json> [--keyring <keyring.json>] [--checkpoint <checkpoint.json>] " +
-      "[--identity <manifest.json>] [--anchors <anchors.json> --trust-set <trust.json> [--max-anchor-age-ms <n>]]\n",
+      "[--identity <manifest.json>] [--anchors <anchors.json> --trust-set <trust.json> [--max-anchor-age-ms <n>]]\n" +
+      "       noa --serve [--frame-timeout-ms <n>]   (PROTOCOL REHEARSAL, ADR-0002 Stage 0.5 — NOT a security\n" +
+      "                                               boundary, NOT the isolated kernel; docs/kernel-wire-protocol.md)\n",
   );
   process.exit(EXIT.USAGE);
 }
@@ -223,4 +225,12 @@ function main(argv: string[]): number {
   return statusToExit(result.status);
 }
 
+// `--serve` — Stage 0.5 PROTOCOL REHEARSAL (docs/kernel-wire-protocol.md): length-framed requests
+// on stdin, length-framed signed responses on stdout, long-lived. NOT a security boundary and NOT
+// the isolated Go kernel — same-realm TypeScript behind a process boundary is still poisonable
+// inside the process. Dynamic import so the one-shot path evaluates exactly the modules it always did.
+if (process.argv[2] === "--serve") {
+  const { runServe } = await import("./serve.js");
+  process.exit(await runServe(process.argv.slice(3)));
+}
 process.exit(main(process.argv));

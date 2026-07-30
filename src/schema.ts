@@ -10,7 +10,7 @@
 
 import { RECEIPT_SPEC } from "./types.js";
 import { parseDocument } from "./bytes.js";
-import { arrayPush, arrayIncludes, arrayConcat, hasOwn, objectKeys } from "./intrinsics.js";
+import { arrayPush, arrayIncludes, arrayConcat, hasOwn, objectKeys, isArray, arrayLength, strIsWellFormed, strCodePointCount, isSafeInteger } from "./intrinsics.js";
 import { membership } from "./inert.js";
 import { isSha256Hash, isParamsHash, isRfc3339 } from "./scan.js";
 
@@ -49,7 +49,7 @@ export interface SchemaResult {
 }
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === "object" && v !== null && !Array.isArray(v);
+  return typeof v === "object" && v !== null && !isArray(v);
 }
 
 /**
@@ -73,10 +73,19 @@ function checkExactKeys(
   errors: string[],
 ): void {
   const allowed = arrayConcat(required, optional);
-  for (const k of objectKeys(obj)) {
+  // CAPTURED (2026-07-29, round-2, R3-08). `for (const k of objectKeys(obj))` dispatched through
+  // `%ArrayIteratorPrototype%.next`; a skipping iterator hid an unknown field so the closed-schema
+  // walk never flagged it. Walked by index instead — the key list is the captured `objectKeys`, and
+  // nothing is iterated through a poisonable protocol.
+  const keys = objectKeys(obj);
+  const kn = arrayLength(keys);
+  for (let ki = 0; ki < kn; ki++) {
+    const k = keys[ki]!;
     if (!arrayIncludes(allowed, k)) arrayPush(errors, `${path}: unknown field "${k}"`);
   }
-  for (const k of required) {
+  const rn = arrayLength(required);
+  for (let ri = 0; ri < rn; ri++) {
+    const k = required[ri]!;
     if (!has(obj, k)) arrayPush(errors, `${path}: missing required field "${k}"`);
   }
 }
@@ -85,7 +94,9 @@ function str(v: unknown): v is string {
   // Reject non-well-formed strings (lone UTF-16 surrogates) at the structural layer so a
   // receipt fed directly to verifyChain (bypassing safeParse) becomes MALFORMED rather than
   // throwing a JcsError from the hashing step — keeps the public return-type contract.
-  return typeof v === "string" && v.isWellFormed();
+  // `strIsWellFormed` captured: a live `String.prototype.isWellFormed` on a value is a dispatch
+  // through a mutable slot (R3-08 class).
+  return typeof v === "string" && strIsWellFormed(v);
 }
 
 /**
@@ -134,7 +145,11 @@ export function validateReceiptShapeParsed(value: unknown): SchemaResult {
   // cross-impl consensus split on identical signed bytes (an astral id of 65 emoji = 65 code points = 130
   // units → TS MALFORMED, Python VALID). [...r.id].length iterates by code point, matching both. (Only true
   // char-count CAPS need this; non-empty `length===0` checks elsewhere are unit-vs-point-agnostic.)
-  if (!str(r.id) || r.id.length === 0 || [...r.id].length > 128) arrayPush(errors, "receipt.id: non-empty string ≤128 chars");
+  // CAPTURED (2026-07-29, round-2, R3-08). `[...r.id]` spread the id through the mutable string
+  // iterator to count CODE POINTS; a poison that shortens `%StringIteratorPrototype%.next` made an
+  // over-128-code-point id pass the cap. `strCodePointCount` folds surrogate pairs by index and
+  // returns the identical count with no iterator dispatch (verified against `[...s].length`).
+  if (!str(r.id) || r.id.length === 0 || strCodePointCount(r.id) > 128) arrayPush(errors, "receipt.id: non-empty string ≤128 chars");
   if (!str(r.ts) || !isRfc3339(r.ts)) arrayPush(errors, "receipt.ts: must be RFC 3339 UTC timestamp");
 
   // scope
@@ -199,7 +214,9 @@ export function validateReceiptShapeParsed(value: unknown): SchemaResult {
       const c = r.governance.compliance;
       if (isPlainObject(c)) {
         checkExactKeys(c, ["policyHash", "readSetHash", "inputsHash"], ["verdict"], "receipt.governance.compliance", errors);
-        for (const k of ["policyHash", "readSetHash", "inputsHash"] as const) {
+        const cflds = ["policyHash", "readSetHash", "inputsHash"] as const;
+        for (let cfi = 0; cfi < 3; cfi++) {
+          const k = cflds[cfi]!;
           if (!str(c[k]) || !isSha256Hash(c[k] as string)) arrayPush(errors, `receipt.governance.compliance.${k}: sha256:<64 hex>`);
         }
         // Optional + additive: the recorded policy decision. When present it MUST be ALLOW|DENY so
@@ -213,7 +230,7 @@ export function validateReceiptShapeParsed(value: unknown): SchemaResult {
   // chain
   if (isPlainObject(r.chain)) {
     checkExactKeys(r.chain, ["seq", "prevHash", "hash"], [], "receipt.chain", errors);
-    if (typeof r.chain.seq !== "number" || !Number.isSafeInteger(r.chain.seq) || r.chain.seq < 0)
+    if (typeof r.chain.seq !== "number" || !isSafeInteger(r.chain.seq) || r.chain.seq < 0)
       arrayPush(errors, "receipt.chain.seq: non-negative safe integer");
     if (r.chain.prevHash !== null && (!str(r.chain.prevHash) || !isSha256Hash(r.chain.prevHash)))
       arrayPush(errors, "receipt.chain.prevHash: sha256:<64 hex> or null");

@@ -25,7 +25,7 @@ export {
 export { buildHoldEnvelope, type BuildHoldEnvelopeInput } from "./envelope.js";
 export { issueGrant, buildConsumption, buildUncertainty } from "./grants.js";
 export { buildHoldResolution } from "./resolution.js";
-export { getProjection, registerProjection, type DisplayProjection } from "./projections.js";
+export { getProjection, type DisplayProjection } from "./projections.js";
 export {
   guard,
   InProcessGateClient,

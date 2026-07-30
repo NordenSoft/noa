@@ -23,6 +23,10 @@ export type HoldStatus =
 /** Machine-readable terminal reason (never free text / never PII). */
 export type HoldReasonCode =
   | "HUMAN_APPROVED"
+  /** RAW (UNENFORCED) acknowledgement. A key-holder acknowledged a display the boundary did NOT
+   *  derive, so this is NOT authorization and NOT execution evidence (owner decision 2026-07-30).
+   *  It exists so an unenforced acknowledgement can never be mistaken for HUMAN_APPROVED. */
+  | "HUMAN_ACK_UNENFORCED"
   | "HUMAN_DENIED"
   | "APPROVAL_TIMEOUT"
   | "LOCAL_STATE_LOST";

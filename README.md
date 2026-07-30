@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/NordenSoft/noa/actions/workflows/ci.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/ci.yml)
 
-278 tests green, including TS↔Python cross-implementation conformance in CI — the independent
+487 tests green, including TS↔Python cross-implementation conformance in CI — the independent
 Python reference verifier is required to agree with the TS verifier on every conformance vector.
 
 **Published on npm (Apache-2.0):** `noa-receipt` 0.5.0 · `noa-mcp-adapter-core` 0.2.0 · `noa-mcp-proxy` 0.2.0
@@ -11,6 +11,13 @@ Python reference verifier is required to agree with the TS verifier on every con
 > **What this repo is:** the open-source of **one organ** of NOA — the **governance &
 > receipt layer**: the part that gates an AI agent's real-world actions and issues a
 > tamper-evident, independently verifiable receipt.
+>
+> ⚠ **Read "gates" precisely (2026-07-29).** It gates **an honest integration**. This package cannot
+> stop a compromised caller from calling the provider directly, and in the gate's RAW mode the
+> description a human approves is not cryptographically bound to the action that executes. Both are
+> measured, not theoretical — see the trust-boundary box below, [NON-CLAIMS.md](NON-CLAIMS.md)
+> NC-6.6, and `packages/gate/README.md`. A pre-action control that an attacker can route around is a
+> **safety** feature against mistakes, not yet a **security** control against adversaries.
 >
 > **What NOA is:** a *brain* for AI agents — an agent-cognition OS (memory, identity,
 > homeostasis, governance) that you connect your own agent to. This repository opens
@@ -49,6 +56,49 @@ happen **before** it runs, and leaves an independently verifiable provenance rec
 > attribution in multi-key keyrings) are written down in
 > [THREAT-MODEL.md](THREAT-MODEL.md) and, consolidated and normative,
 > [NON-CLAIMS.md](NON-CLAIMS.md) — read them before you rely on this.
+
+> ### ⚠ Where this TypeScript package sits in the trust boundary (2026-07-29)
+>
+> **This package is a best-effort compatibility and orchestration layer. It does not meet the
+> in-realm security objective, and it no longer claims to.**
+>
+> If an attacker can run code in the same JavaScript realm — a dependency, a bundler shim, an
+> instrumentation hook, anything evaluated before or alongside this library — they can influence a
+> verdict. Four independent cross-vendor adversarial rounds each closed the sites a review named and
+> each found the same class one call further out, every time while the project's own gates reported
+> green. The conclusion is structural, not a backlog item: *in a shared realm, the set of operations
+> trusted code performs is not enumerable by that trusted code.*
+>
+> **What to use instead, today.** The isolated Go kernel is **specified in
+> [ADR-0002](docs/ADR-0002-isolated-native-trust-boundary.md) and NOT YET BUILT** — do not plan
+> around it as if it shipped. What *does* ship is the CLI: `npx noa verify <receipts.json>
+> [keyring.json]` runs in a **separate process with no third-party dependencies**
+> (`"dependencies": {}`), so a hostile *document* has no way to poison that process's realm — there
+> is no host module loaded before it. For an attacker who controls only the data you verify, the
+> CLI boundary holds today.
+>
+> Its ceiling, stated with it: the CLI's **output is not authenticated**, so a compromised caller can
+> still discard or misreport a correct verdict. That is the consumption-integrity limit in
+> [NON-CLAIMS.md](NON-CLAIMS.md) NC-6.2.
+>
+> **This sentence used to end "…and it is what the kernel's signed-response envelope is for." That
+> was withdrawn on 2026-07-29.** A signed verdict returned *into* a compromised caller is not an
+> enforcement control: the caller's transport and its signature check are both poisonable, and both
+> were measured to be
+> ([ROUND5-FINDINGS.md](docs/ROUND5-FINDINGS.md) R5-01, [T7-trust-root.md](docs/T7-trust-root.md) §1).
+> An envelope tells an *honest* caller that an answer is genuine. It does nothing for a caller that
+> has already been taken over — and that caller was the one we claimed to protect.
+>
+> **What replaces it:** a critical action must be *technically impossible* without authority held by
+> the independent boundary — credentials the kernel holds and uses on your behalf, or a short-lived
+> single-use grant the third party validates itself. Not a verdict handed back to code that may be
+> lying to itself. See [NON-CLAIMS.md](NON-CLAIMS.md) NC-6.6.
+>
+> Use the in-process API for development, tooling, and contexts where you already trust every line of
+> code in the process.
+>
+> The receipt **format** is unaffected: receipts signed today keep verifying, and all independent
+> verifiers still agree on them.
 
 ## The Receipt
 
