@@ -1,6 +1,7 @@
 {
   "name": "noa-signer",
   "version": "0.1.0",
+  "private": true,
   "description": "Portable, framework-agnostic Ed25519 receipt-signing core for noa-receipt \u2014 every shell (PWA, native app, server) imports this ONE module so a receipt signed anywhere is byte-identical to what noa-receipt itself would have produced. Zero platform-SDK imports (no DOM, no React-Native, no Telegram) \u2014 @noble/curves is the signing driver, so the same code runs in a browser, a service worker, or Node.",
   "keywords": [
     "ai-agent",
