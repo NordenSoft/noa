@@ -128,12 +128,37 @@ const add = (id, file, line, msg) => findings.push({ id, file, line, msg });
  */
 const listSources = (dir) => {
   const out = [];
-  const SRC = /\.(ts|mts|cts|mjs|cjs|js)$/;
+  // ── THIRD TIME, 2026-07-30. `.tsx`/`.jsx` were missing and a symlinked DIRECTORY was skipped. ──
+  // The paragraph above records this layer going blind twice by defining "source file" too narrowly.
+  // It was still too narrow. Both holes were reproduced with a CONTROL — the identical violating
+  // construct from `wrapper.ts:135`, planted twice under `packages/gate/src`:
+  //
+  //     __probe.tsx                L9: 1 finding   <- invisible
+  //     __probe.ts  (same bytes)   L9: 2 findings  <- caught
+  //     __evildir -> /tmp/evilsrc  L9: 1 finding   <- invisible (contains hidden.ts, violating)
+  //
+  // A `.tsx` under a gated root is not hypothetical the moment any package grows a rendered surface,
+  // and the symlink hole needs no exotic attacker: `Dirent.isDirectory()` is FALSE for a link to a
+  // directory, so the walk fell through to the file branch, the name did not match SRC, and an
+  // entire subtree left the gate's world silently.
+  //
+  // `statSync` FOLLOWS the link and answers about the target, which is the question that matters.
+  // A dangling link is skipped — there is nothing to read — rather than crashing the gate.
+  //
+  // `.d.ts`/`.d.mts`/`.d.cts` stay excluded: a declaration decides nothing.
+  const SRC = /\.(ts|tsx|mts|cts|mjs|cjs|js|jsx)$/;
   const walk = (d) => {
     for (const e of fs.readdirSync(path.join(ROOT, d), { withFileTypes: true })) {
+      if (e.name === "node_modules" || e.name === "dist") continue;
       const rp = `${d}/${e.name}`;
-      if (e.isDirectory()) walk(rp);
-      else if (SRC.test(e.name) && !e.name.endsWith(".d.ts")) out.push(rp);
+      let st;
+      try {
+        st = fs.statSync(path.join(ROOT, rp));
+      } catch {
+        continue; // dangling symlink
+      }
+      if (st.isDirectory()) walk(rp);
+      else if (st.isFile() && SRC.test(e.name) && !/\.d\.(ts|mts|cts)$/.test(e.name)) out.push(rp);
     }
   };
   if (fs.existsSync(path.join(ROOT, dir))) walk(dir);
@@ -334,10 +359,40 @@ if (process.argv.includes("--selftest")) {
     "",
   ].join("\n"));
 
+  // ── .tsx FIXTURE (added 2026-07-30, THIRD blindness). `SRC` covered ts|mts|cts|mjs|cjs|js and not
+  // `.tsx`/`.jsx`. Measured with a control: the identical violating interface as `__probe.tsx` left
+  // L9 at 1 finding, and as `__probe.ts` took it to 2. Same reasoning as the `.mjs` arm — an
+  // extension the scanner already handled cannot detect an extension it does not.
+  const tsxFixture = path.join(ROOT, "packages/gate/src/__l9_selftest_fixture.tsx");
+  fs.writeFileSync(tsxFixture, [
+    "export interface SelftestTsxOpaque { execute: () => Promise<{ ok: boolean }>; }",
+    "",
+  ].join("\n"));
+
+  // ── SYMLINKED-DIRECTORY FIXTURE (added 2026-07-30, alongside the .tsx arm). `Dirent.isDirectory()`
+  // is FALSE for a link to a directory, so the walk fell through to the file branch, the link's own
+  // name did not match SRC, and the entire subtree left the gate's world with no diagnostic. The
+  // fixture plants a REAL directory outside every gated root and links it inside one, so the arm can
+  // only go green if the walk follows the link.
+  const linkTargetDir = path.join(ROOT, ".l9-selftest-linktarget");
+  const linkPath = path.join(ROOT, "packages/gate/src/__l9_selftest_fixture_link");
+  fs.mkdirSync(linkTargetDir, { recursive: true });
+  fs.writeFileSync(path.join(linkTargetDir, "__l9_selftest_fixture_linked.ts"), [
+    "export interface SelftestLinkedOpaque { execute: () => Promise<{ ok: boolean }>; }",
+    "",
+  ].join("\n"));
+  try { fs.unlinkSync(linkPath); } catch { /* not present */ }
+  fs.symlinkSync(linkTargetDir, linkPath, "dir");
+
   const red = scanPatterns(gatedFiles()).filter((x) => x.file.includes("__l9_selftest_fixture"));
   const redMjs = red.filter((x) => x.file.endsWith(".mjs"));
+  const redTsx = red.filter((x) => x.file.endsWith(".tsx"));
+  const redLinked = red.filter((x) => x.file.includes("__l9_selftest_fixture_link/"));
   fs.unlinkSync(fixture);
   fs.unlinkSync(mjsFixture);
+  fs.unlinkSync(tsxFixture);
+  fs.unlinkSync(linkPath);
+  fs.rmSync(linkTargetDir, { recursive: true, force: true });
   const green = scanPatterns(gatedFiles()).filter((x) => x.file.includes("__l9_selftest_fixture"));
 
   console.log(`selftest RED  (fixture present): ${red.length} finding(s) ${red.length >= 3 ? "OK" : "FAIL"}`);
@@ -351,12 +406,15 @@ if (process.argv.includes("--selftest")) {
   // The negative sample lives at a known offset; assert L9-D did NOT fire on the snapshot function.
   const dOnSnapshot = red.filter((x) => x.id === "L9-D" && x.line >= 12).length;
   console.log(`  .mjs reached by discovery: ${redMjs.length >= 2 ? "OK" : "FAIL"} (${redMjs.length} finding(s) in a .mjs fixture)`);
+  console.log(`  .tsx reached by discovery: ${redTsx.length >= 1 ? "OK" : "FAIL"} (${redTsx.length} finding(s) in a .tsx fixture)`);
+  console.log(`  symlinked DIR followed:    ${redLinked.length >= 1 ? "OK" : "FAIL"} (${redLinked.length} finding(s) behind a directory symlink)`);
   console.log(`  L9-B fires: ${byLayer("L9-B") >= 1 ? "OK" : "FAIL"}   ` +
     `L9-C fires: ${byLayer("L9-C") >= 1 ? "OK" : "FAIL"}   ` +
     `L9-D fires on a LIVE re-read: ${dPositive >= 1 ? "OK" : "FAIL"}   ` +
     `L9-D silent on a SNAPSHOT re-read: ${dOnSnapshot === 0 ? "OK" : "FAIL"}`);
 
   const ok = red.length >= 3 && green.length === 0 && redMjs.length >= 2 &&
+    redTsx.length >= 1 && redLinked.length >= 1 &&
     byLayer("L9-B") >= 1 && byLayer("L9-C") >= 1 && dPositive >= 1 && dOnSnapshot === 0;
   console.log(ok
     ? "SELFTEST PASS -- this layer is observed to fail, so it is known to be a gate."
