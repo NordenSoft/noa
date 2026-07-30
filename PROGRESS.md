@@ -163,17 +163,35 @@ triggers are recorded), `PERSIST-2` (the cited location is the wrong target — 
 
 ---
 
-## CONVERGENCE COUNTER: 0 / 2
+## CONVERGENCE COUNTER: 0 / 2  —  ROUND 8 RAN AND WAS NOT CLEAN
 
-A correction round is **not** a clean review round. Everything on this branch is correction work. Two
-consecutive clean cross-family rounds are required, and any new CRITICAL/HIGH, trust-boundary change,
-architecture change or withdrawn claim resets it to 0.
+**Verdict `ROUND_8_NOT_CLEAN_CONVERGENCE_0_OF_2`** (2026-07-30). Full record:
+`~/.claude/doctrine/round8-2026-07-31/VERDICT.md`.
 
-**Not claimed, and must not be claimed:** converged, verified, production-ready, secure, or
-world-class. The measurable criteria for each are unmet, and stating otherwise would be the single
-most dangerous thing in this file.
+The section above this one says the defect list is empty. **That was true of the list, and the list
+was not the territory.** Round 8 was the first genuinely adversarial look at the finished tree and it
+returned 28 findings, four of which I re-derived myself:
 
----
+| Finding | Status | What it is |
+|---|---|---|
+| **R8-01** (codex) | **REPRODUCED** | An authorized approver device can sign an approval naming a **different human**, at an arbitrary time, and the chain returns `VALID_FULL_CHAIN`. The verifier binds `approverKid === sig.kid` but compares `governance.approval.by` / `agent.id` / `agent.principal` / `approval.at` to **nothing**. The signature proves a KEY approved; the bundle names a HUMAN. Nothing connects them — and that connection is the entire product. |
+| **F-2** (Fable) | **REPRODUCED** | `reconcileTCB` guards `src/` — the root kernel TCB — and is blind to `.mts`, `.cts`, `.tsx` and symlinked directories. The hardened walker is **356 lines below it in the same file**. MY defect: hardened for `packages/relay/src` in `18778d3` and L9 in `f0fb299`, never propagated to the sibling. |
+| **F-1** (Fable) | **REPRODUCED** | The injected `DisplaySealer`'s output is never verified — one `aad` token in all of `packages/gate/src`, and it is a type field. ADR-0005 §8 records M5 CLOSED by a mechanism with zero implementation. |
+| **F-13** (Fable) | **REPRODUCED** | `typecheck:all` — the headline of MEASURED TOTALS above — exits **2** in a clean checkout and appears in **no** CI workflow. |
+
+24 further findings (codex R8-02…R8-12, Fable F-3…F-16) are **UNRESOLVED — pending lead
+re-derivation**. Not accepted, not rejected.
+
+**Reviewer integrity: only ONE cross-family voice completed.** codex finished (exit 0, 42 KB). kimi
+failed four times — two were my own invocation errors, then `429 provider overloaded` after 22
+minutes of real work with no report. No same-family agent was substituted. Fable QA completed but is
+**producer-dependent and is not an independent approval**.
+
+**Tree integrity: PASS.** `9f20f98…` before the first reviewer and after the last, 0 dirty
+throughout, all reviewer mutation confined to `/tmp`.
+
+**Still not claimed, and now with a measured reason:** converged, verified, production-ready, secure,
+world-class. A defect list reaching zero measures the list. Round 8 measured the tree.
 
 ## ROLLBACK
 
