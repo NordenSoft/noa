@@ -58,6 +58,42 @@ const INVENTORY = {
     note: "757 lines, NEVER adversarially reviewed, 0 of 28 knockout controls (Fable R-1/R-2)",
   },
   "packages/evidence/src": { gated: true, note: "evidence assembly over signed artifacts" },
+
+  // ── THE FIVE `.mjs`-ONLY ROOTS (added 2026-07-30, ADR-0005 Slice 5) ─────────────────────────────
+  // Every one of these was previously printed by this gate as "not security-critical". That was not a
+  // judgement — `listSources` was `.ts`-only (see its docstring), these packages ship ZERO `.ts` files,
+  // so `isCritical()` read nothing and returned false. An affirmative clearance produced by not looking.
+  // The marker each one actually hits is named below, measured rather than assumed. Gating all five adds
+  // ZERO findings, so making them visible costs nothing and the previous silence bought nothing.
+  "packages/adapter-core/src": {
+    gated: true,
+    note: "BOUNDARY 2 + the side-effect state machine. `gate`, `mcp-proxy` and `framework-adapters` ALL " +
+      "import it (safe-throw, side-effect-state, tool-outcome-not-recorded), so it decides `ran` / " +
+      "`safeToRetry` for every dispatch surface in the repo — the C-04 class. Markers: buildReceipt, " +
+      "canonicalize, encodeDocument, paramsHash, riskClass.",
+  },
+  "packages/framework-adapters/src": {
+    gated: true,
+    note: "a REGISTERED DISPATCH SURFACE (`framework-adapter-fn`, CLOSED, in lint-dispatch-surfaces) — it " +
+      "invokes caller tools and signs the outcome. Markers: buildReceipt, paramsHash, riskClass.",
+  },
+  "packages/mcp-proxy/src": {
+    gated: true,
+    note: "a REGISTERED DISPATCH SURFACE (`mcp-proxy-calltool`, MITIGATED) plus a rotatable SIGNER and " +
+      "outcome-receipt minting. Markers: buildReceipt, canonicalize, paramsHash.",
+  },
+  "packages/signer-sidecar/src": {
+    gated: true,
+    note: "SIGNING. The starkest case: a gate whose job is to inventory security-critical roots cleared " +
+      "the signer sidecar because its two files are `.mjs`. Not currently published (code-ready), which " +
+      "is a release fact and not a reason to leave it unscanned. Marker: buildReceipt.",
+  },
+  "packages/tsa-anchor/src": {
+    gated: true,
+    note: "RFC-3161 timestamp anchoring — it canonicalizes the value that gets externally timestamped, so " +
+      "a split read there is a split anchor. Marker: canonicalize.",
+  },
+
   "packages/e2e-demo/src": {
     gated: false,
     reason: "demo/harness code, not a shipped decision path -- but it CONSTRUCTS security artifacts, " +
@@ -68,13 +104,36 @@ const INVENTORY = {
 const findings = [];
 const add = (id, file, line, msg) => findings.push({ id, file, line, msg });
 
-const listTs = (dir) => {
+/**
+ * Every SOURCE file in a root.
+ *
+ * ⚠ THIS WAS `.ts`-ONLY UNTIL 2026-07-30, AND IT IS THE SECOND TIME THIS LAYER WAS BLIND IN EXACTLY THE
+ * WAY IT EXISTS TO PREVENT. `isCritical()` decides whether a root is security-critical by scanning this
+ * list for CRITICAL_MARKERS. Five packages ship ZERO `.ts` files and only `.mjs`:
+ *
+ *     packages/signer-sidecar/src        0 .ts   2 .mjs     <- SIGNING
+ *     packages/adapter-core/src          0 .ts  16 .mjs
+ *     packages/tsa-anchor/src            0 .ts   7 .mjs
+ *     packages/mcp-proxy/src             0 .ts   7 .mjs
+ *     packages/framework-adapters/src    0 .ts   4 .mjs
+ *
+ * So `isCritical()` read ZERO files for each, found no markers, and this gate PRINTED them as
+ * "not security-critical" — an AFFIRMATIVE clearance produced by not looking. That is worse than an
+ * omission: an omission reads as a gap, a printed "not security-critical" reads as evidence. The
+ * docstring at the top of this file quotes the PREVIOUS gate predicting this about itself ("correct on
+ * the day it was written, silent thereafter") — and then this function did it again one layer down,
+ * because "source file" was silently defined as "TypeScript file".
+ *
+ * `.d.ts` stays excluded: a declaration decides nothing.
+ */
+const listSources = (dir) => {
   const out = [];
+  const SRC = /\.(ts|mts|cts|mjs|cjs|js)$/;
   const walk = (d) => {
     for (const e of fs.readdirSync(path.join(ROOT, d), { withFileTypes: true })) {
       const rp = `${d}/${e.name}`;
       if (e.isDirectory()) walk(rp);
-      else if (e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) out.push(rp);
+      else if (SRC.test(e.name) && !e.name.endsWith(".d.ts")) out.push(rp);
     }
   };
   if (fs.existsSync(path.join(ROOT, dir))) walk(dir);
@@ -97,7 +156,7 @@ function discoverRoots() {
 }
 
 function isCritical(root) {
-  for (const f of listTs(root)) {
+  for (const f of listSources(root)) {
     const src = fs.readFileSync(path.join(ROOT, f), "utf8");
     if (CRITICAL_MARKERS.some((m) => src.includes(m))) return true;
   }
@@ -137,7 +196,12 @@ function isCritical(root) {
 function parseSnapshotIds(lines) {
   const ids = new Set();
   const bind = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+?)?=\s*([^;]*)/;
-  const seed = /\b(?:parseDocument|parseBody)\s*\(/;
+  // `signArtifact` belongs here on the same principle, not as a convenience: it TAKES BYTES and
+  // `approval-artifacts/src/sign.ts:40` calls `parseDocument(docBytes, "document")`, so its result is a
+  // parse snapshot by construction. Without it, L9-D reports `trust.ts:162` — `refHash(keyManifest)`
+  // followed by `keyManifest.version` — where `keyManifest` is the gate's own signed artifact built from
+  // its own bytes and cannot possibly answer two reads differently.
+  const seed = /\b(?:parseDocument|parseBody|signArtifact)\s*\(/;
   for (const ln of lines) {
     const m = bind.exec(ln);
     if (m && seed.test(m[2])) ids.add(m[1]);
@@ -177,7 +241,28 @@ function scanPatterns(files) {
             "boundary cannot bind what executed to what was granted. It must accept a typed " +
             "execution command it constructs itself." });
       }
-      const m = /encodeDocument\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(ln);
+      // ⚠ SINK SCAN RUNS ON CODE, NOT ON PROSE. Widening the sink list immediately produced THREE false
+      // positives in `packages/evidence/src/steps.ts`, and all three were this gate reading its own
+      // English: `refHash(grant)` appears inside the ERROR MESSAGE
+      // `"consumption.grantHash != refHash(grant)"` and inside a comment quoting the check. This file
+      // already learned that lesson and fixed it for the RE-READ side only (see the note below about
+      // `getPath(head, "chain.hash")`); the SINK side was never blanked, so the bug was latent until a
+      // sink appeared in a message. Blank strings and line comments first — the code structure is
+      // unchanged, only literals are erased.
+      const code = ln
+        .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+        .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+        .replace(/`(?:[^`\\]|\\.)*`/g, "``")
+        .replace(/\/\/.*$/, "")
+        .replace(/^\s*\*.*$/, "");
+      // ⚠ THE SINK LIST WAS `encodeDocument` ALONE, WHICH IS WHY L9-D MISSED THE HEADLINE DEFECT.
+      // `engine.ts:635` passed the LIVE `decisionArtifact` to `buildHoldResolution`, which hands it to
+      // `refHash` (`resolution.ts:32`) — and `refHash` CANONICALIZES, which invokes accessors exactly as
+      // `JSON.stringify` does. The gate signed a `decisionArtifactHash` over bytes it never verified while
+      // this layer reported zero findings, because it watched one of the SEVERAL functions that serialize.
+      // A sink list is a hardcoded subject list, and this file's own opening docstring names that as the
+      // failure mode it was written to fix.
+      const m = /(?:encodeDocument|refHash|receiptRefHash|virtualHash)\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(code);
       // A parse snapshot is not a caller-owned object: re-reading it cannot disagree with the
       // serialization, so the re-read L9-D exists to forbid is not a defect here. See parseSnapshotIds.
       if (m && !snapshots.has(m[1])) {
@@ -192,9 +277,10 @@ function scanPatterns(files) {
         const k = after.findIndex((l) => new RegExp(`\\b${v}\\s*\\[`).test(l) || new RegExp(`\\b${v}\\.[a-z]`).test(l));
         if (k >= 0) {
           out.push({ id: "L9-D", file: f, line: i + 1,
-            msg: `\`${v}\` is serialized for authentication here and RE-READ at line ${i + 2 + k}. ` +
-              "encodeDocument is JSON.stringify, which invokes accessors, so the authenticated bytes " +
-              "and the authorizing read can disagree. Authorize from a parsed immutable snapshot." });
+            msg: `\`${v}\` is serialized for authentication/commitment here and RE-READ at line ${i + 2 + k}. ` +
+              "encodeDocument is JSON.stringify and refHash/receiptRefHash/virtualHash canonicalize; ALL of " +
+              "them invoke accessors, so the committed bytes and the authorizing read can disagree. " +
+              "Authorize from a parsed immutable snapshot." });
         }
       }
     });
@@ -202,7 +288,7 @@ function scanPatterns(files) {
   return out;
 }
 
-const gatedFiles = () => Object.entries(INVENTORY).filter(([, v]) => v.gated).flatMap(([r]) => listTs(r));
+const gatedFiles = () => Object.entries(INVENTORY).filter(([, v]) => v.gated).flatMap(([r]) => listSources(r));
 
 // ── self-test: prove the layer goes RED with a forbidden fixture, and GREEN without it ───────────
 if (process.argv.includes("--selftest")) {
@@ -231,8 +317,27 @@ if (process.argv.includes("--selftest")) {
     "}",
     "",
   ].join("\n"));
+  // ── .mjs FIXTURE (added 2026-07-30). `listSources` was `.ts`-only and this selftest planted a `.ts`
+  // fixture, so the selftest PASSED while five `.mjs`-only roots were being cleared without being read.
+  // A selftest that only exercises the extension the scanner already handled cannot detect that the
+  // scanner ignores another one. This fixture is `.mjs` and lives in a root that is `.mjs`-only in
+  // reality, so if discovery ever narrows back to `.ts` this arm goes silent and the run FAILS.
+  const mjsFixture = path.join(ROOT, "packages/signer-sidecar/src/__l9_selftest_fixture.mjs");
+  fs.writeFileSync(mjsFixture, [
+    "export const SELFTEST_MJS_REGISTRY = new Map();",
+    "export function selftestMjsRegister(k, v) { SELFTEST_MJS_REGISTRY.set(k, v); }",
+    "export function selftestMjsLiveReread(live) {",
+    "  const bytes = encodeDocument(live);",
+    "  void bytes;",
+    "  return String(live[\"decision\"]);",
+    "}",
+    "",
+  ].join("\n"));
+
   const red = scanPatterns(gatedFiles()).filter((x) => x.file.includes("__l9_selftest_fixture"));
+  const redMjs = red.filter((x) => x.file.endsWith(".mjs"));
   fs.unlinkSync(fixture);
+  fs.unlinkSync(mjsFixture);
   const green = scanPatterns(gatedFiles()).filter((x) => x.file.includes("__l9_selftest_fixture"));
 
   console.log(`selftest RED  (fixture present): ${red.length} finding(s) ${red.length >= 3 ? "OK" : "FAIL"}`);
@@ -245,12 +350,13 @@ if (process.argv.includes("--selftest")) {
   const dPositive = byLayer("L9-D");
   // The negative sample lives at a known offset; assert L9-D did NOT fire on the snapshot function.
   const dOnSnapshot = red.filter((x) => x.id === "L9-D" && x.line >= 12).length;
+  console.log(`  .mjs reached by discovery: ${redMjs.length >= 2 ? "OK" : "FAIL"} (${redMjs.length} finding(s) in a .mjs fixture)`);
   console.log(`  L9-B fires: ${byLayer("L9-B") >= 1 ? "OK" : "FAIL"}   ` +
     `L9-C fires: ${byLayer("L9-C") >= 1 ? "OK" : "FAIL"}   ` +
     `L9-D fires on a LIVE re-read: ${dPositive >= 1 ? "OK" : "FAIL"}   ` +
     `L9-D silent on a SNAPSHOT re-read: ${dOnSnapshot === 0 ? "OK" : "FAIL"}`);
 
-  const ok = red.length >= 3 && green.length === 0 &&
+  const ok = red.length >= 3 && green.length === 0 && redMjs.length >= 2 &&
     byLayer("L9-B") >= 1 && byLayer("L9-C") >= 1 && dPositive >= 1 && dOnSnapshot === 0;
   console.log(ok
     ? "SELFTEST PASS -- this layer is observed to fail, so it is known to be a gate."

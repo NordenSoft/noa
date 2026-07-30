@@ -268,6 +268,9 @@ jobs:
           python-version: "3.12"
       - run: npm ci
       - name: Build + generate vectors + test
+        # `id` so every INDEPENDENT gate below can condition on the BUILD succeeding rather than on
+        # whichever gate happens to sit above it in this list. See the ORDERING note below.
+        id: build
         run: npm test
       - name: Cross-impl conformance (TS reference == independent Python verifier)
         # Gates the TS↔PY interop bar: a divergence on identical signed bytes FAILS the build (not just the
@@ -275,7 +278,30 @@ jobs:
         run: |
           npm run build
           node impl-py/conformance.mjs
+      # ══════════════════════════════════════════════════════════════════════════════════════════════
+      # INDEPENDENT GATES — EACH ONE RUNS EVEN IF ANOTHER FAILED (ADR-0005 Slice 5, 2026-07-30)
+      #
+      # THE DEFECT THIS FIXES, and it was live: these gates ran as a plain sequential chain, so the FIRST
+      # failure suppressed every gate after it. `lint-trusted-roots` (L9) is BLOCKING and currently
+      # carries ONE parked finding — the owner-deferred L9-C `execute()` callback, waiting on ADR-0006.
+      # That single parked finding therefore silently disabled THREE independent gates downstream of it:
+      #
+      #     the R7 exploit corpus (13 pinned exploits)
+      #     the L4 control knockout (28 controls)
+      #     the conformance matrix drift check
+      #
+      # A parked finding in one layer must never buy silence in another. Nothing about L9-C tells you
+      # whether a CLOSED exploit started reproducing again — but for as long as L9 exits 1 first, nobody
+      # would have been told.
+      #
+      # `!cancelled() && steps.build.outcome == 'success'` rather than `always()`: `always()` also runs on
+      # cancellation (burning runner minutes and masking the cancel), and an unconditional gate after a
+      # FAILED BUILD reports noise instead of findings. Conditioning on the BUILD means each gate is
+      # independent of its SIBLINGS while still requiring the thing all of them need. Every gate remains
+      # blocking — the job still fails; it now fails with the full picture instead of the first item.
+      # ══════════════════════════════════════════════════════════════════════════════════════════════
       - name: Conformance vectors are reproducible (no drift)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           # catches modified AND newly-generated (untracked) vector files
           if [ -n "$(git status --porcelain conformance/)" ]; then
@@ -284,22 +310,51 @@ jobs:
             exit 1
           fi
       - name: Entry-point registry is up to date (no drift)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # The registry of security-sensitive entry points is GENERATED from src/index.ts via the
         # TypeScript compiler API and diff-gated exactly like the conformance matrix. A new export
         # cannot reach the public surface without a human reading the change. Hand-maintained lists
         # are what H-03 was made of.
         run: npm run check:entry-points
       - name: Dispatch-surface enumeration (C-04 / H-02 class)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Every call that hands control to code we do not own is matched from source and reconciled
         # against a registry stating its mechanism and its failing-test evidence. Bidirectional: an
         # unregistered surface bypassed review, and a stale entry describes code that is gone.
         run: npm run lint:dispatch-surfaces
       - name: L1-L7 security gates
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Source-level, full strength, ratcheted enforcement. L5/L6/L7 block today. L1/L2/L3 report
         # against a violation BUDGET that fails on regression — the count may only fall, and each
         # flips to blocking when it reaches zero. The rule is never weakened to fit the code.
         run: npm run lint:security-gates
+      - name: L9 trusted-root inventory + forbidden trust-input patterns
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # BLOCKING. L1-L7 above walk `src/` ONLY and contain zero `packages/` paths, so they were
+        # structurally blind to `packages/gate/src` — where ALLOW/DENY is actually decided, and where
+        # eight measured defects lived while this suite reported a blocking zero. L9 reconciles the set
+        # of trusted source ROOTS mechanically, so a new security-critical package cannot be silently
+        # unguarded. Added to CI 2026-07-30 after a reviewer found it wired to NOTHING: I wrote the
+        # gate, wrote its selftest, and never put it in a blocking chain. A gate nobody runs is not a
+        # gate — the same failure this project has already made three times.
+        run: node scripts/lint-trusted-roots.mjs
+      - name: L9 selftest (the layer must be observed to fail)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # A layer never observed to fail is not known to be a gate.
+        #
+        # THE LIMITATION RECORDED HERE IS NOW CLOSED (ADR-0005 Slices 1+5). It read: "this selftest plants
+        # L9-B and L9-C fixtures only, so it does NOT prove L9-D. `L9-D = 0` must never be cited as clause
+        # evidence." The selftest now plants FOUR samples and asserts each arm individually:
+        #   L9-D POSITIVE  — a live re-read, must FIRE (or the Slice 1 parse-provenance skip has silently
+        #                    turned the whole layer off, which a total-count check would not notice);
+        #   L9-D NEGATIVE  — a parse-snapshot re-read, must stay SILENT (the correct shape must not alarm);
+        #   .mjs REACHED   — a fixture in a `.mjs`-only root, because discovery was `.ts`-only and this
+        #                    selftest could not have detected that;
+        #   L9-B / L9-C    — as before, now asserted per layer rather than by a summed count.
+        # So `L9-D = 0` IS now citable as clause evidence. See docs/ADR-0005-VERIFICATION.md §3.2.
+        run: node scripts/lint-trusted-roots.mjs --selftest
       - name: R7 exploit corpus (pinned dispositions)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # All eleven preserved review-round-7 exploits, each pinned CLOSED or OPEN in BOTH
         # directions: a CLOSED exploit that reproduces again is a regression, and an OPEN exploit
         # that silently stops reproducing is an exploit that rotted into measuring nothing.
@@ -315,16 +370,19 @@ jobs:
           npm --prefix packages/gate ci && npm --prefix packages/gate run build
           npm run test:r7-exploits
       - name: L4 control knockout (every control has a test that dies without it)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Slow by construction: each control is removed and its suite re-run. It runs here rather
         # than in a fast lane precisely because "what would have caught this?" is worth the minutes.
         run: npm run lint:knockout
       - name: Conformance matrix is up to date (no drift)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Regenerates conformance/MATRIX.md from conformance.mjs's own output and fails if it differs
         # from the committed copy (or if any vector could not be classified into a security class).
         # Same "regenerate + git-diff" discipline as the vector-drift check above, applied to the
         # derived TS↔Python pass/fail matrix so it can never silently go stale against the harness.
         run: node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md
       - name: Self-check the CLI exit-code contract
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           set -e
           node dist/src/cli.js verify conformance/vectors/valid-chain.json \
@@ -338,13 +396,16 @@ jobs:
             echo "TAMPERED -> exit $? (want non-zero)"
           fi
       - name: Dogfood pilots (PRIVATE, vitest — proxy/replay/co-attestation behaviour)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # The dogfood harnesses under test/dogfood/ are PRIVATE/internal (not in package.json `files`)
         # and use vitest (resolved via a pinned npx, NOT a project dependency — the lib stays zero-dep).
         # `npm test` (node:test) deliberately excludes them; this gates their runtime behaviour.
         run: npm run test:dogfood
       - name: INERT CORE — the vendored ingest boundary is byte-identical to its source
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: npm run check:inert-core
       - name: adapter-core unit tests (packages/adapter-core)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # adapter-core depends on the kernel via `noa-receipt: file:../..`, so `npm ci` here only
         # creates the symlink and `import "noa-receipt"` resolves through the root's
         # `main: dist/src/index.js`. That dist/ exists because this job's earlier `npm test` built
@@ -359,6 +420,7 @@ jobs:
           npm ci
           npm test
       - name: signer-sidecar smoke test (packages/signer-sidecar)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Real 2-process smoke test (sidecar.mjs child process + client.mjs). Must run AFTER
         # adapter-core's own `npm ci` above (same file:../adapter-core node_modules-population
         # reason the mcp-proxy step below already documents) and BEFORE mcp-proxy's own step
@@ -369,6 +431,7 @@ jobs:
           npm ci
           npm test
       - name: mcp-proxy smoke test (packages/mcp-proxy)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Real-transport smoke test: fail-closed DENY, live tools/list reflection, session
         # isolation, persist-then-commit ordering, and CLI double-stdio integration.
         # Must run AFTER the adapter-core AND signer-sidecar steps above: mcp-proxy links both
@@ -381,6 +444,7 @@ jobs:
           npm ci
           npm test
       - name: tsa-anchor unit tests (packages/tsa-anchor)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # RFC 3161 DER encode/decode, TimeStampReq/Resp, client self-checks, verifyStamp, CLI.
         # LIKE every other kernel-linking package, tsa-anchor depends on the LOCAL repo via
         # `noa-receipt: file:../..`, so `npm ci` here just symlinks node_modules/noa-receipt -> the
@@ -392,6 +456,7 @@ jobs:
           npm ci
           npm test
       - name: signer-core parity gates (packages/signer-core)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # G1 (RFC 8032 vectors) + G2 (golden-receipt byte-parity vs noa-receipt's own
         # buildReceipt/signEd25519) — the P1a kill-gates from .plan/MOBILE-APP-BUILD-SPEC.md §3.
         # Same `noa-receipt: file:../..` local-repo dependency as tsa-anchor above (needs the

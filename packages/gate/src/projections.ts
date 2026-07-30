@@ -3,9 +3,21 @@
  *
  * A projection is a REGISTERED, reviewed, pinned adapter — **never caller-supplied code**. Each is
  * side-effect-free, deterministic, network-less and versioned, and its identity (`{id,version,hash}`)
- * is bound into the signed Hold Envelope. `hash` is a stable sha256 over the adapter's identity
- * descriptor (test-vectored — see test/projection.test.ts), NOT over its runtime output, so a
- * verifier can pin "which reviewed adapter ran" without re-running it.
+ * is bound into the signed Hold Envelope.
+ *
+ * ⚠ WHAT `hash` DOES NOT DO — CORRECTED 2026-07-30 (ADR-0005 §3.3 ordered this; the previous text was
+ * a load-bearing false claim, not a wording slip). It read: "so a verifier can pin *which reviewed
+ * adapter ran* without re-running it." IT CANNOT. `hash` is a sha256 over `{id, version, kind}` —
+ * THREE SELF-DECLARED STRINGS — and covers nothing about `run()`. An adapter with entirely different
+ * behaviour reproduces the shipped identity byte-for-byte, so the envelope pins a NAME, not a renderer.
+ * Demonstrated by `test/provenance-regression.test.ts` ("projection identity: a different
+ * implementation must not reproduce the reviewed identity"), which is RED and owner-deferred to
+ * ADR-0006 — the identity must commit to the implementation artifact, and doing that is a schema and
+ * wire-format change, deliberately not made here.
+ *
+ * So: `hash` is a stable, test-vectored identifier for a REGISTERED NAME AND VERSION (see
+ * test/projection.test.ts). Treating it as evidence of which code ran is exactly the overclaim this
+ * project calls a red line, and the gate's signature does not make the claim true.
  *
  * Alpha ships ONE ENFORCED adapter, `noa.command.exec/1` — a shell-command bind (D14: the command
  * string alone is insufficient; the canonical param set is executable real-path + argv + cwd +
