@@ -5,7 +5,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { resolveConfig, isLoopbackAddress, type RelayConfig } from "./config.js";
+import { resolveConfig, isLoopbackAddress, enrolmentRefusal, type RelayConfig } from "./config.js";
 import { InMemoryStore, type Store } from "./store.js";
 import { FileStore } from "./file-store.js";
 import { NoopLogPushProvider, type PushProvider } from "./push.js";
@@ -163,7 +163,23 @@ async function handle(
     return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: rl.retryAfterSec });
   }
 
-  // ── open (no-auth) routes ──
+  // ── ENROLMENT routes (R-1) ──
+  // These three MINT CREDENTIALS: a pairing token becomes an agent key, and `/v1/devices` registers
+  // an approver key whose signatures the relay will then accept. They used to sit above every auth
+  // block with no gate at all, which is why the relay's keyring has no root — anyone who could reach
+  // the server could become an approver.
+  //
+  // `enrolmentRefusal` permits anonymous enrolment ONLY while the relay is bound to loopback and
+  // therefore unreachable from outside; off loopback it fails closed unless an operator secret is
+  // configured. See `RelayConfig.enrolmentSecret` for why the default is tied to exposure rather than
+  // to convenience.
+  const isEnrolmentRoute =
+    method === "POST" && (path === "/v1/pairings" || path === "/v1/pair" || path === "/v1/devices");
+  if (isEnrolmentRoute) {
+    const refusal = enrolmentRefusal(config, header(req, "x-noa-enrolment-secret"));
+    if (refusal) return sendJson(res, refusal.status, refusal.body);
+  }
+
   if (method === "POST" && path === "/v1/pairings") {
     const b = await readBody(req, res, config);
     if (!b.ok) return;
