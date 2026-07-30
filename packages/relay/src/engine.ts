@@ -151,9 +151,13 @@ export class RelayEngine {
   // ── pairing / onboarding ───────────────────────────────────────────────────
   createPairing(input: unknown): EngineResult {
     const agentHint = isRecord(input) ? asString(input["agentHint"]) ?? null : null;
+    // R8-11: the tenant scope is fixed HERE, on the operator-issued token, and is the last thing
+    // about this agent decided by anyone but the agent. Absent ⇒ null ⇒ the agent can never publish
+    // a manifest. A missing scope must not become a permissive one.
+    const tenant = isRecord(input) ? asString(input["tenant"]) ?? null : null;
     const token = "noa_pair_" + randomBytes(24).toString("base64url");
     const expiresAt = this.now() + this.cfg.pairingTokenTtlMs;
-    this.store.putPairing({ token, agentHint, usedAt: null, expiresAt, createdAt: this.now() });
+    this.store.putPairing({ token, agentHint, tenant, usedAt: null, expiresAt, createdAt: this.now() });
     return { status: 201, body: { token, expiresAt: new Date(expiresAt).toISOString() } };
   }
 
@@ -173,6 +177,9 @@ export class RelayEngine {
       name,
       apiKeyHash: hashSecret(apiKey),
       ownerDevice: null,
+      // R8-11: from the TOKEN, never from this request body. The redeeming caller supplies `name`
+      // and could just as easily have supplied a tenant — which is exactly the mistake being fixed.
+      tenant: pairing.tenant,
       createdAt: this.now(),
     };
     this.store.putAgent(agent);
@@ -681,11 +688,33 @@ export class RelayEngine {
   }
 
   // ── key manifest (PUBLIC material only; the relay never signs it) ───────────
-  putManifest(input: unknown): EngineResult {
+  /**
+   * ── R8-11: THE AGENT IS NOW A PARAMETER, AND THAT IS THE WHOLE FIX ──────────────────────────
+   * This method used to take `(input)` only. `server.ts` resolved the calling agent one line
+   * earlier and then threw it away — `engine.putManifest(b.value)` — so the tenant came from
+   * `manifest["tenant"]`, a field in the caller's own body, with `?? "default"` behind it.
+   *
+   * Measured: customer A authenticated legitimately, wrote `"tenant": "customer-B"`, and
+   * `GET /v1/trust?tenant=customer-B` served A's keys as B's approver and root. Then B's own
+   * legitimate publish at the same version returned `409 MANIFEST_EQUIVOCATION` — so the attack is
+   * not only impersonation, it permanently wedges the victim's key rotation and recovery.
+   *
+   * Authentication answered "who are you". Nothing answered "and whose keys may you replace".
+   */
+  putManifest(agent: AgentRecord, input: unknown): EngineResult {
     if (!isRecord(input)) return err(400, "BAD_REQUEST");
     const manifest = isRecord(input["manifest"]) ? (input["manifest"] as Record<string, unknown>) : undefined;
     if (!manifest || manifest["spec"] !== "noa.key-manifest/0.1") return err(422, "BAD_MANIFEST");
     const tenant = asString(manifest["tenant"]) ?? "default";
+    // FAIL CLOSED on an unscoped credential. `agent.tenant === null` means no operator ever declared
+    // which tenant this agent speaks for, and the old code's answer to that was `"default"` — an
+    // unscoped credential silently acquiring a scope. It is refused instead.
+    if (agent.tenant === null || agent.tenant !== tenant) {
+      this.log("authz.denied", { route: "putManifest", requested: tenant, agent: agent.id, scope: agent.tenant });
+      return err(403, "TENANT_NOT_AUTHORIZED", {
+        detail: "this agent credential is not scoped to the tenant named in the manifest",
+      });
+    }
     const version = typeof manifest["version"] === "number" ? (manifest["version"] as number) : undefined;
     if (version === undefined) return err(422, "MANIFEST_MISSING_VERSION");
     // R6 — the version must be a safe, non-negative INTEGER. Fractional and non-finite values were

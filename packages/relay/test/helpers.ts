@@ -68,14 +68,32 @@ export function makeHarness(overrides: Partial<RelayConfig> = {}, storeOverride?
 }
 
 /** Register an agent through the real pairing flow; return the AgentRecord + its api key. */
-export function makeAgent(h: Harness, name = "test-agent"): { agent: AgentRecord; apiKey: string } {
-  const pair = bodyOf<{ token: string }>(h.engine.createPairing({}));
+/**
+ * Register an agent through the real pairing flow.
+ *
+ * `tenant` (R8-11) is carried on the OPERATOR-ISSUED pairing token and is the scope the redeemed
+ * agent may publish a key manifest for. It defaults to `null`, which FAILS CLOSED — an agent whose
+ * tenant nobody declared cannot publish at all. That default is deliberate: it means a test must
+ * say out loud which tenant it is acting for, so a new manifest test cannot accidentally inherit a
+ * permissive scope the way `?? "default"` used to hand one out.
+ */
+export function makeAgent(
+  h: Harness,
+  name = "test-agent",
+  tenant: string | null = null,
+): { agent: AgentRecord; apiKey: string } {
+  const pair = bodyOf<{ token: string }>(h.engine.createPairing({ tenant }));
   const red = bodyOf<{ agentId: string; apiKey: string }>(
     h.engine.redeemPairing({ token: pair.token, name }),
   );
   const agent = h.store.getAgentById(red.agentId);
   if (!agent) throw new Error("agent not stored");
   return { agent, apiKey: red.apiKey };
+}
+
+/** Shorthand for the common manifest-test shape: an agent scoped to exactly the tenant under test. */
+export function agentForTenant(h: Harness, tenant: string): AgentRecord {
+  return makeAgent(h, `agent-${tenant}`, tenant).agent;
 }
 
 export interface TestDevice {

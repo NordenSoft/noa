@@ -356,7 +356,7 @@ async function handle(
     if (method === "POST" && path === "/v1/manifest") {
       const b = await readBody(req, res, config);
       if (!b.ok) return;
-      return respond(res, engine.putManifest(b.value));
+      return respond(res, engine.putManifest(agent, b.value));
     }
     // E-3: both read routes are now scoped to the OWNING agent. `agent` is already resolved above at
     // the top of this block, so this costs one argument and no new lookup. A foreign hold answers

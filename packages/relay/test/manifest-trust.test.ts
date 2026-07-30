@@ -8,12 +8,28 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeHarness, bodyOf } from "./helpers.js";
+import { makeHarness, bodyOf , agentForTenant } from "./helpers.js";
+import type { Harness } from "./helpers.js";
+import type { EngineResult } from "../src/engine.js";
 import { createRelay } from "../src/server.js";
 import { httpJson } from "./http-client.js";
 import { InMemoryStore } from "../src/store.js";
 import { safeRefHash } from "../src/crypto.js";
 import type { KeyManifestRecord } from "../src/types.js";
+
+/**
+ * R8-11 CONVERSION (2026-07-31). `putManifest` now takes the calling AGENT, because the tenant used
+ * to be read from the caller's own body. These tests are about MANIFEST semantics — versioning,
+ * delegation, equivocation — not about tenant authorization, so each publish is made by an agent
+ * correctly scoped to whatever tenant the manifest declares. Every assertion below keeps its exact
+ * previous meaning. The new authorization property is pinned separately, in
+ * `manifest-tenant-authz.test.ts`, where a MISMATCHED agent is the point.
+ */
+function publish(h: Harness, body: { manifest: Record<string, unknown>; delegation?: unknown }): EngineResult {
+  const tenant = String((body.manifest as Record<string, unknown>)["tenant"] ?? "default");
+  return h.engine.putManifest(agentForTenant(h, tenant), body as unknown as Record<string, unknown>);
+}
+
 
 const MANIFEST_NO_DELEGATION = {
   spec: "noa.key-manifest/0.1",
@@ -54,7 +70,7 @@ test("engine: GET /v1/trust honestly 404s (NO_MANIFEST) when no manifest has eve
 
 test("engine: manifest published WITHOUT delegation (older gate) → GET /v1/trust honest 404 NO_DELEGATION, never fabricates one", () => {
   const h = makeHarness();
-  assert.equal(h.engine.putManifest({ manifest: MANIFEST_NO_DELEGATION }).status, 200);
+  assert.equal(publish(h, { manifest: MANIFEST_NO_DELEGATION }).status, 200);
 
   const trust = h.engine.getTrust("default");
   assert.equal(trust.status, 404);
@@ -69,7 +85,7 @@ test("engine: manifest published WITHOUT delegation (older gate) → GET /v1/tru
 test("engine: manifest published WITH a well-formed delegation → GET /v1/trust serves the full bundle", () => {
   const h = makeHarness();
   assert.equal(
-    h.engine.putManifest({ manifest: MANIFEST_WITH_DELEGATION, delegation: DELEGATION }).status,
+    publish(h, { manifest: MANIFEST_WITH_DELEGATION, delegation: DELEGATION }).status,
     200,
   );
 
@@ -87,7 +103,7 @@ test("engine: manifest published WITH a well-formed delegation → GET /v1/trust
 
 test("engine: a malformed delegation (wrong spec tag) → 422 BAD_DELEGATION, publish rejected entirely", () => {
   const h = makeHarness();
-  const res = h.engine.putManifest({
+  const res = publish(h, {
     manifest: { ...MANIFEST_WITH_DELEGATION, tenant: "bad-tenant" },
     delegation: { spec: "not-a-delegation" },
   });
@@ -99,7 +115,7 @@ test("engine: a malformed delegation (wrong spec tag) → 422 BAD_DELEGATION, pu
 
 test("engine: putManifest response shape is unchanged by the new optional field (no delegation echoed back)", () => {
   const h = makeHarness();
-  const res = h.engine.putManifest({ manifest: MANIFEST_WITH_DELEGATION, delegation: DELEGATION });
+  const res = publish(h, { manifest: MANIFEST_WITH_DELEGATION, delegation: DELEGATION });
   assert.deepEqual(Object.keys(bodyOf<Record<string, unknown>>(res)).sort(), ["refHash", "tenant", "version"]);
 });
 
@@ -107,7 +123,7 @@ test("http: publish with delegation → GET /v1/trust returns it; GET /v1/manife
   const relay = createRelay({ config: { port: 0 } });
   const { port } = await relay.listen();
   try {
-    const pair = await httpJson(port, "POST", "/v1/pairings", { body: {} });
+    const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "acme" } });
     const token = (pair.json as { token: string }).token;
     const paired = await httpJson(port, "POST", "/v1/pair", { body: { token, name: "gate-1" } });
     const apiKey = (paired.json as { apiKey: string }).apiKey;
@@ -142,7 +158,7 @@ test("http: no delegation ever published for this tenant → GET /v1/trust hones
   const relay = createRelay({ config: { port: 0 } });
   const { port } = await relay.listen();
   try {
-    const pair = await httpJson(port, "POST", "/v1/pairings", { body: {} });
+    const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "default" } });
     const token = (pair.json as { token: string }).token;
     const paired = await httpJson(port, "POST", "/v1/pair", { body: { token, name: "gate-2" } });
     const apiKey = (paired.json as { apiKey: string }).apiKey;
@@ -171,7 +187,7 @@ test("http: no delegation ever published for this tenant → GET /v1/trust hones
 
 test("engine: R1 — a delegation whose tenant mismatches the manifest's tenant → 422 BAD_DELEGATION, nothing stored", () => {
   const h = makeHarness();
-  const res = h.engine.putManifest({
+  const res = publish(h, {
     manifest: { ...MANIFEST_NO_DELEGATION, tenant: "victim", version: 1 },
     delegation: { ...DELEGATION, tenant: "attacker" },
   });
@@ -193,7 +209,7 @@ test("engine: R1 — H2: DELETING the tenant field does NOT bypass the cross-ten
   // noa.key-delegation/0.1 schema.
   const h = makeHarness();
   const { tenant: _drop, ...delegationNoTenant } = DELEGATION;
-  const res = h.engine.putManifest({
+  const res = publish(h, {
     manifest: { ...MANIFEST_WITH_DELEGATION, tenant: "beta", version: 1 },
     delegation: delegationNoTenant,
   });
@@ -207,10 +223,10 @@ test("engine: R1 — H2: DELETING the tenant field does NOT bypass the cross-ten
 test("engine: R2 — a LOWER-version re-publish is rejected 409 STALE_MANIFEST_VERSION, never a silent-ignore 200", () => {
   const h = makeHarness();
   assert.equal(
-    h.engine.putManifest({ manifest: { ...MANIFEST_NO_DELEGATION, tenant: "stale-tenant", version: 5 } }).status,
+    publish(h, { manifest: { ...MANIFEST_NO_DELEGATION, tenant: "stale-tenant", version: 5 } }).status,
     200,
   );
-  const stale = h.engine.putManifest({
+  const stale = publish(h, {
     manifest: { ...MANIFEST_NO_DELEGATION, tenant: "stale-tenant", version: 3 },
   });
   assert.equal(stale.status, 409);
@@ -224,7 +240,7 @@ test("engine: R2 — a LOWER-version re-publish is rejected 409 STALE_MANIFEST_V
 test("engine: R2 — an EQUAL-version re-publish that OMITS delegation preserves the previously-stored delegation (no silent strip)", () => {
   const h = makeHarness();
   assert.equal(
-    h.engine.putManifest({
+    publish(h, {
       manifest: { ...MANIFEST_WITH_DELEGATION, tenant: "eqtenant", version: 2 },
       delegation: { ...DELEGATION, tenant: "eqtenant" },
     }).status,
@@ -233,7 +249,7 @@ test("engine: R2 — an EQUAL-version re-publish that OMITS delegation preserves
   assert.equal(h.engine.getTrust("eqtenant").status, 200);
 
   // re-publish the SAME version, this time omitting delegation entirely
-  const republish = h.engine.putManifest({
+  const republish = publish(h, {
     manifest: { ...MANIFEST_WITH_DELEGATION, tenant: "eqtenant", version: 2 },
   });
   assert.equal(republish.status, 200);
@@ -248,7 +264,7 @@ test("engine: equal-version canonical replay is idempotent, but changed manifest
   const tenant = "equivocation-tenant";
   const manifest = { ...MANIFEST_WITH_DELEGATION, tenant, version: 7 };
   const delegation = { ...DELEGATION, tenant };
-  assert.equal(h.engine.putManifest({ manifest, delegation }).status, 200);
+  assert.equal(publish(h, { manifest, delegation }).status, 200);
 
   // Same JSON values in a different property order are JCS-equivalent and remain a valid retry.
   const canonicalReplay = {
@@ -269,16 +285,16 @@ test("engine: equal-version canonical replay is idempotent, but changed manifest
     tenant: delegation.tenant,
     spec: delegation.spec,
   };
-  assert.equal(h.engine.putManifest({ manifest: canonicalReplay, delegation: delegationReplay }).status, 200);
+  assert.equal(publish(h, { manifest: canonicalReplay, delegation: delegationReplay }).status, 200);
 
-  const manifestSwap = h.engine.putManifest({
+  const manifestSwap = publish(h, {
     manifest: { ...manifest, keys: [{ kid: "attacker-key" }] },
     delegation,
   });
   assert.equal(manifestSwap.status, 409);
   assert.equal(bodyOf<{ error: string }>(manifestSwap).error, "MANIFEST_EQUIVOCATION");
 
-  const delegationSwap = h.engine.putManifest({
+  const delegationSwap = publish(h, {
     manifest,
     delegation: { ...delegation, delegatedKid: "attacker-delegated-key" },
   });
@@ -312,7 +328,7 @@ test("engine: a Store-side compare/write race is mapped to 409 and the winning e
   const store = new RacingStore();
   const h = makeHarness({}, store);
   const manifest = { ...MANIFEST_NO_DELEGATION, tenant: "race-tenant", version: 4 };
-  const result = h.engine.putManifest({ manifest });
+  const result = publish(h, { manifest });
   assert.equal(result.status, 409);
   assert.equal(bodyOf<{ error: string }>(result).error, "MANIFEST_EQUIVOCATION");
   assert.deepEqual(
@@ -324,13 +340,13 @@ test("engine: a Store-side compare/write race is mapped to 409 and the winning e
 test("engine: R2 — a HIGHER-version publish that omits delegation still nulls it out (rotation, unchanged pre-existing behavior)", () => {
   const h = makeHarness();
   assert.equal(
-    h.engine.putManifest({
+    publish(h, {
       manifest: { ...MANIFEST_WITH_DELEGATION, tenant: "rotate-tenant", version: 1 },
       delegation: { ...DELEGATION, tenant: "rotate-tenant" },
     }).status,
     200,
   );
-  const rotated = h.engine.putManifest({
+  const rotated = publish(h, {
     manifest: { ...MANIFEST_WITH_DELEGATION, tenant: "rotate-tenant", version: 2 },
   });
   assert.equal(rotated.status, 200);
@@ -342,7 +358,7 @@ test("http: equal-version manifest/delegation swaps return 409 MANIFEST_EQUIVOCA
   const relay = createRelay({ config: { port: 0 } });
   const { port } = await relay.listen();
   try {
-    const pair = await httpJson(port, "POST", "/v1/pairings", { body: {} });
+    const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "http-equivocation" } });
     const token = (pair.json as { token: string }).token;
     const paired = await httpJson(port, "POST", "/v1/pair", { body: { token, name: "gate-equivocation" } });
     const apiKey = (paired.json as { apiKey: string }).apiKey;
@@ -385,7 +401,7 @@ test("http: R5 — GET /v1/trust?tenant= (explicit empty) resolves to the SAME r
   const relay = createRelay({ config: { port: 0 } });
   const { port } = await relay.listen();
   try {
-    const pair = await httpJson(port, "POST", "/v1/pairings", { body: {} });
+    const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "default" } });
     const token = (pair.json as { token: string }).token;
     const paired = await httpJson(port, "POST", "/v1/pair", { body: { token, name: "gate-empty-tenant" } });
     const apiKey = (paired.json as { apiKey: string }).apiKey;
@@ -416,7 +432,7 @@ test("http: a malformed delegation → POST /v1/manifest 422, no manifest publis
   const relay = createRelay({ config: { port: 0 } });
   const { port } = await relay.listen();
   try {
-    const pair = await httpJson(port, "POST", "/v1/pairings", { body: {} });
+    const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "bad-tenant-http" } });
     const token = (pair.json as { token: string }).token;
     const paired = await httpJson(port, "POST", "/v1/pair", { body: { token, name: "gate-3" } });
     const apiKey = (paired.json as { apiKey: string }).apiKey;

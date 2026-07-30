@@ -115,6 +115,26 @@ export interface AgentRecord {
   /** sha256 hex of "noa_agent_<secret>". Plaintext is never stored. */
   apiKeyHash: string;
   ownerDevice: string | null;
+  /**
+   * WHICH TENANT'S KEY MANIFEST THIS AGENT MAY PUBLISH. `null` means none, and null FAILS CLOSED.
+   *
+   * MEASURED BEFORE THIS FIELD EXISTED (R8-11, round 8, two independent reviewers): customer A
+   * authenticated with its own legitimate credential, put `"tenant": "customer-B"` in the manifest
+   * BODY, and the relay stored it. `GET /v1/trust?tenant=customer-B` then served A's keys as B's
+   * approver and root. Worse than the forgery: B's own next legitimate publish at the same version
+   * came back `409 MANIFEST_EQUIVOCATION`, so any authenticated customer could permanently wedge
+   * another customer's key rotation and recovery path.
+   *
+   * The tenant was read from `manifest["tenant"]` — the caller's own body — and `putManifest` did
+   * not take an agent at all, so there was nothing to check it against. Authentication answered
+   * "who are you"; nothing answered "and whose keys may you replace".
+   *
+   * Bound ONCE at pairing redemption, from the operator-issued pairing token, and never from a
+   * request body. `null` is refused rather than defaulted: an agent whose tenant nobody declared is
+   * exactly the agent that must not be able to publish, and the old `?? "default"` fallback is how
+   * an unscoped credential silently acquired a scope.
+   */
+  tenant: string | null;
   createdAt: number;
 }
 
@@ -160,6 +180,13 @@ export interface PushSubscriptionRecord {
 export interface PairingRecord {
   token: string;
   agentHint: string | null;
+  /**
+   * The tenant the redeemed agent will be scoped to (R8-11). Carried on the OPERATOR-ISSUED pairing
+   * token because that is the last point at which a party other than the agent decides anything
+   * about it — after redemption every byte the agent sends is its own. `null` yields a
+   * `tenant: null` agent, which cannot publish a manifest at all.
+   */
+  tenant: string | null;
   usedAt: number | null;
   expiresAt: number;
   createdAt: number;

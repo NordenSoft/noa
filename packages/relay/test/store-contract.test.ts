@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { makeHarness, makeAgent, makeDevice, signDecisionReceipt, bodyOf, PARAMS_HASH } from "./helpers.js";
+import { makeHarness, makeAgent, makeDevice, signDecisionReceipt, bodyOf, PARAMS_HASH , agentForTenant } from "./helpers.js";
 import {
   InMemoryStore,
   ManifestPutConflictError,
@@ -112,20 +112,20 @@ for (const [name, makeStore] of STORE_FACTORIES) {
     const h = makeHarness({}, makeStore());
     const m1 = { spec: "noa.key-manifest/0.1", tenant: "acme", version: 2, keys: [] };
     const delegation = { spec: "noa.key-delegation/0.1", tenant: "acme", delegatedKid: "gate-1" };
-    assert.equal(h.engine.putManifest({ manifest: m1, delegation }).status, 200);
+    assert.equal(h.engine.putManifest(agentForTenant(h, "acme"), { manifest: m1, delegation }).status, 200);
 
-    const stale = h.engine.putManifest({ manifest: { ...m1, version: 1 } });
+    const stale = h.engine.putManifest(agentForTenant(h, "acme"), { manifest: { ...m1, version: 1 } });
     assert.equal(stale.status, 409);
     assert.equal(bodyOf<{ error: string }>(stale).error, "STALE_MANIFEST_VERSION");
 
     // equal-version resend WITHOUT delegation must not silently strip the stored one
-    assert.equal(h.engine.putManifest({ manifest: m1 }).status, 200);
+    assert.equal(h.engine.putManifest(agentForTenant(h, "acme"), { manifest: m1 }).status, 200);
     const trust = h.engine.getTrust("acme");
     assert.equal(trust.status, 200);
     assert.deepEqual(bodyOf<{ delegation: unknown }>(trust).delegation, delegation);
 
     // A real rotation still advances and may intentionally omit (therefore clear) delegation.
-    assert.equal(h.engine.putManifest({ manifest: { ...m1, version: 3 } }).status, 200);
+    assert.equal(h.engine.putManifest(agentForTenant(h, "acme"), { manifest: { ...m1, version: 3 } }).status, 200);
     assert.equal((h.engine.getManifest("acme").body as { version: number }).version, 3);
     assert.equal(h.engine.getTrust("acme").status, 404);
   });

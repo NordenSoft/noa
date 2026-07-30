@@ -33,59 +33,75 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { makeHarness, bodyOf } from "./helpers.js";
+import { makeHarness, bodyOf , agentForTenant } from "./helpers.js";
+import type { Harness } from "./helpers.js";
+import type { EngineResult } from "../src/engine.js";
+
+/**
+ * R8-11 CONVERSION (2026-07-31). `putManifest` now takes the calling AGENT, because the tenant used
+ * to be read from the caller's own body. These tests are about MANIFEST semantics — versioning,
+ * delegation, equivocation — not about tenant authorization, so each publish is made by an agent
+ * correctly scoped to whatever tenant the manifest declares. Every assertion below keeps its exact
+ * previous meaning. The new authorization property is pinned separately, in
+ * `manifest-tenant-authz.test.ts`, where a MISMATCHED agent is the point.
+ */
+function publish(h: Harness, body: { manifest: Record<string, unknown>; delegation?: unknown }): EngineResult {
+  const tenant = String((body.manifest as Record<string, unknown>)["tenant"] ?? "default");
+  return h.engine.putManifest(agentForTenant(h, tenant), body as unknown as Record<string, unknown>);
+}
+
 
 const base = { spec: "noa.key-manifest/0.1", tenant: "acme", keys: [] as unknown[] };
 
 test("R6: a MAX_SAFE_INTEGER version is refused, and rotation still works afterwards", () => {
   const h = makeHarness();
-  assert.equal(h.engine.putManifest({ manifest: { ...base, version: 2 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, version: 2 } }).status, 200);
 
-  const huge = h.engine.putManifest({ manifest: { ...base, version: Number.MAX_SAFE_INTEGER } });
+  const huge = publish(h, { manifest: { ...base, version: Number.MAX_SAFE_INTEGER } });
   assert.equal(huge.status, 422, `MAX_SAFE_INTEGER version must be refused, got ${huge.status}`);
   assert.equal(bodyOf<{ error: string }>(huge).error, "BAD_MANIFEST_VERSION");
 
   // The load-bearing assertion: the operator can still rotate. This is what the defect destroyed.
-  const rotation = h.engine.putManifest({ manifest: { ...base, version: 3 } });
+  const rotation = publish(h, { manifest: { ...base, version: 3 } });
   assert.equal(rotation.status, 200, `legitimate rotation must still succeed, got ${JSON.stringify(rotation.body)}`);
 });
 
 test("R6: a negative version is refused", () => {
   const h = makeHarness();
-  const neg = h.engine.putManifest({ manifest: { ...base, version: -1 } });
+  const neg = publish(h, { manifest: { ...base, version: -1 } });
   assert.equal(neg.status, 422, `negative version must be refused, got ${neg.status}`);
   assert.equal(bodyOf<{ error: string }>(neg).error, "BAD_MANIFEST_VERSION");
 });
 
 test("R6: a publish cannot jump the counter arbitrarily far beyond the stored version", () => {
   const h = makeHarness();
-  assert.equal(h.engine.putManifest({ manifest: { ...base, version: 5 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, version: 5 } }).status, 200);
 
-  const leap = h.engine.putManifest({ manifest: { ...base, version: 5 + 1_000_000 } });
+  const leap = publish(h, { manifest: { ...base, version: 5 + 1_000_000 } });
   assert.equal(leap.status, 422, `an oversized version jump must be refused, got ${leap.status}`);
 
   // A normal rotation, and a generous-but-bounded jump, both still work.
-  assert.equal(h.engine.putManifest({ manifest: { ...base, version: 6 } }).status, 200);
-  assert.equal(h.engine.putManifest({ manifest: { ...base, version: 500 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, version: 6 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, version: 500 } }).status, 200);
 });
 
 test("R6: a fresh tenant cannot be opened at an exhausting version", () => {
   const h = makeHarness();
-  const openHigh = h.engine.putManifest({ manifest: { ...base, tenant: "fresh", version: Number.MAX_SAFE_INTEGER } });
+  const openHigh = publish(h, { manifest: { ...base, tenant: "fresh", version: Number.MAX_SAFE_INTEGER } });
   assert.equal(openHigh.status, 422, "a brand-new tenant must not be openable at the top of the version space");
-  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "fresh", version: 1 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, tenant: "fresh", version: 1 } }).status, 200);
 });
 
 test("R6: a fresh tenant must open at a GENESIS-scale version, not anywhere in the advance window", () => {
   // Allowing the full +MAX_VERSION_JUMP window on a first publish let anyone open an unused tenant
   // at 999 and shove it off its intended genesis sequence. Recoverable, but pointless surface.
   const h = makeHarness();
-  const far = h.engine.putManifest({ manifest: { ...base, tenant: "greenfield", version: 999 } });
+  const far = publish(h, { manifest: { ...base, tenant: "greenfield", version: 999 } });
   assert.equal(far.status, 422, `a fresh tenant must not open at 999, got ${far.status}`);
   assert.equal(bodyOf<{ error: string }>(far).error, "BAD_MANIFEST_VERSION");
   // genesis-scale values still work, and normal rotation continues from there
-  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "greenfield", version: 1 } }).status, 200);
-  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "greenfield", version: 2 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, tenant: "greenfield", version: 1 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, tenant: "greenfield", version: 2 } }).status, 200);
 });
 
 test("R6 MIGRATION: a tenant left with a pre-fix extreme version can still re-genesis (not bricked forever)", () => {
@@ -102,10 +118,10 @@ test("R6 MIGRATION: a tenant left with a pre-fix extreme version can still re-ge
     refHash: "sha256:" + "0".repeat(64),
     createdAt: 0,
   });
-  const recover = h.engine.putManifest({ manifest: { ...base, tenant: "legacy", version: 1 } });
+  const recover = publish(h, { manifest: { ...base, tenant: "legacy", version: 1 } });
   assert.equal(recover.status, 200, `recovery re-genesis must be allowed, got ${JSON.stringify(recover.body)}`);
   // and normal monotonic behaviour resumes from the new genesis
-  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "legacy", version: 2 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, tenant: "legacy", version: 2 } }).status, 200);
 });
 
 /**
@@ -129,14 +145,14 @@ test("R6 MIGRATION: a tenant left with a pre-fix extreme version can still re-ge
 test("R6b: 1000 conforming +1000 publishes reach the recovery threshold, and recovery still REFUSES to roll the manifest back", () => {
   const h = makeHarness();
   const tenant = "walker";
-  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant, version: 1 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, tenant, version: 1 } }).status, 200);
 
   // Walk upward using ONLY publishes the engine accepts.
   let v = 1;
   let jumps = 0;
   while (v <= 1_000_000) {
     const next = v + 1_000;
-    const r = h.engine.putManifest({ manifest: { ...base, tenant, version: next } });
+    const r = publish(h, { manifest: { ...base, tenant, version: next } });
     if (r.status !== 200) break;
     v = next;
     jumps++;
@@ -145,7 +161,7 @@ test("R6b: 1000 conforming +1000 publishes reach the recovery threshold, and rec
   assert.ok(v > 1_000_000, `stored version must be past MAX_SANE_VERSION, got ${v}`);
 
   // THE ASSERTION THIS TEST EXISTS FOR: a walked-up tenant is not "residue" and must not re-genesis.
-  const rollback = h.engine.putManifest({
+  const rollback = publish(h, {
     manifest: { ...base, tenant, version: 1, keys: [{ kid: "attacker-recovery" }] },
   });
   assert.equal(rollback.status, 409, `rollback must be refused, got ${rollback.status} ${JSON.stringify(rollback.body)}`);
@@ -155,12 +171,12 @@ test("R6b: 1000 conforming +1000 publishes reach the recovery threshold, and rec
   assert.deepEqual(stored?.manifest.keys, [], "the attacker key list must never have landed");
 
   // The bound's own promise still holds: there is room above, so the operator can still rotate.
-  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant, version: v + 1 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, tenant, version: v + 1 } }).status, 200);
 });
 
 test("R6b: every record the engine stores carries bounded-publish provenance (this is what closes the recovery path)", () => {
   const h = makeHarness();
-  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "prov", version: 1 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, tenant: "prov", version: 1 } }).status, 200);
   assert.equal(
     h.store.getLatestManifest("prov")?.publishedUnderVersionBound,
     true,
@@ -180,9 +196,9 @@ test("R6b: a pre-fix record that has ALREADY recovered cannot recover a second t
     refHash: "sha256:" + "0".repeat(64),
     createdAt: 0,
   });
-  assert.equal(h.engine.putManifest({ manifest: { ...base, tenant: "legacy2", version: 3 } }).status, 200);
+  assert.equal(publish(h, { manifest: { ...base, tenant: "legacy2", version: 3 } }).status, 200);
   // a second attempt to drop back below the (now normal) stored version is an ordinary stale publish
-  const second = h.engine.putManifest({ manifest: { ...base, tenant: "legacy2", version: 1 } });
+  const second = publish(h, { manifest: { ...base, tenant: "legacy2", version: 1 } });
   assert.equal(second.status, 409);
   assert.equal(bodyOf<{ error: string }>(second).error, "STALE_MANIFEST_VERSION");
 });
@@ -190,15 +206,15 @@ test("R6b: a pre-fix record that has ALREADY recovered cannot recover a second t
 test("R6: ordinary monotonic behaviour is unchanged (stale refused, idempotent republish accepted)", () => {
   const h = makeHarness();
   const m = { ...base, version: 4 };
-  assert.equal(h.engine.putManifest({ manifest: m }).status, 200);
+  assert.equal(publish(h, { manifest: m }).status, 200);
   // idempotent republish of the identical document
-  assert.equal(h.engine.putManifest({ manifest: m }).status, 200);
+  assert.equal(publish(h, { manifest: m }).status, 200);
   // stale
-  const stale = h.engine.putManifest({ manifest: { ...base, version: 3 } });
+  const stale = publish(h, { manifest: { ...base, version: 3 } });
   assert.equal(stale.status, 409);
   assert.equal(bodyOf<{ error: string }>(stale).error, "STALE_MANIFEST_VERSION");
   // equivocation at the same version
-  const equiv = h.engine.putManifest({ manifest: { ...base, version: 4, keys: [{ kid: "x" }] } });
+  const equiv = publish(h, { manifest: { ...base, version: 4, keys: [{ kid: "x" }] } });
   assert.equal(equiv.status, 409);
   assert.equal(bodyOf<{ error: string }>(equiv).error, "MANIFEST_EQUIVOCATION");
 });
