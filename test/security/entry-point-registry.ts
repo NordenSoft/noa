@@ -44,6 +44,26 @@
  *   unrouted       — takes hostile-capable data and does NOT ingest. Every entry here is an OPEN
  *                    FINDING with an owner, not an exemption; `why` must say what it would take.
  *                    The test prints them as a standing report so the count can only go down.
+ *
+ * ── WHAT A GREEN REGISTRY DOES AND DOES NOT MEAN (added 2026-07-30) ─────────────────────────────
+ * ADR-0002 §3 (ratified 2026-07-29) required this correction on four surfaces. `README.md`,
+ * `THREAT-MODEL.md` and `NON-CLAIMS.md` got it the same day. THIS FILE — named in that list — did
+ * not, and the omission mattered in a specific way: everything above reads like a proof. A class
+ * called `bytes-in`, a probe that fires ZERO times, a count that can only go down. A reader who does
+ * not already know the architecture would reasonably conclude the registry demonstrates that hostile
+ * input cannot reach a decision. It does not.
+ *
+ * Every classification here is a statement about what happens AFTER `noa-receipt` has loaded. The
+ * intrinsic captures the whole scheme rests on are themselves snapshots taken at module evaluation,
+ * so an adversary evaluated FIRST hands them a poisoned value to snapshot, and none of the probes
+ * below can see it — they run inside the same compromised realm and measure a library that is
+ * already lying. Measured and re-runnable: `r7-exploits/o01_preload_includes.mjs`, pinned OPEN.
+ *
+ * So the in-realm security objective is UNMET and this package makes no in-realm security claim.
+ * What the registry genuinely delivers is narrower and still worth having: a NEW export cannot be
+ * added without a classification, a classification that has stopped being true fails, and the
+ * `unrouted` count is a standing debt rather than a memory. That is hygiene against our own drift.
+ * The security property belongs to the isolated Go kernel, which shares no realm with the caller.
  */
 
 export type EntryClass = "bytes-in" | "dataless" | "producer-inert" | "caller-owned" | "unrouted";
