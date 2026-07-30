@@ -39,6 +39,63 @@ const ONLY = onlyIdx > -1 ? process.argv[onlyIdx + 1] : null;
  * reported, so the registry cannot silently stop describing the code).
  */
 const KNOCKOUTS = [
+  // ── ADR-0005 (2026-07-30) ───────────────────────────────────────────────────────────────────────
+  // This registry carried 28 entries and NOT ONE covered ADR-0005, while its own header says a fix
+  // without a knockout is a claim. Seven controls were built or repaired in that work and every one
+  // of them was knocked out by hand at the time; these entries make that permanent, so the next
+  // refactor cannot quietly restore a defect the tests would then pass over.
+  //
+  // Every find/replace below is BEHAVIOURAL and COMPILES. Three of my first attempts were compile
+  // errors, which this file already refuses (see the header): a compile error proves the identifier
+  // exists, not that the check runs.
+  {
+    id: "adr5-relay-cross-agent-ownership",
+    control: "E-3 — a foreign agent cannot read another agent's hold, receipt or decisionArtifact (F29-authz, ported)",
+    file: "packages/relay/src/engine.ts",
+    find: 'if (!this.ownsHold(hold, agent, "getHold")) return err(404, "UNKNOWN_HOLD");',
+    replace: 'if (!hold) return err(404, "UNKNOWN_HOLD");',
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr5-relay-inert-receipt-snapshot",
+    control: "R-ING-01 — one accessor-free snapshot, so a two-faced verdict cannot sign a DENIAL and record an approval",
+    file: "packages/relay/src/engine.ts",
+    find: "    const inertReceipt = inertSnapshot(rawReceipt);",
+    replace: "    const inertReceipt: unknown = rawReceipt;",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr5-relay-exposure-from-real-socket",
+    control: "R-1 shape (A) — exposure is classified from the OS-bound address, not from config.bindAddress",
+    file: "packages/relay/src/server.ts",
+    find: "    handle(req, res, engine, effectiveConfig(), limiter).catch(() => {",
+    replace: "    handle(req, res, engine, config, limiter).catch(() => {",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr5-relay-declared-exposure",
+    control: "R-1 shape (B) — tlsTerminated or unsafeListen means EXPOSED, whatever the bind address says",
+    file: "packages/relay/src/config.ts",
+    find: "    const declaredExposed = config.tlsTerminated || config.unsafeListen;",
+    replace: "    const declaredExposed = false;",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr5-signer-producer-inert-copy",
+    control: "C-01 sibling (producer) — what is signed is what is returned; no writable global between them",
+    file: "packages/signer-core/src/sign.ts",
+    find: "  const signed = inertDeepCopy(core);",
+    replace: "  const signed = structuredClone(core);",
+    suite: ["packages/signer-core", "npm", ["test"]],
+  },
+  {
+    id: "adr5-gate-b1-fail-closed-floor",
+    control: "B-1 — an unmatched action classifies to the highest tier and fails closed, whatever tier the caller names",
+    file: "packages/gate/src/engine.ts",
+    find: '    if (mode === "RAW") {',
+    replace: '    if (mode === "RAW" && (riskClass === "CRITICAL" || riskClass === "IRREVERSIBLE")) {',
+    suite: ["packages/gate", "npm", ["test"]],
+  },
   {
     id: "c04-gate-observation",
     control: "C-04 — report() signs no determinate negative in ANY state (the UNUSED 409 and the attributed-claim 202)",
@@ -133,6 +190,195 @@ const KNOCKOUTS = [
     find: "return key === \"__proto__\"",
     replace: "return false && key === \"__proto__\"",
     suite: [".", "npm", ["test"]],
+  },
+  // ── ADDED 2026-07-29 (round-3). One entry per finding, because the previous rounds' fixes shipped
+  // with NO knockout at all: nothing in the repository would have gone red if any of them had been
+  // reverted, which is why the same class kept reappearing one call deeper and kept being reported as
+  // "new". A fix without a knockout is a claim.
+  {
+    id: "t17-crypto-verify-capture",
+    control: "T17 — the Ed25519 signature verdict goes through the LOAD-TIME snapshot of crypto.verify, not a live ESM binding",
+    file: "src/keys.ts",
+    // Restores the vulnerability exactly: a live `node:crypto` import binding used as the verdict.
+    find: "    return ed25519Verify(message, key, sigBytes);",
+    replace: "    return _liveVerify(null, message, key as never, sigBytes);",
+    also: [{
+      find: "import {\n  bufferFrom, bufToString, bufEquals, bufSubarray, byteLength,",
+      replace: "import { verify as _liveVerify } from \"node:crypto\";\nimport {\n  bufferFrom, bufToString, bufEquals, bufSubarray, byteLength,",
+    }],
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t18-bigint-capture",
+    control: "T18 — the y<q canonicality gate builds its comparand with the CAPTURED BigInt, not the bare global",
+    file: "src/keys.ts",
+    find: "toBigInt(yBytes[i]!)",
+    replace: "BigInt(yBytes[i]!)",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t18-curve-pin-accessor",
+    control: "T18b — the Ed25519 curve pin reads asymmetricKeyType through the CAPTURED accessor",
+    file: "src/keys.ts",
+    find: "    if (asymmetricKeyType(key) !== \"ed25519\") return false;",
+    replace: "    if ((key as { asymmetricKeyType?: string }).asymmetricKeyType !== \"ed25519\") return false;",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t19-parser-inert-arrays",
+    control: "T19 — safeParse re-roots every array it emits onto INERT_ARRAY_PROTOTYPE (the ROOT of the iterator/HOF class)",
+    file: "src/safe-json.ts",
+    find: "        return inertArray(arr);",
+    replace: "        return arr;",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t19-validator-index-walk",
+    control: "T19 — the policy validator walks `rules` by INDEX, so a no-op forEach cannot skip every rule",
+    file: "src/policy/validate.ts",
+    find: "    for (let i = 0; i < pol.rules.length; i++) {\n      const r = pol.rules[i];",
+    replace: "    (pol.rules as unknown[]).forEach((r, i) => {",
+    also: [{
+      find: "      validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);\n    }",
+      replace: "      validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);\n    });",
+    }, { find: "        continue;\n      }\n      const rule = r as Record<string, unknown>;", replace: "        return;\n      }\n      const rule = r as Record<string, unknown>;" }],
+    // The parser's re-rooting independently defeats this poison, so knocking out ONE layer leaves the
+    // other measuring it and the run would report a false "nothing measures this". Both come out
+    // together — which is also the honest statement of the design: two layers, each load-bearing.
+    andAlso: "t19-parser-inert-arrays",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t19b-cbor-inert-arrays",
+    control: "T19b — the CBOR decoder re-roots decoded arrays AND each map pair (destructuring dispatches through the pair's own iterator)",
+    file: "src/cose/cbor.ts",
+    find: "      return { t: \"map\", v: inertArray(m) };",
+    replace: "      return { t: \"map\", v: m };",
+    also: [{
+      find: "        arrayPush(m, inertArray([key, val]) as [CborValue, CborValue]);",
+      replace: "        arrayPush(m, [key, val] as [CborValue, CborValue]);",
+    }],
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "inert-proto-refuses-accessors",
+    control: "INERT_ARRAY_PROTOTYPE copies DATA descriptors only — a pre-load accessor is refused (absent), never copied",
+    // RE-AIMED 2026-07-29 (round-4, A1). The construction MOVED from `src/inert.ts` to
+    // `src/intrinsics.ts` so the captured wrappers could re-root the arrays they manufacture through
+    // it without an import cycle. This entry reported ROTTED on the first run after the move, which
+    // is exactly what a knockout registry is for: an entry that silently stops matching measures
+    // nothing, and the runner says so instead of passing.
+    file: "src/intrinsics.ts",
+    find: "    if (!(_apply(_hasOwnProperty, d as never, [\"value\"] as never) as boolean)) continue;",
+    replace: "    if (!(_apply(_hasOwnProperty, d as never, [\"value\"] as never) as boolean)) { _apply(_objectDefineProperty, undefined as never, [proto, key, { get: d.get, set: d.set, enumerable: false, configurable: false }] as never); continue; }",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "t20-l8-selftest",
+    control: "T20/A5 — every AST-gate rule is proven to BITE against a known-positive sample (a gate reading 0 because it matches nothing is the false-green pathology)",
+    // RE-AIMED 2026-07-29 (round-4, A5): L8 is no longer a set of regexes, so the string this entry
+    // used to defang does not exist. It now defangs a NODE-KIND test in the analyser itself. The
+    // evasion matrix's `for-of` positive sample must go unflagged and L8-selftest must go red.
+    file: "scripts/lib/dispatch-ast.mjs",
+    find: "      if (ts.isForOfStatement(node) && deferred) {",
+    replace: "      if (false && ts.isForOfStatement(node) && deferred) {",
+    suite: [".", "npm", ["run", "lint:security-gates"]],
+  },
+  {
+    id: "t20-source-lock-scope",
+    control: "T20 — the source lock's subject is the WHOLE derived TCB, not a hand-picked five",
+    file: "test/security/intrinsic-poisoning.test.ts",
+    // Aimed at the DERIVATION, not at the scan loop. Narrowing the loop alone is unmeasurable once
+    // the tree is clean — nothing is found either way — which is precisely the trap: a scope
+    // regression is invisible until an offender exists, so the SCOPE ITSELF has to be the assertion.
+    // Replacing the derived list with the hand-picked five this lock used to carry is the exact
+    // regression that left src/keys.ts unlocked while it held a live `verify` binding on the
+    // signature verdict, and it turns the coverage test red immediately.
+    find: "  return (block![1]!.match(/\"([^\"]+)\"/g) ?? []).map((s) => s.slice(1, -1));",
+    replace: "  return [\"src/hash.ts\", \"src/signing.ts\", \"src/cose/cbor.ts\", \"src/nfc.ts\", \"src/verify.ts\"];",
+    suite: [".", "npm", ["test"]],
+  },
+  // ── ADDED 2026-07-29 (round-4). One entry per control this pass introduced. The previous three
+  // rounds' fixes shipped with NO knockout, which is why the same class kept reappearing one call
+  // deeper and kept being reported as "new". A fix without a knockout is a claim.
+  {
+    id: "r4-a1-inert-wrappers",
+    control: "A1 — the captured wrappers that MANUFACTURE arrays (objectKeys/ownNames/ownKeys/slice/split/…) return INERT-rooted arrays, so a fresh array is never rooted on the live Array.prototype",
+    file: "src/intrinsics.ts",
+    // The root of the whole round-4 class, in one edit: make the re-rooting a no-op.
+    find: "function _inert<T>(a: T[]): T[] {\n  _apply(_objectSetPrototypeOf, undefined as never, [a, INERT_ARRAY_PROTOTYPE] as never);\n  return a;\n}",
+    replace: "function _inert<T>(a: T[]): T[] {\n  return a;\n}",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "r4-a2-noextrakeys-index-walk",
+    control: "A2 — the policy closed-grammar check walks keys by INDEX, so a skipping iterator cannot hide an unknown key (DENY/policy-invalid -> ALLOW/allow-x, measured)",
+    file: "src/policy/validate.ts",
+    find: "  const keys = objectKeys(obj);\n  for (let i = 0; i < keys.length; i++) {\n    const k = keys[i] as string;",
+    replace: "  for (const k of objectKeys(obj)) {",
+    // A1 independently defeats this poison, so knocking out ONE layer leaves the other measuring it
+    // and the run would report a false "nothing measures this". Both come out together — which is
+    // also the honest statement of the design: two layers, each load-bearing.
+    andAlso: "r4-a1-inert-wrappers",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "r4-a2-checkpoint-index-walk",
+    control: "A2 — the checkpoint closed-schema walk is an INDEX walk, so a skipping iterator cannot hide a smuggled (and honestly re-signed) field (TAMPERED -> VALID/tailChecked, measured)",
+    file: "src/verify.ts",
+    find: "  const cKeys = objectKeys(c);\n  for (let i = 0; i < cKeys.length; i++) {\n    if (!arrayIncludes(CHECKPOINT_KEYS, cKeys[i] as string)) return \"malformed checkpoint\";\n  }",
+    replace: "  for (const k of objectKeys(c)) {\n    if (!arrayIncludes(CHECKPOINT_KEYS, k)) return \"malformed checkpoint\";\n  }",
+    andAlso: "r4-a1-inert-wrappers",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "r4-a2-manifest-index-walk",
+    control: "A2 — the identity-manifest walk is an INDEX walk, so a skipping iterator cannot hide a malformed entry from validation (MALFORMED -> VALID, measured)",
+    file: "src/verify.ts",
+    find: "      const aids = objectGetOwnPropertyNames(live);\n      for (let ai = 0; ai < aids.length; ai++) {\n        const aid = aids[ai] as string;",
+    replace: "      for (const aid of objectGetOwnPropertyNames(live)) {",
+    andAlso: "r4-a1-inert-wrappers",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "r4-t06-newset-captured-add",
+    control: "R4-T06 — newSet(init) fills through the CAPTURED Set.prototype.add; `new Set(iterable)` reads `this.add` off the instance and calls it per element, so a no-op add silently empties the committed read-set",
+    file: "src/intrinsics.ts",
+    find: "  const s = new _Set() as Set<T>;\n  if (init !== undefined) {\n    for (let i = 0; i < (init as { length: number }).length; i++) _apply(_setAdd, s as never, [init[i]] as never);\n  }\n  return s;",
+    replace: "  return new _Set(init as never) as Set<T>;",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "r4-t07-audit-captured-weakset",
+    control: "R4-T07 — the policy-table audit's cycle guard uses the CAPTURED WeakSet.prototype.has; a live `has -> true` made inertViolations return [] , i.e. the control that hunts mutable policy tables reported CLEAN exactly when an attacker was present",
+    file: "src/inert.ts",
+    find: "    if (weakSetHas(seen, value as object)) return;\n    weakSetAdd(seen, value as object);",
+    replace: "    if (seen.has(value as object)) return;\n    seen.add(value as object);",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "r4-a1c-publication-boundary",
+    control: "A1c — a CALLER-OWNED public result (readSet, warnings, inertViolations) is published as an ORDINARY array; shipping the inert internal breaks `instanceof Array` and `deepStrictEqual` for every consumer",
+    file: "src/intrinsics.ts",
+    find: "export function publishArray<T>(a: readonly T[]): T[] {\n  const out: T[] = [];\n  for (let i = 0; i < (a as { length: number }).length; i++) _apply(_push, out as never, [a[i]]);\n  return out;\n}",
+    replace: "export function publishArray<T>(a: readonly T[]): T[] {\n  return a as T[];\n}",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "r4-a5-ast-load-time-exemption",
+    control: "A5 — the AST gate's load-time exemption is STRUCTURAL (a parameter default is call-time, an IIFE at module level is load-time); widening it to 'everything is load-time' must not be able to silence the gate",
+    file: "scripts/lib/dispatch-ast.mjs",
+    find: "function isLoadTime(node) {\n  let n = node;",
+    replace: "function isLoadTime(node) {\n  if (node) return true;\n  let n = node;",
+    suite: [".", "npm", ["run", "lint:security-gates"]],
+  },
+  {
+    id: "r4-a5-ast-symbol-resolution",
+    control: "A5 — the AST gate resolves the leftmost identifier's SYMBOL to decide 'ambient global or ours'; degrading that to 'never a global' is the one-line way to make the gate read 0 forever",
+    file: "scripts/lib/dispatch-ast.mjs",
+    find: "  if (!BUILTIN_GLOBALS.has(id.text) && !BARE_GLOBAL_CALLS.has(id.text)) return false;",
+    replace: "  if (id) return false;\n  if (!BUILTIN_GLOBALS.has(id.text) && !BARE_GLOBAL_CALLS.has(id.text)) return false;",
+    suite: [".", "npm", ["run", "lint:security-gates"]],
   },
 ];
 
