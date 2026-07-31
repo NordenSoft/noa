@@ -57,6 +57,41 @@ const ONLY = onlyIdx > -1 ? process.argv[onlyIdx + 1] : null;
  * reported, so the registry cannot silently stop describing the code).
  */
 const KNOCKOUTS = [
+  // ── R8-32 (2026-07-31): THE GATES ADR-0005 §7 PROMISED AND NEVER SHIPPED ───────────────────────
+  // The ADR's table names four knockouts by id — G3 `parse-boundary-strictness`,
+  // G4 `render-node-single-input`, G5 `display-aad-egress-check`, G6 `riskclass-derived-not-accepted`
+  // — each with "must go red" as its anti-vacuity clause. None existed. Three are added here.
+  //
+  // G5 IS FORMALLY WITHDRAWN, not quietly skipped. Its instruction is "delete the egress AAD
+  // verification", and that verification does not exist: `grep -rn "aad" packages/gate/src` returns
+  // exactly ONE hit, `types.ts:71`, an unused optional field. A knockout deletes a control; there is
+  // nothing here to delete, so writing a G5 entry would have manufactured the appearance of coverage
+  // over a control that was never built. The gap is recorded in ADR-0005 §13 instead — the missing
+  // control is F-1/R8-17, and it is open.
+  {
+    id: "g3-parse-boundary-strictness",
+    control: "ADR-0005 §7 G3 — stage 0: every request body enters through parseDocument, so a body that is not strict JSON is refused before any field is read",
+    file: "packages/gate/src/engine.ts",
+    find: 'const parsed = parseDocument(body, "request body");',
+    replace: 'const parsed = { ok: true as const, value: body as unknown };',
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
+    id: "g4-render-node-single-input",
+    control: "ADR-0005 §7 G4 — the render node reads the CANONICAL BYTES, so the display and the paramsHash cannot disagree (M7)",
+    file: "packages/gate/src/projections.ts",
+    find: "const view = commandView(canonical);",
+    replace: "const view = commandView(canonicalize(snapshot as Record<string, unknown>));",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
+    id: "g6-riskclass-derived-not-accepted",
+    control: "ADR-0005 §7 G6 — riskClass is DERIVED inside the boundary; the caller's hint may raise the floor and can never lower it (M2)",
+    file: "packages/gate/src/engine.ts",
+    find: "effectiveRisk = maxRisk(run.derivedRisk, riskClass);",
+    replace: 'effectiveRisk = riskClass ?? run.derivedRisk;',
+    suite: ["packages/gate", "npm", ["test"]],
+  },
   // ── ADR-0005 (2026-07-30) ───────────────────────────────────────────────────────────────────────
   // This registry carried 28 entries and NOT ONE covered ADR-0005, while its own header says a fix
   // without a knockout is a claim. Seven controls were built or repaired in that work and every one
