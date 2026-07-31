@@ -1,0 +1,83 @@
+# RELEASE-BLOCKERS — the one authoritative list
+
+**Mode:** BOUNDED DELIVERY. **Branch** `impl/adr-0005-trusted-input-provenance` · **HEAD** `7c5ab12`
+· tree clean · nothing pushed. **Convergence 0/2** (engineering completion and convergence are
+separate states).
+
+**Reopening rule:** a settled decision reopens ONLY with a reproducible attack + exact source path +
+measurable security consequence + an honest control + evidence the current fix fails. A reviewer's
+theoretical possibility is not enough.
+
+**Settled, not to be reopened without the above:** keep `0.1` · no `0.2` now · preserve wire bytes ·
+defer gate-side nonce consumption until the storage/concurrency/crash model is real · no ADR-0006 ·
+no Stage 1 freeze · no Go kernel.
+
+---
+
+## P0 — RELEASE BLOCKERS
+
+| ID | item | evidence | exit criterion |
+|---|---|---|---|
+| **P0-1** | **ROOT key `validFrom` is DROPPED** — `evidence/src/trust.ts:74` carries `revokedAt` but not `validFrom`, so a trust-ROOT signature dated BEFORE its own activation verifies clean. `approval-artifacts/src/verify.ts:234` only enforces activation when `entry.validFrom != null`. The sibling manifest path at `:156` was fixed for exactly this and says so. | **REPRODUCED [MEASURED]**: parsed ROOT entry = `{publicKey,type,roles,revokedAt}` — no `validFrom`. **Control:** `revokedAt` survives, so the parser is populating fields; the omission is specific. | activation enforced for ROOT keys; permanent RED test; knockout triggers |
+| **P0-2** | **Evidence-claim triage (#76, 19 items C01–C19)** — the P0 criterion "evidence claiming more than was proven" applies to this class by definition. Individual items are **not yet re-derived**, so the *triage* is the blocker, not all 19. | untriaged; prior session recorded 19 claim findings | every C-item classified P0/P1/P2 with evidence; all true P0s closed |
+| **P0-3** | **"Cannot prove a human displayed the signed content"** — codex created a valid gate decision **without opening or displaying** the encrypted display. If evidence implies a human saw it, that is an over-claim. | codex `[UNVERIFIED by me]` — must re-derive before accepting | either the claim is not made anywhere, or it is measurably true |
+| **P0-4** | **Encrypted display omitted from the evidence bundle** — prevents independent F2 verification by a third party, so archived evidence cannot be re-checked. | codex `[UNVERIFIED by me]` | bundle contains what a verifier needs, or the non-claim is explicit |
+
+**Owner of all P0:** lead (Fable seat). **Next action:** batch 1 = P0-1 (reproduced, fix now); batch 2
+= re-derive P0-3 and P0-4; batch 3 = P0-2 triage.
+
+---
+
+## P1 — MUST CLOSE BEFORE MERGE
+
+| ID | item | evidence | exit criterion |
+|---|---|---|---|
+| **P1-1** | **No hosted CI has ever run for this branch** — `ci.yml:7` covers `main` and `arp-interop-response-*`; `impl/*` is absent. Blocking coverage is incomplete by construction. | `git ls-remote origin 'refs/heads/impl/*'` = 0 | `impl/*` added to `ci.yml`; a run is green (**push is owner-authorised, not lead**) |
+| **P1-2** | **5 knockout entries UNTESTED** — `t19-validator-index-walk`, `r4-a2-noextrakeys-index-walk`, `r4-a2-checkpoint-index-walk`, `r4-a2-manifest-index-walk` (DETECTOR_DID_NOT_TRIGGER), `g4-render-node-single-input` (ANTI_VACUITY_FAILED). NOT P0: the registry reports them as findings and exits 1, so no gate is silently green. | measured 46/51 proven at `c4102c9` | each either gets a test that turns RED, or is deleted as not load-bearing |
+| **P1-3** | **R8-17 / F-1 / F-7b** — the injected DisplaySealer's output is signed with no re-check of tenant/holdId/deferredReceiptHash/expiresAt/recipients/aadHash. ADR-0005 §8 records M5 CLOSED and §7 names knockout G5; neither exists. | `grep -rn "display-aad-egress-check"` = 0 | either the re-check exists, or the ADR claim is withdrawn in the same commit |
+| **P1-4** | **R8-14** — a prior signed approval replays onto a NEW relay hold with the same canonical+paramsHash; `relay/engine.ts:613-617` reads neither nonce nor deferredReceipt. The gate refuses it (422), so it is a relay RECORD defect, not a forged grant. | reproduced in a prior session | relay record cannot show an approval the gate refused |
+| **P1-5** | **R8-02** — nothing enforces that the checkpoint signer is disjoint from the gate keyring, and `e2e-demo/src/evidence.ts:51-53` signs the "external" checkpoint with `trust.gate.privateKey`, so the shipped demo teaches the misconfiguration. | reproduced in a prior session | `VALID_FULL_CHAIN` refused when a checkpoint kid is also a GATE key |
+| **P1-6** | **Schema/implementation divergence** — the frozen `0.1` schema accepts AEAD identifier 2; the opener rejects it as unsupported. Narrowing the schema changes no historical wire meaning (only artifacts that never opened). | codex-measured, `[UNVERIFIED by me]` | schema matches the implementation, or the divergence is documented as a non-claim |
+| **P1-7** | **Relay F2 skip is silent** — an authorised **device** can fetch a display whose F2 was never checked (`getDisplay(DEVICE) -> 200`, **[MEASURED]**). The approval path stays closed via `getHoldContext`, so this is observability, not a bypass. | measured this session (correction W-1) | the hold records F2-checked/skipped, or the non-guarantee is explicit |
+| **P1-8** | **`check:entry-points` RED** — pre-existing; fails identically in a worktree at baseline `b163e7d`. | measured previously | green, or recorded as a known non-blocking failure with a reason |
+| **P1-9** | **`der.ts:102-115` / `hpke.ts:48-56` live `.set()` sites** — codex-flagged in the #77 family. **NOT reproduced by me** — treat as a claim. | `[UNVERIFIED]` | reproduced and fixed, or rejected with evidence |
+
+---
+
+## P2 — DEFERRED BACKLOG
+
+| ID | item | deferred rationale |
+|---|---|---|
+| **P2-1** | ADR-0006 (typed authority pipeline, ProjectionBundle) | owner-deferred; `projectionIdentity` stays UNRESOLVED until it exists |
+| **P2-2** | Stage 1 wire-spec freeze / Go kernel (#31) | explicitly not authorised |
+| **P2-3** | PITR cleanup, 8 services ~12.4 GB (#42) | owner authorisation required; unrelated to release safety |
+| **P2-4** | Oracle coverage over policy/COSE/federation (#33) | additional coverage; cannot invalidate a current P0/P1 claim |
+| **P2-5** | R8-18 `reversible` flag not shown to the human | **absorbed by `Derived<T>`** — landing it standalone gets rewritten |
+| **P2-6** | Mobile release-artifact verification + running the mobile suite | three `[UNVERIFIED]` items; read-only, no security regression pending |
+| **P2-7** | `encrypted-display/0.2` | settled: do not build. Reopen only under the reopening rule |
+| **P2-8** | Gate-side nonce consumption | settled: defer. One-time-use per hold is already enforced (`409 HOLD_ALREADY_RESOLVED`); the missing piece is a durable cross-restart ledger, and the cited CAS is single-process |
+| **P2-9** | Second independent reviewer (Kimi/Gemini) | **operator input** — recharge Kimi or migrate Gemini. Blocks convergence claims, NOT defect correction |
+
+---
+
+## REMOVED FROM THE ACTIVE LIST — history preserved
+
+| item | why removed |
+|---|---|
+| "encrypted-display recipient set is unauthenticated" | **FALSE** — withdrawn in CORRECTIONS.md C-8; F2 + the gate signature bind it; codex independently reproduced the rejection, including the valid-attacker-CEK-wrap variant |
+| "`suite` is cryptographically unbound" | **FALSE** — withdrawn as W-2; `HPKE_SUITE_ID` includes `aead_id` and feeds the key schedule |
+| "anti-replay is NOT IMPLEMENTED" | **OVERSTATED** — withdrawn as W-3; one-time use per hold IS enforced. The narrower true statement is P2-8 |
+| "the gate already has an atomic CAS for nonce consumption" | **WITHDRAWN as a justification** (W-4) — the source says "single-process" |
+| "`getDisplay` returns 404 without an envelope" | **INVALID MEASUREMENT** — withdrawn as W-1; the corrected finding is P1-7 |
+| #77-A / #77-B / #77-C | **CLOSED** — 7a30e2c, c07a63b, c4102c9, d0b816d; knockouts registered and triggering |
+
+---
+
+## Working rules for this mode
+
+Batches of **at most 3 root causes**. Per batch: reproduce → permanent RED test → smallest
+root-cause fix → anti-vacuity control → RED/restore/GREEN knockout → affected package tests → root
+tests + blocking gates → update this file → local commit.
+
+**No P2 work while any P0 is open.** No new ADR, protocol version, subsystem or major abstraction
+unless a reproduced blocker cannot be closed inside the approved architecture.
