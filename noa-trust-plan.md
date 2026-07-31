@@ -1,5 +1,33 @@
 # noa-trust-plan.md — THE canonical plan
 
+<!-- ══════════════════════════════════════════════════════════════════════════════════════════ -->
+## 🟢 NEW SESSION STARTS HERE — read this box, then §P0, then work
+
+**Everything a fresh seat needs is in this repo. No transcript required.**
+
+| | |
+|---|---|
+| **Repo** | `~/noa-receipt` — **NOT** `~/noa-trust` (that is a different, older repo; a seat that starts there will find nothing and conclude the work is missing) |
+| **Branch** | `impl/adr-0005-trusted-input-provenance` |
+| **State** | `git log -1` is the truth. Nothing is pushed, ever, without owner say-so. **Convergence 0/2.** |
+| **Mode** | BOUNDED DELIVERY. P1 and P2 are PAUSED until P0 = 0. |
+
+**OPERATING MODEL (owner dictate 2026-07-31, latest — supersedes every earlier loop):**
+**Fable 5 is LEAD and DIRECTS. `codex` IMPLEMENTS** (`codex exec --sandbox workspace-write -C ~/noa-receipt "<one root cause>"` — it needs WRITE access now; it is no longer a reviewer).
+**NO QA rounds until every task is done.** Fable supervises codex by **reading the actual `git diff`**, never its report, and corrects it when it wanders.
+**Mechanical gates still run on EVERY batch** — package suites · `npm run typecheck:all` · `node scripts/lint-resolver-parity.mjs` · the relevant knockouts · RED-before-fix evidence per fix. Removing QA removed a *review round*, not verification.
+
+**WHAT IS LEFT — 3 P0s, both already specified so nobody re-derives them:**
+1. **BATCH C — P0-9 + P0-10 + P0-11.** Full spec, reproductions, recommended approach and the three vacuous-reproduction traps: **`docs/BATCH-C-FIX-SPEC-P0-9-10-11.md`**.
+2. **BATCH D — P0-14.** Retired signing key mints new evidence in the **published** `noa-mcp-proxy` 0.2.0. Runnable reproduction: **`node docs/reproductions/repro-P0-14-retired-key-forgery.mjs`** (3 controls + the attack). Interface decision and reachability are in the §P0 row.
+
+**DO NOT, under any circumstances without an explicit owner instruction:** push · merge · publish · deploy · touch Railway or production · change secrets, keys, KMS, IAM, roles, grants or migrations · silently change `noa.encrypted-display/0.1` bytes · implement ADR-0006 · freeze Stage 1 · start the Go kernel.
+
+**CARRY TO THE END:** `codex` is now a PRODUCER — at the final QA it may **not** review its own code. `docs/PRODUCER-LEDGER.md` records what it authored. Cross-family reviewers are thin (gemini `IneligibleTierError`, kimi suspended); if none is reachable, **REPORT the gap** rather than let a producer approve itself.
+
+**The hard rule, project-wide:** no claim — *closed, verified, enforced, fully covered, fail closed, all resolvers, complete* — may appear in code, docs or a commit message without a proof ID that resolves to a real test, gate or knockout. This is now mechanically enforced: `lint:resolver-parity` decides proof liveness from the **runner's own output**, so however a skip is spelled, the runner sees it.
+<!-- ══════════════════════════════════════════════════════════════════════════════════════════ -->
+
 > **This is the ONE plan file for NOA Trust** (owner, 2026-07-31: *"noa-trust-plan.md olsun planin
 > adi, hatirlamam daha kolay olur"*). It was `RELEASE-BLOCKERS.md`; renamed with `git mv` so the
 > history follows. **Do not open a second plan.** New work, research and decisions are added INSIDE
