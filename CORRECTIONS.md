@@ -116,3 +116,61 @@ commit in the table, which is why the offset is constant.
 **Verdict:** the relay counts are corroborated. The `gate`, `evidence`, `approval-artifacts` and
 `root` counts in those same lines were not put through this check and remain `[UNVERIFIED]` — the
 method above would work on them too and was not run.
+
+---
+
+## 2026-07-31 — R8-15/R8-15b: the defect is real, the CONSEQUENCE I wrote is overstated
+
+Raised by a cross-family adversarial reviewer (codex) that I asked specifically to attack the
+severity wording, then **reproduced by me before accepting it** — a finding is a claim until it is
+measured, including a finding against my own work.
+
+### C-5 — "one Ed25519 signature over two documents" implies an acceptance that does not happen
+
+`0341351` (R8-15) and `b69f30f` (R8-15b) both frame the defect as forgery:
+
+> *"One Ed25519 signature, two documents — the exact forgery shape this package exists to make
+> impossible."*
+
+**Literally true and misleading in the direction that matters.** There ARE two documents and ONE
+signature. What the wording implies — that an authoritative verifier ACCEPTS the divergent
+document — is false. Measured (`/tmp/qa815/adjudicate.mjs`, signer-core produces, the ROOT kernel
+verifies, with a live sanity control in the same run):
+
+```
+SANITY: honest signer-core receipt at the ROOT verifier -> VALID   <- the harness works
+
+DOC A (the bytes the signature covers) -> MALFORMED  receipts: forbidden object key '__proto__'
+DOC B (what the caller received)       -> TAMPERED   invalid signature (kid kid-adj)
+
+R8-15b-shaped divergent document       -> TAMPERED   hash mismatch (content altered)
+```
+
+Both halves fail CLOSED. `src/safe-json.ts` refuses a `__proto__` key outright, so the signed bytes
+never parse; the returned document fails the signature check because it is not what was signed.
+Neither is accepted by anything.
+
+**What remains true, so this correction is not itself an overcorrection:**
+
+1. The divergence is real and measured — `receiptHashInput` keeps the key, the pre-fix deep copy
+   dropped it. A producer that signs one document and returns another is a defect whatever the
+   verifier then does, and this repository ships more than one verifier implementation with a Go
+   kernel planned. "Our current verifier happens to reject it" is not a property of the producer.
+2. The PHANTOM READ is real and is the sharper half: `copy.governance.approval` reads back as a
+   human approval while being neither an own property nor present in any wire byte. Code that reads
+   a receipt object BEFORE verifying it — and the relay does read receipt objects — is misled with
+   no artefact an auditor could later find.
+3. The fix is unchanged and still minimal: `defineProperty` for every key and every element,
+   matching `structuredClone` exactly.
+
+**Corrected severity: fail-closed divergence plus misleading pre-verification consumers. NOT an
+accepted forgery.** The commit messages are left as written, per this file's opening rule; the
+live surfaces (`packages/signer-core/src/deep-copy.ts`, `PROGRESS.md`, task #75) carry the
+corrected wording.
+
+**The lesson worth keeping.** I reached for the strongest available framing of a real defect
+instead of the measured one, in a security record, having explicitly asked a reviewer to look for
+exactly that. Overstated severity is not a harmless exaggeration — it spends the reader's trust on
+the finding that does not need it, and there are three HIGH findings on this same branch (an
+attacker-constant signature, a collapsing canonicalizer, and a substituted approval display) that
+do.

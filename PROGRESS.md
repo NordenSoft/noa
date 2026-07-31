@@ -253,7 +253,7 @@ Backup: `~/.claude/backups/noa-receipt-adr5-impl/*-bundle/impl-adr-0005.bundle`,
 | `b841bab` | **R8-13** the rate-limit key was the caller's own bearer string. 400 rotating bearers → 0 throttles; `/v1/devices` minted 200 credentials unthrottled. Peer bucket now spent first; table bounded. |
 | `2fde754` | **R8-11** any customer could publish another's key manifest, and wedge the victim's rotation with `409 MANIFEST_EQUIVOCATION`. `tenant` now bound at pairing from the operator-issued token; `null` fails closed. |
 | `9fb2655` | **R8-07** enrolment openness was inferred from a bind address. Now an explicit opt-in, and it cannot override DETECTED exposure — three pre-existing tests caught my first ordering. |
-| `0341351` | **R8-15** `inertDeepCopy` built its output by ASSIGNMENT, and on a plain object assignment consults the prototype chain for a setter — `Object.prototype.__proto__` is one. An own `__proto__` (which `JSON.parse` produces from ordinary untrusted input, no poison and no Proxy) was consumed by that setter instead of copied. Measured byte-exact: the Ed25519 signature covered `governance.__proto__.approval = HUMAN:cfo-victim` and the RETURNED receipt did not contain it — one signature, two documents. Fixed with `defineProperty` for EVERY key, which closes the class rather than one spelling; deliberately NOT a `__proto__` blacklist, because `structuredClone` keeps the key as an ordinary own property and rejecting it would break G2 golden-parity. 7 permanent tests (4 attack incl. nesting, arrays and all 12 `Object.prototype` member names; 3 anti-vacuity). Knockout `r8-15-deep-copy-defineproperty`: DETECTOR_TRIGGERED, 4 RED for the intended reason, 3 controls stayed GREEN, restoration hash-verified. |
+| `0341351` | **R8-15** `inertDeepCopy` built its output by ASSIGNMENT, and on a plain object assignment consults the prototype chain for a setter — `Object.prototype.__proto__` is one. An own `__proto__` (which `JSON.parse` produces from ordinary untrusted input, no poison and no Proxy) was consumed by that setter instead of copied. Measured byte-exact: the Ed25519 signature covered `governance.__proto__.approval = HUMAN:cfo-victim` and the RETURNED receipt did not contain it. ⚠ SEVERITY CORRECTED same day (CORRECTIONS.md C-5): this is NOT an accepted forgery — measured at the ROOT kernel the signed bytes are MALFORMED and the returned object is TAMPERED, both fail closed. What stands is a producer that signs one document and returns another, plus a phantom read that misleads any consumer reading the object before verifying it. Fixed with `defineProperty` for EVERY key, which closes the class rather than one spelling; deliberately NOT a `__proto__` blacklist, because `structuredClone` keeps the key as an ordinary own property and rejecting it would break G2 golden-parity. 7 permanent tests (4 attack incl. nesting, arrays and all 12 `Object.prototype` member names; 3 anti-vacuity). Knockout `r8-15-deep-copy-defineproperty`: DETECTOR_TRIGGERED, 4 RED for the intended reason, 3 controls stayed GREEN, restoration hash-verified. |
 
 ### THE FINDING THAT OUTRANKS ALL OF THEM
 
@@ -288,9 +288,11 @@ laptop, including the ones in this report."*
 
 ### Open, recorded, NOT fixed
 
-- **`check:inert-core` is RED right now** — `packages/approval-artifacts/src/inert-core/intrinsics.ts`
-  is STALE and still carries the withdrawn paragraph corrected in the source on 2026-07-30. One
-  command: `node scripts/sync-inert-core.mjs`.
+- ~~`check:inert-core` is RED right now~~ **FALSE as of 2026-07-31 — re-measured, exit 0.**
+  `npm run check:inert-core` passes (exit read directly, not through a pipe). Either it was fixed
+  and the entry was never cleared, or it was never red. Left visible rather than deleted: an
+  "open item" that is not open is the same failure as a control that is not in force, and this
+  file is the thing the next session reads first.
 - **e2e-demo leaks servers on its error path.** A failed device registration never closes the
   gate/relay, so node never exits. Eight such processes accumulated at 0.0% CPU holding 42 sockets,
   and I reported them as "running" when they were deadlocked. The config is fixed; the error path

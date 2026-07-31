@@ -149,6 +149,16 @@ function copyValue(value: unknown, path: string, depth: number): unknown {
   // not produce: `receiptHashInput` is own-property-only, so the signature covers a receipt without
   // that approval while a consumer reading `receipt.governance.approval` sees one.
   //
+  // ⚠ SEVERITY CORRECTED 2026-07-31 (CORRECTIONS.md C-5), after a cross-family reviewer attacked
+  // the wording and I reproduced its objection. This is NOT an accepted forgery. Measured against
+  // the ROOT kernel, with a live sanity control (an honest receipt verifies VALID in the same run):
+  //     the SIGNED bytes    -> MALFORMED  (safe-json refuses a `__proto__` key outright)
+  //     the RETURNED object -> TAMPERED   (invalid signature)
+  // Both fail CLOSED. What stands is (a) a producer that signs one document and returns another —
+  // a defect whatever a particular verifier then does, since this project ships more than one
+  // implementation — and (b) the PHANTOM READ above, which misleads any consumer that reads a
+  // receipt object BEFORE verifying it, leaving no artefact an auditor could find.
+  //
   // THE FIX IS `defineProperty`, NOT A BLACKLIST, and the choice was measured rather than argued.
   // `structuredClone` — the behaviour this function must reproduce — keeps an own `__proto__` as an
   // ORDINARY OWN PROPERTY, leaves the prototype alone, and round-trips it through JSON:
