@@ -31,7 +31,7 @@ import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalRec
 import { b } from "./helpers/bytes.mjs";
 import { createProxyServer } from "../src/create-proxy-server.mjs";
 import { startHttpProxy } from "../src/http-server.mjs";
-import { verifyOutcomeReceipt, OUTCOME_RECEIPT_SPEC } from "../src/outcome-receipt.mjs";
+import { buildOutcomeReceipt, verifyOutcomeReceipt, OUTCOME_RECEIPT_SPEC } from "../src/outcome-receipt.mjs";
 import { createRotatableSigner } from "../src/rotatable-signer.mjs";
 import { TRANSFER_GUARD_POLICY, APPROVAL_RULES } from "../src/policy.mjs";
 
@@ -1267,14 +1267,94 @@ async function main() {
   // is real, not cosmetic).
   // ---------------------------------------------------------------------------------------
   section("Scenario X (R2) — signing-key rotation: old kid verifies history, new kid signs new segments");
+  const poisonNowMsX = Date.UTC(2026, 6, 15, 0, 0, 0, 0);
+  const rotateRoundTripErrorX = "rotate: clock/formatter produced an instant that does not represent `now()`; rotation was not recorded";
+  const originalToISOStringX = Date.prototype.toISOString;
+  try {
+    const garbageOldX = generateKeyPair("smoke:session-X:garbage-old");
+    const garbageNewX = generateKeyPair("smoke:session-X:garbage-new");
+    const garbageRotX = createRotatableSigner(garbageOldX, { now: () => poisonNowMsX });
+    const garbageRetiredBeforeX = JSON.stringify(garbageRotX.retiredKids());
+    let garbageErrorX;
+    Date.prototype.toISOString = () => "NOT-A-TIMESTAMP";
+    try {
+      garbageRotX.rotate(garbageNewX);
+    } catch (error) {
+      garbageErrorX = error;
+    }
+    ok(
+      "(x) attack A: garbage Date formatter output makes rotate throw and records nothing",
+      garbageErrorX?.message === rotateRoundTripErrorX
+        && JSON.stringify(garbageRotX.retiredKids()) === garbageRetiredBeforeX
+        && Object.keys(garbageRotX.retirements()).length === 0
+        && garbageRotX.currentKid === garbageOldX.kid,
+    );
+
+    const futureOldX = generateKeyPair("smoke:session-X:future-old");
+    const futureNewX = generateKeyPair("smoke:session-X:future-new");
+    const futureRotX = createRotatableSigner(futureOldX, { now: () => poisonNowMsX });
+    const futureRetiredBeforeX = JSON.stringify(futureRotX.retiredKids());
+    let futureErrorX;
+    Date.prototype.toISOString = () => "2099-01-01T00:00:00.000Z";
+    try {
+      futureRotX.rotate(futureNewX);
+    } catch (error) {
+      futureErrorX = error;
+    }
+    ok(
+      "(x) attack B: canonical FAR-FUTURE formatter output makes rotate throw and cannot move the retirement bound",
+      futureErrorX?.message === rotateRoundTripErrorX
+        && JSON.stringify(futureRotX.retiredKids()) === futureRetiredBeforeX
+        && Object.keys(futureRotX.retirements()).length === 0
+        && futureRotX.currentKid === futureOldX.kid,
+    );
+
+    Date.prototype.toISOString = originalToISOStringX;
+    const controlOldX = generateKeyPair("smoke:session-X:formatter-control-old");
+    const controlNewX = generateKeyPair("smoke:session-X:formatter-control-new");
+    const controlRotX = createRotatableSigner(controlOldX, { now: () => poisonNowMsX });
+    controlRotX.rotate(controlNewX);
+    ok(
+      "(x) control: unpoisoned rotate records the exact injected retirement instant",
+      controlRotX.retirements()[controlOldX.kid] === "2026-07-15T00:00:00.000Z"
+        && controlRotX.currentKid === controlNewX.kid,
+    );
+
+    const fractionalOldX = generateKeyPair("smoke:session-X:fractional-old");
+    const fractionalNewX = generateKeyPair("smoke:session-X:fractional-new");
+    const fractionalRotX = createRotatableSigner(fractionalOldX, { now: () => poisonNowMsX + 0.5 });
+    let fractionalErrorX;
+    try {
+      fractionalRotX.rotate(fractionalNewX);
+    } catch (error) {
+      fractionalErrorX = error;
+    }
+    ok(
+      "(x) control: a non-integer now() is refused with the integer-milliseconds reason and records nothing",
+      fractionalErrorX?.message === "rotate: clock `now()` must return integer epoch milliseconds"
+        && fractionalRotX.retiredKids().length === 0
+        && Object.keys(fractionalRotX.retirements()).length === 0
+        && fractionalRotX.currentKid === fractionalOldX.kid,
+    );
+  } finally {
+    Date.prototype.toISOString = originalToISOStringX;
+  }
+
   const storeX = createChainSessionStore();
   const kpXa = generateKeyPair("smoke:session-X:kidA");
-  const rotX = createRotatableSigner(kpXa);
+  const retirementInstantX = "2026-07-15T00:00:00.000Z";
+  const rotX = createRotatableSigner(kpXa, { now: () => Date.UTC(2026, 6, 15, 0, 0, 0, 0) });
   const sessXa = await makeSession({ sessionId: "session-Xa", store: storeX, signer: rotX });
   await sessXa.client.callTool({ name: "echo", arguments: { text: "xa1" } });
   await sessXa.client.callTool({ name: "echo", arguments: { text: "xa2" } });
   const segX_A = [...sessXa.receipts];
   await sessXa.close();
+
+  const oldOutcomeSignerX = { kid: kpXa.kid, privateKey: kpXa.privateKey };
+  const historicalOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_A[0], tool: "echo", outcome: "success", ts: "2026-07-14T23:59:59.999Z" },
+    oldOutcomeSignerX,
+  );
 
   const kpXb = generateKeyPair("smoke:session-X:kidB");
   rotX.rotate(kpXb);
@@ -1284,9 +1364,30 @@ async function main() {
   const segX_B = [...sessXb.receipts];
   await sessXb.close();
 
+  const retirementsX = typeof rotX.retirements === "function" ? rotX.retirements() : {};
+  const currentOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_B[0], tool: "echo", outcome: "success", ts: "2026-07-15T00:00:00.001Z" },
+    rotX,
+  );
+  const postRetirementOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_A[0], tool: "echo", outcome: "success", ts: "2099-01-01T00:00:00.000Z" },
+    oldOutcomeSignerX,
+  );
+  const malformedTsOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_A[0], tool: "echo", outcome: "success", ts: "not-an-instant" },
+    oldOutcomeSignerX,
+  );
+  const kpXStranger = generateKeyPair("smoke:session-X:stranger");
+  const unknownOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_A[0], tool: "echo", outcome: "success", ts: "2099-01-01T00:00:00.000Z" },
+    kpXStranger,
+  );
+
   ok("(x) segment A (2 receipts) all signed by the OLD kid", segX_A.length === 2 && segX_A.every((r) => r.sig.kid === kpXa.kid));
   ok("(x) segment B (2 receipts) all signed by the NEW kid — the new key is genuinely in use", segX_B.length === 2 && segX_B.every((r) => r.sig.kid === kpXb.kid));
   ok("(x) rotatable keyring carries BOTH the retired + current kid", rotX.keyring()[kpXa.kid] === kpXa.publicKey && rotX.keyring()[kpXb.kid] === kpXb.publicKey && rotX.retiredKids().join() === kpXa.kid);
+  ok("(x) keyring values remain flat base64 strings for verifyChain compatibility", Object.values(rotX.keyring()).every((value) => typeof value === "string"));
+  ok("(x) retirements exposes only the retired kid at the injected canonical instant", retirementsX[kpXa.kid] === retirementInstantX && retirementsX[kpXb.kid] === undefined);
   ok("(x) historical segment A still verifies under the OLD kid ALONE", verifyChain(b(segX_A), { keyring: b({ [kpXa.kid]: kpXa.publicKey }) }).status === "VALID");
   ok("(x) segment B verifies under the NEW kid alone", verifyChain(b(segX_B), { keyring: b({ [kpXb.kid]: kpXb.publicKey }) }).status === "VALID");
   ok(
@@ -1297,6 +1398,41 @@ async function main() {
   ok(
     `(x) segment B does NOT verify under the OLD-kid-only keyring (new kid unknown there) — proves the swap is real, not cosmetic (status=${segBOldOnlyX.status})`,
     segBOldOnlyX.status !== "VALID" && segBOldOnlyX.signaturesVerified === false && /kidB|not in keyring/i.test(segBOldOnlyX.reason ?? ""),
+  );
+  ok(
+    "(x) historical outcome signed BEFORE retirement still verifies when retirements are enforced",
+    verifyOutcomeReceipt(historicalOutcomeX, { keyring: rotX.keyring(), retirements: retirementsX }).ok === true,
+  );
+  ok(
+    "(x) current kid outcome still verifies when retirements are enforced",
+    verifyOutcomeReceipt(currentOutcomeX, { keyring: rotX.keyring(), retirements: retirementsX }).ok === true,
+  );
+  const unknownOutcomeResultX = verifyOutcomeReceipt(unknownOutcomeX, { keyring: rotX.keyring(), retirements: retirementsX });
+  ok(
+    "(x) unknown kid keeps the existing byte-identical refusal reason",
+    unknownOutcomeResultX.ok === false && unknownOutcomeResultX.reason === `kid ${JSON.stringify(kpXStranger.kid)} not in keyring`,
+  );
+  ok(
+    "(x) backward compatibility: omitting retirements still accepts the same retired-key receipt",
+    verifyOutcomeReceipt(postRetirementOutcomeX, { keyring: rotX.keyring() }).ok === true,
+  );
+  const retiredAttackResultX = verifyOutcomeReceipt(postRetirementOutcomeX, { keyring: rotX.keyring(), retirements: retirementsX });
+  ok(
+    "(x) retired kid cannot mint an outcome at or after its retirement instant",
+    retiredAttackResultX.ok === false && retiredAttackResultX.reason === `signing key ${JSON.stringify(kpXa.kid)} was retired at ${retirementInstantX}`,
+  );
+  const malformedRetiredAtResultX = verifyOutcomeReceipt(historicalOutcomeX, {
+    keyring: rotX.keyring(),
+    retirements: { [kpXa.kid]: "not-an-instant" },
+  });
+  ok(
+    "(x) malformed retiredAt fails closed",
+    malformedRetiredAtResultX.ok === false && malformedRetiredAtResultX.reason === `cannot evaluate retirement time for signing key ${JSON.stringify(kpXa.kid)}`,
+  );
+  const malformedTsResultX = verifyOutcomeReceipt(malformedTsOutcomeX, { keyring: rotX.keyring(), retirements: retirementsX });
+  ok(
+    "(x) malformed receipt ts fails closed for a retired kid",
+    malformedTsResultX.ok === false && malformedTsResultX.reason === `cannot evaluate retirement time for signing key ${JSON.stringify(kpXa.kid)}`,
   );
 
   // ---------------------------------------------------------------------------------------

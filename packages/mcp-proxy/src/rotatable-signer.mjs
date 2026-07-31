@@ -1,3 +1,5 @@
+import { parseCanonicalInstant } from "./outcome-receipt.mjs";
+
 /**
  * rotatable-signer.mjs (R2 #5) — signing-key ROTATION for the proxy's LOCAL signer.
  *
@@ -15,11 +17,18 @@
  *     keeps it firmly on the synchronous LOCAL path (this rotation helper is for local keys; a
  *     remote sidecar signer rotates on the sidecar's own side, out of this module's scope).
  *
- * `rotate(newKeyPair)` records the OUTGOING key's public key into a retired set and swaps the
- * current key in place. `keyring()` returns `{ [kid]: publicKey }` for retired + current keys — the
- * exact shape `verifyChain` / `verifyOutcomeReceipt` take — so every historical SEGMENT still
- * verifies (under just its own old kid, or under the combined keyring), while segments signed
- * post-rotation genuinely require the new kid (proving the swap is real, not cosmetic).
+ * `rotate(newKeyPair)` records the OUTGOING key's public key + retirement instant and swaps the
+ * current key in place. `keyring()` deliberately remains `{ [kid]: publicKey }` for retired +
+ * current keys — the exact string-valued shape `verifyChain` takes. The separate `retirements()`
+ * channel lets a library consumer pass the retirement bounds to `verifyOutcomeReceipt`, keeping
+ * pre-retirement receipts verifiable while refusing newly minted post-retirement evidence.
+ *
+ * This temporal defence is opt-in at verification for published-0.2.0 compatibility: a library
+ * consumer that adopts this documented rotation helper must pass BOTH `keyring()` and
+ * `retirements()`. Omitting `retirements()` intentionally preserves the old verification behaviour.
+ * The proxy CLI is not a caller of `createRotatableSigner` and its `--keyring-file` contains only
+ * the current key, so this exposure is the documented library-consumer rotation path, not every
+ * proxy user.
  *
  * ⚠️ ROTATE ONLY AT A CHAIN-SEGMENT BOUNDARY (between sessions, or at a process restart) — NEVER
  * mid-segment. This is a hard invariant, not a style preference: `verifyChain` enforces "one agent,
@@ -42,6 +51,7 @@
 
 /**
  * @param {{ kid: string, privateKey: string, publicKey: string }} initialKeyPair
+ * @param {{ now?: () => number }} [options] clock returning epoch milliseconds (defaults to Date.now)
  * @returns {{
  *   readonly kid: string,
  *   readonly privateKey: string,
@@ -49,15 +59,19 @@
  *   readonly currentKid: string,
  *   rotate: (newKeyPair: { kid: string, privateKey: string, publicKey: string }) => any,
  *   keyring: () => Record<string,string>,
+ *   retirements: () => Record<string,string>,
  *   retiredKids: () => string[],
  * }}
  */
-export function createRotatableSigner(initialKeyPair) {
+export function createRotatableSigner(initialKeyPair, options = {}) {
   if (!initialKeyPair || !initialKeyPair.kid || !initialKeyPair.privateKey || !initialKeyPair.publicKey) {
     throw new Error("createRotatableSigner: `initialKeyPair` with { kid, privateKey, publicKey } is required");
   }
+  const now = options?.now ?? Date.now;
+  if (typeof now !== "function") throw new Error("createRotatableSigner: `now` must be a function");
   let current = { ...initialKeyPair };
-  const retired = new Map(); // kid -> publicKey (historical verification material only; NO private keys kept)
+  // kid -> { publicKey, retiredAt }; historical verification material only, with NO private keys kept.
+  const retired = new Map();
 
   const signer = {
     // Live getters — buildReceipt reads `signer.kid` / `signer.privateKey` fresh on every call, so a
@@ -84,16 +98,35 @@ export function createRotatableSigner(initialKeyPair) {
       if (retired.has(newKeyPair.kid)) {
         throw new Error(`rotate: kid "${newKeyPair.kid}" was already retired — refusing to re-activate a retired signing identity`);
       }
-      // Keep ONLY the retiring key's PUBLIC material for historical verification; drop its private key.
-      retired.set(current.kid, current.publicKey);
+      const nowMs = now();
+      if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) {
+        throw new Error("rotate: clock `now()` must return finite epoch milliseconds");
+      }
+      if (!Number.isInteger(nowMs)) {
+        throw new Error("rotate: clock `now()` must return integer epoch milliseconds");
+      }
+      // WITHDRAWN CLAIM (preserved verbatim): "It either yields the required YYYY-MM-DDTHH:MM:SS.mmmZ form or throws before state changes, so a malformed retirement instant can never be recorded by this helper."
+      // That claim trusted mutable Date.prototype.toISOString. The formatter output is now accepted
+      // only when the Date-free canonical parser round-trips it to the injected clock exactly.
+      const retiredAt = new Date(nowMs).toISOString();
+      if (parseCanonicalInstant(retiredAt) !== nowMs) {
+        throw new Error("rotate: clock/formatter produced an instant that does not represent `now()`; rotation was not recorded");
+      }
+      // Keep ONLY the retiring key's PUBLIC material + retirement bound; drop its private key.
+      retired.set(current.kid, { publicKey: current.publicKey, retiredAt });
       current = { ...newKeyPair };
       return signer;
     },
     keyring() {
       const kr = {};
-      for (const [kid, pub] of retired) kr[kid] = pub;
+      for (const [kid, entry] of retired) kr[kid] = entry.publicKey;
       kr[current.kid] = current.publicKey; // current wins if a kid somehow appears twice (it cannot)
       return kr;
+    },
+    retirements() {
+      const bounds = {};
+      for (const [kid, entry] of retired) bounds[kid] = entry.retiredAt;
+      return bounds;
     },
     retiredKids() {
       return [...retired.keys()];

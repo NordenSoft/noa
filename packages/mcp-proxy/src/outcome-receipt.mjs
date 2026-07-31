@@ -105,6 +105,63 @@ function signingBytes(unsigned) {
   return Buffer.from(OUTCOME_SIG_DOMAIN + "\n" + canonicalize(unsigned), "utf8");
 }
 
+// Security-time parser for retirement enforcement. Outcome timestamps produced by this module and
+// retirement timestamps produced by rotatable-signer.mjs use this one canonical UTC form. Do not
+// replace this with Date.parse: permissive host parsing previously admitted non-canonical security
+// timestamps elsewhere in this repository.
+const CANONICAL_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
+
+function integerQuotient(nonNegative, divisor) {
+  return (nonNegative - (nonNegative % divisor)) / divisor;
+}
+
+function isLeapYear(year) {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function daysInMonth(year, month) {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  if (month === 4 || month === 6 || month === 9 || month === 11) return 30;
+  return 31;
+}
+
+/** Days since 1970-01-01, using the proleptic Gregorian calendar. */
+function daysFromCivil(year, month, day) {
+  const shiftedYear = year - (month <= 2 ? 1 : 0);
+  const era = shiftedYear < 0 ? -1 : integerQuotient(shiftedYear, 400);
+  const yearOfEra = shiftedYear - era * 400;
+  const shiftedMonth = month + (month > 2 ? -3 : 9);
+  const dayOfYear = integerQuotient(153 * shiftedMonth + 2, 5) + day - 1;
+  const dayOfEra = yearOfEra * 365
+    + integerQuotient(yearOfEra, 4)
+    - integerQuotient(yearOfEra, 100)
+    + dayOfYear;
+  return era * 146_097 + dayOfEra - 719_468;
+}
+
+export function parseCanonicalInstant(value) {
+  if (typeof value !== "string" || !CANONICAL_INSTANT.test(value)) return NaN;
+  const digit = (offset) => +value[offset];
+  const twoDigits = (offset) => digit(offset) * 10 + digit(offset + 1);
+  const year = digit(0) * 1_000 + digit(1) * 100 + digit(2) * 10 + digit(3);
+  const month = twoDigits(5);
+  const day = twoDigits(8);
+  const hour = twoDigits(11);
+  const minute = twoDigits(14);
+  const second = twoDigits(17);
+  const millisecond = digit(20) * 100 + digit(21) * 10 + digit(22);
+
+  if (month < 1 || month > 12) return NaN;
+  if (day < 1 || day > daysInMonth(year, month)) return NaN;
+  if (hour > 23 || minute > 59 || second > 59) return NaN;
+
+  return daysFromCivil(year, month, day) * 86_400_000
+    + hour * 3_600_000
+    + minute * 60_000
+    + second * 1_000
+    + millisecond;
+}
+
 /**
  * Builds + signs an outcome receipt with a LOCAL `{ kid, privateKey }` signer (sync fast path,
  * mirrors noa-receipt's buildReceipt()).
@@ -131,15 +188,20 @@ export async function buildOutcomeReceiptAsync({ decisionReceipt, tool, outcome,
 
 /**
  * Fully-offline verification of an outcome receipt. Pure function of (receipt, keyring[, expected
- * decision]). Returns `{ ok, reason?, decisionId?, status? }` — never throws.
+ * decision, retirements]). Returns `{ ok, reason?, decisionId?, status? }` — never throws.
  *
  * @param {object} outcomeReceipt
- * @param {{ keyring: Record<string,string>, expectedDecisionReceipt?: object }} opts
+ * @param {{ keyring: Record<string,string>, expectedDecisionReceipt?: object,
+ *   retirements?: Record<string,string> }} opts
  *   `keyring` maps kid -> base64 SPKI public key (same shape verifyChain takes). When
  *   `expectedDecisionReceipt` is given, ALSO asserts the outcome is bound to THAT exact decision
  *   (id + chain.hash) — catches a signed-but-mismatched outcome spliced next to the wrong decision.
+ *   When `retirements` is supplied, a retired kid may verify only receipts strictly before its
+ *   canonical retirement instant. This separate channel preserves the string-valued keyring
+ *   contract. Omitting it deliberately preserves published-0.2.0 behaviour, so library consumers
+ *   adopting rotation must pass both `rot.keyring()` and `rot.retirements()` to activate the bound.
  */
-export function verifyOutcomeReceipt(outcomeReceipt, { keyring, expectedDecisionReceipt } = {}) {
+export function verifyOutcomeReceipt(outcomeReceipt, { keyring, expectedDecisionReceipt, retirements } = {}) {
   try {
     if (!outcomeReceipt || typeof outcomeReceipt !== "object") return { ok: false, reason: "not an object" };
     if (outcomeReceipt.spec !== OUTCOME_RECEIPT_SPEC) return { ok: false, reason: `not an outcome receipt (spec ${JSON.stringify(outcomeReceipt.spec)})` };
@@ -154,6 +216,22 @@ export function verifyOutcomeReceipt(outcomeReceipt, { keyring, expectedDecision
     const pub = keyring?.[sig.kid];
     if (!pub) return { ok: false, reason: `kid ${JSON.stringify(sig.kid)} not in keyring` };
     if (!verifyEd25519(pub, signingBytes(unsigned), sig.value)) return { ok: false, reason: "signature mismatch" };
+    if (retirements !== undefined) {
+      if (retirements === null || typeof retirements !== "object") {
+        return { ok: false, reason: "malformed retirements" };
+      }
+      if (Object.prototype.hasOwnProperty.call(retirements, sig.kid)) {
+        const retiredAt = retirements[sig.kid];
+        const retirementTime = parseCanonicalInstant(retiredAt);
+        const receiptTime = parseCanonicalInstant(unsigned.ts);
+        if (Number.isNaN(retirementTime) || Number.isNaN(receiptTime)) {
+          return { ok: false, reason: `cannot evaluate retirement time for signing key ${JSON.stringify(sig.kid)}` };
+        }
+        if (receiptTime >= retirementTime) {
+          return { ok: false, reason: `signing key ${JSON.stringify(sig.kid)} was retired at ${retiredAt}` };
+        }
+      }
+    }
     if (expectedDecisionReceipt) {
       if (
         unsigned.decision.id !== expectedDecisionReceipt.id ||

@@ -136,13 +136,20 @@ npm test   # node test/smoke.mjs — real child processes, real MCP Client/Serve
   session (the same one-downstream-per-session model as stdio).
 - **Signing identity persistence is opt-in, not automatic — and (R2) key rotation is now supported
   as a capability.** Without `--key-file`, `proxy.mjs` still generates a fresh Ed25519 keypair every
-  process start (the original, unchanged default). `src/rotatable-signer.mjs`'s
-  `createRotatableSigner` retires an old `kid` while keeping historical receipts verifiable under a
-  multi-key keyring, and new receipts sign under the new `kid` (Scenario X). Hard invariant: rotate
-  ONLY at a chain-SEGMENT boundary (between sessions / at restart) — a mid-chain `kid` swap for one
-  agent is flagged `TAMPERED` by `verifyChain` by design. Rotation covers the LOCAL signer; a remote
-  `--signer-socket` sidecar rotates on its own side. A production rotation *policy* (when/how often)
-  remains a deployment concern.
+  process start (the original, unchanged default). **Correction to the prior rotation claim:**
+  “`createRotatableSigner` retires an old `kid` while keeping historical receipts verifiable under a
+  multi-key keyring, and new receipts sign under the new `kid` (Scenario X).” More precisely,
+  `keyring()` intentionally remains a flat `kid -> base64 publicKey` map so `verifyChain` keeps
+  working, while `retirements()` separately returns `kid -> retiredAt`. A library verifier must pass
+  both to `verifyOutcomeReceipt(receipt, { keyring: rot.keyring(), retirements: rot.retirements() })`:
+  receipts dated strictly before retirement remain verifiable, while receipts at or after retirement
+  are refused. Omitting `retirements` deliberately preserves published-0.2.0 behaviour and therefore
+  leaves that library consumer exposed to post-retirement minting. The CLI does not import this
+  rotation helper and its `--keyring-file` contains only the current key, so this is the documented
+  library-consumer path, not every proxy user. Hard invariant: rotate ONLY at a chain-SEGMENT boundary
+  (between sessions / at restart) — a mid-chain `kid` swap for one agent is flagged `TAMPERED` by
+  `verifyChain` by design. Rotation covers the LOCAL signer; a remote `--signer-socket` sidecar rotates
+  on its own side. A production rotation *policy* (when/how often) remains a deployment concern.
 - **`--key-file` gives restart-continuity of the SIGNING IDENTITY, not of one CHAIN — unless you
   ALSO configure `--session-dir`.** Reusing the same `--key-file` across a restart keeps every
   receipt (before AND after the restart) verifiable under the SAME `kid`/external keyring — but by
