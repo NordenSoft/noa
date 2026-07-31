@@ -225,3 +225,62 @@ The honest options, in the order I would take them:
 **None blocking.** Task #42 (8 leftover PITR services, ~12.4 GB) and #48 still await authorization and
 remain untouched. Standing: no merge, push, publish, release, deploy, Railway/production/PITR change,
 or secret/KMS/IAM/role/ACL/grant/migration change. ADR-0006 not started.
+
+---
+
+## PAUSED 2026-07-31 — where to resume
+
+**HEAD `9fb2655` · 35 commits ahead of `b163e7d` · working tree CLEAN · nothing pushed.**
+Backup: `~/.claude/backups/noa-receipt-adr5-impl/*-bundle/impl-adr-0005.bundle`, verified restorable
+(`git bundle verify` → *"records a complete history"*).
+
+### Closed this session, each with a knockout observed red then restored
+
+| | |
+|---|---|
+| `b841bab` | **R8-13** the rate-limit key was the caller's own bearer string. 400 rotating bearers → 0 throttles; `/v1/devices` minted 200 credentials unthrottled. Peer bucket now spent first; table bounded. |
+| `2fde754` | **R8-11** any customer could publish another's key manifest, and wedge the victim's rotation with `409 MANIFEST_EQUIVOCATION`. `tenant` now bound at pairing from the operator-issued token; `null` fails closed. |
+| `9fb2655` | **R8-07** enrolment openness was inferred from a bind address. Now an explicit opt-in, and it cannot override DETECTED exposure — three pre-existing tests caught my first ordering. |
+
+### THE FINDING THAT OUTRANKS ALL OF THEM
+
+```
+gh api .../actions/runs?head_sha=<HEAD>  →  0
+git ls-remote origin 'refs/heads/impl/*' →  (empty)
+ci.yml:7  branches: [main, 'arp-interop-response-*']
+```
+
+**No hosted CI run has ever executed for this branch.** The rename silently un-gated the trigger, so
+every number quoted anywhere in this file — and in the commit messages above — has only ever run on
+one laptop. Fable's phrasing: *"every number this project quotes is a claim about one unshared
+laptop, including the ones in this report."*
+
+**OWNER DECISION, and it is #1 ahead of every security fix:** push the branch and add `impl/*` to
+`ci.yml:7`. Two lines and a `git push`. Not done — the standing order forbids pushing.
+
+### NEXT, in Fable's dependency order (55 findings → 11 structural changes)
+
+1. **CI + push** (owner).
+2. `scripts/lib/verdict.mjs` — a gate that examined nothing must not be green. Retires R8-23/25/26/36.
+3. `scripts/lib/enumerate.mjs` — **nine** independent file walkers exist; the symlink/extension fix
+   landed on two. Do NOT patch R8-28/R8-30 separately — that would be the fourth instance-level patch
+   of this class.
+4. Exemption records + missing-subject rule (R8-29, R8-23).
+5. Knockout hardening: private worktree, known baseline, registry reconciled (R8-26/27/32 + the four
+   ADR-promised gates G3–G6 that were never written).
+6. `Principal` brand (R8-09, R8-12, `ownerDevice`).
+7. `Derived<T>` — **absorbs R8-18; do not land it standalone or it gets rewritten.**
+8. AAD egress topology · intrinsics export · unwired-field lint.
+9. Claim tokens + generated status lines (retires C01/C02/C03/C09/C13/C16/C19, C14/C15/C17).
+
+### Open, recorded, NOT fixed
+
+- **`check:inert-core` is RED right now** — `packages/approval-artifacts/src/inert-core/intrinsics.ts`
+  is STALE and still carries the withdrawn paragraph corrected in the source on 2026-07-30. One
+  command: `node scripts/sync-inert-core.mjs`.
+- **e2e-demo leaks servers on its error path.** A failed device registration never closes the
+  gate/relay, so node never exits. Eight such processes accumulated at 0.0% CPU holding 42 sockets,
+  and I reported them as "running" when they were deadlocked. The config is fixed; the error path
+  is not.
+- Convergence **0/2**. Kimi's account is suspended (insufficient balance), so round 9 has no second
+  cross-family voice.
