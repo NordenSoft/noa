@@ -27,6 +27,12 @@
  */
 
 import { canonicalize, sha256Prefixed, parseDocument } from "noa-approval-artifacts";
+// R8-08: reached through the ALREADY-PUBLISHED `intrinsics` namespace (src/index.ts:81)
+// rather than a new top-level export. Adding one tripped L1 and the C2 registry test —
+// correctly: a new name on a published surface is a permanent compatibility commitment,
+// and this needs no new name at all.
+import { intrinsics } from "noa-receipt";
+const { hasOwn } = intrinsics;
 import type { ProjectionId, RiskClass } from "./types.js";
 
 export interface ProjectionResult {
@@ -98,7 +104,7 @@ function classifyShellCommand(executable: string, argv: readonly string[]): Risk
     const a = argv[i];
     if (a === "-rf" || a === "-fr" || a === "--force" || a === "--no-preserve-root") return "CRITICAL";
   }
-  if (Object.prototype.hasOwnProperty.call(REVIEWED_EXECUTABLES, executable)) {
+  if (hasOwn(REVIEWED_EXECUTABLES, executable)) {
     return REVIEWED_EXECUTABLES[executable]!;
   }
   // FAIL CLOSED. Unreviewed executable ⇒ highest tier. This is the register's requirement and the
@@ -381,5 +387,5 @@ const REGISTRY: Readonly<Record<string, DisplayProjection>> = Object.freeze(
  * `test/provenance-regression.test.ts`.
  */
 export function getProjection(canonical: string): DisplayProjection | undefined {
-  return Object.prototype.hasOwnProperty.call(REGISTRY, canonical) ? REGISTRY[canonical] : undefined;
+  return hasOwn(REGISTRY, canonical) ? REGISTRY[canonical] : undefined;
 }

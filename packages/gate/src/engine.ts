@@ -20,6 +20,12 @@
  */
 
 import { parseDocument, verifyArtifact, refHash, receiptRefHash } from "noa-approval-artifacts";
+// R8-08: reached through the ALREADY-PUBLISHED `intrinsics` namespace (src/index.ts:81)
+// rather than a new top-level export. Adding one tripped L1 and the C2 registry test —
+// correctly: a new name on a published surface is a permanent compatibility commitment,
+// and this needs no new name at all.
+import { intrinsics } from "noa-receipt";
+const { hasOwn } = intrinsics;
 import { verifyChain } from "noa-receipt";
 import type { GateConfig } from "./config.js";
 import type { Store } from "./store.js";
@@ -71,16 +77,46 @@ interface Waiter {
 
 const RISK_CLASSES: ReadonlySet<string> = new Set(["LOW", "MEDIUM", "HIGH", "CRITICAL", "IRREVERSIBLE"]);
 
-/** Total order over risk classes. Used ONLY to take a maximum: a caller hint may RAISE the derived
- *  floor and may never lower it (B-1, owner decision 2026-07-30). Frozen so no code — ours or a
- *  dependency's — can reorder severity at runtime and thereby invert the max. */
+/**
+ * Total order over risk classes. Used ONLY to take a maximum: a caller hint may RAISE the derived
+ * floor and may never lower it (B-1, owner decision 2026-07-30).
+ *
+ * ⚠ CORRECTED 2026-07-31 (R8-08). This comment used to end: *"Frozen so no code — ours or a
+ * dependency's — can reorder severity at runtime and thereby invert the max."* That was measurably
+ * FALSE, and the measurement is the reason this paragraph is longer than the code it describes.
+ *
+ * Freezing protects the TABLE'S VALUES, and they were never the way in. The LOOKUP was
+ * `Object.prototype.hasOwnProperty.call(...)` — an ambient method any module in the realm can
+ * replace. Poisoned to return `true`, the lookup "succeeds" with `undefined`, `riskRank(undefined)`
+ * is `undefined`, `undefined >= 0` is false, and `maxRisk` returns the caller's hint. Measured on
+ * this tree, same request both times:
+ *
+ *     clean      /usr/bin/python3 -c "import shutil; shutil.rmtree('/srv')"  ->  CRITICAL
+ *     poisoned   the identical request                                        ->  undefined
+ *
+ * downstream of which an `approve-high` device authorized a recursive filesystem deletion and the
+ * gate issued a signed grant.
+ *
+ * ADR-0002 §3 item 1 orders exactly this class of claim removed, so the claim is gone. What stands
+ * in its place is narrower and true: the table is frozen AND null-rooted so its values cannot be
+ * reordered, and the lookup is routed through `hasOwn` — a module-load capture invoked through a
+ * captured `Reflect.apply`. Neither closes the PRE-LOAD window; that residual is ADR-0002's, and it
+ * is why the security property belongs to the out-of-process kernel rather than to this file.
+ */
 const RISK_ORDER: Readonly<Record<string, number>> = Object.freeze(
   Object.assign(Object.create(null) as Record<string, number>, {
     LOW: 0, MEDIUM: 1, HIGH: 2, CRITICAL: 3, IRREVERSIBLE: 4,
   }),
 );
 const riskRank = (r: string): number =>
-  Object.prototype.hasOwnProperty.call(RISK_ORDER, r) ? RISK_ORDER[r]! : Number.MAX_SAFE_INTEGER;
+  // R8-08 (2026-07-31): `hasOwn` is a MODULE-LOAD capture dispatched through a captured
+  // Reflect.apply (src/intrinsics.ts:483), not the ambient prototype method. Measured before this
+  // change, with `Object.prototype.hasOwnProperty` replaced AFTER module load:
+  //     clean     /usr/bin/python3 -c "shutil.rmtree('/srv')"  ->  derivedRisk CRITICAL
+  //     poisoned  the same request                             ->  derivedRisk undefined
+  // `undefined >= 0` is false, so maxRisk returned the CALLER's hint and an approve-high device
+  // authorized a recursive filesystem deletion under a gate-signed grant.
+  hasOwn(RISK_ORDER, r) ? RISK_ORDER[r]! : Number.MAX_SAFE_INTEGER;
 /** The caller may only tighten. An UNRECOGNISED hint ranks as maximum, so it cannot be used to lower. */
 const maxRisk = (a: string, b: string): string => (riskRank(a) >= riskRank(b) ? a : b);
 
