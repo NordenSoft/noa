@@ -170,11 +170,24 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
 
   const keyManifestHash = refHash(keyManifest);
 
+  // ── P0-5 (2026-07-31): THIS RESOLVER WAS THE THIRD ONE, AND IT DROPPED `validFrom` ───────────
+  // The key manifest built 30 lines above declares `validFrom` on every key (:145, :154, …). This
+  // keyring — the one `engine.ts:711` hands to `verifyArtifact` for LIVE Decision verification —
+  // was rebuilt from the same inputs WITHOUT it, so `verifyArtifact` saw `undefined` and skipped
+  // the activation check entirely. A future-activated approver could sign before activation and
+  // pass. Current alpha constructors choose a past `validFrom`, which bounds the exposure, but
+  // `createGate` accepts an injected `GateTrust`.
+  //
+  // I fixed the EVIDENCE resolver for this same class one batch earlier and wrote a test asserting
+  // "the ROOT path and the MANIFEST path carry activation the SAME way" — without asking whether a
+  // THIRD resolver existed. It did, and it is this one. That is the "fix landed on one sibling"
+  // pattern for the third time in this file family; the parity test added with this change is what
+  // makes a fourth one fail loudly instead of silently.
   const keyring: Record<string, KeyEntry> = {
-    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], revokedAt: null },
-    [approver.kid]: { publicKey: approver.publicKey, type: "APPROVER", roles: [approverRole], revokedAt: null },
-    [authority.kid]: { publicKey: authority.publicKey, type: "DELEGATED", roles: ["key-manifest-sign"], revokedAt: null },
-    [root.kid]: { publicKey: root.publicKey, type: "ROOT", roles: [], revokedAt: null },
+    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], validFrom, revokedAt: null },
+    [approver.kid]: { publicKey: approver.publicKey, type: "APPROVER", roles: [approverRole], validFrom, revokedAt: null },
+    [authority.kid]: { publicKey: authority.publicKey, type: "DELEGATED", roles: ["key-manifest-sign"], validFrom, revokedAt: null },
+    [root.kid]: { publicKey: root.publicKey, type: "ROOT", roles: [], validFrom, revokedAt: null },
   };
   const receiptKeyring: Record<string, string> = {
     [gate.kid]: gate.publicKey,

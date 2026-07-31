@@ -94,9 +94,46 @@ function computeRefHash(rule: "side" | "receipt" | "virtual", artifact: unknown)
   return refHash(artifact);
 }
 
+/**
+ * ── P0-6 (2026-07-31): `Date.parse` IS NOT A SECURITY PARSER ──────────────────────────────────
+ * This returned `pristineDateParse(v)` for any string. `Date.parse` does not reject malformed
+ * input — it NORMALISES it into a plausible instant, and every comparison below then treats that
+ * invented instant as the declared one. MEASURED end to end against the shipped decision vector,
+ * with the unmodified vector ACCEPTED in the same run as the control:
+ *
+ *     validFrom "0"            -> Date.parse => 1999-12-31  -> key ACCEPTED (a past instant)
+ *     validFrom "2026-02-30"   -> Date.parse => 2026-03-02  -> key ACCEPTED (the day does not exist)
+ *     validFrom "" / "   " / not-a-timestamp -> NaN          -> refused, as intended
+ *
+ * So an operator who declares a FUTURE activation and mistypes it gets a key that is silently
+ * active already. (An attacker who can author the key record gains nothing they did not already
+ * have — this is an operator-error amplifier, not an authorization bypass, and it is recorded at
+ * that severity rather than inflated.)
+ *
+ * The parser is now STRICT: exactly the canonical form this project already emits everywhere —
+ * `YYYY-MM-DDTHH:MM:SS[.mmm]Z` — and the calendar round-trip check rejects a date that does not
+ * exist rather than rolling it forward. Anything else is `NaN`, and every caller below already
+ * treats `NaN` as fail-closed.
+ *
+ * COMPATIBILITY MEASURED BEFORE THIS CHANGE, not after: 1727 timestamps across the shipped
+ * conformance corpora were scanned; **0** are non-canonical-but-parseable, so no record that
+ * verified before stops verifying now.
+ *
+ * Fixed HERE rather than in a separate activation-only parser, deliberately: all 11 comparisons in
+ * this file are security comparisons, and giving activation its own parser would create exactly the
+ * resolver drift this batch exists to close.
+ */
+const CANONICAL_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+
 function parseTime(v: unknown): number {
   if (typeof v !== "string") return NaN;
-  return pristineDateParse(v);
+  if (!CANONICAL_INSTANT.test(v)) return NaN;
+  const ms = pristineDateParse(v);
+  if (Number.isNaN(ms)) return NaN;
+  // Reject a syntactically canonical but non-existent date (e.g. 2026-02-30, which `Date.parse`
+  // rolls forward to 2026-03-02). A round trip through the ISO form is the cheapest exact check.
+  const iso = new Date(ms).toISOString();
+  return iso.slice(0, 19) === v.slice(0, 19) ? ms : NaN;
 }
 
 /** Artifact fields that declare the identity of their own signer, independent of caller context. */
