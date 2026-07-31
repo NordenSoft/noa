@@ -9,6 +9,71 @@
 · 54 commits ahead of baseline `b163e7d` · working tree **clean** · **nothing pushed** (no upstream on
 this branch) · tree `cd16e5f2f47ab26089b14d5c31592e82ca995cc4`
 
+### DEFECT B — CANONICALIZATION COLLAPSE · VERDICT: DEFECT_B_COLLISIONS_CLOSED
+
+Closed at `c07a63b` + `c4102c9`. Three root causes, all found by BUILDING the 30-row collision
+matrix rather than by reading the code.
+
+**The tested domain — the verdict applies to this and nothing wider.** 30 candidate pairs across
+absence/emptiness, scalar representation, shape, Unicode, object/array exotica, receipt-schema
+specifics and meaning-bearing values; exercised through three entry points, labelled per row:
+`P` the REAL producer (`buildReceipt`), `V` the REAL root verifier (`verifyChain`), `J` the
+canonicalizer alone. Plus four live-global poison channels. NOT collision-free outside this domain.
+
+```
+DISTINCT_AND_DISTINCT_COMMITMENT  20      INTENTIONAL_EQUIVALENCE  2
+REJECTED                           5      COLLISION_CONFIRMED      3  -> all closed
+```
+
+**The three collisions, and what each cost:**
+
+| # | collision | reachable via | outcome |
+|---|---|---|---|
+| B/1 | own NON-ENUMERABLE property: `jcs.ts` walks `Object.keys` (own+**enumerable**), `deep-copy.ts` walks `getOwnPropertyNames` (own, **incl. non-enumerable**) and promotes to enumerable | real producer | signed `governance` had no approval; returned `governance` carried `HUMAN:cfo-victim`; root verdict **TAMPERED** |
+| B/2 | array with a NAMED property canonicalized identically to one without — `[1]` either way | `canonicalize` public export only (producer and wire both refuse) | two distinct values, one commitment, in the function whose job is injectivity |
+| B/3 | four live-global channels in `jcs.ts` | any same-realm code | see below |
+
+B/3's four channels, each measured with a live control:
+```
+Array.prototype.sort -> empties    {a:1,b:2} and {x:"production.delete.all"} BOTH -> "{}"
+Array.prototype.sort -> identity   SAME document, two key orders -> TWO canonical forms
+Object.keys -> []                  fields vanish from the commitment
+String.prototype.isWellFormed->true  U+D800 -> 7b2273223a22efbfbd227d
+                                     U+D801 -> 7b2273223a22efbfbd227d   IDENTICAL
+```
+The last is the channel `serializeString`'s own comment describes — 2048 code points into one hash
+bucket — and the check closing it was reading a writable global.
+
+**Two INTENTIONAL equivalences, now documented AND tested** (owner's rule): property ORDER (JCS
+sorts by UTF-16 code unit) and `-0` vs `0` (RFC 8785 serialises both as `"0"`; the test asserts the
+runtime still distinguishes them, or the equivalence has gone vacuous).
+
+**Three matrix rows were MY error, not the code's**, recorded because a matrix that miscounts
+pessimistically is as wrong as one that miscounts optimistically:
+- `1` vs `1.0` — not a collision. JS has ONE number type; `Object.is(1.0, 1)` is `true`.
+- inherited vs own property — not a collision. `JSON.stringify` agrees that inherited properties are
+  not part of the document. Chasing this false positive is what surfaced B/1 next door.
+
+**Wire-semantics gate — MEASURED, not asserted.** `gen:vectors` → **0** conformance files changed ·
+G2 golden parity 5/5 byte-identical to the root builder · root 518/518 including the RFC 8785,
+locale-free ordering and UTF-16 edge corpora. No wire bytes, paramsHash, action commitment, chain
+hash, signature pre-image, stored-receipt compatibility or cross-language parity changed. **No owner
+decision triggered.**
+
+**Cross-language (Phase 7) — PASS, but WEAKLY independent, and it must be read that way.**
+```
+impl-py PASS · impl-go 47/47 · impl-rust 38/38 curated + 40/40 sweep · impl-csharp 40/40
+```
+All three of go/rust/csharp compare against **impl-py**, not against the TS reference and not against
+each other — a STAR topology, not a mesh. All five implementations share one author and one spec.
+And the behaviours changed here have **no cross-language analogue at all**: mutable prototypes,
+own non-enumerable properties and named array properties do not exist in Rust/Go/C#. For Defect B's
+specific collisions, cross-language consensus is **untested and largely untestable** — neither
+passing nor failing. Reported rather than counted as corroboration.
+
+**Residual, explicitly open:** the capture defence is POST-load only. A pre-load poison is captured
+INTO these bindings. Same bound as `hash.ts` and `deep-copy.ts` — see CORRECTIONS.md C-6.
+
 ### PHASE 1 KNOCKOUT REGISTRY — measured 2026-07-31 at `7e5c579`, 43 entries
 
 ```
