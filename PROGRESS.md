@@ -5,9 +5,45 @@
 > **How to read this file.** I do not run continuously. This file is written at the end of each work
 > block; its timestamp is the last moment work happened, not "now".
 
-**Last updated:** 2026-07-31 · branch `impl/adr-0005-trusted-input-provenance` · HEAD `0341351`
-· 47 commits ahead of baseline `b163e7d` · working tree **clean** · **nothing pushed** (no upstream on
-this branch)
+**Last updated:** 2026-07-31 · branch `impl/adr-0005-trusted-input-provenance` · HEAD `7e5c579`
+· 54 commits ahead of baseline `b163e7d` · working tree **clean** · **nothing pushed** (no upstream on
+this branch) · tree `cd16e5f2f47ab26089b14d5c31592e82ca995cc4`
+
+### PHASE 1 KNOCKOUT REGISTRY — measured 2026-07-31 at `7e5c579`, 43 entries
+
+```
+VALID 38 · UNTESTED 5 · INVALID 0 · DUPLICATE 0 · ADR_0006_DEFERRED 0
+```
+
+The five UNTESTED, by stable id — these stay OPEN AND VISIBLE (owner instruction); none is labelled
+INVALID until a detector genuinely turns RED:
+
+```
+t19-validator-index-walk        suite stayed GREEN without the control
+r4-a2-noextrakeys-index-walk    suite stayed GREEN without the control
+r4-a2-checkpoint-index-walk     suite stayed GREEN without the control
+r4-a2-manifest-index-walk       suite stayed GREEN without the control
+g4-render-node-single-input     ANTI_VACUITY_FAILED — no failure beyond the 2-failure baseline
+```
+
+`INVALID` is 0 because nothing earned it, not because nothing is wrong. `g4` is the closest
+candidate — `projections.ts:148` already ADMITS in a comment that it survives its own knockout —
+but an author's admission is not a measurement, so it stays UNTESTED.
+
+`ADR_0006_DEFERRED` is 0 and that is stated rather than left blank: the gate suite's two persistent
+failures ARE the owner-deferred ADR-0006 pair, but they are TEST failures, not registry entries, and
+the runner subtracts them as a measured baseline. No knockout entry is blocked by ADR-0006.
+
+RESIDUE, verified rather than assumed: dirty 0 · tree hash identical before and after
+(`cd16e5f2…`) · 0 RESTORATION-UNPROVEN · 0 `noa-receipt` node processes. Two node listeners on
+:8800/:8765 are the operator's own Claude dashboards started three hours earlier, NOT leaked by this
+run — checked before reporting. 206 rebuilt files under `dist/` are expected and gitignored.
+
+Per-entry guarantees are structural, not inspected by hand: a `find` matching ≠1 site is
+MUTATION_NOT_APPLIED, a byte-identical mutation is rejected as a no-op, restoration is hash-compared
+per file, and since `f99a944` a non-compiling mutation is MUTATION_DID_NOT_BUILD and can never score
+as a kill. All 43 passed those gates: 0 MUTATION_NOT_APPLIED, 0 MUTATION_DID_NOT_BUILD, 0
+INVALID_TEST, 0 unproven restorations.
 
 **Context that sets the bar:** 5 customers are ready to go live on request, and expect hostile traffic
 immediately. A breach at launch is not recoverable. So the standard is *the shortest path we never
