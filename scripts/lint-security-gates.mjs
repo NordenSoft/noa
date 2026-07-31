@@ -279,6 +279,35 @@ function reconcileTCB() {
   // patched at the instance three times and a fourth would have left six other walkers keeping it.
   const seen = fileSetUnder(ROOT, "src");
   let n = tcbMembershipFromExports();
+
+  // ── R8-29 (2026-07-31): AN EXEMPTION WITHOUT A REASON IS NOT AN EXEMPTION ─────────────────────
+  // Membership was tested `f in OUT_OF_TCB` (below), which reads the KEY and never the value. So a
+  // blank string exempted anything, and the relay's twin table 400 lines down ALREADY rejected
+  // exactly that — the asymmetry between two tables in one file is what made this findable.
+  //
+  // MEASURED, in an isolated copy, by moving one LIVE decision path out of the TCB:
+  //     `"src/scan.ts": ""`  ->  L0 0, L2 0, L8 0, suite exit 0
+  // `src/scan.ts` is the format scanner. It left the trusted computing base silently, and three
+  // gates that exist to watch it reported nothing.
+  //
+  // The reason IS the exemption. Empty, it is a hole with a filename.
+  for (const [f, why] of Object.entries(OUT_OF_TCB)) {
+    if (typeof why !== "string" || why.trim().length === 0) {
+      add("L0", f, 0,
+        "exempted from the TCB with an EMPTY reason — an unjustified exemption is indistinguishable " +
+        "from an unnoticed gap. State what this file does and why it is not a decision path, or " +
+        "classify it in TCB.");
+      n++;
+    }
+  }
+  emitVerdict({ gate: "L0", subject: "src modules", examined: seen.size });
+  emitVerdict({
+    gate: "L0",
+    subject: "TCB exemptions",
+    examined: Object.keys(OUT_OF_TCB).length,
+    ...(Object.keys(OUT_OF_TCB).length === 0 ? { emptyReason: "no file under src/ is exempted from the TCB" } : {}),
+  });
+
   for (const f of seen) {
     if (!TCB.includes(f) && !(f in OUT_OF_TCB)) {
       add("L0", f, 0,

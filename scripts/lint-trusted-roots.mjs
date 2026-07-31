@@ -436,6 +436,26 @@ for (const root of Object.keys(INVENTORY)) {
   if (!fs.existsSync(path.join(ROOT, root))) {
     add("L9-A", root, 0, "inventory names a source root that does not exist -- stale entry, remove it.");
   }
+  // ── R8-29 (2026-07-31): THE REASON THE DOCSTRING DEMANDS WAS NEVER READ ──────────────────────
+  // Line 39 of this file states: "`gated: false` requires an auditable reason -- never a silent
+  // omission." Measured: `grep -c "\.reason"` over this file returned ZERO. The requirement was
+  // asserted in prose and enforced nowhere, which is the exact class this gate exists to catch,
+  // committed by the gate itself.
+  //
+  // MEASURED in an isolated copy, un-gating the component that MINTS GRANTS:
+  //     "packages/gate/src": { gated: false, reason: "" }  ->  L9: 0 findings, exit 0
+  //     (baseline: 1 finding, exit 1)
+  // An empty string removed the decision layer from the gate's world and the report read complete.
+  const inv = INVENTORY[root];
+  if (inv && inv.gated === false) {
+    const why = typeof inv.reason === "string" ? inv.reason.trim() : "";
+    if (why === "") {
+      add("L9-A", root, 0,
+        "inventoried as NOT GATED with no auditable reason. This file's own docstring requires one. " +
+        "An un-gated root without a stated reason is indistinguishable from a root somebody quietly " +
+        "removed from coverage -- state why it is not security-critical, or gate it.");
+    }
+  }
 }
 for (const p of scanPatterns(gatedFiles())) add(p.id, p.file, p.line, p.msg);
 
