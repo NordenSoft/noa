@@ -6,9 +6,7 @@
 > this file. `PROGRESS.md` keeps the measured totals and evidence and points here for what to do
 > next; on any drift, THIS file wins.
 
-**Mode:** BOUNDED DELIVERY. **LEAD: Fable 5** (owner handover 2026-07-31; Fable decides and does not ask). **BATCH 4 CLOSURE CLAIM IS WITHDRAWN — the batch is NOT closed.** P1 and P2 are PAUSED. ⚠ **P0 = 5.** Batch 4 closed P0-5/P0-6 and its mandatory frozen-diff review opened five more — including a FALSE CLAIM I wrote into source. "P0 = 0" was claimed once and was wrong (see P0-5/P0-6, found by a 9-minute diff-scoped codex consult). **Branch** `impl/adr-0005-trusted-input-provenance` · **HEAD** `4f8b0c9`
-· tree clean · nothing pushed. **Convergence 0/2** (engineering completion and convergence are
-separate states).
+**Mode:** BOUNDED DELIVERY. **LEAD: Fable 5** (owner handover 2026-07-31; Fable decides and does not ask). **BATCH 4 CLOSURE CLAIM IS WITHDRAWN — the batch is NOT closed.** P1 and P2 are PAUSED. ⚠ **P0: 3 open (P0-9/10/11) + 1 codex finding UNTESTED; P0-7 + P0-8 are ENGINEERING-COMPLETE in micro-batch A and frozen for the independent frozen-diff QA — they are NOT called closed here, because the lead may not self-approve its own batch.** Batch 4 closed P0-5/P0-6 and its mandatory frozen-diff review opened five more — including a FALSE CLAIM the previous lead wrote into source. "P0 = 0" was claimed once and was wrong. **Branch** `impl/adr-0005-trusted-input-provenance` · HEAD = the micro-batch A closing commit (see MICRO-BATCH A below and PROGRESS.md for the frozen hashes) · nothing pushed. **Convergence 0/2** (engineering completion and convergence are separate states).
 
 **Reopening rule:** a settled decision reopens ONLY with a reproducible attack + exact source path +
 measurable security consequence + an honest control + evidence the current fix fails. A reviewer's
@@ -37,11 +35,59 @@ no Stage 1 freeze · no Go kernel.
 | **P0-5** | **My P0-1 fix was INCOMPLETE — a THIRD resolver still drops `validFrom`.** `gate/src/trust.ts:173-178` builds the live keyring with `revokedAt: null` and **no `validFrom`** on all four entries (GATE/APPROVER/DELEGATED/ROOT), and `engine.ts:711` uses `this.trust.keyring` for LIVE Decision Artifact verification. A future-activated approver can sign before activation and pass, because `verifyArtifact` sees `undefined` and skips the check. Current alpha constructors choose past activation, which BOUNDS exposure — but `createGate` accepts an injected `GateTrust`. | **[VERIFIED by lead]** `grep -c validFrom packages/gate/src/trust.ts` = 5, none on the keyring entries | activation carried by EVERY resolver; a test that fails if a new resolver omits it |
 | **P0-6** | **My "malformed `validFrom` fails CLOSED" test is VACUOUS.** Codex runtime proof: ROOT `validFrom:"0"` is parsed by `Date.parse` as a 1999/2000 instant and the root-signed delegation returned `ok:true`; only `not-a-timestamp` is rejected. **The test named "fails CLOSED at the verifier" never invokes the verifier** — it only asserts field carriage. I wrote a test whose name claims more than it measures, which is the exact defect class this batch was adjudicating. | codex-measured, **[UNVERIFIED by lead]** — verify before fixing | the test invokes the real verifier; a numeric/coercible `validFrom` is refused or explicitly accepted with a stated rule |
 
-| **P0-7** | 🔴 **I WROTE A FALSE CLAIM INTO SOURCE.** `gate/src/trust.ts` says *"the parity test added with this change is what makes a fourth one fail loudly instead of silently."* **No such test exists** — `grep -rn "parity" packages/gate/test/` returns nothing, and deleting all four new `validFrom` properties leaves all 7 new tests GREEN. I asserted a control that is not there, in the batch after adjudicating 19 findings about exactly that. | **[VERIFIED by lead]** | the parity test exists and fails when any resolver drops activation — or the comment is withdrawn |
-| **P0-8** | 🔴 **A SEVENTH resolver — my "inventory complete at 6" was wrong.** `e2e-demo/src/pairing.ts:277-281` builds the live keyring with `revokedAt: null` and NO `validFrom`, while the manifest in the same file carries it (9 occurrences). Identical drift to P0-5, in the golden live path. Third consecutive batch where I declared an inventory complete and missed a site. | **[VERIFIED by lead]** | every resolver carries activation, enforced by the P0-7 parity test |
+| **P0-7** | 🟡 **ENGINEERING-COMPLETE (micro-batch A), awaiting the independent frozen-diff QA.** The false sentence is WITHDRAWN IN PLACE at `gate/src/trust.ts` — verbatim-preserved, with the statement that no such test existed when it was written. The claimed control now exists: 3 tests in `packages/gate/test/keyring-resolver-parity.test.ts` [proof: RES-PAR-GATE-KEYRING] — manifest↔keyring carriage, offline-consumer enforcement, and live-engine enforcement (a future-activated approver gets `422 DECISION_ARTIFACT_INVALID`, hold stays PENDING, 0 grants). | **MEASURED against the exact mutation the original claim failed on:** deleting all four keyring `validFrom` properties turns gate 214 pass/2 fail → **211/5** (the 3 new failures are the 3 parity tests); restoration sha256-verified (`07eab26e…`). Knockout `res-parity-proof-must-resolve` DETECTOR_TRIGGERED: skipping the proof test turns the census gate exit 0→1 with `[PROOF_UNRESOLVED]`. | exit criterion met at the engineering level; **closure requires the frozen-diff review — the lead does not self-approve** |
+| **P0-8** | 🟡 **ENGINEERING-COMPLETE (micro-batch A), awaiting the independent frozen-diff QA.** `assembleGateTrust` now carries `validFrom: auth.validFrom` on all four live-keyring entries AND on `tenantRoot` — the census found the tenantRoot map (`assembleGateTrust>tenantRoot`) as an **EIGHTH** site of the class in the same function, missed by the "seventh resolver" count too. RED-BEFORE-FIX: all 4 new e2e parity tests failed for the defect reason (validFrom `undefined`; a pre-activation manifest verifying `ok:true` through the live keyring) before the fix, 12/12 after [proof: RES-PAR-E2E-KEYRING, RES-PAR-E2E-TENANTROOT, RES-PAR-XRES-EQUIV]. The census itself is now mechanical: `scripts/resolver-inventory.json` (52 AST-detected sites + 8 anchored resolvers + 119 vocabulary-census files) reconciled by the BLOCKING `scripts/lint-resolver-parity.mjs` in the `security-gates` chain — a resolver that appears, disappears, or drops `validFrom`/`revokedAt` fails it for its own named reason, so "inventory complete" is no longer an assertion anyone makes by hand. | knockout `p08-e2e-keyring-validfrom-carried` DETECTOR_TRIGGERED (1 new failure beyond a 0-failure baseline, the intended test); knockout `res-inventory-reconcile-blocks` DETECTOR_TRIGGERED (removing an inventory entry: gate exit 0→1 `[NEW_SITE]`); all three restorations sha256-verified | exit criterion met at the engineering level; **closure requires the frozen-diff review — the lead does not self-approve** |
 | **P0-9** | 🔴 **My strict parser depends on a LIVE GLOBAL.** `verify.ts:135` uses `new Date(ms).toISOString()` on the security path. Codex overrode `Date.prototype.toISOString` and the `2026-02-30` vector flipped from refused to `{ok:true}`. I introduced the exact defect class (#77-A/B/C) I spent this session fixing, inside the fix for another one. | codex-measured, **[UNVERIFIED by lead]** | the round-trip check uses captured intrinsics, or a parser that needs none |
 | **P0-10** | 🔴 **`mustBeWithin` NaN-checks only the artifact time, not `min`/`max`** (`verify.ts:351-356`). With both bounds `"not-a-time"` a future-dated decision changed from refused to `{ok:true}` — my strict parser made this REACHABLE. | codex-measured, **[UNVERIFIED by lead]** | every parsed bound is NaN-checked before comparison |
 | **P0-11** | 🔴 **My compatibility claim was too narrow, and there IS a regression.** I scanned 1727 timestamps in FILES. Runtime inputs were outside it: `evidence/cli.ts:54` documents `--now` as RFC3339, and the same instant written `2026-07-14T14:00:00.000+02:00` now returns INVALID where `…12:00:00.000Z` returns VALID_FULL_CHAIN. | codex-measured, **[UNVERIFIED by lead]** | offsets accepted, or the CLI contract narrowed deliberately with the break documented |
+
+## MICRO-BATCH A — P0-7 + P0-8 (2026-07-31, Fable 5 lead) — frozen for independent QA
+
+**Delivered** (sequence: freeze → census → RED tests → comment withdrawal → fix → knockouts → suites):
+
+1. **Resolver census, machine-readable:** `scripts/resolver-inventory.json` — 52 AST-detected
+   key-entry sites (identity = file + lexical scope + ordinal), 8 anchored non-AST resolvers
+   (string keyrings, relay device records, the enforcement point), 119 vocabulary-census files,
+   6 registered proofs, 5 versioned exceptions each with a reason. Built by shape-detection
+   (`scripts/lib/resolver-scan.mjs`), NOT by name grep — the method that missed a site twice.
+2. **Blocking reconciliation gate:** `scripts/lint-resolver-parity.mjs`, wired into
+   `npm run security-gates` after `lint:security-gates`. Re-derives the census from the AST on
+   every run; ten named failure modes, each probed RED individually (NEW_SITE, MISSING_SITE,
+   FIELD_DRIFT, POLICY_DROP, EMPTY_REASON, PROOF_UNRESOLVED, MISSING_PROOF, ANCHOR_ROTTED,
+   VOCAB_UNCLASSIFIED, VOCAB_STALE) + verdict-record anti-vacuity (examined 0 ⇒ not green).
+   Second independent channel: any file speaking the trust-key vocabulary as AST identifiers must
+   be classified — built to fail on sites the shape detector cannot see.
+3. **Parity tests, RED before fix:** `packages/e2e-demo/test/keyring-resolver-parity.test.ts`
+   (4 tests — carriage, tenantRoot, real-verifier enforcement, cross-resolver equivalence with
+   legacy/revoked/malformed probes through `buildResolvedKeyring`) and
+   `packages/gate/test/keyring-resolver-parity.test.ts` (3 tests — carriage, offline-consumer
+   enforcement, live-engine enforcement).
+4. **The two fixes:** the P0-7 withdrawal in `gate/src/trust.ts` (verbatim-preserved) and the
+   P0-8 `validFrom` carriage in `e2e-demo/src/pairing.ts` (keyring + tenantRoot).
+5. **Knockouts:** `p08-e2e-keyring-validfrom-carried` · `res-inventory-reconcile-blocks` ·
+   `res-parity-proof-must-resolve` — all three DETECTOR_TRIGGERED, restorations sha256-verified.
+   The FULL knockout registry was NOT re-run this batch (hours of runtime); the three new entries
+   were proven individually with clean measured baselines. `[UNVERIFIED: full-registry totals at
+   this HEAD]`.
+6. **Suite totals, all freshly measured this batch (no carried numbers):** gate **216 = 214/2**
+   (the 2 are the named owner-deferred ADR-0006 pair; +3 vs the 211/2 baseline are exactly the new
+   parity tests — no regression) · evidence **126/0** · approval-artifacts **168/0** · signer-core
+   **75/0** · relay **133/0** · e2e-demo **12/0** · root **518/0** · `typecheck:all` **exit 0**
+   (12 projects) · `lint:resolver-parity` **exit 0** (52 sites · 119 vocab files · 8 anchors ·
+   6 proofs examined). adapter-core not re-measured (outside the batch's mandate list).
+
+**Process anomaly, recorded not hidden:** commit `12d715c` ("docs(plan): the canonical plan is now
+noa-trust-plan.md"), authored mid-batch from the coordinating seat, also carries micro-batch A's
+then-in-progress files (the pairing fix, both parity tests, the scanner, the inventory, the
+trust.ts correction) although its message describes only the rename. Per this branch's append-only
+rule (CORRECTIONS.md, opening) history is not rewritten; this paragraph is the correction. **The QA
+freeze range is therefore `cc243a7..<micro-batch A closing commit>`** so the reviewer sees the whole
+batch regardless of the interleaving.
+
+**Not closed here.** Closure of P0-7/P0-8 happens only after the frozen-diff codex QA and the
+lead's independent re-derivation of every material finding, per the standing process rule.
+
+---
 
 ## P1 — MUST CLOSE BEFORE MERGE
 

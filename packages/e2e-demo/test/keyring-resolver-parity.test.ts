@@ -64,6 +64,13 @@ const schemas = loadSchemas();
 type J = Record<string, unknown>;
 const enc = (o: unknown): Uint8Array => encodeDocument(o as J);
 
+/** ARTIFACTS lookup under noUncheckedIndexedAccess: a missing domain is a fixture bug. */
+function domainOf(spec: string): string {
+  const d = ARTIFACTS[spec]?.domain;
+  assert.ok(typeof d === 'string', `fixture: no signing domain registered for ${spec}`);
+  return d;
+}
+
 /** Index access under noUncheckedIndexedAccess: a missing entry is a fixture bug, not a result. */
 function entryOf(map: Record<string, KeyEntry>, kid: string, what: string): KeyEntry {
   const e = map[kid];
@@ -196,7 +203,7 @@ function decisionBy(kid: string, privateKey: string, decidedAt: string): J {
       decidedAt,
       approverKid: kid,
     }),
-    ARTIFACTS['noa.decision/0.1'].domain,
+    domainOf('noa.decision/0.1'),
     { kid, privateKey },
   );
 }
@@ -226,7 +233,7 @@ test('[PROOF:RES-PAR-XRES-EQUIV] evidence, gate and e2e resolvers yield the SAME
         validFrom: F,
         expiresAt: EXP,
       }),
-      ARTIFACTS['noa.key-delegation/0.1'].domain,
+      domainOf('noa.key-delegation/0.1'),
       { kid: root.kid, privateKey: root.privateKey },
     ) as unknown as DelegationDoc;
     const manifest = signArtifact(
@@ -246,7 +253,7 @@ test('[PROOF:RES-PAR-XRES-EQUIV] evidence, gate and e2e resolvers yield the SAME
           { kid: malformed.kid, type: 'APPROVER', roles: ['approve-high'], publicKey: malformed.publicKey, validFrom: 'not-a-timestamp', revokedAt: null },
         ],
       }),
-      ARTIFACTS['noa.key-manifest/0.1'].domain,
+      domainOf('noa.key-manifest/0.1'),
       { kid: authority.kid, privateKey: authority.privateKey },
     ) as unknown as ManifestDoc;
     const keyring = buildResolvedKeyring({}, delegation, manifest);

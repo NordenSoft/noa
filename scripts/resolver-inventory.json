@@ -1229,6 +1229,7 @@
     "packages/signer-core/test/signing-binding.test.ts": "signer-core tests: string keyrings for chain verification",
     "scripts/gen-vectors.ts": "repo tooling touching keyring vocabulary in strings/identifiers; constructs no entries",
     "scripts/lib/resolver-scan.mjs": "this census tooling itself",
+    "scripts/lint-resolver-parity.mjs": "the reconciliation gate consuming this inventory",
     "src/cli.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/cose/cose-sign1.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/cose/receipt-cose.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",

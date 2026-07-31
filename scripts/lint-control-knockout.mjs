@@ -632,6 +632,39 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/signer-core", "npm", ["test"]],
   },
+  // ── P0-7 / P0-8 (2026-07-31): RESOLVER PARITY + THE CENSUS GATE ────────────────────────────────
+  // Three resolvers of one class dropped a declared `validFrom` (P0-1/P0-5/P0-8), the inventory was
+  // declared complete twice while a site was missing, and a source comment claimed a parity test
+  // that did not exist (P0-7). These three entries make the whole control stack observable failing:
+  // the parity TEST (a resolver drops activation), the reconciliation GATE (a resolver leaves the
+  // inventory), and the proof-resolution rule (a claimed control stops running).
+  {
+    id: "p08-e2e-keyring-validfrom-carried",
+    control: "P0-8 — the pairing live keyring carries the manifest-declared validFrom on every entry; dropping ONE entry's activation must fail the parity test [proof: RES-PAR-E2E-KEYRING]",
+    file: "packages/e2e-demo/src/pairing.ts",
+    find: "    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], validFrom: auth.validFrom, revokedAt: null },",
+    replace: "    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], revokedAt: null },",
+    kind: "tests",
+    suite: ["packages/e2e-demo", "npm", ["test"]],
+  },
+  {
+    id: "res-inventory-reconcile-blocks",
+    control: "P0-8 census — a resolver REMOVED from the inventory turns the reconciliation gate RED (the tree is re-derived from the AST on every run; the inventory is never trusted)",
+    file: "scripts/resolver-inventory.json",
+    find: '    {\n      "id": "e2e-demo-assemblegatetrust-tenantroot-0",\n      "package": "e2e-demo",\n      "file": "packages/e2e-demo/src/pairing.ts",\n      "scope": "assembleGateTrust>tenantRoot",\n      "ordinal": 0,\n      "line": 321,\n      "kind": "construct",\n      "class": "demo",\n      "input": "the demo authority\'s declared ROOT window",\n      "output": "KeyEntry (ROOT)",\n      "validFrom": "explicit",\n      "revokedAt": "explicit",\n      "missingValue": "not expressible: constructor always sets both fields (P0-8 fix)",\n      "malformedValue": "not expressible: clock-derived canonical toISOString",\n      "timestampParser": "new Date(ms).toISOString() at generation",\n      "consumer": "§13 verify-evidence external tenant root (F7a)",\n      "proofs": [\n        "RES-PAR-E2E-TENANTROOT"\n      ]\n    },\n',
+    replace: "",
+    kind: "gate",
+    suite: [".", "npm", ["run", "lint:resolver-parity"]],
+  },
+  {
+    id: "res-parity-proof-must-resolve",
+    control: "P0-7 — a registered parity proof must RESOLVE to a live test; skipping it turns the reconciliation gate RED (a source claim about a control that does not run is the exact defect this batch adjudicated)",
+    file: "packages/e2e-demo/test/keyring-resolver-parity.test.ts",
+    find: "test('[PROOF:RES-PAR-E2E-TENANTROOT] the external tenant root map CARRIES the declared activation', async () => {",
+    replace: "test.skip('[PROOF:RES-PAR-E2E-TENANTROOT] the external tenant root map CARRIES the declared activation', async () => {",
+    kind: "gate",
+    suite: [".", "npm", ["run", "lint:resolver-parity"]],
+  },
 ];
 
 // ── R8-26/R8-27: MEASURE EVERY SUITE'S CLEAN BASELINE FIRST ────────────────────────────────────

@@ -7,8 +7,9 @@
 > **How to read this file.** Written at the end of each work block; its timestamp is the last moment
 > work happened, not "now".
 
-**Last updated:** 2026-07-31 · branch `impl/adr-0005-trusted-input-provenance` · HEAD `56339ab`
-· working tree **clean** · **nothing pushed** · convergence **0/2**
+**Last updated:** 2026-07-31 (micro-batch A closing commit — child of `12d715c`) · branch
+`impl/adr-0005-trusted-input-provenance` · working tree **clean at freeze** · **nothing pushed**
+· convergence **0/2**
 
 ## ⚠ LEAD HANDOVER — 2026-07-31
 
@@ -25,8 +26,8 @@ parity-enforced, fail-closed or covering "all resolvers".
 
 | ID | finding | verified by |
 |---|---|---|
-| **P0-7** | source claims a resolver-parity test exists; **it does not** (`grep -rn parity packages/gate/test` = 0; deleting all four new `validFrom` properties leaves all 7 new tests GREEN) | **lead-verified** |
-| **P0-8** | a **seventh** resolver: `e2e-demo/src/pairing.ts:277-281` drops `validFrom` from the live keyring while the manifest in the same file carries it | **lead-verified** |
+| **P0-7** | source claims a resolver-parity test exists; **it does not** (`grep -rn parity packages/gate/test` = 0; deleting all four new `validFrom` properties leaves all 7 new tests GREEN) | **lead-verified** → 🟡 **ENGINEERING-COMPLETE in micro-batch A** (claim withdrawn in place; the control now exists and is measured — see the plan). NOT closed: awaiting frozen-diff QA |
+| **P0-8** | a **seventh** resolver: `e2e-demo/src/pairing.ts:277-281` drops `validFrom` from the live keyring while the manifest in the same file carries it — and the census then found an **EIGHTH** site, the `tenantRoot` map in the same function | **lead-verified** → 🟡 **ENGINEERING-COMPLETE in micro-batch A** (both sites fixed, RED-before-fix; census gate blocking). NOT closed: awaiting frozen-diff QA |
 | **P0-9** | the strict timestamp verifier depends on mutable `Date.prototype.toISOString` (`verify.ts:135`); overriding it flipped the `2026-02-30` vector from refused to `ok:true` | codex-measured, **[UNVERIFIED by lead]** |
 | **P0-10** | `mustBeWithin` NaN-checks the artifact time but **not** `min`/`max` (`verify.ts:351-356`) | codex-measured, **[UNVERIFIED by lead]** |
 | **P0-11** | compatibility regression the lead introduced: `+02:00` now INVALID where the identical instant as `Z` is VALID_FULL_CHAIN (`evidence/cli.ts:54` documents RFC3339) | codex-measured, **[UNVERIFIED by lead]** |
@@ -34,6 +35,35 @@ parity-enforced, fail-closed or covering "all resolvers".
 
 **Still correctly fixed:** P0-1 (ROOT `validFrom`, `651cbd3`), P0-5 (live gate keyring, `dd2997c`),
 P0-6 (strict parser core, `dd2997c`). P0-2/3/4 closed earlier.
+
+### MICRO-BATCH A — measured evidence (2026-07-31, Fable 5 lead)
+
+Full record + deliverable list: **`noa-trust-plan.md` → MICRO-BATCH A** (the plan is the authority).
+The measurements, so this file keeps its role:
+
+```
+RED-before-fix     e2e parity tests 4/4 FAIL for the defect reason (validFrom undefined;
+                   a pre-activation manifest verifying ok:true through the live keyring)
+post-fix           e2e-demo 12/12 · gate parity 3/3 GREEN
+P0-7 mutation      delete all 4 keyring validFrom props in gate/src/trust.ts:
+                   gate 214 pass/2 fail -> 211/5 (the 3 new fails = the 3 parity tests)
+                   restore sha256 07eab26e… byte-exact
+knockouts          p08-e2e-keyring-validfrom-carried   DETECTOR_TRIGGERED (1 new fail / 0 baseline)
+                   res-inventory-reconcile-blocks      DETECTOR_TRIGGERED (gate exit 0 -> 1, NEW_SITE)
+                   res-parity-proof-must-resolve       DETECTOR_TRIGGERED (gate exit 0 -> 1, PROOF_UNRESOLVED)
+                   restorations sha256-verified: 5cdf9816… · 4ba8cba3… · f5eed404…
+census gate        lint:resolver-parity exit 0 — examined 52 sites · 119 vocab files · 8 anchors ·
+                   6 proofs; all 10 failure modes probed RED individually, then restored
+suites (fresh)     gate 216 = 214/2 (the named ADR-0006 pair; +3 = the new parity tests)
+                   evidence 126/0 · approval-artifacts 168/0 · signer-core 75/0 · relay 133/0
+                   e2e-demo 12/0 · root 518/0 · typecheck:all exit 0 (12 projects)
+NOT re-run         the full knockout registry (hours; 3 new entries proven individually) ·
+                   adapter-core suite (outside the batch mandate)
+```
+
+The suite-total lines in "MEASURED TOTALS" further down predate this batch (measured at `0341351`)
+and are superseded where they differ; the fresh numbers above were re-measured at the micro-batch A
+freeze.
 
 ### Standing process rule — codex is QA ONLY
 
