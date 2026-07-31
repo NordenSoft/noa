@@ -268,10 +268,83 @@ test("R8-15: what signReceipt SIGNS is byte-identical to what it RETURNS, hostil
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
+// ATTACK 5 — R8-15b, THE SAME SINK ONE BRANCH OVER.
+//
+// The array branch kept `out[i] = …` when the object branch was converted, and the object branch's
+// comment claimed the whole function no longer wrote by assignment. It did. `out` is a fresh array,
+// so it is rooted on the LIVE `Array.prototype` — the one prototype this file cannot capture,
+// because a copy of it would not be an array. An index accessor defined there owns the write.
+//
+// The existing accessor guard does NOT reach this: that guard inspects the SOURCE element, and the
+// hostile accessor is on the DESTINATION's prototype.
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+
+test("R8-15b: an `Array.prototype` index accessor cannot capture the copy's element writes", () => {
+  let setterFired = 0;
+  let getterFired = 0;
+  Object.defineProperty(Array.prototype, "0", {
+    get() { getterFired++; return "ATTACKER"; },
+    set(_v: unknown) { setterFired++; },   // swallow the write
+    configurable: true,
+  });
+  try {
+    // PROOF THE VEHICLE IS LIVE, inside the poisoned window: a plain array literal assignment is
+    // captured right now, so the sink genuinely exists while this test runs.
+    const probe: unknown[] = [];
+    probe[0] = "swallowed";
+    assert.equal(own(probe, "0"), false, "assignment to index 0 stored an own property — the poison is not in force, so this test is vacuous");
+    assert.ok(setterFired > 0, "the poisoned setter never fired on a plain array — the fixture is not hostile");
+
+    const before = setterFired;
+    const source = ["HONEST-FIRST-ELEMENT", "second", { nested: "third" }];
+    const copy = inertDeepCopy(source);
+
+    assert.equal(
+      setterFired, before,
+      "`inertDeepCopy` routed an element write through the attacker's `Array.prototype` setter — " +
+      "the write is owned by the attacker and the copied element is whatever the getter says",
+    );
+    assert.ok(own(copy, "0"), "the copy has no own element 0 — the write was swallowed by the inherited setter");
+    assert.equal(copy[0], "HONEST-FIRST-ELEMENT", "the copy's first element is not the source's");
+    assert.equal(
+      JSON.stringify(copy), JSON.stringify(source),
+      "THE RETURNED ARRAY IS NOT THE DOCUMENT THAT WAS HANDED IN. Same consequence as R8-15: the " +
+      "signature covers the source's bytes and the caller receives the attacker's",
+    );
+  } finally {
+    delete (Array.prototype as unknown as Record<string, unknown>)["0"];
+  }
+  assert.equal(
+    own(Array.prototype, "0"), false,
+    "the test failed to restore `Array.prototype` — every later test in this process is now suspect",
+  );
+  assert.ok(getterFired >= 0, "getter counter is read so the poison is observably wired, not merely defined");
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
 // ANTI-VACUITY CONTROLS — these must stay GREEN in the same run, INCLUDING under the knockout that
 // restores the vulnerable assignment. If they ever go red together with the attacks above, the
 // failure is in the harness and the attack results mean nothing.
 // ────────────────────────────────────────────────────────────────────────────────────────────────
+
+test("R8-15b ANTI-VACUITY: ordinary arrays still copy faithfully with no poison present", () => {
+  const source = [1, "two", { three: 3 }, [4, [5]], null, true];
+  const copy = inertDeepCopy(source);
+
+  assert.deepEqual(copy, source, "an ordinary array did not copy faithfully");
+  assert.ok(Array.isArray(copy), "the copy is no longer an array — `defineProperty` on an array must keep it one");
+  assert.equal(copy.length, source.length, "`length` did not track the defined indices");
+  assert.equal(JSON.stringify(copy), JSON.stringify(source), "an ordinary array did not round-trip");
+  assert.notEqual(copy[3], source[3], "a nested array is shared with the source");
+
+  // The documented array refusals must still fire — a `defineProperty` rewrite that dropped them
+  // would satisfy every assertion above while re-opening the sparse-array and accessor classes.
+  const sparse = [1, , 3] as unknown[];                              // eslint-disable-line no-sparse-arrays
+  assert.throws(() => inertDeepCopy(sparse), /hole/, "a sparse array was no longer refused");
+  const withAccessor: unknown[] = [];
+  Object.defineProperty(withAccessor, 0, { get: () => "read-me", enumerable: true, configurable: true });
+  assert.throws(() => inertDeepCopy(withAccessor), /accessor/, "an accessor element was no longer refused");
+});
 
 test("R8-15 ANTI-VACUITY: an ordinary receipt still deep-copies, and sign() still binds it", () => {
   const core = receiptCore();

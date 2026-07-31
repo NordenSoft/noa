@@ -441,6 +441,14 @@ const KNOCKOUTS = [
     replace: "    out[key] = copyValue(d.value, `${path}.${key}`, depth + 1);",
     suite: ["packages/signer-core", "npm", ["test"]],
   },
+  {
+    id: "r8-15b-deep-copy-array-defineproperty",
+    control: "R8-15b \u2014 the ARRAY branch of inertDeepCopy also builds with defineProperty. `out` is a fresh array rooted on the LIVE Array.prototype \u2014 the one prototype this file cannot capture \u2014 so an index accessor defined there OWNED the element write. Measured: a copy of [\"HONEST-FIRST-ELEMENT\",\"second\"] serialised as [\"ATTACKER\",\"second\"]. The source-element accessor guard does not reach it; that guard inspects the SOURCE, the hostile accessor is on the DESTINATION's prototype.",
+    file: "packages/signer-core/src/deep-copy.ts",
+    find: "      objectDefineProperty(out, i, {\n        value: copyValue(d.value, `${path}[${i}]`, depth + 1),\n        writable: true,\n        enumerable: true,\n        configurable: true,\n      });",
+    replace: "      out[i] = copyValue(d.value, `${path}[${i}]`, depth + 1);",
+    suite: ["packages/signer-core", "npm", ["test"]],
+  },
 ];
 
 // ── R8-26/R8-27: MEASURE EVERY SUITE'S CLEAN BASELINE FIRST ────────────────────────────────────

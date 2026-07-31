@@ -87,7 +87,33 @@ function copyValue(value: unknown, path: string, depth: number): unknown {
       if (d.get !== undefined || d.set !== undefined) {
         throw new DeepCopyError(`accessor at ${path}[${i}] — refusing to invoke it on a signing path`);
       }
-      out[i] = copyValue(d.value, `${path}[${i}]`, depth + 1);
+      // ── R8-15b (2026-07-31): THE SAME SINK, ONE BRANCH OVER ─────────────────────────────────
+      // `out[i] = …` was left here when the object branch below was converted to
+      // `defineProperty`, and the comment there claimed "NO key is written by assignment any
+      // more". That was an OVERCLAIM about this function, and I found it by attacking my own fix
+      // rather than by being told.
+      //
+      // `out` is a fresh array, so it is rooted on the LIVE `Array.prototype` — the one thing this
+      // file cannot capture, because a copy of it would not be an array. An attacker who defines an
+      // INDEX ACCESSOR there before this runs owns the write, exactly as `Object.prototype`'s
+      // `__proto__` setter owned the object branch. MEASURED:
+      //
+      //     Object.defineProperty(Array.prototype, "0", { get: () => "ATTACKER", set() {}, … })
+      //     inertDeepCopy(["HONEST-FIRST-ELEMENT", "second"])
+      //       setter fired : 1
+      //       copy has own 0? : false
+      //       copy JSON  : ["ATTACKER","second"]     <- what the caller receives
+      //       source JSON: ["HONEST-FIRST-ELEMENT","second"]  <- what the signature covers
+      //
+      // Same class, same consequence: one Ed25519 signature over two different documents. The
+      // accessor guard above does not reach it — that guard inspects the SOURCE element, and the
+      // hostile accessor is on the DESTINATION's prototype.
+      objectDefineProperty(out, i, {
+        value: copyValue(d.value, `${path}[${i}]`, depth + 1),
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      });
     }
     return out;
   }
@@ -132,7 +158,13 @@ function copyValue(value: unknown, path: string, depth: number): unknown {
   // So rejecting the key would DIVERGE from structuredClone and break G2, while `defineProperty`
   // matches it exactly — and because the value stays an own property it is inside `receiptHashInput`
   // and inside the wire bytes. There is no hidden channel left to exploit, for `__proto__` or for
-  // any other name, because NO key is written by assignment any more.
+  // any other name, because no key is written by assignment ON THIS BRANCH any more.
+  //
+  // ⚠ CORRECTED 2026-07-31 (R8-15b). This sentence originally read "because NO key is written by
+  // assignment any more", full stop. That was false when written: the ARRAY branch above still
+  // assigned, and it is a live sink of the same class via an `Array.prototype` index accessor.
+  // Recorded rather than quietly widened, because a comment that overstates the reach of a fix is
+  // how the next reader concludes the class is closed and stops looking.
   const out: Record<string, unknown> = {};
   const keys = objectGetOwnPropertyNames(value);
   for (let i = 0; i < keys.length; i++) {
