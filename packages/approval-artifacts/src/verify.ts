@@ -26,7 +26,7 @@ import { canonicalize } from "./jcs.js";
 import { refHash, receiptRefHash, virtualHash } from "./refhash.js";
 import { parseDocument } from "./inert-core/bytes.js";
 import { hasOwn } from "./inert-core/intrinsics.js";
-import { arrayIncludes, arraySome, dateParse as pristineDateParse, strSplit } from "./inert-core/intrinsics.js";
+import { arrayIncludes, arraySome, strSplit } from "./inert-core/intrinsics.js";
 
 export interface KeyEntry {
   publicKey: string; // base64(DER SPKI) Ed25519
@@ -110,10 +110,11 @@ function computeRefHash(rule: "side" | "receipt" | "virtual", artifact: unknown)
  * have — this is an operator-error amplifier, not an authorization bypass, and it is recorded at
  * that severity rather than inflated.)
  *
- * The parser is now STRICT: exactly the canonical form this project already emits everywhere —
- * `YYYY-MM-DDTHH:MM:SS[.mmm]Z` — and the calendar round-trip check rejects a date that does not
- * exist rather than rolling it forward. Anything else is `NaN`, and every caller below already
- * treats `NaN` as fail-closed.
+ * The parser is now STRICT: calendar validity plus the epoch value are computed directly from the
+ * numeric components. P0-11 widened accepted RFC 3339 spellings to `Z` or a numeric offset while
+ * preserving `Z` as the only emitted spelling. It does not call `Date` or any `Date` method; the test
+ * "P0-9: a targeted Date.prototype.toISOString poison cannot admit a non-existent activation
+ * date" installs the targeted poison while pinning both refusal and an accepted control.
  *
  * COMPATIBILITY MEASURED BEFORE THIS CHANGE, not after: 1727 timestamps across the shipped
  * conformance corpora were scanned; **0** are non-canonical-but-parseable, so no record that
@@ -123,17 +124,82 @@ function computeRefHash(rule: "side" | "receipt" | "virtual", artifact: unknown)
  * this file are security comparisons, and giving activation its own parser would create exactly the
  * resolver drift this batch exists to close.
  */
-const CANONICAL_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/;
+const CANONICAL_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/;
+
+function integerQuotient(nonNegative: number, divisor: number): number {
+  return (nonNegative - (nonNegative % divisor)) / divisor;
+}
+
+function isLeapYear(year: number): boolean {
+  return year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+}
+
+function daysInMonth(year: number, month: number): number {
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  if (month === 4 || month === 6 || month === 9 || month === 11) return 30;
+  return 31;
+}
+
+/** Days since 1970-01-01, using the proleptic Gregorian calendar. */
+function daysFromCivil(year: number, month: number, day: number): number {
+  const shiftedYear = year - (month <= 2 ? 1 : 0);
+  // The four-digit syntax limits shiftedYear to -1..9999, so -1 is the only negative era case.
+  const era = shiftedYear < 0 ? -1 : integerQuotient(shiftedYear, 400);
+  const yearOfEra = shiftedYear - era * 400;
+  const shiftedMonth = month + (month > 2 ? -3 : 9);
+  const dayOfYear = integerQuotient(153 * shiftedMonth + 2, 5) + day - 1;
+  const dayOfEra = yearOfEra * 365
+    + integerQuotient(yearOfEra, 4)
+    - integerQuotient(yearOfEra, 100)
+    + dayOfYear;
+  return era * 146_097 + dayOfEra - 719_468;
+}
 
 function parseTime(v: unknown): number {
   if (typeof v !== "string") return NaN;
   if (!CANONICAL_INSTANT.test(v)) return NaN;
-  const ms = pristineDateParse(v);
-  if (Number.isNaN(ms)) return NaN;
-  // Reject a syntactically canonical but non-existent date (e.g. 2026-02-30, which `Date.parse`
-  // rolls forward to 2026-03-02). A round trip through the ISO form is the cheapest exact check.
-  const iso = new Date(ms).toISOString();
-  return iso.slice(0, 19) === v.slice(0, 19) ? ms : NaN;
+
+  const digit = (offset: number): number => +v[offset]!;
+  const twoDigits = (offset: number): number => digit(offset) * 10 + digit(offset + 1);
+  const year = digit(0) * 1_000 + digit(1) * 100 + digit(2) * 10 + digit(3);
+  const month = twoDigits(5);
+  const day = twoDigits(8);
+  const hour = twoDigits(11);
+  const minute = twoDigits(14);
+  const second = twoDigits(17);
+  const hasMilliseconds = v[19] === ".";
+  const millisecond = hasMilliseconds
+    ? digit(20) * 100 + digit(21) * 10 + digit(22)
+    : 0;
+  const zoneOffset = hasMilliseconds ? 23 : 19;
+  let offsetMinutes = 0;
+  if (v[zoneOffset] !== "Z") {
+    const offsetHour = twoDigits(zoneOffset + 1);
+    const offsetMinute = twoDigits(zoneOffset + 4);
+    if (offsetHour > 23 || offsetMinute > 59) return NaN;
+    const offsetSign = v[zoneOffset] === "+" ? 1 : -1;
+    offsetMinutes = offsetSign * (offsetHour * 60 + offsetMinute);
+  }
+
+  if (month < 1 || month > 12) return NaN;
+  if (day < 1 || day > daysInMonth(year, month)) return NaN;
+  if (hour > 23 || minute > 59) return NaN;
+  // Leap seconds (`:60`) are explicitly refused, preserving the existing parser contract.
+  if (second > 59) return NaN;
+
+  return daysFromCivil(year, month, day) * 86_400_000
+    + hour * 3_600_000
+    + minute * 60_000
+    + second * 1_000
+    + millisecond
+    - offsetMinutes * 60_000;
+}
+
+function hasInvalidTime(...times: number[]): boolean {
+  for (const time of times) {
+    if (Number.isNaN(time)) return true;
+  }
+  return false;
 }
 
 /** Artifact fields that declare the identity of their own signer, independent of caller context. */
@@ -344,7 +410,7 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
   for (const mb of ctx.mustBeAfter ?? []) {
     const t = parseTime(getPath(doc, mb.path));
     const limit = parseTime(mb.time);
-    if (Number.isNaN(t) || Number.isNaN(limit) || t <= limit) {
+    if (hasInvalidTime(t, limit) || t <= limit) {
       return { ok: false, reason: `time check failed: ${mb.path} must be after ${mb.time}` };
     }
   }
@@ -352,7 +418,7 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
     const t = parseTime(getPath(doc, mw.path));
     const min = parseTime(mw.min);
     const max = parseTime(mw.max);
-    if (Number.isNaN(t) || t < min || t > max) {
+    if (hasInvalidTime(t, min, max) || t < min || t > max) {
       return { ok: false, reason: `time check failed: ${mw.path} must be within [${mw.min}, ${mw.max}]` };
     }
   }

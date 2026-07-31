@@ -83,7 +83,6 @@ test("P0-6: a malformed `validFrom` cannot be normalised into a past instant", (
     "2026-01-01",             // date only, no time or zone — ambiguous
     "2026-01-01T00:00:00",    // no zone designator
     "2026-01-01t00:00:00z",   // lowercase, non-canonical
-    "2026-01-01T00:00:00+01:00", // an offset form this project never emits
     " 2026-01-01T00:00:00Z",  // leading whitespace
   ]) {
     const r = verifyWithValidFrom(bad);
@@ -120,6 +119,8 @@ test("P0-6: the documented legacy rule holds — an ABSENT validFrom is always-a
 test("P0-6: a canonical PAST activation still verifies, in both accepted spellings", () => {
   assert.equal(verifyWithValidFrom("2000-01-01T00:00:00.000Z").ok, true, "millisecond form rejected");
   assert.equal(verifyWithValidFrom("2000-01-01T00:00:00Z").ok, true, "second-precision form rejected");
+  // The rule changed deliberately in P0-11 because the CLI documents RFC 3339; emit stays `Z`.
+  assert.equal(verifyWithValidFrom("2026-01-01T00:00:00+01:00").ok, true, "RFC 3339 offset form rejected");
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -194,4 +195,102 @@ test("P0-6: the boundary is INCLUSIVE — signing exactly AT validFrom is allowe
   const at = String((fx.artifact as Record<string, unknown>)["decidedAt"] ?? (fx.artifact as Record<string, unknown>)["ts"]);
   assert.match(at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/, "the fixture's artifact time is not canonical — this pin cannot be trusted");
   assert.equal(verifyWithValidFrom(at).ok, true, "a key activating at exactly the artifact time was refused — the boundary flipped to exclusive");
+});
+
+test("P0-10 ANTI-VACUITY: mustBeWithin runs against the verifying decision vector", () => {
+  const control = verifyArtifact(enc(fx.artifact), enc({ ...fx.context, schemas, keyring }));
+  assert.equal(control.ok, true,
+    `the shipped decision vector does not verify (${control.ok ? "" : control.reason}) — the window probe would be meaningless`);
+
+  const excluded = verifyArtifact(enc(fx.artifact), enc({
+    ...fx.context,
+    schemas,
+    keyring,
+    mustBeWithin: [{ path: "decidedAt", min: "2099-01-01T00:00:00.000Z", max: "2100-01-01T00:00:00.000Z" }],
+  }));
+  assert.equal(excluded.ok, false, "a decision outside a well-formed mustBeWithin window was accepted");
+  assert.match(String(excluded.reason), /time check failed: decidedAt must be within/,
+    `the well-formed window was refused for the wrong reason: ${excluded.reason}`);
+});
+
+test("P0-10: mustBeWithin refuses every malformed window bound", () => {
+  for (const window of [
+    { label: "both bounds", min: "not-a-time", max: "also-not-a-time" },
+    { label: "min only", min: "not-a-time", max: "2100-01-01T00:00:00.000Z" },
+    { label: "max only", min: "2000-01-01T00:00:00.000Z", max: "not-a-time" },
+  ]) {
+    const r = verifyArtifact(enc(fx.artifact), enc({
+      ...fx.context,
+      schemas,
+      keyring,
+      mustBeWithin: [{ path: "decidedAt", min: window.min, max: window.max }],
+    }));
+    assert.equal(r.ok, false, `mustBeWithin accepted malformed ${window.label}: [${window.min}, ${window.max}]`);
+    assert.match(String(r.reason), /time check failed: decidedAt must be within/,
+      `malformed ${window.label} was refused for the wrong reason: ${r.reason}`);
+  }
+});
+
+test("P0-9: a targeted Date.prototype.toISOString poison cannot admit a non-existent activation date", () => {
+  const impossible = "2026-02-30T00:00:00.000Z";
+  const rolled = "2026-03-02T00:00:00.000Z";
+
+  const clean = verifyWithValidFrom(impossible);
+  assert.equal(clean.ok, false, "a non-existent activation date was accepted without the poison");
+  assert.match(clean.reason, /cannot evaluate activation time/,
+    `the clean non-existent date was refused for the wrong reason: ${clean.reason}`);
+
+  const originalToISOString = Date.prototype.toISOString;
+  try {
+    Date.prototype.toISOString = function targetedToISOStringPoison(): string {
+      const actual = originalToISOString.call(this);
+      return actual === rolled ? impossible : actual;
+    };
+
+    const control = verifyArtifact(enc(fx.artifact), enc({ ...fx.context, schemas, keyring }));
+    assert.equal(control.ok, true,
+      `the unmodified conformance vector failed while the targeted poison was installed (${control.ok ? "" : control.reason})`);
+
+    const attacked = verifyWithValidFrom(impossible);
+    assert.equal(attacked.ok, false,
+      "a targeted Date.prototype.toISOString poison admitted a non-existent activation date");
+    assert.match(attacked.reason, /cannot evaluate activation time/,
+      `the poisoned non-existent date was refused for the wrong reason: ${attacked.reason}`);
+  } finally {
+    Date.prototype.toISOString = originalToISOString;
+  }
+});
+
+test("P0-11: equivalent RFC 3339 instant spellings produce the same activation outcome", () => {
+  const control = verifyArtifact(enc(fx.artifact), enc({ ...fx.context, schemas, keyring }));
+  assert.equal(control.ok, true,
+    `the unmodified conformance vector does not verify (${control.ok ? "" : control.reason}) — the equivalence probe would be meaningless`);
+
+  for (const malformed of [
+    "2026-07-14T13:56:00.000+99:00",
+    "2026-07-14T13:56:00.000+02:60",
+    "2026-07-14T13:56:00.000+2:00",
+    "2026-07-14T13:56:00.000+02",
+  ]) {
+    const refused = verifyWithValidFrom(malformed);
+    assert.equal(refused.ok, false, `malformed offset ${JSON.stringify(malformed)} was accepted`);
+    assert.match(refused.reason, /cannot evaluate activation time/,
+      `malformed offset ${JSON.stringify(malformed)} was refused for the wrong reason: ${refused.reason}`);
+  }
+
+  const outsideWindow = verifyWithValidFrom("2026-07-14T14:56:00.000+02:00");
+  assert.equal(outsideWindow.ok, false,
+    "a well-formed offset activation instant one hour after the signature was accepted");
+
+  const spellings = [
+    "2026-07-14T11:56:00.000Z",
+    "2026-07-14T13:56:00.000+02:00",
+    "2026-07-14T06:56:00.000-05:00",
+  ];
+  const outcomes = spellings.map(verifyWithValidFrom);
+  assert.equal(outcomes[0]!.ok, true, "the Z spelling at the activation boundary was refused");
+  for (let i = 1; i < outcomes.length; i += 1) {
+    assert.deepEqual(outcomes[i], outcomes[0],
+      `${spellings[i]} and ${spellings[0]} denote the same instant but produced different verification outcomes`);
+  }
 });
