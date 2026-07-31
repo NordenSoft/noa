@@ -488,6 +488,24 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/signer-core", "npm", ["test"]],
   },
+  {
+    id: "r815-qa14-object-class-not-spelling",
+    control: "R815-QA-14 \u2014 the deep copy closes the CLASS of inherited setters, not the `__proto__` SPELLING. A fix that defineProperty'd only the one key the tests named would leave every other inherited setter live, and it passed the whole suite 50/50 before this control existed.",
+    file: "packages/signer-core/src/deep-copy.ts",
+    find: "    objectDefineProperty(out, key, {\n      value: copyValue(d.value, `${path}.${key}`, depth + 1),\n      writable: true,\n      enumerable: true,\n      configurable: true,\n    });",
+    replace: "    if (key === \"__proto__\") {\n      objectDefineProperty(out, key, {\n        value: copyValue(d.value, `${path}.${key}`, depth + 1),\n        writable: true, enumerable: true, configurable: true,\n      });\n    } else {\n      out[key] = copyValue(d.value, `${path}.${key}`, depth + 1);\n    }",
+    kind: "tests",
+    suite: ["packages/signer-core", "npm", ["test"]],
+  },
+  {
+    id: "r815-qa14-array-class-not-index0",
+    control: "R815-QA-14 \u2014 the ARRAY branch closes the class for EVERY index, not index 0. A fix that defineProperty'd only element 0 also passed 50/50; the control is an `Array.prototype` accessor on a NON-ZERO index.",
+    file: "packages/signer-core/src/deep-copy.ts",
+    find: "      objectDefineProperty(out, i, {\n        value: copyValue(d.value, `${path}[${i}]`, depth + 1),\n        writable: true,\n        enumerable: true,\n        configurable: true,\n      });",
+    replace: "      if (i === 0) {\n        objectDefineProperty(out, i, {\n          value: copyValue(d.value, `${path}[${i}]`, depth + 1),\n          writable: true, enumerable: true, configurable: true,\n        });\n      } else {\n        out[i] = copyValue(d.value, `${path}[${i}]`, depth + 1);\n      }",
+    kind: "tests",
+    suite: ["packages/signer-core", "npm", ["test"]],
+  },
 ];
 
 // ── R8-26/R8-27: MEASURE EVERY SUITE'S CLEAN BASELINE FIRST ────────────────────────────────────

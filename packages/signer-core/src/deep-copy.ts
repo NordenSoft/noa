@@ -161,10 +161,22 @@ function copyValue(value: unknown, path: string, depth: number): unknown {
   //
   // THE FIX IS `defineProperty`, NOT A BLACKLIST, and the choice was measured rather than argued.
   // `structuredClone` — the behaviour this function must reproduce — keeps an own `__proto__` as an
-  // ORDINARY OWN PROPERTY, leaves the prototype alone, and round-trips it through JSON:
-  //     structuredClone({"a":1,"__proto__":{"x":9}})
-  //       own keys: a, __proto__ · prototype is Object: true · sc.x: undefined
-  //       JSON: {"a":1,"__proto__":{"x":9}}
+  // ORDINARY OWN PROPERTY, leaves the prototype alone, and round-trips it through JSON.
+  //
+  // ⚠ THE CITED EXPERIMENT WAS WRONG, CORRECTED 2026-07-31 (R815-QA-12). What stood here was:
+  //     structuredClone({"a":1,"__proto__":{"x":9}})        <- an object LITERAL
+  // Run that and you get `{"a":1}` with NO own `__proto__`, because `{ "__proto__": … }` in source
+  // is special-cased by the language: it SETS THE PROTOTYPE instead of creating a property. So the
+  // command documented as the evidence proves the OPPOSITE of the conclusion drawn from it. The
+  // conclusion is right and the experiment I wrote down was not — a reader who ran it would have
+  // concluded this fix is wrong. Recorded rather than quietly swapped, because a claim whose
+  // reproduction does not reproduce is the defect class this branch keeps finding.
+  //
+  // The MEASURED behaviour, on the form that actually arrives from untrusted input:
+  //     structuredClone(JSON.parse('{"a":1,"__proto__":{"x":9}}'))
+  //       own __proto__: true · prototype is Object: true · JSON: {"a":1,"__proto__":{"x":9}}
+  //     structuredClone({ a: 1, "__proto__": { x: 9 } })    // the literal, for contrast
+  //       own __proto__: false · JSON: {"a":1}
   // So rejecting the key would DIVERGE from structuredClone and break G2, while `defineProperty`
   // matches it exactly — and because the value stays an own property it is inside `receiptHashInput`
   // and inside the wire bytes. There is no hidden channel left to exploit, for `__proto__` or for

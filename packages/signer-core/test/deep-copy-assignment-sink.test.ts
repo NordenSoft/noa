@@ -60,6 +60,34 @@ const hasOwn = Object.prototype.hasOwnProperty;
 const own = (o: object, k: string): boolean => hasOwn.call(o, k);
 
 /**
+ * Install a poisoned descriptor on a shared prototype, run `body`, and put the prototype back
+ * EXACTLY as it was.
+ *
+ * ── R815-QA-15 ──────────────────────────────────────────────────────────────────────────────────
+ * The first version of the array test ended with `delete Array.prototype["0"]`. That is not a
+ * restoration, it is a deletion: if anything had legitimately defined that property before the
+ * test ran, the test would silently destroy it and every later test in the process would be
+ * running against a prototype this file damaged. Saving and re-installing the PRIOR DESCRIPTOR —
+ * or deleting only when there genuinely was none — is the difference between restoring state and
+ * assuming what it was.
+ */
+function withPrototypePoison<T>(
+  target: object,
+  key: string,
+  poison: PropertyDescriptor,
+  body: () => T,
+): T {
+  const prior = Object.getOwnPropertyDescriptor(target, key);
+  Object.defineProperty(target, key, poison);
+  try {
+    return body();
+  } finally {
+    if (prior === undefined) delete (target as Record<string, unknown>)[key];
+    else Object.defineProperty(target, key, prior);
+  }
+}
+
+/**
  * PROOF THE VEHICLE IS LIVE. Runs inside every attack test. It asserts two independent facts:
  *   1. this runtime still routes `obj["__proto__"] = v` through the inherited SETTER, and
  *   2. `JSON.parse` still produces an own `__proto__` data property.
@@ -282,12 +310,14 @@ test("R8-15: what signReceipt SIGNS is byte-identical to what it RETURNS, hostil
 test("R8-15b: an `Array.prototype` index accessor cannot capture the copy's element writes", () => {
   let setterFired = 0;
   let getterFired = 0;
-  Object.defineProperty(Array.prototype, "0", {
+  // R815-QA-15: `withPrototypePoison` saves and re-installs the PRIOR descriptor. This test used to
+  // end in `delete Array.prototype["0"]`, which destroys a pre-existing property instead of
+  // restoring one.
+  withPrototypePoison(Array.prototype, "0", {
     get() { getterFired++; return "ATTACKER"; },
     set(_v: unknown) { setterFired++; },   // swallow the write
     configurable: true,
-  });
-  try {
+  }, () => {
     // PROOF THE VEHICLE IS LIVE, inside the poisoned window: a plain array literal assignment is
     // captured right now, so the sink genuinely exists while this test runs.
     const probe: unknown[] = [];
@@ -311,14 +341,96 @@ test("R8-15b: an `Array.prototype` index accessor cannot capture the copy's elem
       "THE RETURNED ARRAY IS NOT THE DOCUMENT THAT WAS HANDED IN. Same consequence as R8-15: the " +
       "signature covers the source's bytes and the caller receives the attacker's",
     );
-  } finally {
-    delete (Array.prototype as unknown as Record<string, unknown>)["0"];
-  }
+    // R815-QA-15: the getter must be OBSERVED to fire, on a read this test performs deliberately.
+    // What stood here was `assert.ok(getterFired >= 0, …)`, which is true of every integer and
+    // therefore asserts nothing while reading like an anti-vacuity check. A tautology dressed as a
+    // control is worse than no control: it occupies the slot where a real one would go.
+    const readsThrough = ([] as unknown[])[0];
+    assert.equal(readsThrough, "ATTACKER", "a miss on a fresh array did not reach the poisoned getter");
+    assert.ok(getterFired > 0, "the poisoned GETTER never fired even on a deliberate read — the accessor half of the fixture is not wired");
+  });
   assert.equal(
     own(Array.prototype, "0"), false,
     "the test failed to restore `Array.prototype` — every later test in this process is now suspect",
   );
-  assert.ok(getterFired >= 0, "getter counter is read so the poison is observably wired, not merely defined");
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// ATTACK 6 + 7 — R815-QA-14: THE CLASS, NOT THE TWO SPELLINGS.
+//
+// A reviewer pointed out that everything above tests exactly two things: the built-in `__proto__`
+// accessor, and array index `0`. The commit that introduced them claimed to close the CLASS. It
+// did not prove that, and the difference is not academic — MEASURED, both of these mutants pass
+// the whole suite 50/50:
+//
+//     if (key === "__proto__") objectDefineProperty(out, key, d); else out[key] = copied;
+//     if (i === 0)             objectDefineProperty(out, i, d);   else out[i]   = copied;
+//
+// i.e. a fix that special-cased only what was tested would look fully green. The two tests below
+// use an inherited setter under a name NO blacklist could anticipate, and a NON-ZERO array index.
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+
+test("R815-QA-14: an arbitrary inherited setter on Object.prototype cannot own a copy's write", () => {
+  // The name is built at runtime and is nothing this file, or a future blacklist, could special-case.
+  const sinkName = `r815Sink_${(0x5eed).toString(36)}`;
+  let setterFired = 0;
+
+  withPrototypePoison(
+    Object.prototype,
+    sinkName,
+    { get() { return "ATTACKER"; }, set(_v: unknown) { setterFired++; }, configurable: true },
+    () => {
+      // PROOF THE VEHICLE IS LIVE, inside the poisoned window.
+      const probe: Record<string, unknown> = {};
+      probe[sinkName] = "swallowed";
+      assert.equal(own(probe, sinkName), false, `assignment to \`${sinkName}\` created an own property — the poison is not in force and this test is vacuous`);
+      assert.ok(setterFired > 0, "the inherited setter never fired on a plain assignment — the fixture is not hostile");
+
+      const before = setterFired;
+      const source: Record<string, unknown> = {};
+      Object.defineProperty(source, sinkName, { value: { honest: true }, writable: true, enumerable: true, configurable: true });
+      Object.defineProperty(source, "ordinary", { value: 1, writable: true, enumerable: true, configurable: true });
+
+      const copy = inertDeepCopy(source);
+
+      assert.equal(setterFired, before,
+        "`inertDeepCopy` routed a write through an inherited setter the attacker installed under an " +
+        "arbitrary name. Closing `__proto__` alone leaves the class open — any prototype the " +
+        "destination inherits from can carry a setter under any name at all");
+      assert.ok(own(copy, sinkName), `the key \`${sinkName}\` did not survive as an own property`);
+      assert.deepEqual(copy[sinkName], { honest: true }, "the value was replaced by the attacker's getter");
+      assert.equal(copy["ordinary"], 1, "an ordinary key was lost");
+    },
+  );
+
+  assert.equal(own(Object.prototype, sinkName), false, "the poison was not removed from Object.prototype");
+});
+
+test("R815-QA-14: an `Array.prototype` accessor on a NON-ZERO index cannot own an element write", () => {
+  let setterFired = 0;
+
+  withPrototypePoison(
+    Array.prototype,
+    "1",
+    { get() { return "ATTACKER"; }, set(_v: unknown) { setterFired++; }, configurable: true },
+    () => {
+      const probe: unknown[] = [];
+      probe[1] = "swallowed";
+      assert.equal(own(probe, "1"), false, "assignment to index 1 created an own property — the poison is not in force");
+      assert.ok(setterFired > 0, "the poisoned setter never fired on a plain array — the fixture is not hostile");
+
+      const before = setterFired;
+      const source = ["zero", "HONEST-ELEMENT-ONE", "two"];
+      const copy = inertDeepCopy(source);
+
+      assert.equal(setterFired, before, "an element write went through the attacker's `Array.prototype` setter at index 1");
+      assert.ok(own(copy, "1"), "the copy has no own element 1 — the write was swallowed");
+      assert.equal(copy[1], "HONEST-ELEMENT-ONE", "the copy's element 1 is not the source's");
+      assert.equal(JSON.stringify(copy), JSON.stringify(source), "the copied array does not serialise identically to its source");
+    },
+  );
+
+  assert.equal(own(Array.prototype, "1"), false, "the poison was not removed from Array.prototype");
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
