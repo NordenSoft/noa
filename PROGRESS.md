@@ -180,6 +180,18 @@ C (P0-11) are specified there and in the owner's 2026-07-31 handover mandate.
 VALID 38 · UNTESTED 5 · INVALID 0 · DUPLICATE 0 · ADR_0006_DEFERRED 0
 ```
 
+> ⚠ **SUPERSEDED 2026-08-01 (`c84ae56`). Four of these five are now PROVEN, and the reason they
+> were not is the most instructive result in this file.** They declared `andAlso` — a paired
+> mutation — and the runner read that key **zero** times, so each applied half the mutation its own
+> text described. `DETECTOR_DID_NOT_TRIGGER` did not mean "the control does nothing"; it meant
+> **the instrument never asked**. codex proposed deleting all four on the first reading; the lead
+> overruled it, fixed the runner, and all four came back `proven load-bearing 1/1`.
+> **Absence of a finding and absence of a check are the same value in code and opposite facts in
+> reality** — that sentence is why the four controls still exist.
+> Only `g4-render-node-single-input` remains open: measured clean 6/6 GREEN and mutated 6/6 GREEN,
+> so its "must go red" claim is withdrawn (ADR-0005:252). The invariant stands; nothing measures it.
+> An unknown registry key is now a hard error, so this class of silent mis-measurement cannot recur.
+
 The five UNTESTED, by stable id — these stay OPEN AND VISIBLE (owner instruction); none is labelled
 INVALID until a detector genuinely turns RED:
 
