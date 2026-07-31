@@ -453,7 +453,7 @@ for (const k of selected) {
   const key = suiteKey(k);
   if (baselines.has(key)) continue;
   const obs = observeSuite(ROOT, k.suite);
-  baselines.set(key, { exit: obs.exit, failing: obs.failing, ms: obs.ms, timedOut: obs.timedOut });
+  baselines.set(key, { exit: obs.exit, failing: obs.failing, findings: obs.findings, ms: obs.ms, timedOut: obs.timedOut });
 }
 
 // A knockout whose baseline could not even be measured proves nothing, so say that rather than

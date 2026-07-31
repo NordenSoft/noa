@@ -75,6 +75,31 @@ export function failingTestIds(output) {
 }
 
 /**
+ * A GATE's finding count, for suites that are not `node:test`.
+ *
+ * ── WHY THIS EXISTS (self-correction, 2026-07-31) ───────────────────────────────────────────────
+ * `failingTestIds` parses `node:test`'s `✖` lines. Several knockouts target a GATE — their suite is
+ * `npm run lint:security-gates`, not `npm test` — and a gate prints its own format, so the set came
+ * back EMPTY every time. `newFailures` was therefore always empty and every gate-targeting entry was
+ * classified `ANTI_VACUITY_FAILED` regardless of what actually happened.
+ *
+ * MEASURED: `r4-a5-ast-symbol-resolution` mutated by hand gives
+ *     baseline  npm run lint:security-gates   exit 0
+ *     mutated   the same command              exit 1,  L8-selftest BLOCKING 11
+ * — eleven evasion constructs stopped biting their positive samples. A real kill, reported as a
+ * vacuous one. My own "28/37" number was wrong in the pessimistic direction, and a framework that
+ * miscounts in ANY direction is the thing this file exists to prevent.
+ */
+export function gateFindingCount(output) {
+  let total = 0;
+  for (const line of String(output).split("\n")) {
+    const m = /^\s+\S+\s+(?:BLOCKING|warn[^\s]*)\s+(\d+)/.exec(line);
+    if (m) total += Number(m[1]);
+  }
+  return total;
+}
+
+/**
  * Run a suite and return a structured observation. NEVER returns a bare boolean — the caller must
  * be able to tell a timeout from a failure from a crash.
  */
@@ -84,7 +109,7 @@ export function observeSuite(root, [dir, cmd, args], timeoutMs = 900_000) {
     const out = execFileSync(cmd, args, {
       cwd: path.join(root, dir), encoding: "utf8", stdio: "pipe", timeout: timeoutMs,
     });
-    return { exit: 0, timedOut: false, signal: null, out, failing: failingTestIds(out), ms: Date.now() - started };
+    return { exit: 0, timedOut: false, signal: null, out, failing: failingTestIds(out), findings: gateFindingCount(out), ms: Date.now() - started };
   } catch (e) {
     const out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
     // `execFileSync` surfaces a timeout as a SIGTERM kill, not as an exit code.
@@ -95,6 +120,7 @@ export function observeSuite(root, [dir, cmd, args], timeoutMs = 900_000) {
       signal: e.signal ?? null,
       out,
       failing: failingTestIds(out),
+      findings: gateFindingCount(out),
       ms: Date.now() - started,
     };
   }
@@ -176,22 +202,53 @@ export function runKnockout({ root, entry, baseline, timeoutMs = 900_000 }) {
 
     const newFailures = ev.mutatedFailing.filter((f) => !baseline.failing.has(f));
     ev.newFailures = newFailures;
+    ev.baselineFindings = baseline.findings ?? 0;
+    ev.mutatedFindings = obs.findings ?? 0;
 
     if (obs.exit === 0) {
       ev.verdict = VERDICT.DETECTOR_DID_NOT_TRIGGER;
       ev.detail = "the suite stayed GREEN without this control";
       return ev;
     }
-    if (newFailures.length === 0) {
-      ev.verdict = VERDICT.ANTI_VACUITY_FAILED;
-      ev.detail =
-        `the suite failed, but ONLY with the ${ev.baselineFailing.length} failure(s) its baseline ` +
-        `already had (${ev.baselineFailing.join("; ") || "none"}). Nothing new broke, so this ` +
-        `knockout measured the pre-existing failures rather than its own control.`;
+
+    // A NEW failing test name is the strongest signal, and it is the only one available for a
+    // `node:test` suite.
+    if (newFailures.length > 0) {
+      ev.verdict = VERDICT.DETECTOR_TRIGGERED;
+      ev.detail = `${newFailures.length} NEW failure(s) beyond baseline: ${newFailures.slice(0, 3).join("; ")}`;
       return ev;
     }
-    ev.verdict = VERDICT.DETECTOR_TRIGGERED;
-    ev.detail = `${newFailures.length} NEW failure(s) beyond baseline: ${newFailures.slice(0, 3).join("; ")}`;
+
+    // GATE SUITES emit no `node:test` markers at all, so the absence of new test names says nothing
+    // about them. For those the honest discriminators are the two things a gate DOES report: whether
+    // it went from passing to failing, and whether it found more than it found clean.
+    const isTestSuite = baseline.failing.size > 0 || ev.mutatedFailing.length > 0;
+    if (!isTestSuite) {
+      if (baseline.exit === 0 && obs.exit !== 0) {
+        ev.verdict = VERDICT.DETECTOR_TRIGGERED;
+        ev.detail =
+          `a GATE suite went from exit ${baseline.exit} to exit ${obs.exit} ` +
+          `(findings ${ev.baselineFindings} -> ${ev.mutatedFindings}). Gates print no node:test ` +
+          `markers, so the exit transition against a KNOWN-GREEN baseline is the evidence.`;
+        return ev;
+      }
+      if (ev.mutatedFindings > ev.baselineFindings) {
+        ev.verdict = VERDICT.DETECTOR_TRIGGERED;
+        ev.detail = `a GATE suite reported MORE findings than its baseline (${ev.baselineFindings} -> ${ev.mutatedFindings})`;
+        return ev;
+      }
+      ev.verdict = VERDICT.ANTI_VACUITY_FAILED;
+      ev.detail =
+        `a GATE suite failed exactly as its baseline did (exit ${baseline.exit} -> ${obs.exit}, ` +
+        `findings ${ev.baselineFindings} -> ${ev.mutatedFindings}). Nothing got worse.`;
+      return ev;
+    }
+
+    ev.verdict = VERDICT.ANTI_VACUITY_FAILED;
+    ev.detail =
+      `the suite failed, but ONLY with the ${ev.baselineFailing.length} failure(s) its baseline ` +
+      `already had (${ev.baselineFailing.join("; ") || "none"}). Nothing new broke, so this ` +
+      `knockout measured the pre-existing failures rather than its own control.`;
     return ev;
   } finally {
     // ── (5) restore, and PROVE it ─────────────────────────────────────────────────────────────
