@@ -433,6 +433,14 @@ const KNOCKOUTS = [
     replace: "  if (id) return false;\n  if (!BUILTIN_GLOBALS.has(id.text) && !BARE_GLOBAL_CALLS.has(id.text)) return false;",
     suite: [".", "npm", ["run", "lint:security-gates"]],
   },
+  {
+    id: "r8-15-deep-copy-defineproperty",
+    control: "R8-15 \u2014 inertDeepCopy builds its output with defineProperty, NEVER assignment. `out[key] = v` on a plain object consults the prototype chain for a setter, and `Object.prototype.__proto__` is one \u2014 so an own `__proto__` (which JSON.parse produces from ordinary untrusted input) was consumed by the setter instead of copied. The signature covered bytes the returned receipt did not contain, and an injected approval read back as a phantom that is in no wire byte.",
+    file: "packages/signer-core/src/deep-copy.ts",
+    find: "    objectDefineProperty(out, key, {\n      value: copyValue(d.value, `${path}.${key}`, depth + 1),\n      writable: true,\n      enumerable: true,\n      configurable: true,\n    });",
+    replace: "    out[key] = copyValue(d.value, `${path}.${key}`, depth + 1);",
+    suite: ["packages/signer-core", "npm", ["test"]],
+  },
 ];
 
 // ── R8-26/R8-27: MEASURE EVERY SUITE'S CLEAN BASELINE FIRST ────────────────────────────────────

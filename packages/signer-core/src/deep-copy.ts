@@ -37,6 +37,9 @@
  */
 
 const objectGetOwnPropertyNames = Object.getOwnPropertyNames;
+// R8-15: captured at module load like every other intrinsic in this file. It replaces `out[key] = …`,
+// which invoked `Object.prototype.__proto__`'s setter and re-parented the output.
+const objectDefineProperty = Object.defineProperty;
 const getOwnPropertyDescriptor = Object.getOwnPropertyDescriptor;
 const arrayIsArray = Array.isArray;
 const objectPrototype = Object.prototype;
@@ -100,8 +103,36 @@ function copyValue(value: unknown, path: string, depth: number): unknown {
   // G2 golden-parity test: `receipt-hash.ts` uses a null prototype because its result is an internal,
   // read-only hash pre-image that is never returned. THIS value IS returned to the caller and must
   // stay structurally identical to what `structuredClone` produced, or `deepStrictEqual`, `instanceof`
-  // and every consumer comparison silently change meaning. Own properties are only ever WRITTEN here
-  // and inherited ones are never READ, so `Object.prototype` pollution cannot reach the output.
+  // and every consumer comparison silently change meaning.
+  //
+  // ── R8-15 (2026-07-31): THE WRITE WAS THE VEHICLE ────────────────────────────────────────────
+  // What stood here read: *"Own properties are only ever WRITTEN here and inherited ones are never
+  // READ, so `Object.prototype` pollution cannot reach the output."* True about READS, and it is
+  // the wrong half. `out[key] = …` on a PLAIN object is not always a property write: when `key` is
+  // `"__proto__"` it invokes `Object.prototype.__proto__`'s SETTER and RE-PARENTS `out`.
+  //
+  // MEASURED, and no Proxy is needed — `JSON.parse` produces an own `__proto__` data property:
+  //     source governance own keys : __proto__, verdict
+  //     copy   governance own keys : verdict            <- the key vanished
+  //     copy prototype is Object?  : false              <- re-parented
+  //     copy.approval READS AS     : {"by":"HUMAN:cfo-victim",…}
+  //     …an own property?          : false
+  //     …in the JSON (the wire)?   : false
+  //
+  // A value that READS BACK but is ABSENT from the bytes is precisely the shape a signing path may
+  // not produce: `receiptHashInput` is own-property-only, so the signature covers a receipt without
+  // that approval while a consumer reading `receipt.governance.approval` sees one.
+  //
+  // THE FIX IS `defineProperty`, NOT A BLACKLIST, and the choice was measured rather than argued.
+  // `structuredClone` — the behaviour this function must reproduce — keeps an own `__proto__` as an
+  // ORDINARY OWN PROPERTY, leaves the prototype alone, and round-trips it through JSON:
+  //     structuredClone({"a":1,"__proto__":{"x":9}})
+  //       own keys: a, __proto__ · prototype is Object: true · sc.x: undefined
+  //       JSON: {"a":1,"__proto__":{"x":9}}
+  // So rejecting the key would DIVERGE from structuredClone and break G2, while `defineProperty`
+  // matches it exactly — and because the value stays an own property it is inside `receiptHashInput`
+  // and inside the wire bytes. There is no hidden channel left to exploit, for `__proto__` or for
+  // any other name, because NO key is written by assignment any more.
   const out: Record<string, unknown> = {};
   const keys = objectGetOwnPropertyNames(value);
   for (let i = 0; i < keys.length; i++) {
@@ -112,7 +143,14 @@ function copyValue(value: unknown, path: string, depth: number): unknown {
       throw new DeepCopyError(`accessor at ${path}.${key} — refusing to invoke it on a signing path`);
     }
     if (d.value === undefined) continue; // JSON has no `undefined`; JCS would drop it anyway
-    out[key] = copyValue(d.value, `${path}.${key}`, depth + 1);
+    // `defineProperty` for EVERY key, never assignment. Assignment consults the prototype chain for
+    // a setter; this does not, so no key — known or not yet invented — can reach one.
+    objectDefineProperty(out, key, {
+      value: copyValue(d.value, `${path}.${key}`, depth + 1),
+      writable: true,
+      enumerable: true,
+      configurable: true,
+    });
   }
   return out;
 }
