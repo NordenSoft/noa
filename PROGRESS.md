@@ -31,7 +31,27 @@ parity-enforced, fail-closed or covering "all resolvers".
 **Still correctly fixed:** P0-1 (ROOT `validFrom`, `651cbd3`), P0-5 (live gate keyring, `dd2997c`),
 P0-6 (strict parser core, `dd2997c`). P0-2/3/4 closed earlier.
 
-### Standing process rule — the one thing that worked
+### Standing process rule — codex is QA ONLY
+
+**Owner dictate 2026-07-31: *"her gorev bittiginde codex sadece qa yapsin."*** codex's role is
+**QA only**, run **after** a task is finished. It does not implement, does not design, does not
+decide. It reviews finished work and nothing else.
+
+Per completed P0/P1 micro-batch:
+
+1. Lead implements — only after RED evidence exists.
+2. **Freeze the exact diff.** The tree is not edited while it is under review.
+3. **codex QAs the frozen diff and its direct consumers only** — not the whole repository, not
+   history.
+4. The lead **independently re-derives** every material finding. A codex finding is a CLAIM until
+   reproduced: REPRODUCED / REJECTED_WITH_EVIDENCE / DUPLICATE / UNRESOLVED / UNTESTED. Never silent
+   acceptance — refuting codex is what catches its false positives (round 8: R8-09 wrong locus,
+   R8-10 half false, R8-04 already withdrawn).
+5. Only then may the batch be called closed. **The lead may not self-approve its own batch.**
+
+### Why this rule exists, measured
+
+
 
 Every P0/P1 micro-batch: RED evidence first → freeze the exact diff → **targeted frozen-diff codex
 review of the changed boundary only** → the lead independently re-derives every material finding →
