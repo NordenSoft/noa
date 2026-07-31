@@ -34,6 +34,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { analyzeDispatchSurfaces } from "./lib/dispatch-ast.mjs";
 import { EVASION_MATRIX } from "./lib/dispatch-ast-matrix.mjs";
+import { emit as emitVerdict, report as reportVerdict } from "./lib/verdict.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rel = (p) => path.relative(ROOT, p);
@@ -513,7 +514,34 @@ function L7() {
     if (!fs.existsSync(path.join(ROOT, i))) { add("L7", i, 0, `implementation \`${i}\` is missing — the five-verifier parity claim rests on it`); n++; }
   }
   if (!fs.existsSync(path.join(ROOT, "conformance/MATRIX.md"))) { add("L7", "conformance/MATRIX.md", 0, "the conformance matrix is absent"); n++; }
-  const ci = fs.existsSync(path.join(ROOT, ".github/workflows/ci.yml")) ? read(".github/workflows/ci.yml") : "";
+  // ── R8-23 (2026-07-31): A MISSING SUBJECT IS A FINDING, NEVER A SKIP ──────────────────────────
+  // This read used to be `existsSync(…) ? read(…) : ""`, and every assertion below was guarded
+  // `if (ci && …)`. So with no `ci.yml` at all, the empty string satisfied every guard, L7 reported
+  // `BLOCKING 0`, and the whole suite exited 0.
+  //
+  // MEASURED before the fix, by deleting the file outright:
+  //     baseline           L7  BLOCKING 0   exit 0
+  //     ci.yml DELETED     L7  BLOCKING 0   exit 0     <- identical
+  //
+  // The gate that checks CI enforces the controls was green precisely when there was no CI. That is
+  // the same shape as absence-of-checking reading as absence-of-findings, and it is why
+  // `scripts/lib/verdict.mjs` now exists: every subject class below reports what it EXAMINED.
+  const ciPath = path.join(ROOT, ".github/workflows/ci.yml");
+  const ciPresent = fs.existsSync(ciPath);
+  const ci = ciPresent ? read(".github/workflows/ci.yml") : "";
+  if (!ciPresent) {
+    add("L7", ".github/workflows/ci.yml", 0,
+      "the CI workflow is ABSENT, so none of the controls this gate verifies can be running. A " +
+      "missing subject is a finding, not a skip — every assertion below would otherwise pass " +
+      "vacuously against an empty string.");
+    n++;
+  }
+  emitVerdict({
+    gate: "L7",
+    subject: "ci workflow",
+    examined: ciPresent ? 1 : 0,
+    ...(ciPresent ? {} : { emptyReason: "" }),
+  });
   // Detect the MECHANISM, not one spelling of it: CI runs the matrix inline as
   // `node scripts/conformance-matrix.mjs --write && git diff --exit-code`, which is the same gate
   // as the `check:matrix` script. A lint that demanded one particular spelling would be a false
