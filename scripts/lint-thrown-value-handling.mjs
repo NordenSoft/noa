@@ -89,7 +89,7 @@ function walk(dir, out = []) {
     if (st.isDirectory()) {
       if (entry === "node_modules" || entry === "dist") continue;
       walk(abs, out);
-    } else if (/\.(mjs|js|ts)$/.test(entry)) {
+    } else if (/\.(mjs|cjs|js|jsx|ts|tsx|mts|cts)$/.test(entry)) {
       out.push(abs);
     }
   }

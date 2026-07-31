@@ -35,6 +35,7 @@ import { fileURLToPath } from "node:url";
 import { analyzeDispatchSurfaces } from "./lib/dispatch-ast.mjs";
 import { EVASION_MATRIX } from "./lib/dispatch-ast-matrix.mjs";
 import { emit as emitVerdict, report as reportVerdict } from "./lib/verdict.mjs";
+import { fileSetUnder } from "./lib/enumerate.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const rel = (p) => path.relative(ROOT, p);
@@ -265,15 +266,18 @@ function tcbMembershipFromExports() {
 }
 
 function reconcileTCB() {
-  const seen = new Set();
-  const walk = (dir) => {
-    for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
-      const rp = `${dir}/${e.name}`;
-      if (e.isDirectory()) walk(rp);
-      else if (e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) seen.add(rp);
-    }
-  };
-  walk("src");
+  // ── R8-28 (2026-07-31): THE ROOT KERNEL'S COVERAGE GATE WAS THE BLIND ONE ─────────────────────
+  // This walked one shape — `Dirent.isDirectory()` plus `.endsWith(".ts")` — while the correct
+  // walker sat 356 lines below it in this same file, guarding `packages/relay/src`. So the gate
+  // protecting `src/`, the ROOT KERNEL TCB, was the least thorough one in the repository.
+  //
+  // MEASURED in an isolated copy, planting the same `allowed.includes(v)` body four ways:
+  //     CONTROL  src/__ctl.ts                       L0 BLOCKING 1
+  //     TEST     .mts + .cts + .tsx + symlinked dir L0 BLOCKING 0, suite exit 0
+  //
+  // Both walkers are now one module (`lib/enumerate.mjs`), because this class had already been
+  // patched at the instance three times and a fourth would have left six other walkers keeping it.
+  const seen = fileSetUnder(ROOT, "src");
   let n = tcbMembershipFromExports();
   for (const f of seen) {
     if (!TCB.includes(f) && !(f in OUT_OF_TCB)) {

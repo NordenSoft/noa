@@ -27,6 +27,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { filesUnder, SOURCE } from "./lib/enumerate.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WARN_ONLY = process.argv.includes("--warn");
@@ -107,13 +108,13 @@ const REGISTRY = [
   },
 ];
 
+// R8-28/R8-30 (2026-07-31): one shared enumerator. This private walker matched `ts|mjs|js` and used
+// `Dirent.isDirectory()`, so `.mts`/`.cts`/`.tsx` and any symlinked directory were invisible — the
+// same defect fixed three times elsewhere. `lib/enumerate.mjs` follows links, covers every module
+// extension, and THROWS on a symlink escaping the repository rather than skipping it quietly.
 function walk(dir, out = []) {
-  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (e.name === "node_modules" || e.name === "dist" || e.name === ".git") continue;
-    const p = path.join(dir, e.name);
-    if (e.isDirectory()) walk(p, out);
-    else if (/\.(ts|mjs|js)$/.test(e.name) && !/\.d\.ts$/.test(e.name)) out.push(p);
-  }
+  const rel = path.relative(ROOT, dir) || ".";
+  for (const f of filesUnder(ROOT, rel, { match: SOURCE })) out.push(path.join(ROOT, f));
   return out;
 }
 

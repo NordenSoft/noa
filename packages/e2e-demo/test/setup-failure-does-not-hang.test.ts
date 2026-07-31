@@ -54,7 +54,7 @@ test('a setup that throws leaves NOTHING listening — the demo fails instead of
           headers: { 'content-type': 'application/json' },
         });
       }
-      return realFetch(input as RequestInfo, init as RequestInit);
+      return realFetch(input as Parameters<typeof fetch>[0], init as Parameters<typeof fetch>[1]);
     }) as typeof fetch;
 
     await assert.rejects(
