@@ -43,10 +43,18 @@ const reflectApply = Reflect.apply;
  * constant-returning hash fails it immediately and the signing path throws instead of emitting a
  * receipt whose digest means nothing.
  *
- * ⚠ RESIDUAL, stated rather than implied: a poison that targets only the sizes real receipts
- * produce, while leaving the 3-byte vector intact, would pass this check. It raises the bar; it
- * does not close the class. The class is closed only by process isolation, which this package
- * cannot provide. Cost is one 3-byte SHA-256 per signature — negligible beside Ed25519.
+ * ⚠ THIS IS A DETECTION BARRIER, NOT A SECURITY BOUNDARY (CORRECTIONS.md C-6). Two poisons pass
+ * it, and both are in the same threat model the rest of this package is written against:
+ *   - SIZE-SELECTIVE: a poison that leaves the 3-byte "abc" vector intact while neutralising the
+ *     sizes real receipts produce.
+ *   - PRE-LOAD: a poison installed before this module is evaluated is captured INTO the bindings
+ *     below, including this check's own — it would then validate the attacker's primitive against
+ *     the attacker's arithmetic.
+ * So it raises the cost of a same-realm attack and makes the common case fail closed. It does NOT
+ * make this package resistant to a compromised cryptographic primitive inside its own process, and
+ * no such claim should be made or inferred from it. FULL CLOSURE REQUIRES PROCESS ISOLATION OR AN
+ * INDEPENDENTLY TRUSTED CRYPTOGRAPHIC BOUNDARY — neither of which a library in the same realm can
+ * provide. Cost is one 3-byte SHA-256 per signature — negligible beside Ed25519.
  */
 const KAT_INPUT = "abc";
 const KAT_EXPECTED = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";

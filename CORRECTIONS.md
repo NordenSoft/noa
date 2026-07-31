@@ -174,3 +174,46 @@ exactly that. Overstated severity is not a harmless exaggeration — it spends t
 the finding that does not need it, and there are three HIGH findings on this same branch (an
 attacker-constant signature, a collapsing canonicalizer, and a substituted approval display) that
 do.
+
+---
+
+## 2026-07-31 — #77-A: what is closed, and what is explicitly NOT
+
+### C-6 — the known-answer test is a DETECTION BARRIER, not a same-realm security boundary
+
+`7a30e2c` closed three sinks and it is worth being exact about the boundary between them, because
+the third is a different KIND of result and a reader skimming the commit could take all three as
+equally closed.
+
+**CLOSED — the measured `.set()` attack.** `signingMessageBytes` no longer assembles the Ed25519
+message through `Uint8Array.prototype.set`, and `hash.ts` no longer decides what gets hashed through
+a live `TextEncoder.prototype.encode`. Both are proven by knockouts that turn RED for their own
+reason (`a77-signing-index-writes` against a poison targeted at the message's exact length, so the
+control is the assembly and not the KAT; `a77-hash-captured-encoder`).
+
+**NOT FULLY CLOSED — pre-load and size-selective poisoning of the cryptographic primitive.**
+`@noble/hashes` builds its blocks with `.set()` (`_md.js:94`). This package cannot prevent that:
+
+- a **size-selective** poison that leaves the 3-byte `"abc"` vector intact while neutralising the
+  sizes real receipts produce passes the known-answer test;
+- a **pre-load** poison is captured INTO every binding this package holds, including the KAT's own,
+  so the check would validate the attacker's primitive against the attacker's arithmetic.
+
+**`assertSha256Intact()` is therefore a DETECTION BARRIER, not a security boundary.** It raises the
+cost of a same-realm attack and makes the common case fail closed. It does not make signer-core
+resistant to a compromised cryptographic primitive inside its own process, and no claim to that
+effect should be made or inferred. **Full closure requires process isolation, or a cryptographic
+boundary that is independently trusted — neither of which a library in the same realm can provide.**
+
+### C-7 — two schema limitations found during the #77-A binding audit, preserved
+
+Both are properties of `noa.receipt/0.1` itself, not defects in the signing code, and neither is
+fixed by `7a30e2c`:
+
+1. **`scope.tenant` is OPTIONAL.** It is committed when present — measured — but a receipt without
+   it commits nothing about tenant. **Tenant binding is a producer obligation, not a schema
+   guarantee**, and any claim that a receipt is bound to a tenant is false for receipts that omit it.
+2. **`noa.receipt/0.1` has NO audience or target field.** Own keys are exactly: `spec`, `id`, `ts`,
+   `scope`, `agent`, `action`, `governance`, `chain`, `sig`. The receipt therefore **cannot prove an
+   audience or target claim at all** — not weakly, not by convention. Where such a claim is needed
+   it belongs to the relay's hold/decision artifacts, which are a different artifact type.
