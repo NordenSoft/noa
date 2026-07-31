@@ -35,11 +35,36 @@
  * true` is inert against every call site that goes through `arrayIncludes`: the poisoned property is
  * simply never consulted again.
  *
- * WHY THIS IS SOUND. ES module evaluation is depth-first over the import graph and completes before
- * ANY exported function can be called, so no caller-supplied value can have been read — and
- * therefore no attacker code can have run — before these bindings are taken. (The one residual is a
- * HOST application that mutates an intrinsic in a module evaluated before this one. That is outside
- * this library's boundary; it is recorded in THREAT-MODEL.md rather than pretended away.)
+ * WHAT THIS BUYS, EXACTLY. ES module evaluation is depth-first over the import graph and completes
+ * before ANY exported function can be called, so no caller-supplied value can have been read — and
+ * therefore no attacker code can have run — before these bindings are taken. That is a real property
+ * and it is worth having: it defeats every poison installed AFTER we load.
+ *
+ * ⚠ AND IT IS ONLY THAT. A poison installed BEFORE we load is the value this file snapshots, and a
+ * snapshot of a lie is a lie that can no longer be repaired.
+ *
+ * ── CORRECTED IN PLACE 2026-07-30 (this paragraph used to be the defect) ────────────────────────
+ * What stood here called the pre-load window "the ONE residual … a HOST application … outside this
+ * library's boundary", and pointed at THREAT-MODEL.md as though the matter were filed. It was the
+ * stalest text in the security core: ADR-0002 §3 — ratified by the patron 2026-07-29 — names these
+ * exact lines as one of the two places carrying that framing and rejects it. THREAT-MODEL.md,
+ * README.md and NON-CLAIMS.md (NC-6.0) were corrected the same day. This file was not, so the
+ * docstring a developer reads WHILE EDITING the capture list went on telling them the hole was
+ * narrow and somebody else's. It is neither:
+ *
+ *   "The residual as written sounds narrow. It is not. It is equivalent to: anything sharing the
+ *    realm, evaluated in any order we do not control, by any dependency, in any bundler output,
+ *    under any test harness that loads a shim first."   — ADR-0002 §3
+ *
+ * MEASURED, and re-runnable rather than asserted: `test/security/r7-exploits/o01_preload_includes.mjs`
+ * is `c02_includes425.mjs` with ONE variable changed — WHEN the poison installs. After-load, the
+ * capture holds and the corpus pins it CLOSED. Pre-load, the SAME forged document that is UNTRUSTED
+ * clean verifies `VALID` with `signaturesVerified: true`, and the corpus pins it OPEN because it is
+ * not fixed and must not come to look fixed.
+ *
+ * So: this module raises the cost of an in-realm attack. It is not a boundary, it does not become one
+ * by growing, and the security property is re-established by process isolation (the Go kernel,
+ * ADR-0002), which shares no realm with the caller.
  *
  * ⚠ SCOPE OF WHAT THIS FILE ACHIEVES (2026-07-29, ratified withdrawal — see NON-CLAIMS.md NC-6.0).
  * This module makes an in-realm attack expensive. It does NOT make it impossible, and the package no

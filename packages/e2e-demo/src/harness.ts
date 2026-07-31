@@ -111,17 +111,40 @@ export async function setupHarness(opts: { echo?: boolean; sink?: string[] } = {
 
   const g = await gate.listen();
   const r = await relay.listen();
-  const gateBaseUrl = `http://127.0.0.1:${g.port}`;
-  const relayBaseUrl = `http://127.0.0.1:${r.port}`;
 
-  // 4. Onboard the transport bridge (relay agent) + the phone (relay device).
-  const { apiKey: relayAgentKey } = await registerRelayAgent(relayBaseUrl, 'demo-bridge');
-  const bridge = new GateRelayBridge(relayBaseUrl, relayAgentKey, logger.child('bridge'));
-  const { deviceSecret } = await registerRelayDevice(relayBaseUrl, phone.approverKid, phone.approverPublicKeyRawHex, relayAgentKey);
-  const phoneClient = new PhoneRelayClient(relayBaseUrl, deviceSecret, logger.child('phone'));
+  // ── FROM HERE ON THIS FUNCTION OWNS TWO LISTENING SOCKETS, AND MUST NOT LEAK THEM ─────────────
+  // Every caller writes `const ctx = await setupHarness(); try { … } finally { teardownHarness(ctx) }`
+  // — so the try/finally starts AFTER this function returns. Anything that throws BELOW this line
+  // therefore left the gate and relay listening with nobody holding a reference to close them, and
+  // Node cannot exit while a server is listening.
+  //
+  // MEASURED, 2026-07-31, and the failure mode is the point: the R8-07 enrolment change made
+  // `registerRelayDevice` return 503 here. The demo did not fail — it HUNG. Eight such processes
+  // accumulated at 0.0% CPU holding 42 listening sockets, up to 2h20m each, and were reported to the
+  // owner as "running" because a hang and slow work are indistinguishable from outside.
+  //
+  // A failure that presents as a hang is worse than a crash: a crash names itself. So a function
+  // that opens a resource and can then throw closes it on the way out, and the original error is
+  // rethrown untouched — a cleanup failure must never mask the fault that triggered it.
+  try {
+    const gateBaseUrl = `http://127.0.0.1:${g.port}`;
+    const relayBaseUrl = `http://127.0.0.1:${r.port}`;
 
-  logger.event('harness.ready', { gate: g.port, relay: r.port, tenant: TENANT, approverKid: phone.approverKid });
-  return { clock, ids, logger, authority, phone, trust, tenantRoot, gate, relay, gateBaseUrl, relayBaseUrl, bridge, phoneClient, gateHoldQueue };
+    // 4. Onboard the transport bridge (relay agent) + the phone (relay device).
+    const { apiKey: relayAgentKey } = await registerRelayAgent(relayBaseUrl, 'demo-bridge');
+    const bridge = new GateRelayBridge(relayBaseUrl, relayAgentKey, logger.child('bridge'));
+    const { deviceSecret } = await registerRelayDevice(relayBaseUrl, phone.approverKid, phone.approverPublicKeyRawHex, relayAgentKey);
+    const phoneClient = new PhoneRelayClient(relayBaseUrl, deviceSecret, logger.child('phone'));
+
+    logger.event('harness.ready', { gate: g.port, relay: r.port, tenant: TENANT, approverKid: phone.approverKid });
+    return { clock, ids, logger, authority, phone, trust, tenantRoot, gate, relay, gateBaseUrl, relayBaseUrl, bridge, phoneClient, gateHoldQueue };
+  } catch (err) {
+    // Best-effort, and deliberately swallowing only the CLOSE errors: if closing also fails there is
+    // nothing further to do, and letting that failure propagate would replace a precise diagnosis
+    // ("the relay refused enrolment with 503") with a vague one ("close failed").
+    await Promise.allSettled([gate.close(), relay.close()]);
+    throw err;
+  }
 }
 
 export async function teardownHarness(ctx: HarnessContext): Promise<void> {
