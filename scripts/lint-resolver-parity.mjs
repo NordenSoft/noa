@@ -16,9 +16,11 @@
  *   POLICY_DROP         a production/demo site whose validFrom or revokedAt is ABSENT with no
  *                       named exception (this is exactly P0-1/P0-5/P0-8)
  *   EMPTY_REASON        an exception whose reason is empty or unresolved (TODO/TBD/…), or unversioned
- *   PROOF_UNRESOLVED    a registered proof whose file is missing, whose marker is gone, or whose
- *                       marker line is commented out or `.skip`ped — the mechanical P0-7 rule:
- *                       a claimed control must EXIST and RUN
+ *   PROOF_UNRESOLVED    a registered proof whose file is missing, whose marker names no real test,
+ *                       or whose test is DISABLED by any spelling (`.skip`/`.todo`, an options
+ *                       object, an enclosing suite) or whose enablement is UNDECIDABLE — the
+ *                       mechanical P0-7 rule: a claimed control must EXIST and RUN. Resolution is
+ *                       an AST parse (`lib/proof-resolve.mjs`), never a line scan (P0-13)
  *   MISSING_PROOF       a production/demo KeyEntry resolver with no proof at all
  *   ANCHOR_ROTTED       an anchored (non-AST-detectable) resolver whose anchor no longer matches
  *                       exactly once
@@ -40,6 +42,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanTrustKeySurface, VOCABULARY } from "./lib/resolver-scan.mjs";
+import { resolveProof } from "./lib/proof-resolve.mjs";
 import * as verdict from "./lib/verdict.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -130,22 +133,27 @@ for (const p of referencedProofs) if (!proofs[p]) add("PROOF_UNRESOLVED", p, "re
 for (const [id, p] of Object.entries(proofs)) {
   const abs = path.join(ROOT, p.file);
   if (!fs.existsSync(abs)) { add("PROOF_UNRESOLVED", id, `proof file ${p.file} does not exist — the claimed control is not there (the P0-7 failure, mechanically)`); continue; }
-  const lines = fs.readFileSync(abs, "utf8").split("\n");
-  const hits = lines.filter((l) => l.includes(p.marker));
-  if (hits.length === 0) { add("PROOF_UNRESOLVED", id, `marker not found in ${p.file} — the claimed control is not there`); continue; }
-  // A proof resolves only through a LIVE occurrence: markers may also appear in doc comments, but
-  // at least one occurrence must be uncommented AND not `.skip`/`.todo` — a disabled control is
-  // not a control, and a doc mention of one is exactly the P0-7 failure.
-  const live = hits.filter((l) => {
-    const t = l.trim();
-    if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return false;
-    if (/\b(test|it)\s*\.\s*(skip|todo)\s*\(/.test(l)) return false;
-    return true;
-  });
-  if (live.length === 0) {
+  // ── P0-13 (2026-07-31): AST, NOT A LINE SCAN ───────────────────────────────────────────────────
+  // This read the marker's LINE and rejected `.skip`/`.todo` only in that same-line spelling.
+  // MEASURED: the object form `test("…", { skip: true }, () => {})` gave gate `skipped 3` and this
+  // gate exit 0, still calling all three proofs live — the control built to close P0-7, bypassed by
+  // a different spelling of the same intent. Resolution is now structural (`lib/proof-resolve.mjs`):
+  // the marker must be the NAME of a real `test`/`it` call that is not disabled by a modifier, an
+  // options object, or an enclosing suite. A marker inside a comment is not a node at all.
+  const res = resolveProof(abs, p.marker);
+  if (res.status === "live") continue;
+  if (res.status === "absent") {
+    add("PROOF_UNRESOLVED", id, `${p.file}: ${res.detail}`);
+  } else if (res.status === "disabled") {
     add("PROOF_UNRESOLVED", id,
-      `every occurrence of the marker in ${p.file} is commented out or .skip/.todo — the claimed ` +
-      `control does not RUN (the P0-7 failure, mechanically)`);
+      `${p.file}: the proof exists but is DISABLED — ${res.detail}. A control that does not run is ` +
+      `not a control (the P0-7 failure, mechanically).`);
+  } else {
+    // UNDECIDABLE is a finding, never a pass: "I could not tell" and "it runs" must not be the
+    // same value — that equivalence is this repository's most-repeated defect shape.
+    add("PROOF_UNRESOLVED", id,
+      `${p.file}: whether this proof runs is UNDECIDABLE by static parse — ${res.detail}. Make the ` +
+      `enablement literal, or the gate cannot certify the control.`);
   }
 }
 

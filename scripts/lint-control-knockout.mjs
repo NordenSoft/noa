@@ -665,6 +665,28 @@ const KNOCKOUTS = [
     kind: "gate",
     suite: [".", "npm", ["run", "lint:resolver-parity"]],
   },
+  // ── P0-12 / P0-13 (2026-07-31, micro-batch B): HARDENING WHAT BATCH A BUILT ────────────────────
+  // Both entries below exist because a control that batch A added did not hold: ROOT activation was
+  // carried and never enforced, and the proof-resolution rule was defeated by a second spelling of
+  // "skip". Each knockout targets the NEW control, not the old defect.
+  {
+    id: "p12-root-activation-enforced",
+    control: "P0-12 — a trust ROOT is subject to its OWN activation window. Exempting ROOT from the activation branch left 1040 tests across five suites green before these proofs existed: carriage (P0-1) was proven, enforcement was not. [proof: RES-PAR-ROOT-ENFORCED, RES-PAR-ROOT-ENFORCED-E2E]",
+    file: "packages/approval-artifacts/src/verify.ts",
+    find: "    if (entry.validFrom != null) {",
+    replace: '    if (entry.validFrom != null && entry.type !== "ROOT") {',
+    kind: "tests",
+    suite: ["packages/approval-artifacts", "npm", ["test"]],
+  },
+  {
+    id: "p13-proof-resolution-is-structural",
+    control: "P0-13 — proof resolution reads the AST, so a control cannot be disabled by a spelling the matcher does not know. Defanging the options-object rule makes `test(name, { skip: true }, fn)` certify as live again — the exact measured bypass (gate: skipped 3, lint exit 0).",
+    file: "scripts/lib/proof-resolve.mjs",
+    find: 'if (v.kind === ts.SyntaxKind.TrueKeyword || ts.isStringLiteral(v)) return "disabled";',
+    replace: 'if (false) return "disabled";',
+    kind: "gate",
+    suite: [".", "npm", ["run", "lint:resolver-parity"]],
+  },
 ];
 
 // ── R8-26/R8-27: MEASURE EVERY SUITE'S CLEAN BASELINE FIRST ────────────────────────────────────

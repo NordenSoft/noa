@@ -28,9 +28,40 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { asRootKeyEntryMap } from "../src/trust.js";
+import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
 
 const enc = (o: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(o));
+
+/** The shipped §13 bundle the P0-12 tests at the bottom of this file drive end to end. */
+const FX = JSON.parse(
+  readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "..", "conformance", "valid", "executed.json"), "utf8"),
+) as { bundle: unknown; tenantRoot: Record<string, Record<string, unknown>>; checkpointKeyring: unknown; now: string; maxAgeHours: number };
+const FX_SCHEMAS = loadSchemas();
+
+/**
+ * Run the REAL §13 verifier over the shipped bundle with the tenant ROOT's `validFrom` replaced.
+ * `undefined` leaves the fixture untouched (the anti-vacuity control).
+ */
+function evidenceVerdict(validFrom: string | undefined): { verdict: string; failedStep: string; code: string; reason: string } {
+  const tr = JSON.parse(JSON.stringify(FX.tenantRoot)) as Record<string, Record<string, unknown>>;
+  if (validFrom !== undefined) {
+    const kid = Object.keys(tr)[0];
+    if (kid === undefined || tr[kid] === undefined) throw new Error("fixture: the tenant root has no entry to modify");
+    tr[kid]["validFrom"] = validFrom;
+  }
+  const r = verifyEvidence(enc(FX.bundle), {
+    tenantRoot: enc(tr),
+    checkpointKeyring: enc(FX.checkpointKeyring),
+    now: FX.now,
+    maxAgeMs: FX.maxAgeHours * 60 * 60 * 1000,
+    schemas: FX_SCHEMAS,
+  }) as { verdict: string; failedStep?: string; code?: string; reason?: string };
+  return { verdict: r.verdict, failedStep: r.failedStep ?? "", code: r.code ?? "", reason: r.reason ?? "" };
+}
 const PUB = "aa".repeat(32);
 /** Parse a single ROOT record and REQUIRE it to resolve — a missing entry is a fixture bug, not a result. */
 function root(extra: Record<string, unknown>) {
@@ -124,4 +155,49 @@ test("P0-1: the ROOT path and the MANIFEST path carry activation the SAME way", 
   const windowed = root({ validFrom: "2026-06-01T00:00:00.000Z", revokedAt: "2026-12-01T00:00:00.000Z" });
   assert.equal(windowed.validFrom, "2026-06-01T00:00:00.000Z");
   assert.equal(windowed.revokedAt, "2026-12-01T00:00:00.000Z");
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// P0-12 — CARRIAGE IS NOT ENFORCEMENT, AND ONLY ONE OF THEM WAS PROVEN.
+//
+// Everything above proves the ROOT `validFrom` SURVIVES the parse. Nothing above proves any verifier
+// ACTS on it. MEASURED 2026-07-31: exempting ROOT from the activation branch in
+// `approval-artifacts/src/verify.ts:271` (`&& entry.type !== "ROOT"`) left FIVE suites — 1040 tests
+// — completely green. A field can be carried perfectly into a check that never runs.
+//
+// These tests drive the REAL §13 consumer (`verifyEvidence`) over a REAL shipped bundle, so the
+// property under test is the end-to-end verdict, not a field value. They are the twin of
+// `approval-artifacts/test/activation-window-strict.test.ts` [PROOF:RES-PAR-ROOT-ENFORCED], which
+// probes the same rule at the unit verifier.
+//
+// METHOD NOTE, recorded because it nearly produced a false result: the first run of this probe
+// reported "no enforcement anywhere" against a CLEAN source tree. The cause was a stale `dist/` —
+// the mutation had been reverted in the source and the compiled verifier had not been rebuilt, so
+// the probe measured the mutant. `npm test` builds first, which is why the suite is honest and an
+// ad-hoc `node -e` against `dist/` is not.
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+
+test("P0-12 [PROOF:RES-PAR-ROOT-ENFORCED-E2E]: a FUTURE-activated trust root cannot anchor a bundle at the real §13 verifier", () => {
+  // Control: the shipped bundle verifies unmodified. Without this, every INVALID below could be a
+  // broken fixture rather than an enforced window.
+  assert.equal(evidenceVerdict(undefined).verdict, "VALID_FULL_CHAIN",
+    "the shipped executed bundle does not verify — the refusals below would prove nothing");
+
+  const r = evidenceVerdict("2099-01-01T00:00:00.000Z");
+  assert.notEqual(r.verdict, "VALID_FULL_CHAIN",
+    "a tenant root that does not activate until 2099 anchored a full chain TODAY. The external " +
+    "trust root is the anchor every other key hangs from (F7a); if its own window is not enforced, " +
+    "P0-1's carriage fix bought nothing at the verdict layer");
+  assert.equal(r.code, "E_DELEGATION_CHAIN", `refused at the wrong layer: step=${r.failedStep} code=${r.code}`);
+  assert.match(r.reason, /before its validFrom/, `refused for the wrong reason: ${r.reason}`);
+});
+
+test("P0-12: a MALFORMED root activation fails CLOSED end-to-end; a PAST one still anchors", () => {
+  const mal = evidenceVerdict("not-a-timestamp");
+  assert.notEqual(mal.verdict, "VALID_FULL_CHAIN", "a root whose activation cannot be evaluated still anchored the chain (fail OPEN)");
+  assert.match(mal.reason, /cannot evaluate activation time/, `wrong refusal reason: ${mal.reason}`);
+
+  // Compatibility, at the verdict layer: a canonical PAST activation is unaffected.
+  assert.equal(evidenceVerdict("2000-01-01T00:00:00.000Z").verdict, "VALID_FULL_CHAIN",
+    "a root with a canonical past activation stopped anchoring — this fix must not narrow what already verified");
 });

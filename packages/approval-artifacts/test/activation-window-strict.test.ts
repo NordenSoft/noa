@@ -122,6 +122,64 @@ test("P0-6: a canonical PAST activation still verifies, in both accepted spellin
   assert.equal(verifyWithValidFrom("2000-01-01T00:00:00Z").ok, true, "second-precision form rejected");
 });
 
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+// P0-12 — ROOT IS NOT EXEMPT. Every activation test above probes the DECISION vector, whose signer
+// is an APPROVER. MEASURED (2026-07-31): exempting ROOT from the activation branch
+// (`entry.validFrom != null && entry.type !== "ROOT"`) left 1040 tests across five suites GREEN —
+// P0-1 proved a ROOT's `validFrom` is CARRIED, and nothing proved it is ENFORCED. These tests probe
+// the artifact a ROOT key actually signs (the key-delegation, signerType ROOT), so that exact
+// mutation turns them RED while the APPROVER tests above stay green — the failure names the
+// exemption, not a broken harness. Twin through the real §13 consumer:
+// packages/evidence/test/root-activation-window.test.ts. Knockout: `p12-root-activation-enforced`.
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+
+const dfx = JSON.parse(readFileSync(join(ROOT, "conformance", "key-delegation", "valid.json"), "utf8")) as {
+  artifact: Record<string, unknown>;
+  context: Record<string, unknown>;
+};
+const ROOT_SIGNER = (dfx.artifact["sig"] as { kid: string }).kid;
+
+/** Verify the REAL root-signed delegation vector with the ROOT signer's `validFrom` replaced. */
+function verifyDelegationWithRootValidFrom(validFrom: unknown): { ok: boolean; reason: string } {
+  const kr = JSON.parse(JSON.stringify(keyring)) as Record<string, KeyEntry>;
+  kr[ROOT_SIGNER] = { ...(kr[ROOT_SIGNER] as KeyEntry), validFrom: validFrom as string | null };
+  const r = verifyArtifact(enc(dfx.artifact), enc({ ...dfx.context, schemas, keyring: kr }));
+  return { ok: r.ok, reason: r.ok ? "" : String(r.reason) };
+}
+
+test("P0-12 [PROOF:RES-PAR-ROOT-ENFORCED]: a trust ROOT is NOT exempt from its own activation window", () => {
+  // Control 1 (harness): the unmodified delegation vector verifies through the same call.
+  const ctl = verifyArtifact(enc(dfx.artifact), enc({ ...dfx.context, schemas, keyring }));
+  assert.equal(ctl.ok, true, `the shipped delegation vector does not verify (${ctl.ok ? "" : ctl.reason}) — the probe below would refuse for the wrong reason`);
+
+  // Control 2 (specificity): the SAME future instant on a NON-ROOT signer is refused. Under the
+  // ROOT-exemption mutation this still passes, so only the probe below flips — the RED names ROOT.
+  const nonRoot = verifyWithValidFrom("2099-01-01T00:00:00.000Z");
+  assert.equal(nonRoot.ok, false, "non-ROOT activation stopped being enforced — the branch itself is broken, not the ROOT case");
+
+  // The probe: a ROOT that activates in 2099 must not vouch for a delegation NOW. The delegation
+  // carries no time field of its own, so its artifact time is `context.now` — the ROOT's window is
+  // evaluated at verification time, exactly like every other signer.
+  const r = verifyDelegationWithRootValidFrom("2099-01-01T00:00:00.000Z");
+  assert.equal(r.ok, false,
+    "a trust ROOT with a declared FUTURE activation vouched for a delegation NOW. The trust anchor " +
+    "is the one key whose window matters most, and an exemption here re-opens P0-1 one layer up");
+  assert.match(r.reason, /before its validFrom/, `refused, but not by the activation check: ${r.reason}`);
+});
+
+test("P0-12: ROOT compatibility + fail-closed follow the SAME rules as every signer", () => {
+  // A canonical PAST activation still vouches (the P0-1 compatibility rule, now at the verifier).
+  assert.equal(verifyDelegationWithRootValidFrom("2000-01-01T00:00:00.000Z").ok, true,
+    "a ROOT with a canonical past activation stopped vouching — compatibility broke");
+  // An ABSENT activation stays always-active (documented legacy; asRootKeyEntryMap terse form).
+  assert.equal(verifyDelegationWithRootValidFrom(null).ok, true,
+    "a ROOT with no declared activation stopped vouching — the documented legacy rule broke");
+  // A MALFORMED declared activation fails CLOSED by the same parser rule as P0-6.
+  const mal = verifyDelegationWithRootValidFrom("not-a-timestamp");
+  assert.equal(mal.ok, false, "a malformed ROOT validFrom was accepted — the check was skipped (fail OPEN)");
+  assert.match(mal.reason, /cannot evaluate activation time/, `wrong refusal reason: ${mal.reason}`);
+});
+
 test("P0-6: the boundary is INCLUSIVE — signing exactly AT validFrom is allowed", () => {
   // `verify.ts:242` compares `at < from`, so equality is accepted. Pinned explicitly so a future
   // change to `<=` is a test failure rather than a silent semantic shift.

@@ -197,8 +197,19 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
   //   [proof: RES-PAR-XRES-EQUIV] packages/e2e-demo/test/keyring-resolver-parity.test.ts —
   //     cross-resolver equivalence proven at the real verifier.
   //   scripts/lint-resolver-parity.mjs + scripts/resolver-inventory.json — a BLOCKING census gate:
-  //     a resolver that appears, disappears, or drops validFrom/revokedAt, and a registered proof
-  //     that stops resolving, each fail the gate for its own named reason.
+  //     a resolver that appears or disappears, and a registered proof that stops resolving, each
+  //     fail the gate for its own named reason.
+  //
+  // ── CORRECTED 2026-07-31 (batch-A QA, finding F-4) ────────────────────────────────────────────
+  // The line above previously also claimed the census gate fails when a resolver "drops
+  // validFrom/revokedAt". That is TRUE only for a STRUCTURAL drop (the property is deleted from the
+  // literal, which changes the recorded carriage from `explicit` to `absent`). It is FALSE for a
+  // VALUE substitution: writing `validFrom: null` keeps the property present, so the gate still
+  // reads `explicit` and stays exit 0. MEASURED. The defect is not undetected — the e2e parity test
+  // catches it (12 pass -> 11) — but the sentence overstated WHICH control catches it, and this
+  // file's whole history is claims that named the wrong control. Value-provenance checking is
+  // deliberately NOT built: the test layer already covers it, and a second mechanism would be
+  // theatre. Tracked as P1 (F-4).
   const keyring: Record<string, KeyEntry> = {
     [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], validFrom, revokedAt: null },
     [approver.kid]: { publicKey: approver.publicKey, type: "APPROVER", roles: [approverRole], validFrom, revokedAt: null },

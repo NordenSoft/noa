@@ -36,6 +36,47 @@ parity-enforced, fail-closed or covering "all resolvers".
 **Still correctly fixed:** P0-1 (ROOT `validFrom`, `651cbd3`), P0-5 (live gate keyring, `dd2997c`),
 P0-6 (strict parser core, `dd2997c`). P0-2/3/4 closed earlier.
 
+### MICRO-BATCH B — measured evidence (2026-07-31, Fable 5 lead)
+
+P0-12 + P0-13, both "a control micro-batch A added does not hold". Full record:
+**`noa-trust-plan.md` → MICRO-BATCH B**. **No production code changed** — P0-12 was a missing proof,
+not a missing check.
+
+```
+P0-12 reproduction   verify.ts:271 + `&& entry.type !== "ROOT"` (activation off for trust roots):
+                     approval-artifacts 168/0 · evidence 126/0 · e2e 12/0 · gate 214/2 · root 518/0
+                     = 1038 tests, ZERO failures. Coordinator's number confirmed independently.
+P0-12 now RED        same mutation: approval-artifacts 170 -> 168/2 · evidence 128 -> 126/2
+                     anti-vacuity in the same run: unmodified delegation vector + unmodified
+                     bundle both verify; non-ROOT activation refusal still fires
+P0-13 reproduction   3 gate proofs as test(name, { skip: true }, fn): gate skipped 3 (214 -> 211),
+                     node exit 0, lint:resolver-parity exit 0 STILL calling each proof live
+P0-13 now RED        object-form skip -> [PROOF_UNRESOLVED] "an options object sets skip/todo"
+                     defence in depth: with the parser ALSO defanged, the gate still fails via the
+                     UNDECIDABLE path (exit 1) and the selftest fails independently (exit 1)
+selftest             26 spellings: 7 live · 10 disabled · 6 absent · 3 undecidable — and it caught
+                     a bypass in my OWN resolver during development (spread `{ ...o }` read as
+                     live); fixed, now one of the 26
+knockouts            p12-root-activation-enforced        DETECTOR_TRIGGERED (2 new fails / 0 base)
+                     p13-proof-resolution-is-structural  DETECTOR_TRIGGERED (gate exit 0 -> 1)
+                     restorations sha256-verified: a6ed0b38… · 1188b2fb…
+F-4 correction       gate/src/trust.ts: the census gate catches a STRUCTURAL drop, NOT a VALUE
+                     substitution. Re-measured before writing: `validFrom: null` leaves the gate at
+                     exit 0 while e2e goes 12 -> 11. No value-provenance checker built.
+suites (fresh)       gate 216 = 214/2 skipped 0 · approval-artifacts 170/0 · evidence 128/0 ·
+                     signer-core 75/0 · relay 133/0 · e2e-demo 12/0 skipped 0 · root 518/0 ·
+                     typecheck:all exit 0 (12 projects) · lint:resolver-parity exit 0
+                     (53 sites · 119 vocab · 8 anchors · 8 proofs)
+                     `skipped 0` is stated explicitly: P0-13 was a skip that hid in plain sight.
+NOT re-run           full knockout registry (hours) · adapter-core (outside mandate)
+NOT started          P0-9/10/11 (batch C) · P0-14 (batch D) · F-2 · task #83
+```
+
+**Method note.** My first §13 probe reported "no enforcement anywhere" against a CLEAN source tree.
+Cause: a stale `dist/` — the mutation was reverted in source and the compiled verifier was not
+rebuilt, so the probe measured the mutant. Caught before it became a finding, and recorded in the
+test file itself. `npm test` builds first; an ad-hoc `node -e` against `dist/` does not.
+
 ### MICRO-BATCH A — measured evidence (2026-07-31, Fable 5 lead)
 
 Full record + deliverable list: **`noa-trust-plan.md` → MICRO-BATCH A** (the plan is the authority).
