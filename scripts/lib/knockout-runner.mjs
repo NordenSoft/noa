@@ -58,6 +58,29 @@ export const VERDICT = {
   TIMEOUT_UNEXPLAINED: "TIMEOUT_UNEXPLAINED",
   /** the harness could not parse a result at all */
   INVALID_TEST: "INVALID_TEST",
+  /**
+   * the mutated suite produced NO test results at all — the replacement did not build.
+   *
+   * ── QA-16 (2026-07-31, cross-family reviewer, then MEASURED ────────────────────────────────────
+   * This verdict exists because its absence was silently scoring compile errors as kills. The old
+   * code INFERRED "is this a test suite?" from whether any failures were observed:
+   *
+   *     const isTestSuite = baseline.failing.size > 0 || ev.mutatedFailing.length > 0;
+   *
+   * For a compiled package whose baseline is GREEN, `baseline.failing.size` is 0. If the mutation
+   * does not compile, `npm test` fails at `npm run build`, no test ever runs, and
+   * `mutatedFailing.length` is 0 too — so `isTestSuite` came out FALSE, the run fell into the GATE
+   * branch, and `baseline.exit === 0 && obs.exit !== 0` returned DETECTOR_TRIGGERED.
+   *
+   * MEASURED, by replacing one entry's `replace` with text that is not TypeScript at all:
+   *     node scripts/lint-control-knockout.mjs --only r8-15-deep-copy-defineproperty
+   *     ok  DETECTOR_TRIGGERED  r8-15-deep-copy-defineproperty
+   *     proven load-bearing 1/1
+   * The framework reported a control PROVEN when nothing had been tested. This repository's
+   * standing rule is that a compile-only knockout proves an identifier exists, not that a check
+   * runs — the rule was written down and the tool did the opposite.
+   */
+  MUTATION_DID_NOT_BUILD: "MUTATION_DID_NOT_BUILD",
   /** the file could not be returned to its baseline bytes */
   RESTORATION_FAILED: "RESTORATION_FAILED",
 };
@@ -90,6 +113,17 @@ export function failingTestIds(output) {
  * vacuous one. My own "28/37" number was wrong in the pessimistic direction, and a framework that
  * miscounts in ANY direction is the thing this file exists to prevent.
  */
+/**
+ * Did this run actually EXECUTE a `node:test` suite? The summary footer is the only honest witness:
+ * a suite that compiled and ran always prints it, and a build that failed never does.
+ *
+ * QA-16: this replaces the inference that a suite "is a test suite" if failures were seen. Absence
+ * of failures and absence of execution are the same value there and opposite facts in reality.
+ */
+export function suiteEmittedTestMarkers(output) {
+  return /^\s*(?:\u2139|#)\s*(?:tests|pass)\s+\d+/m.test(String(output));
+}
+
 export function gateFindingCount(output) {
   let total = 0;
   for (const line of String(output).split("\n")) {
@@ -219,11 +253,43 @@ export function runKnockout({ root, entry, baseline, timeoutMs = 900_000 }) {
       return ev;
     }
 
-    // GATE SUITES emit no `node:test` markers at all, so the absence of new test names says nothing
-    // about them. For those the honest discriminators are the two things a gate DOES report: whether
-    // it went from passing to failing, and whether it found more than it found clean.
-    const isTestSuite = baseline.failing.size > 0 || ev.mutatedFailing.length > 0;
-    if (!isTestSuite) {
+    // ── QA-16: THE SUITE KIND IS DECLARED, NEVER INFERRED ─────────────────────────────────────
+    // What stood here was:
+    //     const isTestSuite = baseline.failing.size > 0 || ev.mutatedFailing.length > 0;
+    // i.e. "it is a test suite if we saw failures". A GREEN compiled package whose mutation does
+    // not build produces no failures on either side, so it was classified a GATE and its build
+    // error was scored DETECTOR_TRIGGERED. Measured; see VERDICT.MUTATION_DID_NOT_BUILD.
+    //
+    // The declaration is CROSS-CHECKED against the measured clean baseline rather than trusted: an
+    // entry that calls itself a test suite whose baseline printed no test footer is a broken entry,
+    // and saying so is the whole point of a taxonomy that can express "I could not measure this".
+    const declared = entry.kind;
+    if (declared !== "tests" && declared !== "gate") {
+      ev.verdict = VERDICT.INVALID_TEST;
+      ev.detail = `entry declares kind ${JSON.stringify(declared)}; it must declare "tests" or "gate" — the kind is not inferred (QA-16)`;
+      return ev;
+    }
+    if (declared === "tests") {
+      if (!suiteEmittedTestMarkers(baseline.out ?? "")) {
+        ev.verdict = VERDICT.INVALID_TEST;
+        ev.detail = `entry declares kind "tests" but its CLEAN baseline printed no node:test summary — the declaration and the suite disagree`;
+        return ev;
+      }
+      if (!suiteEmittedTestMarkers(obs.out)) {
+        ev.verdict = VERDICT.MUTATION_DID_NOT_BUILD;
+        ev.detail =
+          `the mutated suite produced NO test results at all (exit ${obs.exit}), so the replacement ` +
+          `did not build. A compile error proves an identifier exists, not that a check runs.`;
+        return ev;
+      }
+      ev.verdict = VERDICT.ANTI_VACUITY_FAILED;
+      ev.detail =
+        `the suite failed, but ONLY with the ${baseline.failing.size} failure(s) its baseline already had` +
+        (baseline.failing.size ? ` (${[...baseline.failing].join("; ")})` : "") +
+        `. Nothing new broke, so this knockout measured the pre-existing failures rather than its own control.`;
+      return ev;
+    }
+    {
       if (baseline.exit === 0 && obs.exit !== 0) {
         ev.verdict = VERDICT.DETECTOR_TRIGGERED;
         ev.detail =
@@ -244,11 +310,10 @@ export function runKnockout({ root, entry, baseline, timeoutMs = 900_000 }) {
       return ev;
     }
 
-    ev.verdict = VERDICT.ANTI_VACUITY_FAILED;
-    ev.detail =
-      `the suite failed, but ONLY with the ${ev.baselineFailing.length} failure(s) its baseline ` +
-      `already had (${ev.baselineFailing.join("; ") || "none"}). Nothing new broke, so this ` +
-      `knockout measured the pre-existing failures rather than its own control.`;
+    // unreachable: both declared kinds return above. Kept as a hard stop rather than a fallthrough,
+    // because a silent fallthrough is how the inference this replaced went unnoticed.
+    ev.verdict = VERDICT.INVALID_TEST;
+    ev.detail = "classification fell through both declared kinds — this is a runner bug, not a result";
     return ev;
   } finally {
     // ── (5) restore, and PROVE it ─────────────────────────────────────────────────────────────

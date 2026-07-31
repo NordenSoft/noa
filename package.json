@@ -66,7 +66,7 @@
     "check:entry-points": "node scripts/gen-entry-point-registry.mjs --write && git diff --exit-code conformance/ENTRY-POINTS.md",
     "lint:dispatch-surfaces": "node scripts/lint-dispatch-surfaces.mjs",
     "lint:security-gates": "node scripts/lint-security-gates.mjs",
-    "lint:knockout": "node scripts/lint-control-knockout.mjs",
+    "lint:knockout": "node scripts/lint-control-knockout.selftest.mjs && node scripts/lint-control-knockout.mjs",
     "lint:trusted-roots": "node scripts/lint-trusted-roots.mjs",
     "lint:trusted-roots:selftest": "node scripts/lint-trusted-roots.mjs --selftest",
     "test:r7-exploits": "node scripts/run-r7-exploits.mjs",

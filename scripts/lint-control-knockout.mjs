@@ -74,6 +74,7 @@ const KNOCKOUTS = [
     file: "packages/gate/src/engine.ts",
     find: 'const parsed = parseDocument(body, "request body");',
     replace: 'const parsed = { ok: true as const, value: body as unknown };',
+    kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
@@ -82,6 +83,7 @@ const KNOCKOUTS = [
     file: "packages/gate/src/projections.ts",
     find: "const view = commandView(canonical);",
     replace: "const view = commandView(canonicalize(snapshot as Record<string, unknown>));",
+    kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
@@ -90,6 +92,7 @@ const KNOCKOUTS = [
     file: "packages/gate/src/engine.ts",
     find: "effectiveRisk = maxRisk(run.derivedRisk, riskClass);",
     replace: 'effectiveRisk = riskClass ?? run.derivedRisk;',
+    kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
   // ── ADR-0005 (2026-07-30) ───────────────────────────────────────────────────────────────────────
@@ -107,6 +110,7 @@ const KNOCKOUTS = [
     file: "packages/relay/src/engine.ts",
     find: 'if (!this.ownsHold(hold, agent, "getHold")) return err(404, "UNKNOWN_HOLD");',
     replace: 'if (!hold) return err(404, "UNKNOWN_HOLD");',
+    kind: "tests",
     suite: ["packages/relay", "npm", ["test"]],
   },
   {
@@ -115,6 +119,7 @@ const KNOCKOUTS = [
     file: "packages/relay/src/engine.ts",
     find: "    const inertReceipt = inertSnapshot(rawReceipt);",
     replace: "    const inertReceipt: unknown = rawReceipt;",
+    kind: "tests",
     suite: ["packages/relay", "npm", ["test"]],
   },
   {
@@ -123,6 +128,7 @@ const KNOCKOUTS = [
     file: "packages/relay/src/server.ts",
     find: "    handle(req, res, engine, effectiveConfig(), limiter).catch(() => {",
     replace: "    handle(req, res, engine, config, limiter).catch(() => {",
+    kind: "tests",
     suite: ["packages/relay", "npm", ["test"]],
   },
   {
@@ -131,6 +137,7 @@ const KNOCKOUTS = [
     file: "packages/relay/src/config.ts",
     find: "    const declaredExposed = config.tlsTerminated || config.unsafeListen;",
     replace: "    const declaredExposed = false;",
+    kind: "tests",
     suite: ["packages/relay", "npm", ["test"]],
   },
   {
@@ -139,6 +146,7 @@ const KNOCKOUTS = [
     file: "packages/signer-core/src/sign.ts",
     find: "  const signed = inertDeepCopy(core);",
     replace: "  const signed = structuredClone(core);",
+    kind: "tests",
     suite: ["packages/signer-core", "npm", ["test"]],
   },
   {
@@ -147,6 +155,7 @@ const KNOCKOUTS = [
     file: "packages/gate/src/engine.ts",
     find: '    if (mode === "RAW") {',
     replace: '    if (mode === "RAW" && (riskClass === "CRITICAL" || riskClass === "IRREVERSIBLE")) {',
+    kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
@@ -155,6 +164,7 @@ const KNOCKOUTS = [
     file: "packages/gate/src/engine.ts",
     find: 'if (result === "FAILED_BEFORE_DISPATCH") {',
     replace: 'if (false as boolean) {',
+    kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
@@ -164,6 +174,7 @@ const KNOCKOUTS = [
     find: "    const ok = r.ok;\n    const detail = r.detail;\n    if (ok) {",
     replace: "    const ok = r.ok;\n    if (ok) {",
     also: [{ find: "    execDetail = detail;\n  } catch (e) {", replace: "    execDetail = r.detail;\n  } catch (e) {" }],
+    kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
@@ -172,6 +183,7 @@ const KNOCKOUTS = [
     file: "packages/framework-adapters/src/wrap-tool.mjs",
     find: "      if (recordedState === null) {",
     replace: "      if (false) {",
+    kind: "tests",
     suite: ["packages/framework-adapters", "npm", ["test"]],
   },
   {
@@ -185,6 +197,7 @@ const KNOCKOUTS = [
           safeToRetry: isSafeToRetry(dispatchState),
         },`,
     replace: "        undefined,",
+    kind: "tests",
     suite: ["packages/mcp-proxy", "npm", ["test"]],
   },
   {
@@ -193,6 +206,7 @@ const KNOCKOUTS = [
     file: "packages/adapter-core/src/side-effect-state.mjs",
     find: '    TOOL_REPORTED_NO_DISPATCH: "SIDE_EFFECT_UNCONFIRMED",',
     replace: '    TOOL_REPORTED_NO_DISPATCH: "FAILED_NO_SIDE_EFFECT",',
+    kind: "tests",
     suite: ["packages/adapter-core", "npm", ["test"]],
   },
   {
@@ -201,6 +215,7 @@ const KNOCKOUTS = [
     file: "packages/adapter-core/src/side-effect-state.mjs",
     find: "export const SIDE_EFFECT_STATES = deepFreeze({",
     replace: "export const SIDE_EFFECT_STATES = ({",
+    kind: "tests",
     suite: ["packages/adapter-core", "npm", ["test"]],
   },
   {
@@ -209,6 +224,7 @@ const KNOCKOUTS = [
     file: "packages/gate/src/engine.ts",
     find: 'if (rec.status !== "UNUSED") return err(409, "GRANT_ALREADY_RESERVED", { status: rec.status });',
     replace: 'if (false as boolean) return err(409, "GRANT_ALREADY_RESERVED", { status: rec.status });',
+    kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
@@ -217,6 +233,7 @@ const KNOCKOUTS = [
     file: "packages/gate/src/engine.ts",
     find: 'if (!this.ownsHold(this.store.getHold(rec.holdId), agent, "report")) return err(404, "UNKNOWN_GRANT");',
     replace: 'if (false as boolean) return err(404, "UNKNOWN_GRANT");',
+    kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
@@ -225,6 +242,7 @@ const KNOCKOUTS = [
     file: "packages/gate/src/engine.ts",
     find: "if (this.now() - rec.reservedAt < this.cfg.uncertaintySweepWindowMs) return false;",
     replace: "if (false as boolean) return false;",
+    kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
@@ -242,6 +260,7 @@ const KNOCKOUTS = [
     // predicate's body makes the parser ACCEPT `__proto__` and the suite must go red.
     find: "return key === \"__proto__\"",
     replace: "return false && key === \"__proto__\"",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   // ── ADDED 2026-07-29 (round-3). One entry per finding, because the previous rounds' fixes shipped
@@ -259,6 +278,7 @@ const KNOCKOUTS = [
       find: "import {\n  bufferFrom, bufToString, bufEquals, bufSubarray, byteLength,",
       replace: "import { verify as _liveVerify } from \"node:crypto\";\nimport {\n  bufferFrom, bufToString, bufEquals, bufSubarray, byteLength,",
     }],
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -267,6 +287,7 @@ const KNOCKOUTS = [
     file: "src/keys.ts",
     find: "toBigInt(yBytes[i]!)",
     replace: "BigInt(yBytes[i]!)",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -275,6 +296,7 @@ const KNOCKOUTS = [
     file: "src/keys.ts",
     find: "    if (asymmetricKeyType(key) !== \"ed25519\") return false;",
     replace: "    if ((key as { asymmetricKeyType?: string }).asymmetricKeyType !== \"ed25519\") return false;",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -283,6 +305,7 @@ const KNOCKOUTS = [
     file: "src/safe-json.ts",
     find: "        return inertArray(arr);",
     replace: "        return arr;",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -299,6 +322,7 @@ const KNOCKOUTS = [
     // other measuring it and the run would report a false "nothing measures this". Both come out
     // together — which is also the honest statement of the design: two layers, each load-bearing.
     andAlso: "t19-parser-inert-arrays",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -311,6 +335,7 @@ const KNOCKOUTS = [
       find: "        arrayPush(m, inertArray([key, val]) as [CborValue, CborValue]);",
       replace: "        arrayPush(m, [key, val] as [CborValue, CborValue]);",
     }],
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -324,6 +349,7 @@ const KNOCKOUTS = [
     file: "src/intrinsics.ts",
     find: "    if (!(_apply(_hasOwnProperty, d as never, [\"value\"] as never) as boolean)) continue;",
     replace: "    if (!(_apply(_hasOwnProperty, d as never, [\"value\"] as never) as boolean)) { _apply(_objectDefineProperty, undefined as never, [proto, key, { get: d.get, set: d.set, enumerable: false, configurable: false }] as never); continue; }",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -335,6 +361,7 @@ const KNOCKOUTS = [
     file: "scripts/lib/dispatch-ast.mjs",
     find: "      if (ts.isForOfStatement(node) && deferred) {",
     replace: "      if (false && ts.isForOfStatement(node) && deferred) {",
+    kind: "gate",
     suite: [".", "npm", ["run", "lint:security-gates"]],
   },
   {
@@ -349,6 +376,7 @@ const KNOCKOUTS = [
     // signature verdict, and it turns the coverage test red immediately.
     find: "  return (block![1]!.match(/\"([^\"]+)\"/g) ?? []).map((s) => s.slice(1, -1));",
     replace: "  return [\"src/hash.ts\", \"src/signing.ts\", \"src/cose/cbor.ts\", \"src/nfc.ts\", \"src/verify.ts\"];",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   // ── ADDED 2026-07-29 (round-4). One entry per control this pass introduced. The previous three
@@ -361,6 +389,7 @@ const KNOCKOUTS = [
     // The root of the whole round-4 class, in one edit: make the re-rooting a no-op.
     find: "function _inert<T>(a: T[]): T[] {\n  _apply(_objectSetPrototypeOf, undefined as never, [a, INERT_ARRAY_PROTOTYPE] as never);\n  return a;\n}",
     replace: "function _inert<T>(a: T[]): T[] {\n  return a;\n}",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -373,6 +402,7 @@ const KNOCKOUTS = [
     // and the run would report a false "nothing measures this". Both come out together — which is
     // also the honest statement of the design: two layers, each load-bearing.
     andAlso: "r4-a1-inert-wrappers",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -382,6 +412,7 @@ const KNOCKOUTS = [
     find: "  const cKeys = objectKeys(c);\n  for (let i = 0; i < cKeys.length; i++) {\n    if (!arrayIncludes(CHECKPOINT_KEYS, cKeys[i] as string)) return \"malformed checkpoint\";\n  }",
     replace: "  for (const k of objectKeys(c)) {\n    if (!arrayIncludes(CHECKPOINT_KEYS, k)) return \"malformed checkpoint\";\n  }",
     andAlso: "r4-a1-inert-wrappers",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -391,6 +422,7 @@ const KNOCKOUTS = [
     find: "      const aids = objectGetOwnPropertyNames(live);\n      for (let ai = 0; ai < aids.length; ai++) {\n        const aid = aids[ai] as string;",
     replace: "      for (const aid of objectGetOwnPropertyNames(live)) {",
     andAlso: "r4-a1-inert-wrappers",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -399,6 +431,7 @@ const KNOCKOUTS = [
     file: "src/intrinsics.ts",
     find: "  const s = new _Set() as Set<T>;\n  if (init !== undefined) {\n    for (let i = 0; i < (init as { length: number }).length; i++) _apply(_setAdd, s as never, [init[i]] as never);\n  }\n  return s;",
     replace: "  return new _Set(init as never) as Set<T>;",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -407,6 +440,7 @@ const KNOCKOUTS = [
     file: "src/inert.ts",
     find: "    if (weakSetHas(seen, value as object)) return;\n    weakSetAdd(seen, value as object);",
     replace: "    if (seen.has(value as object)) return;\n    seen.add(value as object);",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -415,6 +449,7 @@ const KNOCKOUTS = [
     file: "src/intrinsics.ts",
     find: "export function publishArray<T>(a: readonly T[]): T[] {\n  const out: T[] = [];\n  for (let i = 0; i < (a as { length: number }).length; i++) _apply(_push, out as never, [a[i]]);\n  return out;\n}",
     replace: "export function publishArray<T>(a: readonly T[]): T[] {\n  return a as T[];\n}",
+    kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
@@ -423,6 +458,7 @@ const KNOCKOUTS = [
     file: "scripts/lib/dispatch-ast.mjs",
     find: "function isLoadTime(node) {\n  let n = node;",
     replace: "function isLoadTime(node) {\n  if (node) return true;\n  let n = node;",
+    kind: "gate",
     suite: [".", "npm", ["run", "lint:security-gates"]],
   },
   {
@@ -431,6 +467,7 @@ const KNOCKOUTS = [
     file: "scripts/lib/dispatch-ast.mjs",
     find: "  if (!BUILTIN_GLOBALS.has(id.text) && !BARE_GLOBAL_CALLS.has(id.text)) return false;",
     replace: "  if (id) return false;\n  if (!BUILTIN_GLOBALS.has(id.text) && !BARE_GLOBAL_CALLS.has(id.text)) return false;",
+    kind: "gate",
     suite: [".", "npm", ["run", "lint:security-gates"]],
   },
   {
@@ -439,6 +476,7 @@ const KNOCKOUTS = [
     file: "packages/signer-core/src/deep-copy.ts",
     find: "    objectDefineProperty(out, key, {\n      value: copyValue(d.value, `${path}.${key}`, depth + 1),\n      writable: true,\n      enumerable: true,\n      configurable: true,\n    });",
     replace: "    out[key] = copyValue(d.value, `${path}.${key}`, depth + 1);",
+    kind: "tests",
     suite: ["packages/signer-core", "npm", ["test"]],
   },
   {
@@ -447,6 +485,7 @@ const KNOCKOUTS = [
     file: "packages/signer-core/src/deep-copy.ts",
     find: "      objectDefineProperty(out, i, {\n        value: copyValue(d.value, `${path}[${i}]`, depth + 1),\n        writable: true,\n        enumerable: true,\n        configurable: true,\n      });",
     replace: "      out[i] = copyValue(d.value, `${path}[${i}]`, depth + 1);",
+    kind: "tests",
     suite: ["packages/signer-core", "npm", ["test"]],
   },
 ];
@@ -469,7 +508,9 @@ for (const k of selected) {
   const key = suiteKey(k);
   if (baselines.has(key)) continue;
   const obs = observeSuite(ROOT, k.suite);
-  baselines.set(key, { exit: obs.exit, failing: obs.failing, findings: obs.findings, ms: obs.ms, timedOut: obs.timedOut });
+  // `out` is carried so runKnockout can CROSS-CHECK an entry's declared `kind` against what the
+  // clean baseline actually printed (QA-16). Without it the declaration would be trusted.
+  baselines.set(key, { exit: obs.exit, failing: obs.failing, findings: obs.findings, ms: obs.ms, timedOut: obs.timedOut, out: obs.out });
 }
 
 // A knockout whose baseline could not even be measured proves nothing, so say that rather than
