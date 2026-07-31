@@ -5,8 +5,8 @@
 > **How to read this file.** I do not run continuously. This file is written at the end of each work
 > block; its timestamp is the last moment work happened, not "now".
 
-**Last updated:** 2026-07-31 · branch `impl/adr-0005-trusted-input-provenance` · HEAD `af6f83a`
-· 30 commits ahead of baseline `b163e7d` · working tree **clean** · **nothing pushed** (no upstream on
+**Last updated:** 2026-07-31 · branch `impl/adr-0005-trusted-input-provenance` · HEAD `0341351`
+· 47 commits ahead of baseline `b163e7d` · working tree **clean** · **nothing pushed** (no upstream on
 this branch)
 
 **Context that sets the bar:** 5 customers are ready to go live on request, and expect hostile traffic
@@ -23,23 +23,35 @@ typecheck:all              exit 0   12 projects — root + 7 typechecked + 4 MEA
      package (`references: null`), so quoting it as the repository's typecheck claimed coverage
      it did not have. See CORRECTIONS.md C-2 — the correction, and the correction to it.
 
-suite relay                exit 0   120 pass    0 fail   (+17 on the branch)
-suite signer-core          exit 0    41 pass    0 fail
-suite gate                 exit 1   200 pass    2 fail   (both owner-deferred to ADR-0006)
-suite approval-artifacts   exit 0   161 pass    0 fail
-suite evidence             exit 0   120 pass    0 fail
-suite e2e-demo             exit 0     6 pass    0 fail
-suite adapter-core         exit 0   323 pass    0 fail
-suite root                 exit 0   518 pass    0 fail
+suite relay                exit 0   133 pass    0 fail   RE-MEASURED at 0341351
+suite signer-core          exit 0    48 pass    0 fail   RE-MEASURED at 0341351 (41 -> 48, R8-15)
+suite gate                 exit 1   211 pass    2 fail   RE-MEASURED at 0341351; the 2 are the
+                                    known owner-deferred ADR-0006 pair, confirmed BY NAME
+suite root                 exit 0   518 pass    0 fail   RE-MEASURED at 0341351
+suite approval-artifacts   exit 0   161 pass    0 fail   ← carried, NOT re-measured at 0341351
+suite evidence             exit 0   120 pass    0 fail   ← carried, NOT re-measured at 0341351
+suite e2e-demo             exit 0     6 pass    0 fail   ← carried, NOT re-measured at 0341351
+suite adapter-core         exit 0   323 pass    0 fail   ← carried, NOT re-measured at 0341351
+     The four carried lines were measured at an earlier commit on this branch and are repeated
+     here unchanged. They are marked because an unmarked number reads as a fresh measurement,
+     and this file's whole purpose is that it never does that.
 
-security-gates             exit 0   typecheck:all -> dispatch-surfaces -> L0-L10 -> r7 corpus
+security-gates             exit 1   typecheck:all -> dispatch-surfaces -> L0-L10 -> r7 corpus
+                                    -> knockout -> trusted-roots. The 1 is the SIX pre-existing
+                                    knockout findings tracked in task #71, not a regression:
+                                    every other step in the chain exits 0.
   L10  relay decision-path coverage   38 findings, budget 38 (warn, ratcheted 39 -> 38)
   L10-reconcile                        0 findings, BLOCKING and unbudgeted — now RECURSIVE,
                                        follows symlinks, reads .mts/.cts, rejects empty reasons
 r7 exploit corpus          exit 0   13 CLOSED / 1 OPEN (o01_preload_includes, OPEN by decision)
 L9 trusted roots           exit 1   1 finding (parked L9-C, ADR-0006 territory) — UNCHANGED
 L9 --selftest              exit 0   .mjs OK · .tsx OK · symlinked DIR OK · L9-B/C/D OK
-lint-control-knockout      exit 0   killed 34/34
+lint-control-knockout      exit 1   38 controls, proven load-bearing 32/38
+     Was "killed 34/34" — that line was written before the closed verdict taxonomy existed and
+     counted a knockout as killed when the suite merely went red, including when it went red
+     for the gate suite's two PRE-EXISTING failures. R8-26/27/32 replaced it with per-suite
+     measured baselines. 32 controls are proven; the 6 findings are the OPEN entries in task
+     #71 and stay visible until a detector genuinely turns RED.
 lint:publish-surface       exit 0   0 findings, 69 packed files
 lint-dispatch-surfaces     exit 0     check:matrix           exit 0
 lint:topology / :strict    exit 0     lint:thrown            exit 0
@@ -56,7 +68,7 @@ check:entry-points         exit 1   PRE-EXISTING — fails identically in a work
 | `b045082` | **enrolment was authorization** — any enrolled device could enumerate every customer's pending holds and post its own honestly-signed `ALLOWED` on any of them | Customer B approves customer A's wire transfer. No forgery, no stolen credential, and every signature on the resulting evidence is valid. `listPending()` took no device at all; `decide`/`getDisplay`/`getHoldContext` took one and never asked whether it was allowed to see *that* hold. `AgentRecord.ownerDevice` had existed for exactly this and was never populated or read — a control that was designed and never wired greps identically to one that works. |
 | `2c0af6f` | L10's cheap escape was never the budget — it was **moving a file** | A new file outside the scan root scored 0 and the gate exited 0, silently. Reconciliation now BLOCKS, unbudgeted. |
 | `4af58a3` | a recorded bind address outlives the socket it describes | The exposure refusal was decided from a tuple recorded at construction, not from the live socket. |
-| `707c555` | `lint-control-knockout.mjs` had 28 entries and **none** covered ADR-0005 | Its own comment: "a fix without a knockout is a claim." Now 34/34 killed. |
+| `707c555` | `lint-control-knockout.mjs` had 28 entries and **none** covered ADR-0005 | Its own comment: "a fix without a knockout is a claim." It reported 34/34 killed at the time; that count was SUPERSEDED by R8-26/27/32, which found it counted a knockout as killed when the suite merely went red — including for the gate suite's two pre-existing failures. Current measured state is at the top of this file. |
 | `6e91d6b` | the relay's 2,552 lines were covered by **no** mechanical gate | Every finding in this round could have been reintroduced by a refactor with nothing noticing. |
 | `7d9aa6f` · `9d863e0` | signer-core: the producer could sign one document and return another; one global assignment decided what a signature covered | The signature stopped being evidence about the bytes the caller received. |
 | `89a65ff` | anyone who could reach the server could become an approver | Anonymous `POST /v1/devices`. Closed with an operator-provisioned enrolment secret — a deployment credential, **not** a new cryptographic root. |
@@ -230,7 +242,7 @@ or secret/KMS/IAM/role/ACL/grant/migration change. ADR-0006 not started.
 
 ## PAUSED 2026-07-31 — where to resume
 
-**HEAD `9fb2655` · 35 commits ahead of `b163e7d` · working tree CLEAN · nothing pushed.**
+**HEAD `0341351` · 47 commits ahead of `b163e7d` · working tree CLEAN · nothing pushed.**
 Backup: `~/.claude/backups/noa-receipt-adr5-impl/*-bundle/impl-adr-0005.bundle`, verified restorable
 (`git bundle verify` → *"records a complete history"*).
 
@@ -241,6 +253,7 @@ Backup: `~/.claude/backups/noa-receipt-adr5-impl/*-bundle/impl-adr-0005.bundle`,
 | `b841bab` | **R8-13** the rate-limit key was the caller's own bearer string. 400 rotating bearers → 0 throttles; `/v1/devices` minted 200 credentials unthrottled. Peer bucket now spent first; table bounded. |
 | `2fde754` | **R8-11** any customer could publish another's key manifest, and wedge the victim's rotation with `409 MANIFEST_EQUIVOCATION`. `tenant` now bound at pairing from the operator-issued token; `null` fails closed. |
 | `9fb2655` | **R8-07** enrolment openness was inferred from a bind address. Now an explicit opt-in, and it cannot override DETECTED exposure — three pre-existing tests caught my first ordering. |
+| `0341351` | **R8-15** `inertDeepCopy` built its output by ASSIGNMENT, and on a plain object assignment consults the prototype chain for a setter — `Object.prototype.__proto__` is one. An own `__proto__` (which `JSON.parse` produces from ordinary untrusted input, no poison and no Proxy) was consumed by that setter instead of copied. Measured byte-exact: the Ed25519 signature covered `governance.__proto__.approval = HUMAN:cfo-victim` and the RETURNED receipt did not contain it — one signature, two documents. Fixed with `defineProperty` for EVERY key, which closes the class rather than one spelling; deliberately NOT a `__proto__` blacklist, because `structuredClone` keeps the key as an ordinary own property and rejecting it would break G2 golden-parity. 7 permanent tests (4 attack incl. nesting, arrays and all 12 `Object.prototype` member names; 3 anti-vacuity). Knockout `r8-15-deep-copy-defineproperty`: DETECTOR_TRIGGERED, 4 RED for the intended reason, 3 controls stayed GREEN, restoration hash-verified. |
 
 ### THE FINDING THAT OUTRANKS ALL OF THEM
 
