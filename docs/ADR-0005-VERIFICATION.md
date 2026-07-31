@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| **Status** | IMPLEMENTED AND VERIFIED, with two defects explicitly DEFERRED to ADR-0006 and one clause gap found in my own work and closed. |
+| **Status** | 🔴 **PARTIALLY VERIFIED — corrected 2026-07-31 (claim finding C15).** This line read *"IMPLEMENTED AND VERIFIED"* while the body of this same document states: **"Honest count: 1 of 9 clauses fully proven (row 5). Two partial. Six false."** A reader who stops at the status line concludes the opposite of what the table below proves. The body was right; the header was not. Two defects remain explicitly DEFERRED to ADR-0006. |
 | **Date** | 2026-07-30 |
 | **Branch** | `impl/adr-0005-trusted-input-provenance`, created at baseline `b163e7d` |
 | **Convergence** | **0/2 — unchanged. A source-fix round is not a clean review round.** |

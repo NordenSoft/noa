@@ -75,7 +75,7 @@ bundle. Different content at an existing version returns `409 MANIFEST_EQUIVOCAT
 authoritative record unchanged. A higher version remains a normal rotation.
 
 Auth: agents `Authorization: Bearer noa_agent_<secret>`; devices `Bearer noa_device_<secret>`.
-Constant-time hash compare; only sha256 HASHES of secrets are stored.
+Only sha256 HASHES of secrets are stored. ⚠ Corrected 2026-07-31 (C09): this line read "Constant-time hash compare". The bearer lookup (`store.ts:145-147`) is a linear scan using plain `===` with an early return — the constant-time helper exists but is used for the enrolment secret, not bearers. The comparison is over a HASH, so the residual is a false control claim, not an authorization bypass. See `auth.ts` for the full note.
 
 ## Build decisions (this slice)
 

@@ -3,9 +3,17 @@
  * fast-path hint, F8a).
  *
  * `Store` is an interface so the localhost alpha runs on a hermetic in-memory store while a durable
- * driver drops in behind the SAME interface later. The gate's grant record here is the atomic
- * single-use ENFORCER — the CAS UNUSED→RESERVED and the one-shot terminal-report lock both live on
- * this record, never on a client flag.
+ * driver drops in behind the SAME interface later. The gate's grant record here is the single-use
+ * ENFORCER — the UNUSED→RESERVED transition and the one-shot terminal-report lock both live on this
+ * record, never on a client flag.
+ *
+ * ⚠ CORRECTED 2026-07-31 (claim finding C19). This said "the ATOMIC single-use ENFORCER ... the CAS".
+ * The atomicity is real but it is a property of THIS DRIVER, not of the interface: `engine.ts:951`
+ * says so itself — "single-process => the map write IS the atomic step" — and the `Store` interface
+ * below exposes **no compare-and-swap primitive at all** (`get`/`put` only). A durable multi-process
+ * driver implementing this interface faithfully would therefore be NON-ATOMIC by construction, and
+ * the sentence would silently become false at exactly the moment the documented plan is executed.
+ * Adding a CAS method to the interface is the one-way door here; only the driver is deferred.
  */
 
 import type { AgentRecord, GrantRecord, HoldRecord, HoldStatus } from "./types.js";

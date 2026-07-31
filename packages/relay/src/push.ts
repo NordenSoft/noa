@@ -8,7 +8,14 @@
  * any locked decision.
  *
  * RED LINE 11 / invariant (spec §9): the push payload carries an OPAQUE hold-id + deep-link ONLY.
- * Never raw action params, never PII. The provider contract below cannot carry anything else.
+ * Never raw action params, never PII.
+ *
+ * ⚠ CORRECTED 2026-07-31 (claim finding C08). This line read "The provider contract below cannot
+ * carry anything else", which the struct nine lines below refutes: it also carries `title` and a
+ * `body` of at most "<requester> wants to <canonical>". The ACTION NAME therefore reaches the push
+ * provider — an untrusted third party. The security-relevant half of the original claim holds (no
+ * raw params, no PII); the absolute did not, and an operator reading it would not have realised
+ * the canonical action name leaves the system.
  */
 
 export interface PushMessage {
