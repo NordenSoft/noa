@@ -36,7 +36,7 @@ async function rotatingBearers(port: number, path: string, n: number): Promise<R
 }
 
 test("R8-13: rotating the bearer must NOT buy a fresh rate-limit allowance", async () => {
-  const relay = createRelay({ config: { port: 0, rateLimitBurst: 5, rateLimitRefillPerMin: 1 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true, rateLimitBurst: 5, rateLimitRefillPerMin: 1 } });
   const { port } = await relay.listen();
   try {
     const codes = await rotatingBearers(port, "/v1/holds?status=pending", 40);
@@ -53,7 +53,7 @@ test("R8-13: rotating the bearer must NOT buy a fresh rate-limit allowance", asy
 });
 
 test("R8-13: the credential-minting route is throttled for an anonymous rotating caller", async () => {
-  const relay = createRelay({ config: { port: 0, rateLimitBurst: 5, rateLimitRefillPerMin: 1 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true, rateLimitBurst: 5, rateLimitRefillPerMin: 1 } });
   const { port } = await relay.listen();
   try {
     const codes: Record<string, number> = {};
@@ -78,7 +78,7 @@ test("R8-13: the credential-minting route is throttled for an anonymous rotating
 test("ANTI-VACUITY: an honest single caller is NOT throttled inside its burst", async () => {
   // Without this, a relay that answered 429 to everything would satisfy both tests above and the
   // suite would be measuring "the server is broken" rather than "the limiter is keyed correctly".
-  const relay = createRelay({ config: { port: 0, rateLimitBurst: 50, rateLimitRefillPerMin: 600 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true, rateLimitBurst: 50, rateLimitRefillPerMin: 600 } });
   const { port } = await relay.listen();
   try {
     const codes: Record<string, number> = {};

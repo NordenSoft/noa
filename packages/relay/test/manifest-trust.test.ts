@@ -120,7 +120,7 @@ test("engine: putManifest response shape is unchanged by the new optional field 
 });
 
 test("http: publish with delegation → GET /v1/trust returns it; GET /v1/manifest structurally unchanged", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "acme" } });
@@ -155,7 +155,7 @@ test("http: publish with delegation → GET /v1/trust returns it; GET /v1/manife
 });
 
 test("http: no delegation ever published for this tenant → GET /v1/trust honest 404, never fabricates", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "default" } });
@@ -355,7 +355,7 @@ test("engine: R2 — a HIGHER-version publish that omits delegation still nulls 
 });
 
 test("http: equal-version manifest/delegation swaps return 409 MANIFEST_EQUIVOCATION and preserve the authoritative trust bundle", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "http-equivocation" } });
@@ -398,7 +398,7 @@ test("http: equal-version manifest/delegation swaps return 409 MANIFEST_EQUIVOCA
 // ── R5 — empty tenant param must never diverge from the missing-param default ──
 
 test("http: R5 — GET /v1/trust?tenant= (explicit empty) resolves to the SAME record as no tenant param at all", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "default" } });
@@ -429,7 +429,7 @@ test("http: R5 — GET /v1/trust?tenant= (explicit empty) resolves to the SAME r
 });
 
 test("http: a malformed delegation → POST /v1/manifest 422, no manifest published at all", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const pair = await httpJson(port, "POST", "/v1/pairings", { body: { tenant: "bad-tenant-http" } });

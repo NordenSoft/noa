@@ -55,14 +55,52 @@ test("R-1: with a secret configured, enrolment requires it — missing, wrong, a
   assert.equal(enrolmentRefusal(cfg, "s3cret-operator-value"), null, "the correct secret must pass");
 });
 
-test("R-1 ANTI-VACUITY: on loopback with no secret, enrolment still works", () => {
-  // Without this, every assertion above would also pass on a relay that refused enrolment outright —
-  // which would break local development and the demo while looking like a security win.
-  const cfg = resolveConfig({ bindAddress: "127.0.0.1" });
-  assert.equal(enrolmentRefusal(cfg, undefined), null,
-    "an unreachable relay may enrol anonymously; requiring a secret there protects nothing");
-  assert.equal(enrolmentRefusal(resolveConfig({ bindAddress: "::1" }), undefined), null);
-  assert.equal(enrolmentRefusal(resolveConfig({ bindAddress: "localhost" }), undefined), null);
+/**
+ * CONVERTED 2026-07-31 (R8-07), and the conversion is the point.
+ *
+ * This test used to assert the OPPOSITE: `resolveConfig({ bindAddress: "127.0.0.1" })` with no
+ * secret returned `null` — enrolment permitted — under the reasoning "an unreachable relay may
+ * enrol anonymously; requiring a secret there protects nothing".
+ *
+ * The premise was false. "Unreachable" was inferred from a bind address plus two operator-set
+ * booleans, and the standard production shape — a loopback bind behind an undeclared reverse proxy
+ * — defeated all three. Two reviewers measured the full anonymous pipeline running through one:
+ * pairing 201, agent key 200, approver device 201.
+ *
+ * So the property inverted, and the test says so out loud rather than being deleted. Openness is now
+ * an explicit positive (`allowAnonymousEnrolment`), never an inference.
+ */
+test("R8-07: a loopback bind is NOT a reason to allow anonymous enrolment", () => {
+  for (const bindAddress of ["127.0.0.1", "::1", "localhost"]) {
+    const refusal = enrolmentRefusal(resolveConfig({ bindAddress }), undefined);
+    assert.notEqual(refusal, null, `loopback bind "${bindAddress}" still permitted anonymous enrolment`);
+    assert.equal(refusal?.status, 503);
+    assert.equal(refusal?.body.error, "ENROLMENT_NOT_CONFIGURED");
+  }
+});
+
+test("R8-07 ANTI-VACUITY: the explicit development opt-in still works, and a secret still works", () => {
+  // Without this, every assertion above would also pass on a relay that refused enrolment
+  // unconditionally — which would break local development and the demo while looking like a
+  // security win, and would make the refusal untestable from the permissive side.
+  assert.equal(
+    enrolmentRefusal(resolveConfig({ bindAddress: "127.0.0.1", allowAnonymousEnrolment: true }), undefined),
+    null,
+    "the deliberate development opt-in must still permit enrolment",
+  );
+  // AND THE OPT-IN DOES NOT OVERRIDE DETECTED EXPOSURE. A flag saying "development" cannot make a
+  // 0.0.0.0 bind — or a declared TLS terminator — safe; where exposure is visible, the operator's
+  // claim is provably false and the flag is ignored. (My first implementation returned early on the
+  // flag and three pre-existing shape-(A) tests caught it.)
+  for (const exposed of [
+    { bindAddress: "0.0.0.0", allowAnonymousEnrolment: true },
+    { bindAddress: "127.0.0.1", tlsTerminated: true, allowAnonymousEnrolment: true },
+    { bindAddress: "127.0.0.1", unsafeListen: true, allowAnonymousEnrolment: true },
+  ]) {
+    const refusal = enrolmentRefusal(resolveConfig(exposed), undefined);
+    assert.ok(refusal, `the dev opt-in overrode DETECTED exposure: ${JSON.stringify(exposed)}`);
+    assert.equal(refusal.status, 503);
+  }
 });
 
 test("R-1 over HTTP: a configured secret gates the real /v1/devices route end to end", async () => {
@@ -126,10 +164,15 @@ test("R-1: a loopback bind behind a declared TLS terminator counts as EXPOSED", 
   const unsafe = resolveConfig({ bindAddress: "127.0.0.1", unsafeListen: true });
   assert.ok(enrolmentRefusal(unsafe, undefined), "an unsafeListen declaration also means exposed");
 
-  // ANTI-VACUITY: a genuine dev box — loopback with NEITHER declaration — is still open, because on
-  // an unreachable host a secret protects nothing and a control that protects nothing gets routed
-  // around. If this flipped, the test above would pass for the wrong reason.
-  assert.equal(enrolmentRefusal(resolveConfig({ bindAddress: "127.0.0.1" }), undefined), null);
+  // ANTI-VACUITY, CONVERTED 2026-07-31 (R8-07). This clause used to assert that loopback with
+  // NEITHER declaration stays OPEN — the exact rule that was measured failing behind an undeclared
+  // proxy. Openness is no longer inferred from the bind address at all, so the honest control is
+  // now the EXPLICIT opt-in: it must still permit enrolment, or the assertions above would pass on
+  // a relay that simply refuses everything.
+  assert.equal(
+    enrolmentRefusal(resolveConfig({ bindAddress: "127.0.0.1", allowAnonymousEnrolment: true }), undefined),
+    null,
+  );
 
   // And a configured secret still admits the operator in the exposed shape.
   const withSecret = resolveConfig({ bindAddress: "127.0.0.1", tlsTerminated: true, enrolmentSecret: "op" });
@@ -142,7 +185,7 @@ test("R-1: the idempotent-replay body publishes no verdict (the FOURTH leak site
   // replay body 73 lines away, which kept both the old field name and the verdict. The suite walked
   // past it because http-e2e asserts `holdAgain.status === 200` — the HTTP status — while the
   // leaking BODY field was also called `status`.
-  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const pair = await httpJson(port, "POST", "/v1/pairings", { body: {} });
@@ -183,7 +226,7 @@ test("R-1 shape (A): an embedder listening on httpServer directly is treated as 
   //
   // Our `listen()` is never called here, so the server cannot know what was bound and must not
   // guess. Unknown provenance fails CLOSED.
-  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0, allowAnonymousEnrolment: true } });
   await new Promise<void>((resolve) => relay.httpServer.listen(0, "0.0.0.0", () => resolve()));
   const addr = relay.httpServer.address();
   const port = addr && typeof addr === "object" ? addr.port : 0;
@@ -232,7 +275,7 @@ async function mintAnonymously(port: number, kid: string): Promise<number> {
 }
 
 test("R-1 shape (A) variant 1: listen -> close -> embedder re-listens on 0.0.0.0", async () => {
-  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0, allowAnonymousEnrolment: true } });
   await relay.listen();
   await relay.close();
   await new Promise<void>((r) => relay.httpServer.listen(0, "0.0.0.0", () => r()));
@@ -248,7 +291,7 @@ test("R-1 shape (A) variant 1: listen -> close -> embedder re-listens on 0.0.0.0
 });
 
 test("R-1 shape (A) variant 2: our close() is never called; the embedder closes and re-listens", async () => {
-  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+  const relay = createRelay({ store: new InMemoryStore(), config: { port: 0, allowAnonymousEnrolment: true } });
   await relay.listen();
   await new Promise<void>((r) => relay.httpServer.close(() => r()));
   await new Promise<void>((r) => relay.httpServer.listen(0, "0.0.0.0", () => r()));
@@ -260,7 +303,10 @@ test("R-1 shape (A) variant 2: our close() is never called; the embedder closes 
 
     // ANTI-VACUITY: a relay whose socket IS the one we opened still enrols on loopback, so the two
     // 503s above are the live-tuple check biting rather than the gate being stuck closed.
-    const honest = createRelay({ store: new InMemoryStore(), config: { port: 0 } });
+    // R8-07: the control has to declare the development opt-in now, since enrolment is closed by
+    // default. It still proves the same thing — the two 503s above are the live-tuple check biting,
+    // not the gate being stuck shut.
+    const honest = createRelay({ store: new InMemoryStore(), config: { port: 0, allowAnonymousEnrolment: true } });
     const { port: hp } = await honest.listen();
     try {
       assert.equal(await mintAnonymously(hp, "honest"), 201,

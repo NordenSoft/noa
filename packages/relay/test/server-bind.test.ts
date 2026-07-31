@@ -14,7 +14,7 @@ test("default bind address is loopback 127.0.0.1", () => {
 });
 
 test("loopback listen serves /health over a real socket", async () => {
-  const r = createRelay({ config: { port: 0 } });
+  const r = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { address, port } = await r.listen();
   try {
     assert.ok(port > 0, "expected an ephemeral port");

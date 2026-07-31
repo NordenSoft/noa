@@ -20,7 +20,7 @@ import { httpJson } from "./http-client.js";
 import type { Receipt } from "../src/types.js";
 
 test("localhost end-to-end: hold → phone approval → agent learns the signed decision", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     // 1. pairing token (open, rate-limited)
@@ -119,7 +119,7 @@ test("localhost end-to-end: hold → phone approval → agent learns the signed 
 });
 
 test("auth is enforced: POST /v1/holds without an agent bearer → 401", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const res = await httpJson(port, "POST", "/v1/holds", {

@@ -100,7 +100,10 @@ export async function setupHarness(opts: { echo?: boolean; sink?: string[] } = {
       if (event === 'hold.created' && typeof fields['holdId'] === 'string') gateHoldQueue.push(fields['holdId']);
     },
   });
-  const relay = createRelay({ config: { port: 0, now: () => clock.now() }, log: (event, fields) => logger.child('relay').event(event, fields) });
+  // R8-07: enrolment is CLOSED by default now — anonymous credential minting was measured running
+  // end to end through an undeclared reverse proxy. This demo mints its own agent and device on
+  // loopback, so it declares the development opt-in explicitly rather than inheriting one.
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true, now: () => clock.now() }, log: (event, fields) => logger.child('relay').event(event, fields) });
 
   // register the gate-side agent credential (the gate has no pairing endpoint; agents are provisioned).
   const gateAgent: AgentRecord = { id: 'gate-agent-1', name: 'demo-agent', apiKeyHash: hashSecret(GATE_AGENT_KEY), createdAt: clock.now() };

@@ -50,18 +50,49 @@ export interface RelayConfig {
    * nothing, verifies nothing, and introduces no new trusted party and no key custody. Rooting the
    * keyring itself (pinning a gate key) is a separate, one-way decision and is deliberately NOT this.
    *
-   * DEFAULT `null`, AND THE DEFAULT IS TIED TO EXPOSURE RATHER THAN TO CONVENIENCE:
-   *   - bound to LOOPBACK with no secret  -> enrolment is OPEN. Nothing outside the machine can
-   *     reach it, so requiring a secret would only break local development and the demo.
-   *   - bound OFF loopback with no secret -> enrolment is REFUSED (`503 ENROLMENT_NOT_CONFIGURED`).
-   *     The moment the relay is actually reachable, anonymous credential minting stops being a
-   *     convenience and becomes the hole. Fail-closed exactly where it matters.
+   * DEFAULT `null`, AND ENROLMENT IS THEN CLOSED (revised 2026-07-31, R8-07):
+   *   - no secret, no `allowAnonymousEnrolment` -> REFUSED (`503 ENROLMENT_NOT_CONFIGURED`),
+   *     WHATEVER the bind address.
+   *   - no secret, `allowAnonymousEnrolment: true` -> open. Development only, requested explicitly.
    *   - secret set -> required on all three routes, whatever the bind address.
    *
-   * Chosen over "default closed everywhere" because that shape gets switched off by whoever is
-   * blocked by it at 2am, and over "default open everywhere" because that is the current defect.
+   * ⚠ WHAT THIS PARAGRAPH USED TO SAY, and why it is gone: it tied the default to the BIND ADDRESS
+   * — "bound to LOOPBACK with no secret -> enrolment is OPEN. Nothing outside the machine can reach
+   * it." That inference was false in the standard production shape (a loopback bind behind an
+   * undeclared proxy) and was measured minting approver keys anonymously through one. Reachability
+   * is not knowable from inside the process; this file said so two paragraphs down while the
+   * default relied on knowing it anyway.
    */
   enrolmentSecret: string | null;
+
+  /**
+   * EXPLICIT, DEVELOPMENT-ONLY opt-in to mint credentials with no enrolment secret. Default `false`.
+   *
+   * ── R8-07 (2026-07-31): THE DEFAULT WAS THE VULNERABILITY ────────────────────────────────────
+   * `enrolmentRefusal` used to permit anonymous enrolment whenever the bind was loopback and the
+   * operator had declared neither `tlsTerminated` nor `unsafeListen`. Its own comment argued the
+   * case: on a genuinely unreachable dev box a secret protects nothing.
+   *
+   * The premise is the problem. "Unreachable" was inferred from two booleans the OPERATOR has to
+   * remember to set, and the standard production shape defeats it — a relay bound correctly to
+   * loopback with an undeclared reverse proxy or tunnel in front. Measured by two independent
+   * reviewers on the frozen tree:
+   *
+   *     POST /v1/pairings -> 201     POST /v1/pair -> 200 apiKey     POST /v1/devices -> 201
+   *
+   * with no credential at all, through a `0.0.0.0` proxy, while `bindAddress` still read
+   * "127.0.0.1". That is anonymous minting of APPROVER keys, remotely, at shipped defaults.
+   *
+   * The relay was also the only component still arguing this direction. The gate settled the same
+   * question against itself in `gate/src/engine.ts:305-306` under owner decision B-1: *"a default is
+   * a security decision … otherwise the default is the vulnerability."* Two components applied
+   * opposite defaults to the same class, and the credential-minting one had the permissive default.
+   *
+   * So the inference is gone. Enrolment now requires EITHER an operator-provisioned secret OR this
+   * flag, set deliberately. Nothing is inferred from a bind address, because reachability is not
+   * knowable from inside the process and this file already says so.
+   */
+  allowAnonymousEnrolment: boolean;
 
   /** Injectable monotonic-ish clock, epoch ms. */
   now: () => number;
@@ -88,6 +119,7 @@ export const DEFAULT_CONFIG: RelayConfig = {
   expirySweepMs: 30 * 1000,
   maxBodyBytes: 256 * 1024,
   enrolmentSecret: null,
+  allowAnonymousEnrolment: false,
   now: () => Date.now(),
 };
 
@@ -102,36 +134,44 @@ export function enrolmentRefusal(
   presented: string | undefined,
 ): { status: number; body: { error: string; detail?: string } } | null {
   if (config.enrolmentSecret === null) {
-    // EXPOSURE IS NOT `bindAddress`. `bindAddress` describes this process's own socket; it does not
-    // describe REACHABILITY, which is not knowable from inside the process. Measured, on the frozen
-    // tree, two shapes where the old test said "loopback, therefore safe" and enrolment ran anyway:
+    // EXPOSURE IS NOT `bindAddress`, AND IT IS NO LONGER INFERRED FROM ANYTHING (R8-07, 2026-07-31).
     //
-    //   (A) `Relay.httpServer` is a public field. An embedder calling
-    //       `httpServer.listen(port, "0.0.0.0")` bypasses the D20 bind guard entirely, while
-    //       `config.bindAddress` still reads "127.0.0.1".
-    //   (B) THE STANDARD PRODUCTION SHAPE — the relay bound correctly to loopback with a reverse
-    //       proxy in front. D20 passes, `bindAddress` is loopback, and the full anonymous pipeline
-    //       ran end to end through the proxy: approver key, pairing token, agent API key.
+    // The previous version of this block read `tlsTerminated || unsafeListen` and, failing both,
+    // permitted enrolment on a loopback bind. It correctly identified two defeating shapes — a
+    // public `httpServer.listen("0.0.0.0")` by an embedder, and a reverse proxy in front — and then
+    // still concluded that loopback-with-neither-flag was safe. It is not: shape (B) IS the standard
+    // production deployment, and it was measured running the full anonymous pipeline end to end
+    // through an undeclared proxy — approver key, pairing token, agent API key.
     //
-    // (B) is the shape this very file names two lines up: `tlsTerminated` is documented as "set true
-    // when deployed behind Railway/HTTPS". So the operator ALREADY declares the exposure — the flag
-    // was sitting right there and this function did not read it. `unsafeListen` is the same
-    // declaration for a direct bind.
+    // The residual was never the flags. It was that a SAFE state depended on an operator remembering
+    // to declare something. Enrolment now requires an explicit positive: a secret, or a deliberate
+    // development-only opt-in. Nothing about reachability is guessed.
+    // ORDER MATTERS, and getting it wrong is how the opt-in becomes the new hole.
     //
-    // So: either flag being set means EXPOSED, whatever the bind address says. Loopback-with-neither
-    // remains open, because on a genuinely unreachable dev box a secret protects nothing, and a
-    // control that protects nothing teaches people to route around controls.
+    // DETECTED exposure is refused FIRST and unconditionally — the development opt-in cannot
+    // override it. If `tlsTerminated`/`unsafeListen` is set, or the LIVE socket tuple is
+    // non-loopback (server.ts re-reads `httpServer.address()` before calling this, so an embedder
+    // re-listening on 0.0.0.0 is visible here), then the operator's "development only" claim is
+    // provably false and the flag is ignored.
+    //
+    // My first version of this check returned early on the flag, ahead of the exposure logic, and
+    // three existing tests caught it: an embedder re-listening on 0.0.0.0 would have enrolled
+    // anonymously because a config flag said "dev". The tests were right.
     const declaredExposed = config.tlsTerminated || config.unsafeListen;
-    if (!declaredExposed && isLoopbackAddress(config.bindAddress)) return null;
+    if (!declaredExposed && isLoopbackAddress(config.bindAddress) && config.allowAnonymousEnrolment) {
+      return null;
+    }
     return {
       status: 503,
       body: {
         error: "ENROLMENT_NOT_CONFIGURED",
         detail:
-          "this relay is reachable from outside the host, so credential enrolment requires an " +
+          "credential enrolment requires an " +
           "operator-provisioned enrolment secret. Set NOA_RELAY_ENROLMENT_SECRET, or pass " +
-          "--enrolment-secret. Anonymous enrolment is permitted only on a loopback bind with neither " +
-          "--tls-terminated nor --unsafe-listen — i.e. only when nothing outside the host can reach it.",
+          "--enrolment-secret. Anonymous enrolment is DEVELOPMENT ONLY and must be requested " +
+          "explicitly with NOA_RELAY_ALLOW_ANON_ENROLMENT=1 — it is never inferred from the bind " +
+          "address, because a reverse proxy in front of a loopback bind is reachable and the " +
+          "process cannot see it.",
       },
     };
   }

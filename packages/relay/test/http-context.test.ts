@@ -55,7 +55,7 @@ async function bootWithAgentAndDevice(port: number): Promise<{
 }
 
 test("device GET /context → 200 returns the seeded envelope + deferred receipt byte-for-byte", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const { agentAuth, deviceAuth, devicePrivateKey } = await bootWithAgentAndDevice(port);
@@ -101,7 +101,7 @@ test("device GET /context → 200 returns the seeded envelope + deferred receipt
 });
 
 test("GET /context with NO bearer → 401 DEVICE_AUTH_REQUIRED", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const res = await httpJson(port, "GET", "/v1/holds/any-id/context");
@@ -113,7 +113,7 @@ test("GET /context with NO bearer → 401 DEVICE_AUTH_REQUIRED", async () => {
 });
 
 test("GET /context with an AGENT bearer (wrong scheme) → 401 DEVICE_AUTH_REQUIRED", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const { agentAuth } = await bootWithAgentAndDevice(port);
@@ -127,7 +127,7 @@ test("GET /context with an AGENT bearer (wrong scheme) → 401 DEVICE_AUTH_REQUI
 });
 
 test("GET /context for an UNKNOWN holdId → 404 UNKNOWN_HOLD (same code /display uses)", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const { deviceAuth } = await bootWithAgentAndDevice(port);
@@ -140,7 +140,7 @@ test("GET /context for an UNKNOWN holdId → 404 UNKNOWN_HOLD (same code /displa
 });
 
 test("GET /context for a hold seeded WITHOUT envelope/deferred → 404 NO_HOLD_CONTEXT", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const { agentAuth, deviceAuth } = await bootWithAgentAndDevice(port);
@@ -166,7 +166,7 @@ test("GET /context for a hold seeded WITHOUT envelope/deferred → 404 NO_HOLD_C
 test("/context enforces DEVICE_REVOKED exactly as /display does (auth parity)", async () => {
   // A single relay whose store we reach through the engine, so we can revoke the device and prove
   // BOTH /display and /context refuse the revoked bearer with the identical 403 DEVICE_REVOKED.
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const { agentAuth, deviceAuth, deviceSecret, devicePrivateKey } = await bootWithAgentAndDevice(port);

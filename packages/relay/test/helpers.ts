@@ -52,7 +52,10 @@ export interface Harness {
 
 export function makeHarness(overrides: Partial<RelayConfig> = {}, storeOverride?: Store): Harness {
   const clock: Clock = { t: 1_700_000_000_000 };
-  const config = resolveConfig({ now: () => clock.t, ...overrides });
+  // R8-07: enrolment is CLOSED by default in production, so a test harness that mints credentials
+  // has to say so. Declared here once, visibly, rather than inherited from a bind address —
+  // `overrides` can still turn it off to exercise the refusal itself.
+  const config = resolveConfig({ now: () => clock.t, allowAnonymousEnrolment: true, ...overrides });
   const store = storeOverride ?? new InMemoryStore();
   const push = new NoopLogPushProvider();
   const logs: Array<{ event: string; fields: Record<string, unknown> }> = [];

@@ -42,6 +42,13 @@ function parseArgs(argv: string[]): Partial<RelayConfig> {
     const fromEnv = process.env["NOA_RELAY_ENROLMENT_SECRET"];
     if (fromEnv !== undefined && fromEnv !== "") cfg.enrolmentSecret = fromEnv;
   }
+  // R8-07: the DEVELOPMENT-ONLY escape from "enrolment needs a secret". Explicit and positive —
+  // enrolment openness is never inferred from a bind address, because a reverse proxy in front of a
+  // loopback bind is reachable and this process cannot see it. Exactly "1" so a stray empty or
+  // "false" value cannot open credential minting by accident.
+  if (cfg.allowAnonymousEnrolment === undefined) {
+    cfg.allowAnonymousEnrolment = process.env["NOA_RELAY_ALLOW_ANON_ENROLMENT"] === "1";
+  }
   return cfg;
 }
 
