@@ -274,11 +274,20 @@ export function assembleGateTrust(
   const gate: GateKeyPair = { kid: auth.gate.kid, publicKey: auth.gate.publicKey, privateKey: auth.gate.privateKey };
   const approver: GateKeyPair = { kid: phone.approverKid, publicKey: phone.approverPublicKey, privateKey: '' };
 
+  // ── P0-8 (2026-07-31): THIS WAS THE SEVENTH RESOLVER THAT DROPPED `validFrom` ────────────────
+  // The v2 manifest signed in `acceptPairing` above declares `validFrom` on every key; this keyring
+  // — the exact map the gate engine hands to `verifyArtifact` for LIVE Decision verification — was
+  // rebuilt from the same inputs with `revokedAt: null` but NO `validFrom`, so the declared
+  // activation window was open at one end on the golden live path. Identical drift to P0-5
+  // (`gate/src/trust.ts`) and P0-1 (`evidence/src/trust.ts`), found AFTER the resolver inventory
+  // had twice been declared complete. Activation is now carried from the same declared value the
+  // manifest uses. [proof: RES-PAR-E2E-KEYRING] (test/keyring-resolver-parity.test.ts, RED before
+  // this fix); the resolver census is reconciled mechanically by scripts/lint-resolver-parity.mjs.
   const keyring: Record<string, KeyEntry> = {
-    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], revokedAt: null },
-    [approver.kid]: { publicKey: approver.publicKey, type: 'APPROVER', roles: ['approve-high'], revokedAt: null },
-    [auth.authority.kid]: { publicKey: auth.authority.publicKey, type: 'DELEGATED', roles: ['key-manifest-sign'], revokedAt: null },
-    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], revokedAt: null },
+    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], validFrom: auth.validFrom, revokedAt: null },
+    [approver.kid]: { publicKey: approver.publicKey, type: 'APPROVER', roles: ['approve-high'], validFrom: auth.validFrom, revokedAt: null },
+    [auth.authority.kid]: { publicKey: auth.authority.publicKey, type: 'DELEGATED', roles: ['key-manifest-sign'], validFrom: auth.validFrom, revokedAt: null },
+    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], validFrom: auth.validFrom, revokedAt: null },
   };
   const receiptKeyring: Record<string, string> = {
     [gate.kid]: gate.publicKey,
@@ -307,7 +316,9 @@ export function assembleGateTrust(
   // The external tenant trust root the §13 verifier requires (F7a): the ROOT that signed the
   // delegation. Never lifted from the bundle.
   const tenantRoot: Record<string, KeyEntry> = {
-    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], revokedAt: null },
+    // P0-8, same change as the live keyring above: the external anchor carries the ROOT's declared
+    // activation, exactly as `gate/src/trust.ts` and the P0-1 fix do. [proof: RES-PAR-E2E-TENANTROOT]
+    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], validFrom: auth.validFrom, revokedAt: null },
   };
   return { trust, tenantRoot };
 }

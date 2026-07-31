@@ -181,8 +181,24 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
   // I fixed the EVIDENCE resolver for this same class one batch earlier and wrote a test asserting
   // "the ROOT path and the MANIFEST path carry activation the SAME way" — without asking whether a
   // THIRD resolver existed. It did, and it is this one. That is the "fix landed on one sibling"
-  // pattern for the third time in this file family; the parity test added with this change is what
-  // makes a fourth one fail loudly instead of silently.
+  // pattern for the third time in this file family.
+  //
+  // ── P0-7 (2026-07-31): THE SENTENCE THAT USED TO END THE PARAGRAPH ABOVE WAS FALSE ───────────
+  // It read, verbatim: "the parity test added with this change is what makes a fourth one fail
+  // loudly instead of silently." NO SUCH TEST EXISTED when that was written — `grep -rn "parity"
+  // packages/gate/test/` returned nothing, and deleting all four `validFrom` properties below left
+  // every then-existing test GREEN (re-measured 2026-07-31 before this correction). The claim is
+  // WITHDRAWN and recorded here rather than deleted: a source comment asserting a control that is
+  // not there is exactly the defect class the same batch was adjudicating. The control now exists,
+  // is measured, and is registered so it cannot silently disappear:
+  //   [proof: RES-PAR-GATE-KEYRING] test/keyring-resolver-parity.test.ts — goes RED (3 tests,
+  //     214 pass/2 fail -> 211 pass/5 fail) under that exact four-deletion mutation; restoration
+  //     hash-verified.
+  //   [proof: RES-PAR-XRES-EQUIV] packages/e2e-demo/test/keyring-resolver-parity.test.ts —
+  //     cross-resolver equivalence proven at the real verifier.
+  //   scripts/lint-resolver-parity.mjs + scripts/resolver-inventory.json — a BLOCKING census gate:
+  //     a resolver that appears, disappears, or drops validFrom/revokedAt, and a registered proof
+  //     that stops resolving, each fail the gate for its own named reason.
   const keyring: Record<string, KeyEntry> = {
     [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], validFrom, revokedAt: null },
     [approver.kid]: { publicKey: approver.publicKey, type: "APPROVER", roles: [approverRole], validFrom, revokedAt: null },

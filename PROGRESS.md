@@ -1,4 +1,8 @@
-# LIVE STATUS — pre-launch security work
+# PROGRESS — measured totals and evidence
+
+> **The plan lives in [`noa-trust-plan.md`](noa-trust-plan.md).** That file is the single authority
+> for blockers, priorities and the next action; on drift it wins. This file carries MEASURED
+> evidence — suite totals, the knockout registry, residue checks — and the handover record.
 
 > **How to read this file.** Written at the end of each work block; its timestamp is the last moment
 > work happened, not "now".
