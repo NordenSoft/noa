@@ -217,3 +217,73 @@ fixed by `7a30e2c`:
    `scope`, `agent`, `action`, `governance`, `chain`, `sig`. The receipt therefore **cannot prove an
    audience or target claim at all** — not weakly, not by convention. Where such a claim is needed
    it belongs to the relay's hold/decision artifacts, which are a different artifact type.
+
+---
+
+## 2026-07-31 — #77-C: I audited the artifact in ISOLATION and reported a system-level gap
+
+### C-8 — the recipient set IS authenticated, one layer up, and my commit said otherwise
+
+`d0b816d`'s binding audit recorded:
+
+> *"ADDED recipient entry -> NOT BOUND, the object still opens."*
+
+**That is true of `openEncryptedDisplay` called in isolation, and MISLEADING about the system.**
+Found by an adversarial reviewer citing file:line references I had not supplied, then VERIFIED by me
+before acceptance.
+
+The gate commits a hash over the WHOLE encrypted-display object into the Hold Envelope, and SIGNS
+the envelope:
+
+```
+packages/gate/src/envelope.ts:38   displayCiphertextHash: virtualHash(input.encryptedDisplay)
+packages/approval-artifacts/src/refhash.ts:39   virtualHash = sha256Prefixed(canonicalize(obj))
+```
+
+`recipients[]` is inside that object, so it is inside that hash. MEASURED, with a non-vacuous
+control:
+
+```
+APPEND a recipient      F2 hash CHANGED       REMOVE a recipient     F2 hash CHANGED
+RELABEL a kid           F2 hash CHANGED       REORDER recipients     F2 hash CHANGED
+DUPLICATE a recipient   F2 hash CHANGED       (control) no change    unchanged
+```
+
+And the approver device verifies the chain in the right order (`packages/e2e-demo/src/phone.ts`):
+the Hold Envelope's GATE SIGNATURE against a PINNED key (step 2), `gateKid` against the pin and an
+anti-rollback floor on `keyManifestVersion` (step 3), the envelope↔deferred binding (step 4), and
+only then F2 (step 5). So on the device where a human actually approves, recipient tampering is
+detected — transitively, by a signature over a hash that covers the recipient set.
+
+**Why I got it wrong, and it is not a subtle reason.** The owner's own Defect B mandate had told me:
+*"Do not test only an isolated canonicalizer … trace it through the real chain … Use the
+repository's real producer and verifier APIs."* I applied that discipline to Defect B and did NOT
+apply it to the Defect C binding audit — I called `openEncryptedDisplay` directly and reported the
+result as a property of the system. The instruction to avoid exactly this error was in front of me.
+
+### C-8b — what REMAINS true after the correction, measured the same way
+
+The correction does not clear the field. Three findings survive, and two are new:
+
+1. **The relay never verifies the envelope signature.** `grep -c verifyArtifact
+   packages/relay/src/engine.ts` = **0**. It also applies F2 CONDITIONALLY —
+   `const envHash = envelope?.displayCiphertextHash; if (envHash && edHash !== envHash)` — so a
+   request that omits `holdEnvelope`, or supplies one without `displayCiphertextHash`, skips the
+   check entirely. Whether that is acceptable depends on whether the relay is intended to be a
+   security boundary at all (it is described elsewhere as blind transport); that is an OPEN
+   QUESTION, not yet a finding.
+2. **The envelope carries a `nonce` that NOTHING READS.** It is signed into the artifact
+   (`envelope.ts:46`) and never consulted: reads of an envelope nonce across all packages = **0**.
+   A signed-but-unread field is not anti-replay; it is the appearance of anti-replay.
+3. **The phone evidence is DEMO-GRADE.** `packages/e2e-demo` is `private: true`, named
+   `noa-e2e-demo`. It demonstrates that a correct approver implementation exists; it is NOT proof
+   that the shipped mobile application performs these checks. Whether the production approver app
+   verifies the envelope signature and F2 is **[UNVERIFIED]** from this repository.
+
+### C-8c — consequence for the `0.2` decision
+
+The owner's instruction to build `0.2` says the recipient set "must not remain unauthenticated
+mutable metadata". On the measured evidence, **at the system level it is not unauthenticated** — F2
+plus the gate signature already cover it, provided the consumer verifies the envelope. The honest
+statement of the remaining gap is narrower and must be presented as such before implementation is
+authorised, because it changes the cost/benefit of a wire-format break.
