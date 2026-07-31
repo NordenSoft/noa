@@ -16,9 +16,26 @@
  * "and what, exactly, would have caught this?"
  *
  * THE RULE: a knockout that leaves the suite GREEN is a finding. It means either the control is not
- * load-bearing (delete it) or nothing tests it (write the test). The runner never edits anything
- * permanently — each knockout is applied to a scratch copy, the suite is run, and the file is
- * restored from the pristine copy taken before the run, in a `finally`.
+ * load-bearing (delete it) or nothing tests it (write the test).
+ *
+ * ⚠ CORRECTED 2026-07-31 (R8-26/R8-27). This paragraph used to claim "each knockout is applied to a
+ * SCRATCH COPY". That was false: `fs.writeFileSync(path.join(ROOT, k.file))` writes into the
+ * canonical worktree, and the "pristine copy" is a string in memory. A crash between write and
+ * restore left a weakened control on disk, and round 8 observed `git status` rotating through
+ * modified `src/cose/cbor.ts`, `src/intrinsics.ts` and `src/verify.ts` mid-run.
+ *
+ * The mutation still happens in place — a scratch worktree would need a full rebuild per entry —
+ * but it is now BOUNDED and PROVEN: baseline sha256 before, a required byte change to prove the
+ * mutation applied, restoration verified against that same sha256, and a dirty-tree check at the
+ * end. Restoration that cannot be proven is itself a failing verdict.
+ *
+ * And the verdict is no longer `green ? SURVIVED : KILLED`. That treated a real detection, a
+ * pre-existing failure, a compile error, a crash and a timeout as one value. Six of the entries
+ * below target `packages/gate`, whose baseline is `exit 1, 200/2` — so they reported KILLED for any
+ * mutation. Proven by making one entry's `replace` byte-identical to its `find`: the source did not
+ * change at all and the runner still printed `killed 1/1`. Verdicts now come from the closed
+ * taxonomy in `lib/knockout-runner.mjs`, and a kill requires a failure the CLEAN baseline did not
+ * already have.
  *
  * Run:  node scripts/lint-control-knockout.mjs [--warn] [--only <id>]
  */
@@ -26,6 +43,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { runKnockout, observeSuite, VERDICT, PASSING } from "./lib/knockout-runner.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WARN_ONLY = process.argv.includes("--warn");
@@ -382,80 +400,92 @@ const KNOCKOUTS = [
   },
 ];
 
-function run(dir, cmd, args) {
-  try {
-    execFileSync(cmd, args, { cwd: path.join(ROOT, dir), encoding: "utf8", stdio: "pipe", timeout: 900_000 });
-    return { green: true };
-  } catch (e) {
-    return { green: false, out: `${e.stdout ?? ""}${e.stderr ?? ""}`.slice(-400) };
-  }
-}
-
+// ── R8-26/R8-27: MEASURE EVERY SUITE'S CLEAN BASELINE FIRST ────────────────────────────────────
+// Without this, "the suite failed" cannot be distinguished from "the suite was already failing".
+// `packages/gate` is exit 1 / 200 pass / 2 fail at HEAD — two owner-deferred ADR-0006 failures — and
+// the six entries targeting it were reporting a kill for that, not for their own controls.
 const selected = ONLY ? KNOCKOUTS.filter((k) => k.id === ONLY) : KNOCKOUTS;
-const results = [];
 
+// Snapshot the worktree BEFORE anything runs, so residue is measured as a DIFFERENCE.
+let WORKTREE_BEFORE = "";
+try {
+  WORKTREE_BEFORE = execFileSync("git", ["status", "--porcelain"], { cwd: ROOT, encoding: "utf8" }).trim();
+} catch { /* not a git tree */ }
+
+const suiteKey = (k) => JSON.stringify(k.suite);
+const baselines = new Map();
 for (const k of selected) {
-  const abs = path.join(ROOT, k.file);
-  const pristine = fs.readFileSync(abs, "utf8");
-  // A companion control that independently closes the same class must be knocked out together, or
-  // the surviving layer masks the result and the run reports a false "nothing measures this".
-  const companion = k.andAlso ? KNOCKOUTS.find((x) => x.id === k.andAlso) : null;
-  const companionAbs = companion ? path.join(ROOT, companion.file) : null;
-  const companionPristine = companionAbs ? fs.readFileSync(companionAbs, "utf8") : null;
-
-  try {
-    const edits = [{ find: k.find, replace: k.replace }, ...(k.also ?? [])];
-    let src = pristine;
-    let rotted = null;
-    for (const e of edits) {
-      const hits = src.split(e.find).length - 1;
-      if (hits !== 1) { rotted = `\`find\` matched ${hits}× (must be exactly 1) — the control moved or the entry rotted`; break; }
-      src = src.replace(e.find, e.replace);
-    }
-    if (!rotted && companion) {
-      let csrc = companionAbs === abs ? src : companionPristine;
-      const hits = csrc.split(companion.find).length - 1;
-      if (hits !== 1) rotted = `companion \`${companion.id}\` find matched ${hits}× (must be exactly 1)`;
-      else {
-        csrc = csrc.replace(companion.find, companion.replace);
-        if (companionAbs === abs) src = csrc;
-        else fs.writeFileSync(companionAbs, csrc);
-      }
-    }
-    if (rotted) { results.push({ id: k.id, verdict: "ROTTED", detail: rotted, control: k.control }); continue; }
-
-    fs.writeFileSync(abs, src);
-    const r = run(...k.suite);
-    results.push({
-      id: k.id,
-      verdict: r.green ? "SURVIVED" : "KILLED",
-      control: k.control,
-      detail: r.green ? "the suite stayed GREEN without this control" : "",
-    });
-  } finally {
-    fs.writeFileSync(abs, pristine);
-    if (companionAbs && companionPristine !== null) fs.writeFileSync(companionAbs, companionPristine);
-  }
+  const key = suiteKey(k);
+  if (baselines.has(key)) continue;
+  const obs = observeSuite(ROOT, k.suite);
+  baselines.set(key, { exit: obs.exit, failing: obs.failing, ms: obs.ms, timedOut: obs.timedOut });
 }
 
+// A knockout whose baseline could not even be measured proves nothing, so say that rather than
+// scoring it.
+const unmeasurable = [...baselines.entries()].filter(([, b]) => b.timedOut);
+
+const results = [];
+for (const k of selected) {
+  const baseline = baselines.get(suiteKey(k));
+  if (baseline.timedOut) {
+    results.push({ id: k.id, control: k.control, verdict: VERDICT.INVALID_TEST,
+      detail: `the suite's CLEAN baseline timed out, so no mutation result from it can mean anything`, restored: true });
+    continue;
+  }
+  results.push(runKnockout({ root: ROOT, entry: k, baseline }));
+}
+
+// ── REPORT ─────────────────────────────────────────────────────────────────────────────────────
 console.log(`L4 control knockout: ${results.length} controls\n`);
+console.log("  suite baselines (measured clean, before any mutation):");
+for (const [key, b] of baselines) {
+  const dir = JSON.parse(key)[0];
+  console.log(`    ${dir.padEnd(28)} exit ${String(b.exit).padEnd(4)} ${b.failing.size} pre-existing failure(s)`);
+  for (const f of b.failing) console.log(`      already failing: ${f}`);
+}
+console.log();
+
 for (const r of results) {
-  const mark = r.verdict === "KILLED" ? "ok      " : r.verdict === "ROTTED" ? "ROTTED  " : "SURVIVED";
-  console.log(`  ${mark} ${r.id.padEnd(32)} ${r.control}`);
+  const mark = PASSING.has(r.verdict) ? "ok      " : "FINDING ";
+  console.log(`  ${mark} ${String(r.verdict).padEnd(28)} ${r.id.padEnd(34)} ${r.control}`);
   if (r.detail) console.log(`           ${r.detail}`);
+  if (r.restored === false) console.log(`           ⚠ RESTORATION UNPROVEN for ${r.file}`);
 }
 
-const bad = results.filter((r) => r.verdict !== "KILLED");
-console.log(`\nkilled ${results.filter((r) => r.verdict === "KILLED").length}/${results.length}`);
-if (bad.length) {
-  console.error(`\n${bad.length} finding(s):`);
-  for (const r of bad) {
-    console.error(
-      r.verdict === "SURVIVED"
-        ? `  UNMEASURED CONTROL  ${r.id} — removing it left the suite green. Either it is not load-bearing (delete it) or nothing tests it (write the test).`
-        : `  ROTTED KNOCKOUT     ${r.id} — ${r.detail}. A knockout that no longer matches measures nothing.`,
-    );
-  }
+const passed = results.filter((r) => PASSING.has(r.verdict));
+console.log(`\nproven load-bearing ${passed.length}/${results.length}`);
+
+// ── RESIDUE: the worktree must be exactly as it was BEFORE the run ─────────────────────────────
+// Compared against the PRE-RUN snapshot, not against emptiness. A developer legitimately has
+// uncommitted work while running this; what must not change is anything the runner touched. Testing
+// for a clean tree instead would make the check fire on the operator's own edits and be switched
+// off, which is how a control earns the right to be ignored.
+let residue = "";
+try {
+  const after = execFileSync("git", ["status", "--porcelain"], { cwd: ROOT, encoding: "utf8" }).trim();
+  const before = new Set(WORKTREE_BEFORE.split("\n").map((l) => l.trim()).filter(Boolean));
+  const introduced = after.split("\n").map((l) => l.trim()).filter(Boolean).filter((l) => !before.has(l));
+  residue = introduced.join("\n");
+} catch { /* not a git tree — the check below simply cannot run */ }
+
+const bad = results.filter((r) => !PASSING.has(r.verdict));
+const errors = [];
+for (const r of bad) {
+  errors.push(`  ${r.verdict.padEnd(26)} ${r.id} — ${r.detail || "(no detail)"}`);
+}
+if (residue) {
+  errors.push(
+    `  WORKTREE RESIDUE           the knockout run left the tree modified:\n` +
+    residue.split("\n").map((l) => `      ${l}`).join("\n") +
+    `\n      A knockout that cannot restore the tree has not produced a security result.`,
+  );
+}
+for (const [key] of unmeasurable) errors.push(`  BASELINE UNMEASURABLE      ${JSON.parse(key)[0]}`);
+
+if (errors.length) {
+  console.error(`\n${errors.length} finding(s):`);
+  for (const e of errors) console.error(e);
   if (!WARN_ONLY) process.exit(1);
   console.error("(--warn: reported, not blocking)");
 }
