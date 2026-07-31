@@ -70,10 +70,19 @@ const KNOCKOUTS = [
   // control is F-1/R8-17, and it is open.
   {
     id: "g3-parse-boundary-strictness",
-    control: "ADR-0005 §7 G3 — stage 0: every request body enters through parseDocument, so a body that is not strict JSON is refused before any field is read",
+    control: "ADR-0005 §7 G3 — stage 0: every request body enters through parseDocument. PROVEN SCOPE (2026-07-31): replacing it with a LENIENT parser breaks the three bytes-in refusals, so the boundary is load-bearing. NOT yet isolated: whether non-strict JSON specifically is refused — that half needs a mutant that reproduces decodeDocument's exact reason string, and until one exists this entry does not claim it.",
     file: "packages/gate/src/engine.ts",
     find: 'const parsed = parseDocument(body, "request body");',
-    replace: 'const parsed = { ok: true as const, value: body as unknown };',
+    // ── FIXED 2026-07-31 (R815-QA-16 found the cause) ──────────────────────────────────────────
+    // The old replacement was:
+    //     const parsed = { ok: true as const, value: body as unknown };
+    // `ok: true as const` narrows `!parsed.ok` to `never`, so the very next line's `parsed.reason`
+    // stops type-checking. It NEVER COMPILED, so this entry never tested anything — and the runner
+    // scored the build failure as ANTI_VACUITY_FAILED, then (once the taxonomy could say so) as
+    // MUTATION_DID_NOT_BUILD. The union annotation keeps both branches reachable, so the mutant
+    // compiles and the bypass is BEHAVIOURAL rather than a type error. This is the same
+    // narrowing-loss trap that cost three earlier attempts on this branch.
+    replace: 'const parsed: { ok: true; value: unknown } | { ok: false; reason: string } = (() => {\n      try {\n        const raw = typeof body === "string" ? body : new TextDecoder().decode(body as Uint8Array);\n        return { ok: true as const, value: JSON.parse(raw) as unknown };\n      } catch {\n        return { ok: false as const, reason: "request body: lenient parse failed" };\n      }\n    })();',
     kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
