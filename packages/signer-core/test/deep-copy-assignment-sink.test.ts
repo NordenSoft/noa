@@ -53,8 +53,16 @@ import assert from "node:assert/strict";
 import { inertDeepCopy } from "../src/deep-copy.js";
 import { receiptHashInput } from "../src/receipt-hash.js";
 import { signReceipt } from "../src/sign.js";
+import { buildReceipt, buildReceiptDraft, type BuildInput } from "../src/builder.js";
 import { generateKeyPair } from "../src/keygen.js";
 import type { Receipt } from "../src/types.js";
+// `noa-receipt` is a devDependency imported ONLY by this package's tests (README "Why a copy, not
+// an import"). R815-QA-13: the end-to-end assertion has to be made by the AUTHORITATIVE verifier,
+// not by comparing two of this package's own pre-images.
+import { verifyChain } from "noa-receipt";
+
+/** Fixture -> document bytes, the form every kernel entry point takes. */
+const bytes = (v: unknown): Uint8Array => new TextEncoder().encode(JSON.stringify(v));
 
 const hasOwn = Object.prototype.hasOwnProperty;
 const own = (o: object, k: string): boolean => hasOwn.call(o, k);
@@ -141,34 +149,23 @@ function receiptCore(): Receipt {
 // ATTACK 1 — the primitive, at the top level.
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
-test("R8-15: an own `__proto__` survives the copy as an own property and does not re-parent it", () => {
+test("R815-QA-12: an own `__proto__` is REFUSED at the producer, not copied and not swallowed", () => {
   assertOwnProtoVehicleIsLive();
 
   const hostile = JSON.parse(
     '{"verdict":"ALLOWED","__proto__":{"approval":{"by":"HUMAN:cfo-victim","at":"2026-07-31T00:00:00Z"}}}',
   ) as Record<string, unknown>;
 
-  const copy = inertDeepCopy(hostile);
-
-  assert.ok(
-    own(copy, "__proto__"),
-    "the `__proto__` key vanished from the copy — it was consumed by the inherited setter, so the " +
-    "copy is not the document that was handed in",
-  );
-  assert.equal(
-    Object.getPrototypeOf(copy), Object.prototype,
-    "the copy was RE-PARENTED. Its prototype is now attacker-controlled data, which means every " +
-    "`in`, every property read that misses, and every `instanceof` on it now consults the attacker",
-  );
-  assert.equal(
-    (copy as { approval?: unknown }).approval, undefined,
-    "an `approval` READS BACK off the copy without being an own property — a phantom human " +
-    "approval that no auditor re-reading the signed bytes can see",
-  );
-  assert.equal(
-    JSON.stringify(copy), JSON.stringify(hostile),
-    "the copy does not serialise to the same bytes as its source — what gets signed and what gets " +
-    "returned have diverged",
+  // REVISED 2026-07-31. This used to assert the key SURVIVED as an own property, on a
+  // `structuredClone`-parity argument that is now withdrawn (see the source, and CORRECTIONS.md
+  // C-5): the strict parser refuses this key, so a receipt carrying it is MALFORMED at the
+  // authoritative verifier and could never verify. Signing it would produce an unverifiable
+  // document. Refusing is the same fail-closed choice this function already makes for Date, Map,
+  // non-finite numbers and accessors.
+  assert.throws(
+    () => inertDeepCopy(hostile),
+    /forbidden key "__proto__"/,
+    "a `__proto__` key reached a signing path without being refused",
   );
 });
 
@@ -176,32 +173,23 @@ test("R8-15: an own `__proto__` survives the copy as an own property and does no
 // ATTACK 2 — nesting and arrays. A fix applied only to the top-level walk would pass ATTACK 1.
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
-test("R8-15: `__proto__` survives at nesting depth and inside an array element", () => {
+test("R815-QA-12: the refusal reaches EVERY node — nesting depth and inside an array", () => {
   assertOwnProtoVehicleIsLive();
 
-  const hostile = JSON.parse(
-    '{"a":{"b":{"c":{"__proto__":{"deep":"injected"},"kept":1}}},' +
-    '"list":[{"__proto__":{"inArray":"injected"},"kept":2},{"plain":3}]}',
-  ) as Record<string, unknown>;
+  const nested = JSON.parse('{"a":{"b":{"c":{"__proto__":{"deep":"injected"},"kept":1}}}}') as Record<string, unknown>;
+  // A check applied only at depth 0 would pass a one-level test and ship a hole. The PATH in the
+  // message proves which node fired, so this cannot pass by refusing for the wrong reason.
+  assert.throws(
+    () => inertDeepCopy(nested),
+    /forbidden key "__proto__" at \$\.a\.b\.c/,
+    "a `__proto__` nested four levels down was not refused, or was refused without naming its path",
+  );
 
-  const copy = inertDeepCopy(hostile) as {
-    a: { b: { c: Record<string, unknown> } };
-    list: Array<Record<string, unknown>>;
-  };
-
-  const deep = copy.a.b.c;
-  assert.ok(own(deep, "__proto__"), "`__proto__` was consumed four levels down — the walk recurses, so the sink does too");
-  assert.equal(Object.getPrototypeOf(deep), Object.prototype, "a nested node was re-parented");
-  assert.equal(deep["kept"], 1, "the ordinary sibling key must still be copied");
-
-  const inArray = copy.list[0] as Record<string, unknown>;
-  assert.ok(own(inArray, "__proto__"), "`__proto__` was consumed inside an array element");
-  assert.equal(Object.getPrototypeOf(inArray), Object.prototype, "an array element was re-parented");
-  assert.equal(inArray["kept"], 2, "the ordinary sibling key inside the array must still be copied");
-
-  assert.equal(
-    JSON.stringify(copy), JSON.stringify(hostile),
-    "the nested copy does not serialise identically to its source",
+  const inArray = JSON.parse('{"list":[{"kept":2},{"__proto__":{"x":1}}]}') as Record<string, unknown>;
+  assert.throws(
+    () => inertDeepCopy(inArray),
+    /forbidden key "__proto__" at \$\.list\[1\]/,
+    "a `__proto__` inside an array element was not refused",
   );
 });
 
@@ -209,42 +197,46 @@ test("R8-15: `__proto__` survives at nesting depth and inside an array element",
 // ATTACK 3 — EQUIVALENT KEYS. This is the test a blacklist fails.
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
-test("R8-15: every `Object.prototype` member name round-trips as an ordinary own key", () => {
+test("R815-QA-12/14: the THREE forbidden names are refused; every OTHER prototype member round-trips", () => {
   assertOwnProtoVehicleIsLive();
 
-  // Every own name on `Object.prototype`, taken from the runtime rather than typed out, so a future
-  // Node that adds another inherited accessor is covered the day it ships. `__proto__` is the only
-  // ACCESSOR among them today; the rest are data properties or methods and must survive as plain
-  // shadowing keys — a fix that special-cased one string would leave the next one to be discovered.
+  // Names taken from the RUNTIME, not typed out, so a future Node that adds an inherited accessor
+  // is covered the day it ships. The split matters: three names are refused because the strict
+  // parser refuses them, and the REST must still copy faithfully — a fix that refused everything
+  // shadowing a prototype member would break ordinary receipts and would pass a refusal-only test.
+  const FORBIDDEN = new Set(["__proto__", "prototype", "constructor"]);
   const names = Object.getOwnPropertyNames(Object.prototype);
   assert.ok(names.includes("__proto__"), "expected `__proto__` among `Object.prototype`'s own names");
-  assert.ok(names.length >= 10, `only ${names.length} names on Object.prototype — fixture is too thin to be a real sweep`);
+  assert.ok(names.length >= 10, `only ${names.length} names on Object.prototype — too thin to be a real sweep`);
 
+  const allowed = names.filter((n) => !FORBIDDEN.has(n));
+  assert.ok(allowed.length >= 7, `only ${allowed.length} non-forbidden prototype names — the ROUND-TRIP half of this test has almost nothing to measure`);
+
+  // 1. every forbidden name is refused, individually, and the message names the key that fired.
+  for (const n of FORBIDDEN) {
+    const hostile: Record<string, unknown> = {};
+    Object.defineProperty(hostile, n, { value: { injected: n }, writable: true, enumerable: true, configurable: true });
+    assert.throws(() => inertDeepCopy(hostile), new RegExp(`forbidden key "${n}"`), `\`${n}\` was not refused`);
+  }
+
+  // 2. every OTHER prototype member name survives as an ordinary own key. These are the names a
+  //    blacklist would over-reach on, and the ones only `defineProperty` keeps safe.
   const hostile: Record<string, unknown> = {};
-  for (const n of names) {
+  for (const n of allowed) {
     // `defineProperty`, never assignment — building the fixture by assignment would hit the very
     // sink under test and produce a fixture that is not hostile at all.
-    Object.defineProperty(hostile, n, {
-      value: { injected: n },
-      writable: true,
-      enumerable: true,
-      configurable: true,
-    });
+    Object.defineProperty(hostile, n, { value: { injected: n }, writable: true, enumerable: true, configurable: true });
   }
   Object.defineProperty(hostile, "ordinary", { value: 42, writable: true, enumerable: true, configurable: true });
 
   const copy = inertDeepCopy(hostile) as Record<string, unknown>;
-
-  for (const n of names) {
+  for (const n of allowed) {
     assert.ok(own(copy, n), `the key \`${n}\` did not survive the copy as an own property`);
     assert.deepEqual(copy[n], { injected: n }, `the value under \`${n}\` was not copied faithfully`);
   }
   assert.equal(Object.getPrototypeOf(copy), Object.prototype, "the copy was re-parented by one of the prototype-member keys");
   assert.equal(copy["ordinary"], 42, "an ordinary key was lost while copying the hostile ones");
-  assert.equal(
-    JSON.stringify(copy), JSON.stringify(hostile),
-    "the copy does not serialise identically to a source carrying every prototype member name",
-  );
+  assert.equal(JSON.stringify(copy), JSON.stringify(hostile), "the copy does not serialise identically to its source");
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -253,46 +245,76 @@ test("R8-15: every `Object.prototype` member name round-trips as an ordinary own
 // the returned receipt does not contain.
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
-test("R8-15: what signReceipt SIGNS is byte-identical to what it RETURNS, hostile key included", () => {
+test("R815-QA-12/13: a hostile key is refused at sign(), and an honest receipt verifies VALID at the ROOT", () => {
   assertOwnProtoVehicleIsLive();
 
-  const core = receiptCore();
-  // An own `__proto__` on `governance`, delivered the way untrusted input actually arrives.
+  // ── R815-QA-13: THIS TEST USED TO PROVE LESS THAN IT CLAIMED ─────────────────────────────────
+  // Its fixture was a hand-written object whose `chain` had no `seq`/`prevHash`, so it was not a
+  // well-formed Receipt at all; it asserted only that two PRE-IMAGES differed; and it never invoked
+  // an authoritative verifier while its message spoke of forged approvals. Now the fixture comes
+  // from `buildReceiptDraft` and the outcome is checked by `noa-receipt`'s own `verifyChain` — the
+  // thing that actually decides whether a receipt is good.
+  const kp = generateKeyPair("kid-r815", new Uint8Array(32).fill(15));
+  const keyring = { [kp.kid]: kp.publicKey };
+  const input: BuildInput = {
+    id: "rcpt_0",
+    ts: "2026-07-31T12:00:00.000Z",
+    scope: { chain: "chain-r815" },
+    agent: { id: "agent-1", model: null, principal: "HUMAN" },
+    action: {
+      id: "act-1",
+      canonical: "finance.wire.transfer",
+      riskClass: "CRITICAL",
+      paramsHash: "sha256:" + "a".repeat(64),
+      reversible: false,
+      rollbackRef: null,
+    },
+    governance: { mode: "approvals_on", verdict: "ALLOWED", sandboxed: false, approval: null },
+  };
+
+  // 1. THE CONTROL, and it is the strong kind: a real receipt from this package is accepted by the
+  //    ROOT kernel. If this ever fails, every refusal assertion below is about a broken harness.
+  const honest = buildReceipt(input, null, { kid: kp.kid, privateKey: kp.privateKey });
+  const v = verifyChain(bytes([honest]), { keyring: bytes(keyring) });
+  assert.equal(v.status, "VALID", `an honest receipt did not verify at the root: ${v.reason}`);
+
+  // 2. Now the hostile document. `governance` carries an own `__proto__` the way untrusted input
+  //    actually delivers one, and the producer must refuse to sign it rather than emit a receipt
+  //    the root parser will reject as MALFORMED.
+  const draft = buildReceiptDraft(input, null, kp.kid);
   const hostileGovernance = JSON.parse(
     '{"mode":"approvals_on","verdict":"ALLOWED","sandboxed":false,"approval":null,' +
     '"__proto__":{"approval":{"by":"HUMAN:cfo-victim","at":"2026-07-31T00:00:00Z"}}}',
   ) as Record<string, unknown>;
-  (core as unknown as Record<string, unknown>)["governance"] = hostileGovernance;
+  assert.ok(own(hostileGovernance, "__proto__"), "the fixture lost its own `__proto__` before the test started");
+  (draft as unknown as Record<string, unknown>)["governance"] = hostileGovernance;
 
-  assert.ok(
-    own(core.governance as unknown as object, "__proto__"),
-    "the fixture lost its own `__proto__` before the test even started",
+  assert.throws(
+    () => signReceipt(draft, { kid: kp.kid, privateKey: kp.privateKey }),
+    /forbidden key "__proto__" at \$\.governance/,
+    "signReceipt produced a signature over a document carrying a key the authoritative verifier " +
+    "refuses outright — a signed receipt that can never verify",
   );
 
-  const signedPreImage = receiptHashInput(core); // the bytes the Ed25519 signature will cover
-  const kp = generateKeyPair("kid-r815", new Uint8Array(32).fill(15));
-  const signed = signReceipt(core, { kid: "kid-r815", privateKey: kp.privateKey });
-  const returnedPreImage = receiptHashInput(signed);
-
-  assert.equal(
-    returnedPreImage, signedPreImage,
-    "THE SIGNATURE COVERS BYTES THE RETURNED RECEIPT DOES NOT CONTAIN. `receiptHashInput` builds " +
-    "onto a null-prototype object and therefore keeps the own `__proto__`; the deep copy that " +
-    "produced the returned receipt lost it to the inherited setter. One Ed25519 signature, two " +
-    "documents — the exact forgery shape this package exists to prevent",
-  );
-
-  const g = signed.governance as unknown as Record<string, unknown>;
-  assert.ok(own(g, "__proto__"), "the returned receipt lost the `__proto__` key that was signed");
-  assert.equal(
-    Object.getPrototypeOf(g), Object.prototype,
-    "the returned receipt's `governance` is re-parented onto attacker data",
-  );
-  assert.equal(
-    g["approval"], null,
-    "`governance.approval` reads back as an injected human approval that is not an own property — " +
-    "a consumer branching on it authorises on evidence no auditor can find in the signed bytes",
-  );
+  // 3. AND the reason it must be refused, stated as a measurement rather than an assertion: a
+  //    document carrying that key is MALFORMED at the root. This is what makes the refusal correct
+  //    rather than merely strict.
+  const smuggled = JSON.parse(JSON.stringify(honest)) as Record<string, unknown>;
+  // `defineProperty`, NOT `smuggled.governance["__proto__"] = …`.
+  // I wrote the assignment form first and this test failed with `actual: 'VALID'` — because the
+  // assignment invoked the very setter this whole file is about, re-parented the object, and left
+  // the DOCUMENT UNCHANGED. So the root correctly accepted an untouched receipt and the test read
+  // it as "the root accepts forbidden keys". Kept as a comment because it is the sharpest possible
+  // demonstration of the defect: the trap caught the person writing the test for the trap.
+  Object.defineProperty(smuggled["governance"] as object, "__proto__", {
+    value: { approval: { by: "HUMAN:cfo-victim" } },
+    writable: true, enumerable: true, configurable: true,
+  });
+  assert.ok(own(smuggled["governance"] as object, "__proto__"), "the smuggled fixture has no own `__proto__` — it would measure nothing");
+  const vBad = verifyChain(bytes([smuggled]), { keyring: bytes(keyring) });
+  assert.notEqual(vBad.status, "VALID", "the root accepted a document carrying a forbidden key — the premise of the refusal is wrong");
+  assert.match(String(vBad.reason), /forbidden object key|__proto__|hash mismatch|invalid signature/,
+    `the root rejected it for an unexpected reason: ${vBad.reason}`);
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -453,6 +475,20 @@ test("R8-15b ANTI-VACUITY: ordinary arrays still copy faithfully with no poison 
   // would satisfy every assertion above while re-opening the sparse-array and accessor classes.
   const sparse = [1, , 3] as unknown[];                              // eslint-disable-line no-sparse-arrays
   assert.throws(() => inertDeepCopy(sparse), /hole/, "a sparse array was no longer refused");
+
+  // R815-QA-17: a NAMED property on an array was SILENTLY DROPPED — the copy simply did not have
+  // it and nothing said so. `structuredClone` keeps it; JCS emits neither, so the wire bytes are
+  // unaffected and the honest severity is low. But silent reshaping on a signing path is what this
+  // function's docstring refuses to do, so it fails closed like every other unrepresentable input.
+  const named = [1] as unknown[];
+  (named as unknown as Record<string, unknown>)["foo"] = "kept-by-structuredClone";
+  assert.throws(() => inertDeepCopy(named), /named property "foo"/, "a named array property was dropped instead of refused");
+
+  // "4294967295" is one past the maximum array index, so it is a NAMED property, not an index —
+  // the boundary case a naive `Number(name) >= 0` check would wave through.
+  const nearMax = [1] as unknown[];
+  (nearMax as unknown as Record<string, unknown>)["4294967295"] = "named-not-index";
+  assert.throws(() => inertDeepCopy(nearMax), /named property "4294967295"/, "the 2^32-1 boundary name was treated as an index");
   const withAccessor: unknown[] = [];
   Object.defineProperty(withAccessor, 0, { get: () => "read-me", enumerable: true, configurable: true });
   assert.throws(() => inertDeepCopy(withAccessor), /accessor/, "an accessor element was no longer refused");

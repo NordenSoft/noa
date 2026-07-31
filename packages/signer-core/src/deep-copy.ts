@@ -34,6 +34,24 @@
  * Every intrinsic it uses is captured at module load, so reassigning `Object.getOwnPropertyNames`,
  * `Object.getOwnPropertyDescriptor`, `Array.isArray` or `Object.getPrototypeOf` afterwards cannot
  * reach the bindings below.
+ *
+ * ─── WHAT THE CAPTURE DOES NOT DO (R815-QA-18, 2026-07-31) ──────────────────────────────────────
+ *
+ * Module-load capture is a HARDENING MEASURE, not a security boundary, and the distinction is worth
+ * writing down because the paragraph above reads like the latter. It defends against POST-load
+ * mutation only. Code that runs BEFORE this module is evaluated — a hostile dependency earlier in
+ * the import graph — is captured INTO the binding and owns it permanently. MEASURED, in a fresh
+ * process:
+ *
+ *     Object.defineProperty = (target) => target;      // before the import
+ *     const { inertDeepCopy } = await import("./deep-copy.js");
+ *     inertDeepCopy({ a: 1 })                          // => {}   every property swallowed
+ *
+ * That is not a defect in this file and no rearrangement of it helps: whoever runs first wins. It
+ * is the same scope the root package's threat model already states, and it is repeated here so a
+ * reader of THIS file does not infer a guarantee the mechanism cannot give. A production trust
+ * decision needs process or native isolation; what this file buys is that an attacker must arrive
+ * EARLY rather than at any later moment of their choosing.
  */
 
 const objectGetOwnPropertyNames = Object.getOwnPropertyNames;
@@ -114,6 +132,30 @@ function copyValue(value: unknown, path: string, depth: number): unknown {
         enumerable: true,
         configurable: true,
       });
+    }
+    // ── R815-QA-17 (2026-07-31): A NAMED PROPERTY ON AN ARRAY IS REFUSED, NOT DROPPED ───────────
+    // The index walk above copies indices only, so `arr.foo = "x"` was SILENTLY DISCARDED — the
+    // copy simply did not have it. MEASURED: structuredClone keeps `.foo`; this function returned a
+    // copy without it and said nothing.
+    //
+    // The wire bytes are unaffected (JCS emits arrays as arrays and never serialises a named
+    // property), so this is NOT a signed/returned divergence — stated plainly because the honest
+    // severity is lower than the neighbouring findings and inflating it would be the mistake
+    // CORRECTIONS.md C-5 was written about. What it IS: silent reshaping on a signing path, which
+    // is precisely what this function's own docstring refuses to do. A JSON array has no named
+    // properties, so one arriving here is a caller bug worth failing on.
+    const arrayNames = objectGetOwnPropertyNames(src);
+    for (let k = 0; k < arrayNames.length; k++) {
+      const name = arrayNames[k] as string;
+      if (name === "length") continue;
+      // A canonical array index and within the length we walked. Anything else is a named property
+      // — including "4294967295", which is one past the maximum index and IS a named property.
+      const asIndex = Number(name);
+      if (Number.isInteger(asIndex) && asIndex >= 0 && asIndex < n && String(asIndex) === name) continue;
+      throw new DeepCopyError(
+        `named property "${name}" on the array at ${path} — a JSON array has none, and this copy ` +
+        `would silently drop it rather than sign it`,
+      );
     }
     return out;
   }
@@ -197,6 +239,31 @@ function copyValue(value: unknown, path: string, depth: number): unknown {
       throw new DeepCopyError(`accessor at ${path}.${key} — refusing to invoke it on a signing path`);
     }
     if (d.value === undefined) continue; // JSON has no `undefined`; JCS would drop it anyway
+    // ── R815-QA-12 (2026-07-31): WHAT THE VERIFIER REFUSES TO READ, THE PRODUCER REFUSES TO WRITE ──
+    // `src/safe-json.ts` rejects these three keys outright, so a receipt carrying one is MALFORMED
+    // at the authoritative verifier — MEASURED: "receipts: forbidden object key '__proto__'".
+    // Emitting one therefore means signing an artefact that can NEVER verify. Refusing here turns a
+    // silent "this will fail somewhere downstream" into an immediate, diagnosable failure at the
+    // producer, which is what every other refusal in this function already does.
+    //
+    // MY EARLIER ARGUMENT FOR NOT DOING THIS WAS WEAK, and is withdrawn rather than buried: I wrote
+    // that rejecting would "DIVERGE from structuredClone and break G2". But `structuredClone` parity
+    // was never this function's governing rule — it already refuses Date, Map, non-finite numbers,
+    // functions, symbols, cycles and accessors, all of which `structuredClone` accepts or handles.
+    // The rule is "JSON-shaped data on a signing path". And the premise was checkable: the G2
+    // golden-parity fixtures contain NONE of these three keys (grep -c => 0), so parity does not
+    // break in fact either.
+    //
+    // This does NOT replace the `defineProperty` below, it layers with it. A blacklist closes three
+    // SPELLINGS; defining every key closes the CLASS, including inherited setters under names nobody
+    // has invented yet. Two knockouts (r815-qa14-*) exist precisely because the class half is the
+    // one that is easy to lose.
+    if (key === "__proto__" || key === "prototype" || key === "constructor") {
+      throw new DeepCopyError(
+        `forbidden key "${key}" at ${path} — the strict parser refuses it, so a receipt carrying it ` +
+        `could never verify; refusing at the producer rather than signing an unverifiable document`,
+      );
+    }
     // `defineProperty` for EVERY key, never assignment. Assignment consults the prototype chain for
     // a setter; this does not, so no key — known or not yet invented — can reach one.
     objectDefineProperty(out, key, {
