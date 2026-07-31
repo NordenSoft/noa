@@ -30,6 +30,43 @@ export class JcsError extends Error {
   }
 }
 
+// ── #77-B/3 (2026-07-31): EVERY SLOT THIS FILE DISPATCHES THROUGH IS CAPTURED AT MODULE LOAD ───
+// The root package hardened its own `src/jcs.ts` this way in round 2 (`arraySort(objectKeys(obj))`).
+// signer-core is an INDEPENDENT COPY that never received it, and the file's own docstring says why
+// that matters: "a rule enforced in one of two producers is not an invariant, it is a coincidence."
+//
+// MEASURED against the pre-fix source, each with a live control and clean restoration:
+//   Array.prototype.sort -> empties      {a:1,b:2} and {x:"production.delete.all"} BOTH -> "{}"
+//   Array.prototype.sort -> identity     the SAME document in two key orders -> TWO canonical forms
+//   Object.keys          -> []           fields vanish from the commitment
+//   String.prototype.isWellFormed -> true  U+D800 and U+D801 both encode to 7b2273223a22efbfbd227d
+//                                          (2048 code points into ONE hash bucket — the exact
+//                                           forgery channel serializeString's comment describes)
+//
+// Dispatched through a captured `Reflect.apply` so the calls do not go back out through a live
+// `.call`/`.apply`. SCOPE (same bound as hash.ts and deep-copy.ts): capture defends against
+// POST-load mutation only; a pre-load poison is captured INTO these bindings.
+const objectKeys = Object.keys;
+const objectGetOwnPropertyNames = Object.getOwnPropertyNames;
+const arrayIsArray = Array.isArray;
+const arraySortRaw = Array.prototype.sort;
+const strIsWellFormed = String.prototype.isWellFormed;
+const strCodePointAt = String.prototype.codePointAt;
+const numToString = Number.prototype.toString;
+const strPadStart = String.prototype.padStart;
+const numberIsFinite = Number.isFinite;
+const numberIsInteger = Number.isInteger;
+const numberIsSafeInteger = Number.isSafeInteger;
+const objectIs = Object.is;
+const numberCtor = Number;
+const reflectApply = Reflect.apply;
+
+const sortedKeys = (o: object): string[] => {
+  const ks = objectKeys(o);
+  reflectApply(arraySortRaw, ks, []);
+  return ks;
+};
+
 /** Canonicalize a JSON-compatible value to its RFC 8785 byte-string form. */
 export function canonicalize(value: unknown): string {
   return serialize(value, 0);
@@ -49,17 +86,17 @@ function serialize(v: unknown, depth: number): string {
 
   if (t === "number") {
     const n = v as number;
-    if (!Number.isFinite(n)) throw new JcsError("non-finite number not allowed");
-    if (!Number.isInteger(n)) throw new JcsError("non-integer (float) not allowed in receipts");
-    if (!Number.isSafeInteger(n)) throw new JcsError("integer outside safe range not allowed");
-    if (Object.is(n, -0)) return "0";
-    return n.toString();
+    if (!numberIsFinite(n)) throw new JcsError("non-finite number not allowed");
+    if (!numberIsInteger(n)) throw new JcsError("non-integer (float) not allowed in receipts");
+    if (!numberIsSafeInteger(n)) throw new JcsError("integer outside safe range not allowed");
+    if (objectIs(n, -0)) return "0";
+    return reflectApply(numToString, n, []) as string;
   }
 
   if (t === "bigint") throw new JcsError("bigint not allowed");
   if (t === "string") return serializeString(v as string);
 
-  if (Array.isArray(v)) {
+  if (arrayIsArray(v)) {
     // ── #77-B/2 (2026-07-31): `canonicalize` IS A PUBLIC EXPORT AND MUST BE INJECTIVE ───────────
     // The index walk below emits indices only, so an array carrying a NAMED property canonicalized
     // to exactly the same bytes as one without it — `[1]` either way. Two distinct values, one
@@ -68,13 +105,13 @@ function serialize(v: unknown, depth: number): string {
     // one), but `canonicalize` is exported and a caller reaches it directly.
     // "4294967295" is one past the maximum index and is therefore a NAMED property, not an index —
     // the boundary a naive numeric test waves through.
-    const names = Object.getOwnPropertyNames(v);
+    const names = objectGetOwnPropertyNames(v);
     const len = (v as unknown[]).length;
     for (let k = 0; k < names.length; k++) {
       const name = names[k] as string;
       if (name === "length") continue;
-      const asIndex = Number(name);
-      if (Number.isInteger(asIndex) && asIndex >= 0 && asIndex < len && String(asIndex) === name) continue;
+      const asIndex = numberCtor(name);
+      if (numberIsInteger(asIndex) && asIndex >= 0 && asIndex < len && String(asIndex) === name) continue;
       throw new JcsError(`named property "${name}" on an array — a JSON array has none, and it would not be emitted`);
     }
     let out = "[";
@@ -88,10 +125,13 @@ function serialize(v: unknown, depth: number): string {
   if (t === "object") {
     const obj = v as Record<string, unknown>;
     // Sort by UTF-16 code units (RFC 8785). JS default sort on strings does exactly this.
-    const keys = Object.keys(obj).sort();
+    const keys = sortedKeys(obj);
     let out = "{";
     let first = true;
-    for (const k of keys) {
+    // An INDEX loop, not `for…of`: `for…of` dispatches through `%ArrayIteratorPrototype%.next`,
+    // another writable slot, and this loop decides which fields reach the commitment.
+    for (let ki = 0; ki < keys.length; ki++) {
+      const k = keys[ki] as string;
       const val = obj[k];
       if (val === undefined) throw new JcsError(`undefined value at key "${k}" not allowed`);
       if (!first) out += ",";
@@ -111,10 +151,18 @@ function serializeString(s: string): string {
   // share a hash with the original). RFC 8785 / I-JSON require well-formed output, and a Rust
   // producer cannot even represent a lone surrogate, so rejecting here also preserves
   // cross-language conformance.
-  if (!s.isWellFormed()) throw new JcsError("unpaired surrogate in string not allowed");
+  if (!(reflectApply(strIsWellFormed, s, []) as boolean)) {
+    throw new JcsError("unpaired surrogate in string not allowed");
+  }
   let out = '"';
-  // Iterate by code point; emit non-control characters literally (UTF-8 preserved).
-  for (const ch of s) {
+  // Iterate by CODE POINT using a captured `codePointAt` and an explicit index, not `for…of`:
+  // the string iterator is a writable slot (`%StringIteratorPrototype%.next`), and this walk decides
+  // the exact bytes that get hashed. Unpaired surrogates were refused above, so every code point
+  // above 0xFFFF is a well-formed pair and advancing by 2 is correct.
+  for (let si = 0; si < s.length; ) {
+    const cp = reflectApply(strCodePointAt, s, [si]) as number;
+    const ch = cp > 0xffff ? String.fromCodePoint(cp) : (s[si] as string);
+    si += cp > 0xffff ? 2 : 1;
     switch (ch) {
       case '"':
         out += '\\"';
@@ -138,9 +186,9 @@ function serializeString(s: string): string {
         out += "\\t";
         break;
       default: {
-        const code = ch.codePointAt(0)!;
-        if (code < 0x20) {
-          out += "\\u" + code.toString(16).padStart(4, "0");
+        if (cp < 0x20) {
+          const hex = reflectApply(numToString, cp, [16]) as string;
+          out += "\\u" + (reflectApply(strPadStart, hex, [4, "0"]) as string);
         } else {
           out += ch;
         }

@@ -127,6 +127,91 @@ test("#77-B/2: canonicalize refuses a named array property instead of silently d
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────
+// B-3 — THE CANONICALIZER MUST NOT DISPATCH THROUGH WRITABLE GLOBALS.
+//
+// The root package fixed exactly this in `src/jcs.ts` (`arraySort(objectKeys(obj))` through captured
+// intrinsics). signer-core is an INDEPENDENT COPY that never received it. Every channel below was
+// MEASURED against the pre-fix source with a live control and clean restoration.
+// ────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** Install a poisoned prototype/global member, run `body`, restore the EXACT prior descriptor. */
+function withGlobalPoison<T>(target: object, key: string, value: unknown, body: () => T): T {
+  const prior = Object.getOwnPropertyDescriptor(target, key);
+  Object.defineProperty(target, key, { value, writable: true, configurable: true });
+  try {
+    return body();
+  } finally {
+    if (prior === undefined) delete (target as Record<string, unknown>)[key];
+    else Object.defineProperty(target, key, prior);
+  }
+}
+
+test("#77-B/3: a poisoned `Array.prototype.sort` cannot collapse distinct documents", () => {
+  const clean = canonicalize({ a: 1, b: 2 });
+  assert.equal(clean, '{"a":1,"b":2}', "the control output changed — the rest of this test is about something else");
+
+  // (a) sort that EMPTIES the key list. Measured pre-fix: {a:1,b:2} and {x:"production.delete.all"}
+  //     BOTH canonicalized to "{}" — two entirely different documents, one commitment.
+  const emptied = withGlobalPoison(Array.prototype, "sort", function (this: unknown[]) { this.length = 0; return this; },
+    () => [canonicalize({ a: 1, b: 2 }), canonicalize({ x: "production.delete.all" })] as const);
+  assert.notEqual(emptied[0], emptied[1],
+    "two entirely different documents produced the SAME canonical bytes while `Array.prototype.sort` was poisoned");
+  assert.equal(emptied[0], clean, "the canonical form changed under a poisoned sort");
+
+  // (b) sort as IDENTITY — the subtler half. The SAME document in two key orders produced TWO
+  //     different canonical forms, so a receipt's hash stops identifying the DOCUMENT and starts
+  //     identifying one serialization of it.
+  const unsorted = withGlobalPoison(Array.prototype, "sort", function (this: unknown[]) { return this; },
+    () => [canonicalize({ b: 1, a: 2 }), canonicalize({ a: 2, b: 1 })] as const);
+  assert.equal(unsorted[0], unsorted[1],
+    "the SAME document in two key orders produced two different canonical forms under a poisoned sort");
+  assert.equal(unsorted[0], '{"a":2,"b":1}', "key ordering became attacker-controlled");
+});
+
+test("#77-B/3: a poisoned `Object.keys` cannot erase fields from the commitment", () => {
+  const clean = canonicalize({ a: 1, b: 2 });
+  const poisoned = withGlobalPoison(Object, "keys", function () { return []; },
+    () => [canonicalize({ a: 1, b: 2 }), canonicalize({ secret: "x" })] as const);
+  assert.notEqual(poisoned[0], poisoned[1], "two different documents collapsed to one commitment with `Object.keys` poisoned");
+  assert.equal(poisoned[0], clean, "fields vanished from the canonical bytes");
+});
+
+test("#77-B/3: a poisoned `String.prototype.isWellFormed` cannot re-open the surrogate collision", () => {
+  // `jcs.ts`'s own comment states the stake: UTF-8 encoding maps EVERY lone surrogate to U+FFFD,
+  // collapsing 2048 distinct code points into ONE hash bucket. MEASURED pre-fix, in bytes:
+  //     U+D800 -> 7b2273223a22efbfbd227d
+  //     U+D801 -> 7b2273223a22efbfbd227d       identical
+  const LONE_A = "\uD800";
+  const LONE_B = "\uD801";
+  assert.notEqual(LONE_A, LONE_B, "the two fixtures are the same string — nothing to collide");
+
+  const enc = new TextEncoder();
+  const bytesOf = (v: unknown): string => Buffer.from(enc.encode(canonicalize(v))).toString("hex");
+
+  // CONTROL: unpoisoned, the canonicalizer refuses a lone surrogate outright.
+  assert.throws(() => canonicalize({ s: LONE_A }), /unpaired surrogate/, "the clean refusal is gone, and this test's premise with it");
+
+  const outcome = withGlobalPoison(String.prototype, "isWellFormed", function () { return true; }, () => {
+    try {
+      return { threw: false as const, a: bytesOf({ s: LONE_A }), b: bytesOf({ s: LONE_B }) };
+    } catch (e) {
+      return { threw: true as const, msg: (e as Error).message };
+    }
+  });
+
+  if (outcome.threw) {
+    assert.match(outcome.msg, /unpaired surrogate/,
+      `canonicalize refused under the poison, but not for the surrogate reason: ${outcome.msg}`);
+  } else {
+    assert.notEqual(outcome.a, outcome.b,
+      "two DIFFERENT lone surrogates produced IDENTICAL bytes — 2048 code points share one hash " +
+      "bucket, which is the forgery channel this check exists to close");
+  }
+  // the guarantee must RETURN, not merely be absent during the attack
+  assert.throws(() => canonicalize({ s: LONE_A }), /unpaired surrogate/, "the refusal did not return after the poison was removed");
+});
+
+// ────────────────────────────────────────────────────────────────────────────────────────────────
 // ANTI-VACUITY — distinct honest inputs must still produce DISTINCT commitments, and equivalent
 // ones must still produce equal commitments. Without these, "refuse everything" would pass above.
 // ────────────────────────────────────────────────────────────────────────────────────────────────
