@@ -157,6 +157,23 @@ NOA does not perform identity proofing and does not claim to.
 Expiry (`mustBeAfter`) and freshness (`mustBeWithin`) are enforced only when supplied. A verifier that
 supplies no freshness policy gets an authenticity answer, not a currency answer — see NC-1.2.
 
+### NC-3.4 — Nothing proves the approval display was ever RENDERED to a person
+MEASURED (2026-07-31): a valid gate decision can be produced without the encrypted display ever being
+opened, and there is **no attestation field anywhere** that the display was decrypted or shown —
+`grep` for a rendered/opened/display-attestation field across `packages/gate/src` and
+`packages/approval-artifacts/src` returns **0**. The gate receives a signed decision; it has no
+mechanism by which it could learn whether a screen was ever drawn.
+
+So the evidence proves **a holder of the approver key authorized this `paramsHash` at this time** —
+NC-3.1's exact wording — and does NOT prove that the sealed display reached a human's eyes. NC-3.1
+disclaims *comprehension*; this entry disclaims *rendering*, which is a weaker and earlier step, and
+was not previously written down. A device that signs without opening produces evidence
+indistinguishable from a device that opened, read and approved.
+
+This is a property of the design, not a defect with a code fix: an attestation that the pixels were
+drawn would itself be a self-report by the device (see NC-2.3 — a self-report is recorded, never
+believed).
+
 ---
 
 ## 4. Federation, anchors and completeness
@@ -175,6 +192,22 @@ that change is **not yet implemented**. Until it is, supply a `FreshnessPolicy` 
 ### NC-4.3 — There is no transparency log in this repository
 The SCITT draft and the RFC 3161 sidecar exist; neither is deployed. Nothing here contacts a witness
 or a network.
+
+### NC-4.4 — An evidence bundle does not let a third party re-check the display binding (F2)
+MEASURED (2026-07-31): `EvidenceBundle` (`packages/evidence/src/types.ts:79-99`) carries the
+`holdEnvelope` — and therefore the gate-signed `displayCiphertextHash` — but it does **not** carry
+the encrypted display itself. A holder of a bundle has the F2 hash and not the object it commits to,
+so F2 cannot be recomputed from a bundle alone.
+
+The verifier does not pretend otherwise: `packages/evidence/src/steps.ts:424-425` records the skip in
+source — *"F2 display-hash check needs the relay blob, which the bundle does not carry — documented
+skip."* No verdict, including `VALID_FULL_CHAIN`, asserts that F2 was checked.
+
+What was missing until now is this register entry: the skip was documented where an implementer
+reads and not where a customer or auditor reads. **`VALID_FULL_CHAIN` therefore means the chain,
+signatures, envelope bindings and checkpoint verified — it does NOT mean "the display the approver
+saw is the one the gate sealed".** Re-checking F2 independently requires the encrypted display to be
+supplied alongside the bundle, out of band.
 
 ---
 
