@@ -238,6 +238,26 @@ function copyValue(value: unknown, path: string, depth: number): unknown {
     if (d.get !== undefined || d.set !== undefined) {
       throw new DeepCopyError(`accessor at ${path}.${key} — refusing to invoke it on a signing path`);
     }
+    // ── #77-B/1 (2026-07-31): TWO WALKS DISAGREED ABOUT WHAT "THE DOCUMENT'S PROPERTIES" ARE ────
+    // `jcs.ts` walks `Object.keys` — own AND ENUMERABLE. This function walks `getOwnPropertyNames`
+    // — own, INCLUDING NON-ENUMERABLE — and defines everything it writes as `enumerable: true`.
+    // So an own non-enumerable property was INVISIBLE to the hash and VISIBLE (promoted) in the
+    // returned receipt. MEASURED end to end through the real producer and the ROOT verifier, with an
+    // honest receipt VALID in the same run:
+    //     signed   "governance":{"mode":"approvals_on","sandboxed":false,"verdict":"ALLOWED"}
+    //     returned "governance":{"approval":{"by":"HUMAN:cfo-victim",…},"mode":…}
+    //     root     TAMPERED (hash mismatch)
+    // Fails closed at the verifier; the harm is a producer signing one document and returning
+    // another, and any consumer that reads before verifying seeing an approval no signature covers.
+    //
+    // REFUSED rather than skipped. Skipping would match JCS and silently drop caller data on a
+    // SIGNING path, which is the reshaping this function's docstring exists to forbid.
+    if (d.enumerable !== true) {
+      throw new DeepCopyError(
+        `non-enumerable property "${key}" at ${path} — the hash walks enumerable own properties and ` +
+        `this copy walks all of them, so carrying it would sign one document and return another`,
+      );
+    }
     if (d.value === undefined) continue; // JSON has no `undefined`; JCS would drop it anyway
     // ── R815-QA-12 (2026-07-31): WHAT THE VERIFIER REFUSES TO READ, THE PRODUCER REFUSES TO WRITE ──
     // `src/safe-json.ts` rejects these three keys outright, so a receipt carrying one is MALFORMED

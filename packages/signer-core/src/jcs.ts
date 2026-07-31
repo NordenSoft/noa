@@ -60,10 +60,27 @@ function serialize(v: unknown, depth: number): string {
   if (t === "string") return serializeString(v as string);
 
   if (Array.isArray(v)) {
+    // ── #77-B/2 (2026-07-31): `canonicalize` IS A PUBLIC EXPORT AND MUST BE INJECTIVE ───────────
+    // The index walk below emits indices only, so an array carrying a NAMED property canonicalized
+    // to exactly the same bytes as one without it — `[1]` either way. Two distinct values, one
+    // commitment, in the function whose entire job is to be injective. Not reachable through the
+    // producer (deep-copy refuses named array properties) nor from the wire (JSON cannot express
+    // one), but `canonicalize` is exported and a caller reaches it directly.
+    // "4294967295" is one past the maximum index and is therefore a NAMED property, not an index —
+    // the boundary a naive numeric test waves through.
+    const names = Object.getOwnPropertyNames(v);
+    const len = (v as unknown[]).length;
+    for (let k = 0; k < names.length; k++) {
+      const name = names[k] as string;
+      if (name === "length") continue;
+      const asIndex = Number(name);
+      if (Number.isInteger(asIndex) && asIndex >= 0 && asIndex < len && String(asIndex) === name) continue;
+      throw new JcsError(`named property "${name}" on an array — a JSON array has none, and it would not be emitted`);
+    }
     let out = "[";
-    for (let i = 0; i < v.length; i++) {
+    for (let i = 0; i < len; i++) {
       if (i > 0) out += ",";
-      out += serialize(v[i], depth + 1);
+      out += serialize((v as unknown[])[i], depth + 1);
     }
     return out + "]";
   }
