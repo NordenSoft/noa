@@ -36,6 +36,39 @@ parity-enforced, fail-closed or covering "all resolvers".
 **Still correctly fixed:** P0-1 (ROOT `validFrom`, `651cbd3`), P0-5 (live gate keyring, `dd2997c`),
 P0-6 (strict parser core, `dd2997c`). P0-2/3/4 closed earlier.
 
+### MICRO-BATCH B2 — measured evidence (2026-07-31, Fable 5 lead)
+
+P0-15 (+15b): the proof-liveness instrument moves from static analysis to the RUNNER. Full record:
+**`noa-trust-plan.md` → MICRO-BATCH B2**. None of the five reported spellings was individually
+patched — the instrument changed, not the matcher.
+
+```
+reproduction       all four runtime bypasses re-derived against my own resolver first:
+                   indirect opts / computed ["skip"] / aliased d.skip / if(false)
+                   -> resolver "live" on every one; runner: skipped·skipped·absent·absent
+                   (also: a FAILING test resolved "live" statically — runner now requires ✔)
+the fix            proof-resolve.mjs runner tier: node --test per proof FILE, compiled pkgs
+                   BUILT first; verdict from ✔ / ✖ / # SKIP / absent via suiteEmittedTestMarkers
+                   (KURAL 5 — the mechanism the coordinator named, extended not duplicated)
+measured RED       indirect opts  -> [PROOF_UNRESOLVED] "RUNNER reports SKIPPED"
+                   if(false)      -> [PROOF_UNRESOLVED] "NEVER APPEARED in a real run"
+selftest           34 cases (26 AST + 8 runner incl. the 2 ran/not-ran controls)
+knockout           p15-proof-liveness-from-runner DETECTOR_TRIGGERED — spelled as the
+                   indirect-options bypass the AST provably calls live, so the trigger is the
+                   runner tier's alone; restoration 791f97ad… byte-exact
+                   + all 3 pre-existing gate-kind knockouts re-run: DETECTOR_TRIGGERED each
+cost (measured)    runner tier 2.4s for 4 files / 8 proofs per gate run — my draft note said
+                   "tens of seconds" from memory; corrected to the measurement before shipping
+corrections        P0-15b sentence withdrawn verbatim in place (proof-resolve.mjs header)
+                   both "1040 tests GREEN" comments -> "no new failures; 1038 passed, 2 known-red"
+suites (fresh)     gate 216 = 214/2 skipped 0 · approval-artifacts 170/0 · evidence 128/0 ·
+                   signer-core 75/0 · relay 133/0 · e2e-demo 12/0 skipped 0 · root 518/0 ·
+                   typecheck:all exit 0 (12) · lint:resolver-parity exit 0
+excluded           empty-body proofs (pass and certify) — liveness ≠ meaningfulness; closure is
+                   per-proof knockout coverage, P1/F-4, deliberately not built here
+NOT started        P0-9/10/11 (batch C) · P0-14 (batch D); batch-C spec not opened
+```
+
 ### MICRO-BATCH B — measured evidence (2026-07-31, Fable 5 lead)
 
 P0-12 + P0-13, both "a control micro-batch A added does not hold". Full record:

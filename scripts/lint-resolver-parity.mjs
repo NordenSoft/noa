@@ -42,7 +42,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanTrustKeySurface, VOCABULARY } from "./lib/resolver-scan.mjs";
-import { resolveProof } from "./lib/proof-resolve.mjs";
+import { resolveProof, runProofFiles, runnerStatusFor } from "./lib/proof-resolve.mjs";
 import * as verdict from "./lib/verdict.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -125,36 +125,76 @@ for (const rec of invSites) {
   }
 }
 
-// ── proofs must RESOLVE: file exists, marker present, live (uncommented, unskipped) ─────────────
+// ── proofs must RESOLVE: tier 1 diagnoses statically, tier 2 (the runner) decides ───────────────
 const proofs = inventory.proofs ?? {};
+const runtimeQueue = [];
 const referencedProofs = new Set();
 for (const rec of [...invSites, ...(inventory.anchoredResolvers ?? [])]) for (const p of rec.proofs ?? []) referencedProofs.add(p);
 for (const p of referencedProofs) if (!proofs[p]) add("PROOF_UNRESOLVED", p, "referenced by the inventory but not registered in `proofs`");
 for (const [id, p] of Object.entries(proofs)) {
   const abs = path.join(ROOT, p.file);
   if (!fs.existsSync(abs)) { add("PROOF_UNRESOLVED", id, `proof file ${p.file} does not exist — the claimed control is not there (the P0-7 failure, mechanically)`); continue; }
-  // ── P0-13 (2026-07-31): AST, NOT A LINE SCAN ───────────────────────────────────────────────────
-  // This read the marker's LINE and rejected `.skip`/`.todo` only in that same-line spelling.
-  // MEASURED: the object form `test("…", { skip: true }, () => {})` gave gate `skipped 3` and this
-  // gate exit 0, still calling all three proofs live — the control built to close P0-7, bypassed by
-  // a different spelling of the same intent. Resolution is now structural (`lib/proof-resolve.mjs`):
-  // the marker must be the NAME of a real `test`/`it` call that is not disabled by a modifier, an
-  // options object, or an enclosing suite. A marker inside a comment is not a node at all.
+  // ── TIER 1 — AST DIAGNOSIS (P0-13): fast, precise, ADVISORY ────────────────────────────────────
+  // Statically-visible disables fail here cheaply, before any build is spent, with the exact
+  // spelling named. This tier was bypassed by four further spellings (P0-15) and is therefore no
+  // longer the authority — a "live" verdict here proves nothing until the runner tier confirms it.
   const res = resolveProof(abs, p.marker);
-  if (res.status === "live") continue;
   if (res.status === "absent") {
     add("PROOF_UNRESOLVED", id, `${p.file}: ${res.detail}`);
-  } else if (res.status === "disabled") {
+    continue;
+  }
+  if (res.status === "disabled") {
     add("PROOF_UNRESOLVED", id,
       `${p.file}: the proof exists but is DISABLED — ${res.detail}. A control that does not run is ` +
       `not a control (the P0-7 failure, mechanically).`);
-  } else {
-    // UNDECIDABLE is a finding, never a pass: "I could not tell" and "it runs" must not be the
-    // same value — that equivalence is this repository's most-repeated defect shape.
+    continue;
+  }
+  if (res.status === "undecidable") {
+    // Still reported (the author should make enablement literal), but no longer the last word —
+    // the runner below will ALSO measure it, so an undecidable-but-actually-running proof yields
+    // exactly one finding with a precise instruction instead of a silent pass.
     add("PROOF_UNRESOLVED", id,
       `${p.file}: whether this proof runs is UNDECIDABLE by static parse — ${res.detail}. Make the ` +
       `enablement literal, or the gate cannot certify the control.`);
+    continue;
   }
+  runtimeQueue.push({ id, file: p.file, marker: p.marker });
+}
+
+// ── TIER 2 — THE RUNNER (P0-15): GROUND TRUTH ────────────────────────────────────────────────────
+// Three consecutive rounds bypassed the static tier (line scan → {skip:true}; AST → indirect
+// options, computed ["skip"], aliased describe.skip, dead if(false) — all MEASURED resolving live
+// while a real run skipped or never executed them). Static analysis is a model of the runner; the
+// runner is the thing itself. Every proof that survives tier 1 must now appear as a PASSING test
+// (`✔`) in a real `node --test` execution of its file: skipped, failing, absent and could-not-run
+// are four distinct refusals, and none of them certifies. Compiled packages are built first, so a
+// stale `dist/` cannot answer for edited source. Cost accepted and stated in lib/proof-resolve.mjs.
+{
+  const files = [...new Set(runtimeQueue.map((q) => q.file))];
+  const runs = runProofFiles(ROOT, files);
+  for (const { id, file, marker } of runtimeQueue) {
+    const run = runs.get(file);
+    if (!run) { add("PROOF_UNRESOLVED", id, `${file}: the runner tier produced no result for this file — cannot certify`); continue; }
+    if (!run.ok) { add("PROOF_UNRESOLVED", id, `${file}: could not execute the proof file — ${run.error}. "Could not certify" is a refusal, not a pass.`); continue; }
+    const status = runnerStatusFor(run.output, marker);
+    if (status === "passing") continue;
+    if (status === "skipped") {
+      add("PROOF_UNRESOLVED", id,
+        `${file}: the RUNNER reports this proof as SKIPPED (# SKIP/# TODO in a real run). However ` +
+        `the skip is spelled, the runner saw it — a skipped control certifies nothing (P0-15).`);
+    } else if (status === "failing") {
+      add("PROOF_UNRESOLVED", id,
+        `${file}: the proof RAN and FAILED (✖) in a real run — a red test certifies nothing, and ` +
+        `softening "failed" into anything else is the defect class this gate exists for.`);
+    } else {
+      add("PROOF_UNRESOLVED", id,
+        `${file}: the proof NEVER APPEARED in a real run — a dead branch, a skipped enclosing ` +
+        `suite, or an aliased disable. The runner is ground truth and it never saw this test (P0-15).`);
+    }
+  }
+  verdict.emit({ gate: "RES", subject: "proof files executed at the runner", examined: files.length, ...(files.length === 0 && runtimeQueue.length === 0 ? { emptyReason: "every registered proof already failed tier 1" } : {}) });
+  const totalMs = [...runs.values()].reduce((s, r) => s + (r.ms ?? 0), 0);
+  notices.push(`runner tier: ${files.length} file(s) executed in ${(totalMs / 1000).toFixed(1)}s (ground truth for ${runtimeQueue.length} proof(s))`);
 }
 
 // ── anchored (non-AST-detectable) resolvers: the anchor must match exactly once ──────────────────

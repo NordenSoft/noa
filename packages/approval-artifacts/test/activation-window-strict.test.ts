@@ -125,7 +125,10 @@ test("P0-6: a canonical PAST activation still verifies, in both accepted spellin
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 // P0-12 — ROOT IS NOT EXEMPT. Every activation test above probes the DECISION vector, whose signer
 // is an APPROVER. MEASURED (2026-07-31): exempting ROOT from the activation branch
-// (`entry.validFrom != null && entry.type !== "ROOT"`) left 1040 tests across five suites GREEN —
+// (`entry.validFrom != null && entry.type !== "ROOT"`) introduced NO NEW FAILURE across five suites
+// (1040 tests: 1038 passed, the 2 known-red owner-deferred ADR-0006 gate tests unchanged) —
+// [corrected 2026-07-31: this line first said "left 1040 tests GREEN", stating the total as a pass
+// count and denying two real failures — the same claim-precision defect this file polices] —
 // P0-1 proved a ROOT's `validFrom` is CARRIED, and nothing proved it is ENFORCED. These tests probe
 // the artifact a ROOT key actually signs (the key-delegation, signerType ROOT), so that exact
 // mutation turns them RED while the APPROVER tests above stay green — the failure names the

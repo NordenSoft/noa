@@ -162,8 +162,10 @@ test("P0-1: the ROOT path and the MANIFEST path carry activation the SAME way", 
 //
 // Everything above proves the ROOT `validFrom` SURVIVES the parse. Nothing above proves any verifier
 // ACTS on it. MEASURED 2026-07-31: exempting ROOT from the activation branch in
-// `approval-artifacts/src/verify.ts:271` (`&& entry.type !== "ROOT"`) left FIVE suites — 1040 tests
-// — completely green. A field can be carried perfectly into a check that never runs.
+// `approval-artifacts/src/verify.ts:271` (`&& entry.type !== "ROOT"`) introduced NO NEW FAILURE
+// across FIVE suites — 1040 tests: 1038 passed, the 2 known-red ADR-0006 gate tests unchanged
+// [corrected 2026-07-31: first written as "1040 tests — completely green", a total stated as a
+// pass count]. A field can be carried perfectly into a check that never runs.
 //
 // These tests drive the REAL §13 consumer (`verifyEvidence`) over a REAL shipped bundle, so the
 // property under test is the end-to-end verdict, not a field value. They are the twin of

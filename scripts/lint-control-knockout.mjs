@@ -680,10 +680,25 @@ const KNOCKOUTS = [
   },
   {
     id: "p13-proof-resolution-is-structural",
-    control: "P0-13 — proof resolution reads the AST, so a control cannot be disabled by a spelling the matcher does not know. Defanging the options-object rule makes `test(name, { skip: true }, fn)` certify as live again — the exact measured bypass (gate: skipped 3, lint exit 0).",
+    control: "P0-13 — proof resolution reads the AST, so a control cannot be disabled by a spelling the matcher does not know. Defanging the options-object rule makes `test(name, { skip: true }, fn)` certify as live again — the exact measured bypass (gate: skipped 3, lint exit 0). Since P0-15 this AST tier is DIAGNOSIS; the selftest ahead of the gate is what turns this mutation red.",
     file: "scripts/lib/proof-resolve.mjs",
     find: 'if (v.kind === ts.SyntaxKind.TrueKeyword || ts.isStringLiteral(v)) return "disabled";',
     replace: 'if (false) return "disabled";',
+    kind: "gate",
+    suite: [".", "npm", ["run", "lint:resolver-parity"]],
+  },
+  // ── P0-15 (2026-07-31, micro-batch B2): LIVENESS COMES FROM THE RUNNER, NOT FROM A MODEL OF IT ─
+  // The proof-liveness control was bypassed in three consecutive rounds (line scan → {skip:true};
+  // AST → indirect options, computed ["skip"], aliased describe.skip, dead if(false)). This entry
+  // uses the FIRST of the four runtime-only spellings — an options object behind a variable, which
+  // the AST tier provably resolves "live" — so it goes red only if the RUNNER tier catches it.
+  // A knockout using a statically-visible spelling would prove the wrong tier.
+  {
+    id: "p15-proof-liveness-from-runner",
+    control: "P0-15 — a registered proof must appear as a PASSING test in a REAL `node --test` run; a skip spelled so that no static parse can see it (indirect options object) is still refused, because the runner is ground truth and the parser is only a model of it.",
+    file: "packages/e2e-demo/test/keyring-resolver-parity.test.ts",
+    find: "test('[PROOF:RES-PAR-E2E-TENANTROOT] the external tenant root map CARRIES the declared activation', async () => {",
+    replace: "const __p15 = { skip: true };\ntest('[PROOF:RES-PAR-E2E-TENANTROOT] the external tenant root map CARRIES the declared activation', __p15, async () => {",
     kind: "gate",
     suite: [".", "npm", ["run", "lint:resolver-parity"]],
   },
