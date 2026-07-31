@@ -1,78 +1,50 @@
 # LIVE STATUS — pre-launch security work
 
-> Watch with `watch -n 5 cat ~/noa-receipt/PROGRESS.md`.
->
-> **How to read this file.** I do not run continuously. This file is written at the end of each work
-> block; its timestamp is the last moment work happened, not "now".
+> **How to read this file.** Written at the end of each work block; its timestamp is the last moment
+> work happened, not "now".
 
-**Last updated:** 2026-07-31 · branch `impl/adr-0005-trusted-input-provenance` · HEAD `7e5c579`
-· 54 commits ahead of baseline `b163e7d` · working tree **clean** · **nothing pushed** (no upstream on
-this branch) · tree `cd16e5f2f47ab26089b14d5c31592e82ca995cc4`
+**Last updated:** 2026-07-31 · branch `impl/adr-0005-trusted-input-provenance` · HEAD `56339ab`
+· working tree **clean** · **nothing pushed** · convergence **0/2**
 
-### DEFECT B — CANONICALIZATION COLLAPSE · VERDICT: DEFECT_B_COLLISIONS_CLOSED
+## ⚠ LEAD HANDOVER — 2026-07-31
 
-Closed at `c07a63b` + `c4102c9`. Three root causes, all found by BUILDING the 30-row collision
-matrix rather than by reading the code.
+**The task passes to Fable 5 by owner decision.** Fable holds approval and decision authority and
+does not ask the owner. Reason, stated plainly rather than softened: the previous lead (Opus 5)
+self-approved four consecutive batches, and the mandatory independent review found something
+material every time — usually a CLAIM the lead made rather than a bug the lead wrote. The worst was
+a source comment asserting a resolver-parity test that **does not exist**.
 
-**The tested domain — the verdict applies to this and nothing wider.** 30 candidate pairs across
-absence/emptiness, scalar representation, shape, Unicode, object/array exotica, receipt-schema
-specifics and meaning-bearing values; exercised through three entry points, labelled per row:
-`P` the REAL producer (`buildReceipt`), `V` the REAL root verifier (`verifyChain`), `J` the
-canonicalizer alone. Plus four live-global poison channels. NOT collision-free outside this domain.
+**BATCH 4 IS NOT CLOSED.** The closure claim is WITHDRAWN. Do not describe it as complete, verified,
+parity-enforced, fail-closed or covering "all resolvers".
 
-```
-DISTINCT_AND_DISTINCT_COMMITMENT  20      INTENTIONAL_EQUIVALENCE  2
-REJECTED                           5      COLLISION_CONFIRMED      3  -> all closed
-```
+### P0 = 5 REPRODUCED + 1 UNTESTED. P1 and P2 are PAUSED.
 
-**The three collisions, and what each cost:**
+| ID | finding | verified by |
+|---|---|---|
+| **P0-7** | source claims a resolver-parity test exists; **it does not** (`grep -rn parity packages/gate/test` = 0; deleting all four new `validFrom` properties leaves all 7 new tests GREEN) | **lead-verified** |
+| **P0-8** | a **seventh** resolver: `e2e-demo/src/pairing.ts:277-281` drops `validFrom` from the live keyring while the manifest in the same file carries it | **lead-verified** |
+| **P0-9** | the strict timestamp verifier depends on mutable `Date.prototype.toISOString` (`verify.ts:135`); overriding it flipped the `2026-02-30` vector from refused to `ok:true` | codex-measured, **[UNVERIFIED by lead]** |
+| **P0-10** | `mustBeWithin` NaN-checks the artifact time but **not** `min`/`max` (`verify.ts:351-356`) | codex-measured, **[UNVERIFIED by lead]** |
+| **P0-11** | compatibility regression the lead introduced: `+02:00` now INVALID where the identical instant as `Z` is VALID_FULL_CHAIN (`evidence/cli.ts:54` documents RFC3339) | codex-measured, **[UNVERIFIED by lead]** |
+| **UNTESTED** | 1 further codex finding, not yet adjudicated — must not disappear from the list | — |
 
-| # | collision | reachable via | outcome |
-|---|---|---|---|
-| B/1 | own NON-ENUMERABLE property: `jcs.ts` walks `Object.keys` (own+**enumerable**), `deep-copy.ts` walks `getOwnPropertyNames` (own, **incl. non-enumerable**) and promotes to enumerable | real producer | signed `governance` had no approval; returned `governance` carried `HUMAN:cfo-victim`; root verdict **TAMPERED** |
-| B/2 | array with a NAMED property canonicalized identically to one without — `[1]` either way | `canonicalize` public export only (producer and wire both refuse) | two distinct values, one commitment, in the function whose job is injectivity |
-| B/3 | four live-global channels in `jcs.ts` | any same-realm code | see below |
+**Still correctly fixed:** P0-1 (ROOT `validFrom`, `651cbd3`), P0-5 (live gate keyring, `dd2997c`),
+P0-6 (strict parser core, `dd2997c`). P0-2/3/4 closed earlier.
 
-B/3's four channels, each measured with a live control:
-```
-Array.prototype.sort -> empties    {a:1,b:2} and {x:"production.delete.all"} BOTH -> "{}"
-Array.prototype.sort -> identity   SAME document, two key orders -> TWO canonical forms
-Object.keys -> []                  fields vanish from the commitment
-String.prototype.isWellFormed->true  U+D800 -> 7b2273223a22efbfbd227d
-                                     U+D801 -> 7b2273223a22efbfbd227d   IDENTICAL
-```
-The last is the channel `serializeString`'s own comment describes — 2048 code points into one hash
-bucket — and the check closing it was reading a writable global.
+### Standing process rule — the one thing that worked
 
-**Two INTENTIONAL equivalences, now documented AND tested** (owner's rule): property ORDER (JCS
-sorts by UTF-16 code unit) and `-0` vs `0` (RFC 8785 serialises both as `"0"`; the test asserts the
-runtime still distinguishes them, or the equivalence has gone vacuous).
+Every P0/P1 micro-batch: RED evidence first → freeze the exact diff → **targeted frozen-diff codex
+review of the changed boundary only** → the lead independently re-derives every material finding →
+only then "closed". **The lead may not self-approve its own batch.** Measured cost: **9-10 minutes**
+per review. Measured value: it caught two P0s in batch 3's output and five in batch 4's.
 
-**Three matrix rows were MY error, not the code's**, recorded because a matrix that miscounts
-pessimistically is as wrong as one that miscounts optimistically:
-- `1` vs `1.0` — not a collision. JS has ONE number type; `Object.is(1.0, 1)` is `true`.
-- inherited vs own property — not a collision. `JSON.stringify` agrees that inherited properties are
-  not part of the document. Chasing this false positive is what surfaced B/1 next door.
+**No claim — closed, verified, parity enforced, fully covered, fail closed, all resolvers — may
+appear without a stable proof ID resolving to a real test, gate or knockout.**
 
-**Wire-semantics gate — MEASURED, not asserted.** `gen:vectors` → **0** conformance files changed ·
-G2 golden parity 5/5 byte-identical to the root builder · root 518/518 including the RFC 8785,
-locale-free ordering and UTF-16 edge corpora. No wire bytes, paramsHash, action commitment, chain
-hash, signature pre-image, stored-receipt compatibility or cross-language parity changed. **No owner
-decision triggered.**
+Authority for detail: `RELEASE-BLOCKERS.md`. Micro-batches A (P0-7+P0-8), B (P0-9+P0-10),
+C (P0-11) are specified there and in the owner's 2026-07-31 handover mandate.
 
-**Cross-language (Phase 7) — PASS, but WEAKLY independent, and it must be read that way.**
-```
-impl-py PASS · impl-go 47/47 · impl-rust 38/38 curated + 40/40 sweep · impl-csharp 40/40
-```
-All three of go/rust/csharp compare against **impl-py**, not against the TS reference and not against
-each other — a STAR topology, not a mesh. All five implementations share one author and one spec.
-And the behaviours changed here have **no cross-language analogue at all**: mutable prototypes,
-own non-enumerable properties and named array properties do not exist in Rust/Go/C#. For Defect B's
-specific collisions, cross-language consensus is **untested and largely untestable** — neither
-passing nor failing. Reported rather than counted as corroboration.
-
-**Residual, explicitly open:** the capture defence is POST-load only. A pre-load poison is captured
-INTO these bindings. Same bound as `hash.ts` and `deep-copy.ts` — see CORRECTIONS.md C-6.
+---
 
 ### PHASE 1 KNOCKOUT REGISTRY — measured 2026-07-31 at `7e5c579`, 43 entries
 

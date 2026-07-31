@@ -1,6 +1,6 @@
 # RELEASE-BLOCKERS — the one authoritative list
 
-**Mode:** BOUNDED DELIVERY. ⚠ **P0 = 5.** Batch 4 closed P0-5/P0-6 and its mandatory frozen-diff review opened five more — including a FALSE CLAIM I wrote into source. "P0 = 0" was claimed once and was wrong (see P0-5/P0-6, found by a 9-minute diff-scoped codex consult). **Branch** `impl/adr-0005-trusted-input-provenance` · **HEAD** `4f8b0c9`
+**Mode:** BOUNDED DELIVERY. **LEAD: Fable 5** (owner handover 2026-07-31; Fable decides and does not ask). **BATCH 4 CLOSURE CLAIM IS WITHDRAWN — the batch is NOT closed.** P1 and P2 are PAUSED. ⚠ **P0 = 5.** Batch 4 closed P0-5/P0-6 and its mandatory frozen-diff review opened five more — including a FALSE CLAIM I wrote into source. "P0 = 0" was claimed once and was wrong (see P0-5/P0-6, found by a 9-minute diff-scoped codex consult). **Branch** `impl/adr-0005-trusted-input-provenance` · **HEAD** `4f8b0c9`
 · tree clean · nothing pushed. **Convergence 0/2** (engineering completion and convergence are
 separate states).
 
