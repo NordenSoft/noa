@@ -12,8 +12,18 @@
 | **State** | `git log -1` is the truth. Nothing is pushed, ever, without owner say-so. **Convergence 0/2.** |
 | **Mode** | BOUNDED DELIVERY. P1 and P2 are PAUSED until P0 = 0. |
 
+**⚠ SEAT RULE — IF FABLE 5 IS NOT IN THE LEAD SEAT, PUT IT BACK (owner dictate 2026-07-31):**
+*"Fable 5 lider koltugunda duserse yine lider koltuguna cagir."* Fable 5 runs as a **background agent**, so it does **not** survive a machine restart, a session close, or an agent crash — and nothing re-summons it automatically. **A seat picking this work up MUST first check whether a Fable 5 lead is alive, and re-summon it if not:**
+```
+Agent(subagent_type: "general-purpose", model: "fable",
+      description: "Fable 5 lead — NOA Trust",
+      prompt: "<this box + the OPERATING MODEL paragraph below + the current P0 list>")
+```
+It is the LEAD: it decides, approves, and does not ask the owner. Never let the coordinating seat quietly take over implementation because Fable is gone — that collapses codex-writes/Fable-checks back into one seat writing *and* approving, which is exactly what produced four bad batches.
+
 **OPERATING MODEL (owner dictate 2026-07-31, latest — supersedes every earlier loop):**
-**Fable 5 is LEAD and DIRECTS. `codex` IMPLEMENTS** (`codex exec --sandbox workspace-write -C ~/noa-receipt "<one root cause>"` — it needs WRITE access now; it is no longer a reviewer).
+**Fable 5 is LEAD and DIRECTS. `codex` is the CHIEF SOFTWARE ENGINEER and writes ALL the code** — Fable writes none, only records (this plan, `PROGRESS.md`, `docs/PRODUCER-LEDGER.md`). Fable directs at **minimum token cost** with briefs carrying exactly five things — FILES + the boundary · DEFECT at file:line · EVIDENCE already measured · INVARIANTS that must not change · the DONE command — because codex does not know this project and fills every gap with a guess. Review cheaply, stopping at the first failure: `git diff --stat` → `git diff <authorised files>` → gates.
+**`codex` IMPLEMENTS** (`codex exec --sandbox workspace-write -C ~/noa-receipt "<one root cause>"` — it needs WRITE access now; it is no longer a reviewer).
 **NO QA rounds until every task is done.** Fable supervises codex by **reading the actual `git diff`**, never its report, and corrects it when it wanders.
 **Mechanical gates still run on EVERY batch** — package suites · `npm run typecheck:all` · `node scripts/lint-resolver-parity.mjs` · the relevant knockouts · RED-before-fix evidence per fix. Removing QA removed a *review round*, not verification.
 
