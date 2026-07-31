@@ -101,6 +101,22 @@ export function decodeX25519PublicKey(s: string): Uint8Array {
 }
 
 /** The AAD bytes + aadHash for a display (binds tenant‖holdId‖deferredReceiptHash‖expiresAt). */
+// ── #77-C (2026-07-31): THE APPROVAL-RENDER PATH IS CAPTURED AT MODULE LOAD ────────────────────
+// What the human SEES was decided AFTER the AEAD verified, by two writable slots. MEASURED with a
+// real seal->open and a real x25519 device key:
+//     CONTROL  "Wire EUR 2,400,000 to NEW payee GmbH"
+//     ATTACK   "Refund EUR 1.00 to Alice"   via TextDecoder.prototype.decode
+//     ATTACK   "Refund EUR 1.00 to Alice"   via the global JSON.parse
+// Every cryptographic check passed in both cases. This is the product's core failure mode reached
+// with prototype pollution alone — no key, no forged signature, no network position.
+//
+// SCOPE, same bound as hash.ts/jcs.ts/deep-copy.ts (CORRECTIONS.md C-6): capture defends against
+// POST-load mutation only. A pre-load poison is captured INTO these bindings.
+const textDecoderDecode = TextDecoder.prototype.decode;
+const jsonParse = JSON.parse;
+const reflectApply = Reflect.apply;
+const sharedDecoder = new TextDecoder();
+
 function displayAad(args: { tenant: string; holdId: string; deferredReceiptHash: string; expiresAt: string }): {
   aadBytes: Uint8Array;
   aadHash: string;
@@ -135,7 +151,15 @@ export function sealEncryptedDisplay(input: SealDisplayInput): EncryptedDisplay 
   const ciphertext = chacha20poly1305(cek, nonce, aadBytes).encrypt(displayBytes);
 
   // Wrap the CEK to each device via HPKE.
-  const recipients = input.recipients.map((r) => {
+  // #77-C/2: an INDEX walk over the caller's array, not `Array.prototype.map`. `map` is a writable
+  // slot, and at seal time the CEK is in hand — so a poisoned `map` chose WHO MAY READ this
+  // approval. MEASURED: the sealed list came back as ["attacker-device"], the attacker opened the
+  // display, and the intended approver was locked out with "no recipient entry".
+  const src = input.recipients;
+  const n = src.length;
+  const recipients: Array<{ kid: string; enc: string; wrappedCek: string }> = [];
+  for (let i = 0; i < n; i++) {
+    const r = src[i] as { kid: string; hpkePublicKey: string };
     const pk = decodeX25519PublicKey(r.hpkePublicKey);
     const sealed = hpkeSealBase({
       recipientPublicKey: pk,
@@ -144,8 +168,8 @@ export function sealEncryptedDisplay(input: SealDisplayInput): EncryptedDisplay 
       plaintext: cek,
       ...(input.deterministic ? { ephemeralSecretKey: input.deterministic.ephemeralSecretKey } : {}),
     });
-    return { kid: r.kid, enc: bytesToBase64(sealed.enc), wrappedCek: bytesToBase64(sealed.ciphertext) };
-  });
+    recipients[i] = { kid: r.kid, enc: bytesToBase64(sealed.enc), wrappedCek: bytesToBase64(sealed.ciphertext) };
+  }
 
   return {
     spec: "noa.encrypted-display/0.1",
@@ -217,7 +241,11 @@ export function openEncryptedDisplay(ed: unknown, recipient: OpenRecipient): Rec
   if (!isRecord(payload)) throw new Error("openEncryptedDisplay: missing payload");
   const plaintext = chacha20poly1305(cek, base64ToBytes(asStr(payload["nonce"])), aadBytes).decrypt(base64ToBytes(asStr(payload["ciphertext"])));
 
-  const parsed = JSON.parse(new TextDecoder().decode(plaintext)) as unknown;
+  // #77-C: captured decoder and captured parser. The plaintext is authenticated by this point, so
+  // anything that can still change the RESULT here changes what the human approves without touching
+  // the ciphertext.
+  const plaintextText = reflectApply(textDecoderDecode, sharedDecoder, [plaintext]) as string;
+  const parsed = reflectApply(jsonParse, JSON, [plaintextText]) as unknown;
   if (!isRecord(parsed)) throw new Error("openEncryptedDisplay: decrypted display is not a JSON object");
   return parsed;
 }
