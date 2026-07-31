@@ -1,6 +1,6 @@
 # RELEASE-BLOCKERS — the one authoritative list
 
-**Mode:** BOUNDED DELIVERY. **P0 = 0.** **Branch** `impl/adr-0005-trusted-input-provenance` · **HEAD** `4f8b0c9`
+**Mode:** BOUNDED DELIVERY. ⚠ **P0 = 2 — the earlier "P0 = 0" was WRONG** (see P0-5/P0-6, found by a 9-minute diff-scoped codex consult). **Branch** `impl/adr-0005-trusted-input-provenance` · **HEAD** `4f8b0c9`
 · tree clean · nothing pushed. **Convergence 0/2** (engineering completion and convergence are
 separate states).
 
@@ -27,6 +27,9 @@ no Stage 1 freeze · no Go kernel.
 = re-derive P0-3 and P0-4; batch 3 = P0-2 triage.
 
 ---
+
+| **P0-5** | **My P0-1 fix was INCOMPLETE — a THIRD resolver still drops `validFrom`.** `gate/src/trust.ts:173-178` builds the live keyring with `revokedAt: null` and **no `validFrom`** on all four entries (GATE/APPROVER/DELEGATED/ROOT), and `engine.ts:711` uses `this.trust.keyring` for LIVE Decision Artifact verification. A future-activated approver can sign before activation and pass, because `verifyArtifact` sees `undefined` and skips the check. Current alpha constructors choose past activation, which BOUNDS exposure — but `createGate` accepts an injected `GateTrust`. | **[VERIFIED by lead]** `grep -c validFrom packages/gate/src/trust.ts` = 5, none on the keyring entries | activation carried by EVERY resolver; a test that fails if a new resolver omits it |
+| **P0-6** | **My "malformed `validFrom` fails CLOSED" test is VACUOUS.** Codex runtime proof: ROOT `validFrom:"0"` is parsed by `Date.parse` as a 1999/2000 instant and the root-signed delegation returned `ok:true`; only `not-a-timestamp` is rejected. **The test named "fails CLOSED at the verifier" never invokes the verifier** — it only asserts field carriage. I wrote a test whose name claims more than it measures, which is the exact defect class this batch was adjudicating. | codex-measured, **[UNVERIFIED by lead]** — verify before fixing | the test invokes the real verifier; a numeric/coercible `validFrom` is refused or explicitly accepted with a stated rule |
 
 ## P1 — MUST CLOSE BEFORE MERGE
 
