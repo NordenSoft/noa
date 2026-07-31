@@ -769,8 +769,57 @@ export class GateEngine {
     // 3. Exact-action binding: the verdict receipt is for THIS held action.
     // L9-D: the exact-action binding is a trust decision — read it from the parsed snapshot.
     const ra = isRecord(rDoc["action"]) ? (rDoc["action"] as Record<string, unknown>) : undefined;
-    if (!ra || ra["canonical"] !== hold.action.canonical || ra["paramsHash"] !== hold.action.paramsHash) {
+    // ── R8-16 (2026-07-31): EVERY STABLE ACTION FIELD, not two of them ────────────────────────
+    // This compared `canonical` and `paramsHash` only, so an enrolled approver could restate
+    // `action.id`, downgrade `riskClass` HIGH -> LOW, or flip `reversible` false -> true, and the
+    // gate minted a grant from an internally inconsistent approval. Those three fields travel INTO
+    // the signed record and out to every evidence consumer.
+    if (
+      !ra ||
+      ra["canonical"] !== hold.action.canonical ||
+      ra["paramsHash"] !== hold.action.paramsHash ||
+      ra["id"] !== hold.actionId ||
+      ra["riskClass"] !== hold.action.riskClass ||
+      ra["reversible"] !== hold.action.reversible
+    ) {
       return err(422, "ACTION_BINDING_MISMATCH");
+    }
+
+    // ── R8-01 (2026-07-31): THE APPROVAL MUST NAME THE PARTY THAT SIGNED IT ───────────────────
+    // The signature proved a KEY approved. The bundle presents a NAMED HUMAN as the approver, and
+    // nothing connected the two: `governance.approval.by`, `agent.principal` and `approval.at` were
+    // compared to NOTHING here or in the evidence verifier.
+    //
+    // MEASURED before this block existed, with the LEGITIMATE authorized device signing:
+    //     signer kid    approver-1-device-1
+    //     approval.by   HUMAN:cfo-victim          <- a different human entirely
+    //     approval.at   2099-01-01T00:00:00.000Z  <- a time that has not happened
+    //     principal     SERVICE                   <- not a human at all
+    //     decide 200, execution grant ISSUED
+    //
+    // For a product whose sole claim is cryptographic evidence that THIS human approved THIS action,
+    // that is the claim failing, not a hardening gap.
+    const rAgent = isRecord(rDoc["agent"]) ? (rDoc["agent"] as Record<string, unknown>) : undefined;
+    const rGov = isRecord(rDoc["governance"]) ? (rDoc["governance"] as Record<string, unknown>) : undefined;
+    const rAppr = rGov && isRecord(rGov["approval"]) ? (rGov["approval"] as Record<string, unknown>) : undefined;
+    if (!rAgent || rAgent["principal"] !== "HUMAN") {
+      return err(422, "APPROVAL_IDENTITY_MISMATCH", {
+        detail: "a verdict receipt must declare principal HUMAN — a human approval is what this record asserts",
+      });
+    }
+    if (!rAppr || rAppr["by"] !== approverKid) {
+      return err(422, "APPROVAL_IDENTITY_MISMATCH", {
+        detail: "governance.approval.by must equal the signing approver kid",
+      });
+    }
+    // Trusted-time window: the approval cannot predate the hold or postdate the gate's own receipt
+    // of it. `receivedAtMs` is the GATE's clock (F9/F10), never the phone's self-reported instant.
+    const apprAt = asString(rAppr["at"]);
+    const apprMs = apprAt ? gateDateParse(apprAt) : NaN;
+    if (!Number.isFinite(apprMs) || apprMs > receivedAtMs || apprMs < hold.createdAt) {
+      return err(422, "APPROVAL_TIME_OUT_OF_WINDOW", {
+        detail: "approval.at must lie between the hold's creation and the gate's receipt of the decision",
+      });
     }
 
     // Store the SNAPSHOTS. Storing the live caller objects let `report()` — a LATER HTTP REQUEST —
