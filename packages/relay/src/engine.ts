@@ -993,6 +993,21 @@ export class RelayEngine {
     };
     for (const device of this.store.listAllDevices()) {
       if (device.revokedAt !== null) continue;
+      // ── R8-12 (2026-07-31): THE FIFTH DEVICE-FACING PATH ────────────────────────────────────
+      // CRITICAL-1 (b045082) guarded four — getDisplay, getHoldContext, listPending, decide — and
+      // its commit message claimed the design made the check "impossible to forget: there is no
+      // code path that reads a hold for a device without having the device in hand". This is
+      // exactly such a path, in the same file, and I forgot it.
+      //
+      // MEASURED before this line existed: customer A's `wire.transfer` hold was pushed to an
+      // unrelated customer B's device, carrying the hold UUID, the action canonical and the
+      // approval deep link. Not a decision leak — a CONFIDENTIALITY leak, unsolicited, to every
+      // enrolled device on the relay.
+      //
+      // It CALLS the shared guard rather than repeating the predicate, so this path cannot drift
+      // from the four that already had it. Repeating `device.agentId !== hold.agentId` here would
+      // have been the fifth copy of a rule, which is the shape this round keeps finding.
+      if (!this.deviceOwnsHold(hold, device, "notify")) continue;
       const subs = this.store.listPushForDevice(device.id);
       for (const s of subs) {
         try {
