@@ -71,7 +71,20 @@ export function asRootKeyEntryMap(input: Uint8Array | string): Record<string, Ke
     } else if (typeof v === "object" && v !== null) {
       const e = v as Partial<KeyEntry>;
       if (e.type === "ROOT" && typeof e.publicKey === "string") {
-        out[kid] = { publicKey: e.publicKey, type: "ROOT", roles: Array.isArray(e.roles) ? e.roles : [], revokedAt: e.revokedAt ?? null };
+        // P0-1: `validFrom` is carried through, exactly as the manifest resolver below does it.
+        // It was DROPPED here while `revokedAt` was kept, so a trust root's activation window was
+        // open at one end: `verify.ts:234` enforces activation only when the field is non-null, and
+        // a signature dated BEFORE a root's own declared activation therefore verified clean.
+        // `KeyEntry`'s docstring already named this class — "every keyring resolver silently
+        // dropped it and pre-activation signatures verified clean" — and the manifest sibling 80
+        // lines down was fixed for it. This one was not.
+        //
+        // `?? null` and nothing more, deliberately: the parser must NOT invent a second activation
+        // rule. An ABSENT value stays absent (legacy roots remain always-active, the documented
+        // compatibility rule), and a MALFORMED value is carried so `verify.ts:236-239` refuses it
+        // with "cannot evaluate activation time". Dropping a malformed value here would skip the
+        // check entirely and fail OPEN — the same shape as the defect being fixed.
+        out[kid] = { publicKey: e.publicKey, type: "ROOT", roles: Array.isArray(e.roles) ? e.roles : [], validFrom: e.validFrom ?? null, revokedAt: e.revokedAt ?? null };
       }
     }
   }

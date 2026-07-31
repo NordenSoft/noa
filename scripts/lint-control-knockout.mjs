@@ -498,6 +498,15 @@ const KNOCKOUTS = [
     suite: ["packages/signer-core", "npm", ["test"]],
   },
   {
+    id: "p01-root-validfrom-carried",
+    control: "P0-1 \u2014 asRootKeyEntryMap carries `validFrom` on ROOT entries. It carried revokedAt but DROPPED validFrom, and verify.ts:234 enforces activation only when the field is non-null \u2014 so a trust-root signature dated BEFORE its own declared activation verified clean. The manifest sibling (trust.ts:156) was fixed for exactly this class and says so; the ROOT resolver 80 lines above was not.",
+    file: "packages/evidence/src/trust.ts",
+    find: "validFrom: e.validFrom ?? null, revokedAt: e.revokedAt ?? null };",
+    replace: "revokedAt: e.revokedAt ?? null };",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
     id: "c77-display-captured-decode",
     control: "#77-C/1 \u2014 openEncryptedDisplay interprets the AUTHENTICATED plaintext through a CAPTURED TextDecoder.prototype.decode and a CAPTURED JSON.parse. Live, the AEAD verified and the human was shown \"Refund EUR 1.00 to Alice\" while the sealed display said \"Wire EUR 2,400,000 to NEW payee GmbH\" \u2014 the product's core failure mode via prototype pollution alone.",
     file: "packages/signer-core/src/encrypted-display.ts",
