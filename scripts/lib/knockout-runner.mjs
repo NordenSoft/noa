@@ -42,6 +42,122 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 
+/**
+ * CLOSED registry-entry schema. A spelling the runner does not implement is an ERROR, never inert
+ * documentation: silently accepting one would let the registry describe a stronger experiment than
+ * the runner actually performs.
+ */
+export const KNOCKOUT_ENTRY_KEYS = new Set([
+  "id", "control", "file", "find", "replace", "also", "andAlso", "companionFile", "kind",
+  "suite", "expectHang",
+]);
+
+/** Validate the whole registry before any suite is allowed to run. Returns its unambiguous id map. */
+export function validateKnockoutRegistry(registry) {
+  if (!Array.isArray(registry)) throw new Error("knockout registry must be an array");
+
+  const byId = new Map();
+  for (const entry of registry) {
+    const id = entry && typeof entry.id === "string" ? entry.id : "<missing id>";
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`invalid knockout entry ${JSON.stringify(id)}: entry must be an object`);
+    }
+    for (const key of Object.keys(entry)) {
+      if (!KNOCKOUT_ENTRY_KEYS.has(key)) {
+        throw new Error(`invalid knockout entry ${JSON.stringify(id)}: unknown key ${JSON.stringify(key)}`);
+      }
+    }
+    if (typeof entry.id !== "string" || entry.id.length === 0) {
+      throw new Error(`invalid knockout entry ${JSON.stringify(id)}: id must be a non-empty string`);
+    }
+    if (byId.has(entry.id)) {
+      throw new Error(`invalid knockout entry ${JSON.stringify(entry.id)}: duplicate id`);
+    }
+
+    for (const key of ["control", "file", "find"]) {
+      if (typeof entry[key] !== "string" || entry[key].length === 0) {
+        throw new Error(
+          `invalid knockout entry ${JSON.stringify(entry.id)}: ${key} must be a non-empty string`,
+        );
+      }
+    }
+    if (typeof entry.replace !== "string") {
+      throw new Error(
+        `invalid knockout entry ${JSON.stringify(entry.id)}: replace must be a string`,
+      );
+    }
+    if (
+      !Array.isArray(entry.suite) || entry.suite.length !== 3 ||
+      typeof entry.suite[0] !== "string" || typeof entry.suite[1] !== "string" ||
+      !Array.isArray(entry.suite[2]) || entry.suite[2].some((arg) => typeof arg !== "string")
+    ) {
+      throw new Error(
+        `invalid knockout entry ${JSON.stringify(entry.id)}: suite must be [directory, command, stringArgs[]]`,
+      );
+    }
+    if (entry.companionFile !== undefined && (
+      typeof entry.companionFile !== "string" || entry.companionFile.length === 0
+    )) {
+      throw new Error(
+        `invalid knockout entry ${JSON.stringify(entry.id)}: companionFile must be a non-empty string`,
+      );
+    }
+    if (entry.expectHang !== undefined && typeof entry.expectHang !== "boolean") {
+      throw new Error(
+        `invalid knockout entry ${JSON.stringify(entry.id)}: expectHang must be a boolean`,
+      );
+    }
+    if (entry.also !== undefined) {
+      if (!Array.isArray(entry.also)) {
+        throw new Error(
+          `invalid knockout entry ${JSON.stringify(entry.id)}: also must be an array`,
+        );
+      }
+      for (let i = 0; i < entry.also.length; i++) {
+        const edit = entry.also[i];
+        if (!edit || typeof edit !== "object" || Array.isArray(edit)) {
+          throw new Error(
+            `invalid knockout entry ${JSON.stringify(entry.id)}: also[${i}] must be an object`,
+          );
+        }
+        for (const key of Object.keys(edit)) {
+          if (key !== "find" && key !== "replace") {
+            throw new Error(
+              `invalid knockout entry ${JSON.stringify(entry.id)}: unknown also[${i}] key ${JSON.stringify(key)}`,
+            );
+          }
+        }
+        if (typeof edit.find !== "string" || edit.find.length === 0) {
+          throw new Error(
+            `invalid knockout entry ${JSON.stringify(entry.id)}: also[${i}].find must be a non-empty string`,
+          );
+        }
+        if (typeof edit.replace !== "string") {
+          throw new Error(
+            `invalid knockout entry ${JSON.stringify(entry.id)}: also[${i}].replace must be a string`,
+          );
+        }
+      }
+    }
+    byId.set(entry.id, entry);
+  }
+
+  for (const entry of registry) {
+    if (entry.andAlso === undefined) continue;
+    if (typeof entry.andAlso !== "string" || entry.andAlso.length === 0) {
+      throw new Error(
+        `invalid knockout entry ${JSON.stringify(entry.id)}: andAlso must name a non-empty entry id`,
+      );
+    }
+    if (!byId.has(entry.andAlso)) {
+      throw new Error(
+        `invalid knockout entry ${JSON.stringify(entry.id)}: andAlso references missing entry id ${JSON.stringify(entry.andAlso)}`,
+      );
+    }
+  }
+  return byId;
+}
+
 /** CLOSED verdict taxonomy. Every value is a statement about observed evidence. */
 export const VERDICT = {
   /** the detector failed, and its failure set strictly contains the baseline's — a real kill */
@@ -166,11 +282,14 @@ export function observeSuite(root, [dir, cmd, args], timeoutMs = 900_000) {
  * @param {object} o
  * @param {string} o.root          repository root
  * @param {object} o.entry         the registry entry
+ * @param {object[]} [o.registry]  same registry used to resolve entry.andAlso
  * @param {object} o.baseline      { exit, failing:Set, ms } for this entry's suite, measured CLEAN
  * @param {number} [o.timeoutMs]
  * @returns {object} evidence record
  */
-export function runKnockout({ root, entry, baseline, timeoutMs = 900_000 }) {
+export function runKnockout({ root, entry, registry = [entry], baseline, timeoutMs = 900_000 }) {
+  const registryById = validateKnockoutRegistry(registry);
+  const paired = entry.andAlso === undefined ? null : registryById.get(entry.andAlso);
   const ev = {
     id: entry.id,
     control: entry.control,
@@ -180,8 +299,30 @@ export function runKnockout({ root, entry, baseline, timeoutMs = 900_000 }) {
     baselineFailing: [...baseline.failing].sort(),
   };
 
-  const targets = [entry.file, ...(entry.companionFile ? [entry.companionFile] : [])];
+  // `kind` is part of the closed verdict taxonomy rather than a thrown schema error. Preserve that
+  // established contract, but decide it before mutation so an invalid declaration cannot score a
+  // new failure as DETECTOR_TRIGGERED on an experiment the runner cannot classify.
+  if (entry.kind !== "tests" && entry.kind !== "gate") {
+    ev.verdict = VERDICT.INVALID_TEST;
+    ev.detail =
+      `entry declares kind ${JSON.stringify(entry.kind)}; it must declare "tests" or "gate" — ` +
+      `the kind is not inferred (QA-16)`;
+    ev.restored = true;
+    return ev;
+  }
+
+  if (paired) ev.andAlso = paired.id;
+
+  const mutations = [entry, ...(paired ? [paired] : [])];
+  const targets = [...new Set(mutations.flatMap((mutation) => [
+    mutation.file,
+    ...(mutation.companionFile ? [mutation.companionFile] : []),
+  ]))];
   const pristine = new Map();
+  // Exact bytes the runner itself wrote. Restoration may overwrite only these bytes; if a suite or
+  // concurrent editor changed a target again, preserving that unexpected change is safer than
+  // silently erasing work and calling the pristine hash proof.
+  const written = new Map();
 
   // ── (1) baseline hashes, captured BEFORE anything is touched ──────────────────────────────────
   for (const rel of targets) {
@@ -192,30 +333,59 @@ export function runKnockout({ root, entry, baseline, timeoutMs = 900_000 }) {
   ev.hashBefore = Object.fromEntries([...pristine].map(([k, v]) => [k, sha(v)]));
 
   try {
-    // ── apply every edit, requiring EXACTLY ONE match each ─────────────────────────────────────
-    const edits = [{ find: entry.find, replace: entry.replace }, ...(entry.also ?? [])];
-    let src = pristine.get(entry.file);
-    for (const e of edits) {
-      const hits = src.split(e.find).length - 1;
-      if (hits !== 1) {
+    // ── stage every mutation in memory, requiring EXACTLY ONE match for every edit ─────────────
+    // Nothing reaches disk until BOTH halves of an andAlso pair have proven applicable.
+    const mutated = new Map(pristine);
+    for (const mutation of mutations) {
+      const edits = [{ find: mutation.find, replace: mutation.replace }, ...(mutation.also ?? [])];
+      let src = mutated.get(mutation.file);
+      const mutationHashBefore = sha(src);
+      for (const e of edits) {
+        const hits = src.split(e.find).length - 1;
+        if (hits !== 1) {
+          ev.verdict = VERDICT.MUTATION_NOT_APPLIED;
+          ev.detail = `${mutation.id}: \`find\` matched ${hits}× (must be exactly 1) — the control moved or the entry rotted`;
+          return ev;
+        }
+        src = src.replace(e.find, e.replace);
+      }
+
+      // ── (2) EACH mutation must actually CHANGE its target bytes ─────────────────────────────
+      if (sha(src) === mutationHashBefore) {
         ev.verdict = VERDICT.MUTATION_NOT_APPLIED;
-        ev.detail = `\`find\` matched ${hits}× (must be exactly 1) — the control moved or the entry rotted`;
+        ev.detail =
+          `${mutation.id}: the mutated bytes are IDENTICAL to the original — \`replace\` is a no-op, ` +
+          "so any suite result would be about something else. This is the exact shape that let a " +
+          "no-op score a kill.";
         return ev;
       }
-      src = src.replace(e.find, e.replace);
+      mutated.set(mutation.file, src);
     }
 
-    // ── (2) the mutation must actually CHANGE the bytes ────────────────────────────────────────
-    if (sha(src) === ev.hashBefore[entry.file]) {
-      ev.verdict = VERDICT.MUTATION_NOT_APPLIED;
-      ev.detail =
-        "the mutated bytes are IDENTICAL to the original — `replace` is a no-op, so any suite result " +
-        "would be about something else. This is the exact shape that let a no-op score a kill.";
-      return ev;
+    // Two individually effective same-file mutations can cancel (A→B followed by B→A). Running the
+    // clean suite after that sequence would not be a paired measurement.
+    for (const mutation of mutations) {
+      if (sha(mutated.get(mutation.file)) === ev.hashBefore[mutation.file]) {
+        ev.verdict = VERDICT.MUTATION_NOT_APPLIED;
+        ev.detail =
+          `the combined mutation sequence leaves ${mutation.file} byte-identical to its pristine ` +
+          `content — the pair cancelled itself before the suite ran`;
+        return ev;
+      }
     }
 
-    fs.writeFileSync(path.join(root, entry.file), src);
-    ev.hashMutated = sha(src);
+    for (const [rel, src] of mutated) {
+      if (sha(src) !== ev.hashBefore[rel]) {
+        written.set(rel, src);
+        fs.writeFileSync(path.join(root, rel), src);
+      }
+    }
+    ev.hashMutated = sha(mutated.get(entry.file));
+    if (paired) {
+      ev.hashMutatedByFile = Object.fromEntries(
+        [...mutated].map(([rel, src]) => [rel, sha(src)]),
+      );
+    }
 
     const obs = observeSuite(root, entry.suite, timeoutMs);
     ev.mutatedExit = obs.exit;
@@ -317,24 +487,44 @@ export function runKnockout({ root, entry, baseline, timeoutMs = 900_000 }) {
     return ev;
   } finally {
     // ── (5) restore, and PROVE it ─────────────────────────────────────────────────────────────
-    for (const [rel, bytes] of pristine) {
+    const restorationFailures = [];
+    for (const [rel, expectedMutant] of written) {
       try {
-        fs.writeFileSync(path.join(root, rel), bytes);
+        const abs = path.join(root, rel);
+        const current = fs.readFileSync(abs, "utf8");
+        if (sha(current) !== sha(expectedMutant)) {
+          restorationFailures.push(
+            `${rel} changed unexpectedly while the suite ran; refusing to overwrite a concurrent edit`,
+          );
+          continue;
+        }
+        fs.writeFileSync(abs, pristine.get(rel));
       } catch (e) {
-        ev.verdict = VERDICT.RESTORATION_FAILED;
-        ev.detail = `could not rewrite ${rel}: ${String(e && e.message)}`;
+        restorationFailures.push(`could not restore ${rel}: ${String(e && e.message)}`);
       }
     }
-    ev.hashAfter = Object.fromEntries(
-      targets.map((rel) => [rel, sha(fs.readFileSync(path.join(root, rel), "utf8"))]),
-    );
+    ev.hashAfter = {};
     for (const rel of targets) {
-      if (ev.hashAfter[rel] !== ev.hashBefore[rel]) {
-        ev.verdict = VERDICT.RESTORATION_FAILED;
-        ev.detail = `${rel} did not return to its baseline sha256 — a weakened control may be on disk`;
+      try {
+        ev.hashAfter[rel] = sha(fs.readFileSync(path.join(root, rel), "utf8"));
+      } catch (e) {
+        ev.hashAfter[rel] = null;
+        restorationFailures.push(`could not hash restored ${rel}: ${String(e && e.message)}`);
+      }
+      if (
+        ev.hashAfter[rel] !== ev.hashBefore[rel] &&
+        !restorationFailures.some((detail) => detail.startsWith(`${rel} `))
+      ) {
+        restorationFailures.push(
+          `${rel} did not return to its baseline sha256 — a weakened control may be on disk`,
+        );
       }
     }
     ev.restored = targets.every((rel) => ev.hashAfter[rel] === ev.hashBefore[rel]);
+    if (restorationFailures.length > 0) {
+      ev.verdict = VERDICT.RESTORATION_FAILED;
+      ev.detail = restorationFailures.join("; ");
+    }
   }
 }
 

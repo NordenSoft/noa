@@ -43,7 +43,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runKnockout, observeSuite, VERDICT, PASSING } from "./lib/knockout-runner.mjs";
+import {
+  runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING,
+} from "./lib/knockout-runner.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WARN_ONLY = process.argv.includes("--warn");
@@ -60,7 +62,9 @@ const KNOCKOUTS = [
   // ── R8-32 (2026-07-31): THE GATES ADR-0005 §7 PROMISED AND NEVER SHIPPED ───────────────────────
   // The ADR's table names four knockouts by id — G3 `parse-boundary-strictness`,
   // G4 `render-node-single-input`, G5 `display-aad-egress-check`, G6 `riskclass-derived-not-accepted`
-  // — each with "must go red" as its anti-vacuity clause. None existed. Three are added here.
+  // — each with "must go red" as its anti-vacuity clause. None existed. G3 and G6 are registered;
+  // the G4 registry claim and G5 claim are withdrawn below rather than represented by false-green
+  // entries. The canonical ADR/release-status correction is outside this batch's authorized files.
   //
   // G5 IS FORMALLY WITHDRAWN, not quietly skipped. Its instruction is "delete the egress AAD
   // verification", and that verification does not exist: `grep -rn "aad" packages/gate/src` returns
@@ -86,15 +90,18 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
-  {
-    id: "g4-render-node-single-input",
-    control: "ADR-0005 §7 G4 — the render node reads the CANONICAL BYTES, so the display and the paramsHash cannot disagree (M7)",
-    file: "packages/gate/src/projections.ts",
-    find: "const view = commandView(canonical);",
-    replace: "const view = commandView(canonicalize(snapshot as Record<string, unknown>));",
-    kind: "tests",
-    suite: ["packages/gate", "npm", ["test"]],
-  },
+  // G4 REGISTRY CLAIM WITHDRAWN (Batch E, 2026-08-01; canonical ADR correction still open).
+  // A scoped runner built the actual mutation and ran only the public `getProjection().run()` Slice
+  // 2 tests, excluding the two owner-deferred ADR-0006 failures. Clean: 6/6 GREEN. Mutated: 6/6
+  // GREEN (`DETECTOR_DID_NOT_TRIGGER`). The package-wide red baseline was not used as evidence.
+  //
+  // WITHDRAWN CLAIM (verbatim): "ADR-0005 §7 G4 — the render node reads the CANONICAL BYTES, so the display and the paramsHash cannot disagree (M7)"
+  //
+  // This withdraws the knockout claim, not the production invariant. `getProjection()` is publicly
+  // exported and its `run()` is directly reachable, while capture-once independently closes every
+  // split reachable today. The source records why the canonical render node remains a structural
+  // defence against a future second input; reachability justifies retaining code, not calling a
+  // 6/6-green mutation load-bearing.
   {
     id: "g6-riskclass-derived-not-accepted",
     control: "ADR-0005 §7 G6 — riskClass is DERIVED inside the boundary; the caller's hint may raise the floor and can never lower it (M2)",
@@ -319,7 +326,12 @@ const KNOCKOUTS = [
   },
   {
     id: "t19-validator-index-walk",
-    control: "T19 — the policy validator walks `rules` by INDEX, so a no-op forEach cannot skip every rule",
+    // WITHDRAWN CLAIM (verbatim): "T19 — the policy validator walks `rules` by INDEX, so a no-op forEach cannot skip every rule"
+    // That wording implied an independently load-bearing control. Measured at HEAD 3af47d0: the
+    // index-walk mutation alone stayed GREEN. The parser mutation alone caused 3 new failures; the
+    // pair caused 4, adding the forEach policy regression. The pair therefore proves the index walk
+    // as defence-in-depth behind an independently load-bearing inert-array parser.
+    control: "T19 PAIR — safeParse inert-array re-rooting is independently load-bearing (3 new failures alone); with it removed, the validator index walk supplies defence-in-depth (paired removal: 4 new failures, including the forEach policy regression). The index walk alone stayed GREEN at HEAD 3af47d0.",
     file: "src/policy/validate.ts",
     find: "    for (let i = 0; i < pol.rules.length; i++) {\n      const r = pol.rules[i];",
     replace: "    (pol.rules as unknown[]).forEach((r, i) => {",
@@ -327,9 +339,12 @@ const KNOCKOUTS = [
       find: "      validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);\n    }",
       replace: "      validateCondition(rule.when, `policy.rules[${i}].when`, errors, 0);\n    });",
     }, { find: "        continue;\n      }\n      const rule = r as Record<string, unknown>;", replace: "        return;\n      }\n      const rule = r as Record<string, unknown>;" }],
+    // WITHDRAWN CLAIM (verbatim):
     // The parser's re-rooting independently defeats this poison, so knocking out ONE layer leaves the
     // other measuring it and the run would report a false "nothing measures this". Both come out
     // together — which is also the honest statement of the design: two layers, each load-bearing.
+    // Correction: only the parser is independently load-bearing; the extra paired failure is the
+    // measured basis for calling the index walk defence-in-depth.
     andAlso: "t19-parser-inert-arrays",
     kind: "tests",
     suite: [".", "npm", ["test"]],
@@ -403,20 +418,25 @@ const KNOCKOUTS = [
   },
   {
     id: "r4-a2-noextrakeys-index-walk",
-    control: "A2 — the policy closed-grammar check walks keys by INDEX, so a skipping iterator cannot hide an unknown key (DENY/policy-invalid -> ALLOW/allow-x, measured)",
+    // WITHDRAWN CLAIM (verbatim): "A2 — the policy closed-grammar check walks keys by INDEX, so a skipping iterator cannot hide an unknown key (DENY/policy-invalid -> ALLOW/allow-x, measured)"
+    control: "A2 PAIR — inert array-manufacturing wrappers are independently load-bearing (1 new failure alone); with them removed, the policy closed-grammar index walk supplies defence-in-depth (paired removal: 4 new failures, including the hidden-key regression). The index walk alone stayed GREEN at HEAD 3af47d0.",
     file: "src/policy/validate.ts",
     find: "  const keys = objectKeys(obj);\n  for (let i = 0; i < keys.length; i++) {\n    const k = keys[i] as string;",
     replace: "  for (const k of objectKeys(obj)) {",
+    // WITHDRAWN CLAIM (verbatim):
     // A1 independently defeats this poison, so knocking out ONE layer leaves the other measuring it
     // and the run would report a false "nothing measures this". Both come out together — which is
     // also the honest statement of the design: two layers, each load-bearing.
+    // Correction: only A1 is independently load-bearing; the three additional paired failures are
+    // the measured basis for calling this index walk defence-in-depth.
     andAlso: "r4-a1-inert-wrappers",
     kind: "tests",
     suite: [".", "npm", ["test"]],
   },
   {
     id: "r4-a2-checkpoint-index-walk",
-    control: "A2 — the checkpoint closed-schema walk is an INDEX walk, so a skipping iterator cannot hide a smuggled (and honestly re-signed) field (TAMPERED -> VALID/tailChecked, measured)",
+    // WITHDRAWN CLAIM (verbatim): "A2 — the checkpoint closed-schema walk is an INDEX walk, so a skipping iterator cannot hide a smuggled (and honestly re-signed) field (TAMPERED -> VALID/tailChecked, measured)"
+    control: "A2 PAIR — inert array-manufacturing wrappers are independently load-bearing (1 new failure alone); with them removed, the checkpoint closed-schema index walk supplies defence-in-depth (paired removal: 3 new failures, including chain and standalone checkpoint regressions). The index walk alone stayed GREEN at HEAD 3af47d0.",
     file: "src/verify.ts",
     find: "  const cKeys = objectKeys(c);\n  for (let i = 0; i < cKeys.length; i++) {\n    if (!arrayIncludes(CHECKPOINT_KEYS, cKeys[i] as string)) return \"malformed checkpoint\";\n  }",
     replace: "  for (const k of objectKeys(c)) {\n    if (!arrayIncludes(CHECKPOINT_KEYS, k)) return \"malformed checkpoint\";\n  }",
@@ -426,7 +446,8 @@ const KNOCKOUTS = [
   },
   {
     id: "r4-a2-manifest-index-walk",
-    control: "A2 — the identity-manifest walk is an INDEX walk, so a skipping iterator cannot hide a malformed entry from validation (MALFORMED -> VALID, measured)",
+    // WITHDRAWN CLAIM (verbatim): "A2 — the identity-manifest walk is an INDEX walk, so a skipping iterator cannot hide a malformed entry from validation (MALFORMED -> VALID, measured)"
+    control: "A2 PAIR — inert array-manufacturing wrappers are independently load-bearing (1 new failure alone); with them removed, the identity-manifest index walk supplies defence-in-depth (paired removal: 3 new failures, including verifyChain and substituted-key regressions). The index walk alone stayed GREEN at HEAD 3af47d0.",
     file: "src/verify.ts",
     find: "      const aids = objectGetOwnPropertyNames(live);\n      for (let ai = 0; ai < aids.length; ai++) {\n        const aid = aids[ai] as string;",
     replace: "      for (const aid of objectGetOwnPropertyNames(live)) {",
@@ -704,6 +725,10 @@ const KNOCKOUTS = [
   },
 ];
 
+// Fail before measuring any baseline: an unknown key means the registry describes an experiment
+// the runner does not implement, so running a partial experiment would manufacture evidence.
+validateKnockoutRegistry(KNOCKOUTS);
+
 // ── R8-26/R8-27: MEASURE EVERY SUITE'S CLEAN BASELINE FIRST ────────────────────────────────────
 // Without this, "the suite failed" cannot be distinguished from "the suite was already failing".
 // `packages/gate` is exit 1 / 200 pass / 2 fail at HEAD — two owner-deferred ADR-0006 failures — and
@@ -739,7 +764,7 @@ for (const k of selected) {
       detail: `the suite's CLEAN baseline timed out, so no mutation result from it can mean anything`, restored: true });
     continue;
   }
-  results.push(runKnockout({ root: ROOT, entry: k, baseline }));
+  results.push(runKnockout({ root: ROOT, entry: k, registry: KNOCKOUTS, baseline }));
 }
 
 // ── REPORT ─────────────────────────────────────────────────────────────────────────────────────
