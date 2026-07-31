@@ -6,7 +6,7 @@
 > this file. `PROGRESS.md` keeps the measured totals and evidence and points here for what to do
 > next; on any drift, THIS file wins.
 
-**Mode:** BOUNDED DELIVERY. **LEAD: Fable 5** (owner handover 2026-07-31; Fable decides and does not ask). **BATCH 4 CLOSURE CLAIM IS WITHDRAWN — the batch is NOT closed.** P1 and P2 are PAUSED. ⚠ **P0: 3 open (P0-9/10/11) + 1 codex finding UNTESTED; P0-7 + P0-8 are ENGINEERING-COMPLETE in micro-batch A and frozen for the independent frozen-diff QA — they are NOT called closed here, because the lead may not self-approve its own batch.** Batch 4 closed P0-5/P0-6 and its mandatory frozen-diff review opened five more — including a FALSE CLAIM the previous lead wrote into source. "P0 = 0" was claimed once and was wrong. **Branch** `impl/adr-0005-trusted-input-provenance` · HEAD = the micro-batch A closing commit (see MICRO-BATCH A below and PROGRESS.md for the frozen hashes) · nothing pushed. **Convergence 0/2** (engineering completion and convergence are separate states).
+**Mode:** BOUNDED DELIVERY. **LEAD: Fable 5** (owner handover 2026-07-31; Fable decides and does not ask). **BATCH 4 CLOSURE CLAIM IS WITHDRAWN — the batch is NOT closed.** P1 and P2 are PAUSED. ⚠ **P0: 6 open — P0-9/10/11 (pre-existing) + P0-12/13/14 (opened by the micro-batch A QA, all re-derived by the lead). Micro-batch A's QA verdict is `BLOCK`; P0-7 + P0-8 are ENGINEERING-COMPLETE but the batch is NOT closed, because the lead may not self-approve its own batch and the QA found new blockers inside the machinery the batch added.** Batch 4 closed P0-5/P0-6 and its mandatory frozen-diff review opened five more — including a FALSE CLAIM the previous lead wrote into source. "P0 = 0" was claimed once and was wrong. **Branch** `impl/adr-0005-trusted-input-provenance` · HEAD = the micro-batch A closing commit (see MICRO-BATCH A below and PROGRESS.md for the frozen hashes) · nothing pushed. **Convergence 0/2** (engineering completion and convergence are separate states).
 
 **Reopening rule:** a settled decision reopens ONLY with a reproducible attack + exact source path +
 measurable security consequence + an honest control + evidence the current fix fails. A reviewer's
@@ -41,7 +41,37 @@ no Stage 1 freeze · no Go kernel.
 | **P0-10** | 🔴 **`mustBeWithin` NaN-checks only the artifact time, not `min`/`max`** (`verify.ts:351-356`). With both bounds `"not-a-time"` a future-dated decision changed from refused to `{ok:true}` — my strict parser made this REACHABLE. | codex-measured, **[UNVERIFIED by lead]** | every parsed bound is NaN-checked before comparison |
 | **P0-11** | 🔴 **My compatibility claim was too narrow, and there IS a regression.** I scanned 1727 timestamps in FILES. Runtime inputs were outside it: `evidence/cli.ts:54` documents `--now` as RFC3339, and the same instant written `2026-07-14T14:00:00.000+02:00` now returns INVALID where `…12:00:00.000Z` returns VALID_FULL_CHAIN. | codex-measured, **[UNVERIFIED by lead]** | offsets accepted, or the CLI contract narrowed deliberately with the break documented |
 
-## MICRO-BATCH A — P0-7 + P0-8 (2026-07-31, Fable 5 lead) — frozen for independent QA
+| **P0-12** | 🔴 **ROOT ACTIVATION ENFORCEMENT IS PROVEN BY NOTHING.** Found by the batch-A QA (F-1), re-derived and found WORSE than reported. Mutating `approval-artifacts/src/verify.ts:271` from `if (entry.validFrom != null)` to `… && entry.type !== "ROOT"` — i.e. deleting activation enforcement for trust roots — leaves **the entire repository green**. P0-1 proved ROOT `validFrom` **carriage**; nothing proves **enforcement**. A trust root that signs before its own declared activation verifies clean and no gate notices. | **[MEASURED by lead]** with the mutation applied: e2e-demo **12/12** · gate **214/2** (baseline, unchanged) · evidence **126/126** · approval-artifacts **168/168** · root **518/518** — **1038 tests, ZERO failures**. codex claimed only "both new parity files stay green". Restored, sha256 `a6ed0b38…` byte-exact. | a test that turns RED when ROOT activation enforcement is removed, plus a knockout registering it |
+| **P0-13** | 🔴 **The proof-resolution gate is bypassed by a different spelling of skip.** `scripts/lint-resolver-parity.mjs:134` matches the marker **line** and rejects `.skip`/`.todo` only in that exact same-line spelling. The object form `test("[PROOF:…]", { skip: true }, () => {…})` is not seen. This defeats the very control built to close P0-7 — a registered proof can stop running while the gate reports it live. | **[MEASURED by lead]** with all three gate proofs converted to the object form: gate suite **skipped 3** (pass 214 → 211), node exits **0**, and `lint:resolver-parity` exits **0** still calling each proof "live". Restored, sha256 `ad10c9f1…` byte-exact. | resolution parses the test AST (or executes the proof) rather than scanning a line; knockout covers ≥3 skip spellings |
+| **P0-14** | 🔴 **A retired signing key mints NEW evidence — in a PUBLISHED package.** `noa-mcp-proxy` **0.2.0**, no `private:true`, `files:["src"]` ships it, `README:92`/`:139-140` documents it. `rotatable-signer.mjs:92-96` returns retired public keys in a bare `kid → publicKey` map with **no retirement instant recorded anywhere**, and `outcome-receipt.mjs:142-174` applies **zero** temporal checks. Rotation is the remedy for a stolen key — so the incident-response control is broken: discover a compromise, rotate, and the thief keeps full minting power forever. Tracked as task **#84**. | **[MEASURED by lead]**, 3 controls green in the same run: current key pre-rotation `ok:true` · new current key `ok:true` · unknown key **REFUSED** · **RETIRED key signing a NEW receipt dated 2099 → `ok:true`**. codex rated this MEDIUM; raised to P0 with the reasoning recorded. | a retirement instant is recorded and ENFORCED; RED test + anti-vacuity control + knockout; the README claim corrected. **Interface consequence must be stated** — `verifyOutcomeReceipt` takes a string keyring, so this is not a one-liner |
+
+## MICRO-BATCH A — P0-7 + P0-8 (2026-07-31, Fable 5 lead) — **QA VERDICT: BLOCK, NOT CLOSED**
+
+> **2026-07-31 — the independent frozen-diff QA returned `BLOCK` with 5 findings, and the lead
+> re-derived ALL FIVE.** Two were raised in severity (F-1 → P0-12, F-5 → P0-14), one confirmed as
+> stated (F-3 → P0-13), and two lowered to P1 with evidence:
+>
+> - **F-4 → P1.** The census gate does not catch a *value substitution* (`validFrom: auth.validFrom`
+>   → `validFrom: null` leaves `lint:resolver-parity` at exit 0) — but the e2e parity **test** does
+>   catch it (12 → 11 pass). codex rated it HIGH assuming the defect would go undetected; it would
+>   not. What survives is the **false claim** at `gate/src/trust.ts:199` that such a drop "fails the
+>   gate".
+> - **F-2 → P1.** `assembleGateTrust(auth, manifest, …)` accepts `manifest` but derives every entry
+>   from `auth.validFrom` and hardcodes `revokedAt: null` (`pairing.ts:287`); the test named
+>   "CARRIES the declared activation" compares against `auth`, not the manifest's per-key values.
+>   Reachable only by direct callers of the exported helper, and `e2e-demo` is `private:true`.
+>
+> **The QA's own suite numbers are NOT evidence** and it said so: its read-only sandbox blocked
+> localhost listeners, so it measured gate 210/6 and e2e 6-pass/6-EPERM. The lead's unsandboxed
+> numbers stand (gate 214/2, e2e-demo 12/0) and were re-measured after every restoration.
+>
+> **Restoration discipline held throughout:** three separate mutations applied and reverted, each
+> sha256-verified byte-exact; final tree `a41579aa…` identical to the frozen tree, worktree clean,
+> `lint:resolver-parity` exit 0, gate 214/2 `skipped 0`.
+>
+> P0-7 and P0-8 remain **engineering-complete**; the batch does not close because the QA it was
+> frozen for found new blockers in the very machinery it added.
+
 
 **Delivered** (sequence: freeze → census → RED tests → comment withdrawal → fix → knockouts → suites):
 
