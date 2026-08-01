@@ -47,25 +47,25 @@ verifyOutcomeReceipt(outcome, { verification: lifecycle });
 verifyChain(chainBytes, { keyring: new TextEncoder().encode(JSON.stringify(lifecycle)) });
 ```
 
-The lifecycle document places every public key beside a required `retiredAt` value (`null` for the
-single current key). `verifyOutcomeReceipt` now takes one `verification` value instead of the 0.2.x
-`keyring` + optional `retirements` pair. A static, non-rotating outcome consumer passes its one-key
-flat map as `verification`; a rotatable or multi-key consumer must pass the lifecycle document.
+The lifecycle document places every public key beside a required `retiredAt` value (`null` for a
+current key). `verificationLifecycle()` is a stable frozen handle whose `keys` getter returns the
+latest frozen snapshot, so caching the handle does not preserve pre-rotation authority. A serialized
+JSON snapshot is still point-in-time data and must be refreshed after rotation.
+
+`verifyOutcomeReceipt` now takes one `verification` value instead of the 0.2.x `keyring` + optional
+`retirements` pair. A static, non-rotating consumer may pass a one-key or multi-key flat map.
 `verifyChain` keeps its existing `keyring` option and its flat-map behavior for static consumers, but
-also recognizes the lifecycle document and refuses receipts or checkpoints at or after their signing
-key's cutoff.
+also recognizes the lifecycle document and refuses every receipt or checkpoint signed by a key with
+a non-null `retiredAt`, regardless of the artifact's timestamp.
 
-`historicalKeyring()` is retained only as a clearly named flat-map accessor for APIs or historical
-workflows that cannot consume lifecycle entries. It drops retirement data and therefore provides no
-retirement enforcement.
+`historicalKeyring()` has been removed. Flattening a lifecycle document drops the security state and
+is a downgrade, not a conversion.
 
-This release does **not** claim complete containment of a stolen retired key. A retired key can sign
-a chain receipt with a backdated timestamp because that timestamp is authenticated only by the same
-compromised key. The chain cutoff forces a post-retirement forgery to backdate, and chain ordering
-can expose some such attempts, but it is not an independent time proof. Complete containment needs
-an independent time witness; `packages/tsa-anchor` is code-ready and unpublished. Standalone outcome
-receipts have no chain ordering at all, so 0.3.0 refuses every retired-key outcome, including a
-genuine pre-retirement outcome that lacks independent time evidence.
+This release does **not** recover historical verification after a key is retired. A receipt timestamp
+is authenticated only by the same key, so it cannot distinguish genuine history from a backdated
+forgery. That distinction needs an independent time witness; `packages/tsa-anchor` is code-ready and
+unpublished. Until such a witness is supplied, every verifier refuses every retired-key artifact,
+including genuine pre-retirement history.
 
 ## Flags (all optional)
 

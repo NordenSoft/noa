@@ -124,6 +124,38 @@ test("verifyApprovalReceipt: a REAL buildApprovalReceipt output verifies ok agai
   assert.deepEqual(verifyApprovalReceipt(allowed, { approverKeyring, expectedChain: deferred.scope.chain }), { ok: true });
 });
 
+test("P0-14: approval verification accepts multiple current keys and refuses a lifecycle-retired approver", () => {
+  const { allowed, approverKp, deferred } = makeApprovedFixture("v-lifecycle");
+  const otherCurrent = generateKeyPair("v-lifecycle-other-current");
+  const currentLifecycle = {
+    spec: "noa.signing-key-lifecycle/0.1",
+    keys: {
+      [approverKp.kid]: { publicKey: approverKp.publicKey, retiredAt: null },
+      [otherCurrent.kid]: { publicKey: otherCurrent.publicKey, retiredAt: null },
+    },
+  };
+  const retiredLifecycle = {
+    spec: currentLifecycle.spec,
+    keys: {
+      ...currentLifecycle.keys,
+      [approverKp.kid]: { publicKey: approverKp.publicKey, retiredAt: "2026-08-01T08:36:12.643Z" },
+    },
+  };
+
+  const control = verifyApprovalReceipt(allowed, {
+    approverKeyring: currentLifecycle,
+    expectedChain: deferred.scope.chain,
+  });
+  assert.equal(control.ok, true, control.reason);
+
+  const attack = verifyApprovalReceipt(allowed, {
+    approverKeyring: retiredLifecycle,
+    expectedChain: deferred.scope.chain,
+  });
+  assert.equal(attack.ok, false, "approval verifier accepted a lifecycle-retired signer");
+  assert.match(attack.reason, /retired/i);
+});
+
 test("verifyApprovalReceipt: fails closed on an UNTRUSTED signer (kid not in the approver keyring) — the core forgery defense", () => {
   const { allowed } = makeApprovedFixture("v-untrusted");
   const strangerKp = generateKeyPair("stranger");

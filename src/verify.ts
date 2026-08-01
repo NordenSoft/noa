@@ -10,6 +10,7 @@ import { inertOptions, type OptionSchema } from "./opts.js";
 import { arrayPush, arrayIncludes, arrayEvery, arrayLength, arrayJoin, publishArray, dateParse, mapHas, mapGet, mapSet, newMap, newSet, objectKeys, objectGetOwnPropertyNames, objectCreateNull, isSafeInteger, arraySlice, setAdd, setSize, isArray, isNaNValue, jsonStringify } from "./intrinsics.js";
 import { isSha256Hash, isRfc3339 } from "./scan.js";
 import { frozenTable } from "./inert.js";
+import { parseVerificationKeyring, type ParsedVerificationKeyring } from "./verification-keyring.js";
 
 export type VerifyStatus =
   | "VALID" // structure + hash-chain + signatures all verified against the supplied keyring
@@ -40,7 +41,8 @@ export interface VerifyOptions {
   /**
    * Trust root as JSON bytes. A static consumer supplies `{ kid: base64-SPKI }`. A rotatable signer
    * supplies the atomic `noa.signing-key-lifecycle/0.1` document containing public keys plus each
-   * key's `retiredAt` (`null` for the one current key). The lifecycle form applies retirement cutoffs.
+   * key's `retiredAt` (`null` for a current key). The lifecycle form refuses every non-null
+   * retirement outright; signer-chosen receipt/checkpoint timestamps are never retirement evidence.
    */
   keyring?: Uint8Array | string;
   /** Signed checkpoint as JSON bytes, asserting the expected head — enables tail-truncation detection. */
@@ -196,13 +198,6 @@ const VERIFY_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.cr
   requireTenantConsistency: { kind: "boolean" },
   requireNFC: { kind: "boolean" },
 })) as OptionSchema;
-
-const SIGNING_KEY_LIFECYCLE_SPEC = "noa.signing-key-lifecycle/0.1";
-
-interface RetirementBound {
-  readonly instant: number;
-  readonly text: string;
-}
 
 /**
  * The chain verifier over PARSED data. Module-private on purpose: it assumes its input came from
@@ -402,84 +397,12 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
   // verifier (which already returns MALFORMED on a non-dict keyring). Reject it as MALFORMED so
   // both impls agree on the SAME verdict class for the SAME malformed trust file.
   let keyring: Keyring = {};
-  const retirementBounds = newMap<string, RetirementBound>();
+  let verification: ParsedVerificationKeyring | undefined;
   if (haveKeyring) {
-    const kParsed = parseDocument(o.keyring, "keyring");
+    const kParsed = parseVerificationKeyring(o.keyring, "keyring");
     if (!kParsed.ok) return fail("MALFORMED", kParsed.reason, chainId, list.length);
-    const kv = kParsed.value;
-    if (typeof kv !== "object" || kv === null || isArray(kv)) {
-      return fail("MALFORMED", "keyring must be an object (static kid map or atomic signing key lifecycle)", chainId, list.length);
-    }
-    const verificationDocument = kv as Record<string, unknown>;
-    const topNames = objectGetOwnPropertyNames(verificationDocument);
-    const hasLifecycleSpec = arrayIncludes(topNames, "spec")
-      && verificationDocument.spec === SIGNING_KEY_LIFECYCLE_SPEC;
-    const hasStructuredKeys = arrayIncludes(topNames, "keys")
-      && typeof verificationDocument.keys !== "string";
-    const looksLikeLifecycle = hasLifecycleSpec || hasStructuredKeys;
-    if (!looksLikeLifecycle) {
-      // Static consumers retain the published flat map unchanged. No rotation is represented here,
-      // so there is no retirement cutoff to apply.
-      keyring = verificationDocument as Keyring;
-    } else {
-      if (
-        verificationDocument.spec !== SIGNING_KEY_LIFECYCLE_SPEC
-        || topNames.length !== 2
-        || !arrayIncludes(topNames, "spec")
-        || !arrayIncludes(topNames, "keys")
-      ) {
-        return fail("MALFORMED", "malformed signing key lifecycle", chainId, list.length);
-      }
-      const entries = verificationDocument.keys;
-      if (typeof entries !== "object" || entries === null || isArray(entries)) {
-        return fail("MALFORMED", "signing key lifecycle keys must be an object", chainId, list.length);
-      }
-      const kids = objectGetOwnPropertyNames(entries);
-      if (kids.length === 0) {
-        return fail("MALFORMED", "signing key lifecycle must contain at least one key", chainId, list.length);
-      }
-      const derived = objectCreateNull<Keyring>();
-      let currentKeys = 0;
-      for (let ki = 0; ki < kids.length; ki++) {
-        const kid = kids[ki] as string;
-        const entry = (entries as Record<string, unknown>)[kid];
-        if (typeof entry !== "object" || entry === null || isArray(entry)) {
-          return fail("MALFORMED", `lifecycle entry for signing key "${kid}" must be an object`, chainId, list.length);
-        }
-        const fields = objectGetOwnPropertyNames(entry);
-        if (
-          fields.length !== 2
-          || !arrayIncludes(fields, "publicKey")
-          || !arrayIncludes(fields, "retiredAt")
-        ) {
-          return fail("MALFORMED", `lifecycle entry for signing key "${kid}" must contain exactly publicKey + retiredAt`, chainId, list.length);
-        }
-        const publicKey = (entry as Record<string, unknown>).publicKey;
-        const retiredAt = (entry as Record<string, unknown>).retiredAt;
-        if (typeof publicKey !== "string" || publicKey.length === 0) {
-          return fail("MALFORMED", `lifecycle publicKey for signing key "${kid}" must be a non-empty string`, chainId, list.length);
-        }
-        derived[kid] = publicKey;
-        if (retiredAt === null) {
-          currentKeys++;
-          continue;
-        }
-        if (typeof retiredAt !== "string" || !isRfc3339(retiredAt)) {
-          return fail("MALFORMED", `lifecycle retiredAt for signing key "${kid}" must be null or RFC 3339`, chainId, list.length);
-        }
-        const retirementInstant = dateParse(retiredAt);
-        if (isNaNValue(retirementInstant)) {
-          return fail("MALFORMED", `lifecycle retiredAt for signing key "${kid}" is not a parseable instant`, chainId, list.length);
-        }
-        mapSet(retirementBounds, kid, { instant: retirementInstant, text: retiredAt });
-      }
-      if (currentKeys !== 1) {
-        return fail("MALFORMED", `signing key lifecycle must identify exactly one current key (found ${currentKeys})`, chainId, list.length);
-      }
-      // ONE parsed document produced both structures. There is no second retirement read that can
-      // race a rotation or be omitted while retaining the retired public key.
-      keyring = derived;
-    }
+    verification = kParsed.value;
+    keyring = verification.keyring;
   }
   // PUBLISHED as an ordinary array (round-4, A1). `arraySlice` returns an INERT-rooted copy now, and
   // `warnings` is a documented field of a PUBLIC result object — shipping an array whose
@@ -556,20 +479,19 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
 
     // 4c. Signature. With a keyring, an unknown kid is TAMPERED, not a soft pass.
     if (haveKeyring) {
+      if (verification!.retiredKids[r.sig.kid] === true) {
+        return fail(
+          "TAMPERED",
+          `signing key "${r.sig.kid}" is retired; signer-chosen receipt time is not an independent witness`,
+          chainId,
+          list.length,
+          seq,
+        );
+      }
       const pub = keyring[r.sig.kid];
       if (!pub) return fail("TAMPERED", `unknown signing key "${r.sig.kid}" not in keyring`, chainId, list.length, seq);
       const ok = verifyEd25519(pub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), r.sig.value);
       if (!ok) return fail("TAMPERED", `invalid signature (kid ${r.sig.kid})`, chainId, list.length, seq);
-      const retirement = mapGet(retirementBounds, r.sig.kid);
-      if (retirement !== undefined) {
-        const receiptInstant = dateParse(r.ts);
-        if (isNaNValue(receiptInstant)) {
-          return fail("MALFORMED", `cannot evaluate signing-key retirement at seq ${seq}`, chainId, list.length, seq);
-        }
-        if (receiptInstant >= retirement.instant) {
-          return fail("TAMPERED", `signing key "${r.sig.kid}" was retired at ${retirement.text}`, chainId, list.length, seq);
-        }
-      }
     }
 
     // 4c-bis. Identity binding — ONLY meaningful once the signature is AUTHENTICATED (gated on
@@ -635,7 +557,7 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
     // to the tail-match — VALID + tailChecked over an erased tail. Parsed bytes cannot differ
     // between two reads.
     const cp = checkpointSnap as Checkpoint;
-    const cpVerify = verifyCheckpointParsed(cp, keyring);
+    const cpVerify = verifyCheckpointParsed(cp, verification);
     if (cpVerify === "bad spec" || cpVerify === "malformed checkpoint") {
       return fail("TAMPERED", `checkpoint invalid: ${cpVerify}`, chainId, list.length);
     }
@@ -645,17 +567,16 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
     // the tail, and forge a checkpoint over the truncated head (a trust-root bypass on the only
     // anti-truncation control). Mirrors the receipt unknown-kid rule above.
     if (haveKeyring && cpVerify !== "ok") {
+      if (cpVerify === "retired signing key") {
+        return fail(
+          "TAMPERED",
+          `checkpoint signing key "${cp.sig.kid}" is retired; signer-chosen checkpoint time is not an independent witness`,
+          chainId,
+          list.length,
+          head.chain.seq,
+        );
+      }
       return fail("TAMPERED", `checkpoint not authenticated against keyring (${cpVerify})`, chainId, list.length);
-    }
-    const checkpointRetirement = mapGet(retirementBounds, cp.sig.kid);
-    if (checkpointRetirement !== undefined) {
-      const checkpointInstant = dateParse(cp.ts);
-      if (isNaNValue(checkpointInstant)) {
-        return fail("MALFORMED", "cannot evaluate checkpoint signing-key retirement", chainId, list.length, head.chain.seq);
-      }
-      if (checkpointInstant >= checkpointRetirement.instant) {
-        return fail("TAMPERED", `checkpoint signing key "${cp.sig.kid}" was retired at ${checkpointRetirement.text}`, chainId, list.length, head.chain.seq);
-      }
     }
     if (cp.chain !== chainId) return fail("TAMPERED", "checkpoint chain mismatch", chainId, list.length);
     if (cp.highestSeq !== head.chain.seq || cp.headHash !== head.chain.hash) {
@@ -753,7 +674,7 @@ export function verifyChainText(text: string, opts: VerifyOptions = {}): VerifyR
   return verifyChain(text, opts);
 }
 
-type CheckpointVerdict = "ok" | "unverified" | "bad spec" | "malformed checkpoint" | "bad checkpoint signature";
+type CheckpointVerdict = "ok" | "unverified" | "retired signing key" | "bad spec" | "malformed checkpoint" | "bad checkpoint signature";
 
 // The allow-list a checkpoint's key set is decided against — a policy table, so it is built through
 // `frozenTable`: deep-frozen, re-rooted onto the inert array prototype, and refused at construction
@@ -775,15 +696,13 @@ const CHECKPOINT_KEYS = frozenTable(["spec", "chain", "highestSeq", "headHash", 
 export function verifyCheckpoint(cp: Uint8Array | string, keyring?: Uint8Array | string): CheckpointVerdict {
   const cpParsed = parseDocument(cp, "checkpoint");
   if (!cpParsed.ok) return "malformed checkpoint";
-  let ring: Keyring | undefined;
+  let verification: ParsedVerificationKeyring | undefined;
   if (keyring !== undefined) {
-    const kParsed = parseDocument(keyring, "keyring");
+    const kParsed = parseVerificationKeyring(keyring, "keyring");
     if (!kParsed.ok) return "malformed checkpoint";
-    const kv = kParsed.value;
-    if (typeof kv !== "object" || kv === null || isArray(kv)) return "malformed checkpoint";
-    ring = kv as Keyring;
+    verification = kParsed.value;
   }
-  return verifyCheckpointParsed(cpParsed.value as Checkpoint, ring);
+  return verifyCheckpointParsed(cpParsed.value as Checkpoint, verification);
 }
 
 /**
@@ -791,7 +710,7 @@ export function verifyCheckpoint(cp: Uint8Array | string, keyring?: Uint8Array |
  * what the bytes boundary above guarantees, and `verifyParsedChain` reuses it with the SAME parsed
  * keyring it authenticates receipts against.
  */
-function verifyCheckpointParsed(cp: Checkpoint, keyring?: Keyring): CheckpointVerdict {
+function verifyCheckpointParsed(cp: Checkpoint, verification?: ParsedVerificationKeyring): CheckpointVerdict {
   const snap = cp as unknown as Record<string, unknown>;
   // STRICT, FAIL-CLOSED structural validation: a checkpoint is a SIGNED trust statement, so it
   // gets the same discipline as a receipt — null/non-object, unknown fields (additionalProperties:false,
@@ -824,7 +743,8 @@ function verifyCheckpointParsed(cp: Checkpoint, keyring?: Keyring): CheckpointVe
   if (typeof sig.kid !== "string" || sig.kid.length === 0 || typeof sig.value !== "string" || sig.value.length === 0) {
     return "malformed checkpoint";
   }
-  const pub = keyring?.[sig.kid];
+  if (verification?.retiredKids[sig.kid] === true) return "retired signing key";
+  const pub = verification?.keyring[sig.kid];
   if (!pub) return "unverified";
   let msg: Buffer;
   try {

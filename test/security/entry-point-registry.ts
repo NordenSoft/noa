@@ -91,6 +91,7 @@ export const NOA_RECEIPT: EntryPoint[] = [
   { name: "verifyCompleteness", cls: "bytes-in", why: "head, anchors and trustSet are all bytes; freshness is admitted by the option schema" },
   { name: "verifyChainWitnessed", cls: "bytes-in", why: "chain, keyring, anchors and trustSet are bytes; the head is derived from the SAME bytes verifyChain parsed" },
   { name: "verifyReceiptCompliance", cls: "bytes-in", why: "receipt, policy and inputs are three documents; options are schema-admitted" },
+  { name: "resolveVerificationKey", cls: "bytes-in", why: "the keyring/lifecycle trust root is a byte document; retired state is resolved without traversing a caller object" },
   { name: "validateReceiptShape", cls: "bytes-in", why: "the structural walk runs over safeParse output, so its many passes cannot disagree" },
   { name: "receiptFromCose", cls: "bytes-in", why: "COSE bytes were always inert; the keyring and identityManifest are now documents too" },
   { name: "coseSign1Verify", cls: "bytes-in", why: "COSE bytes were always inert; the keyring is now a document too" },

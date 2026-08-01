@@ -41,7 +41,7 @@ test("a revoked approver cannot backdate a genuine decision to mint an execution
   assert.equal(fx.store.listGrants().length, 0);
 });
 
-test("a decision received before a future revocation remains authorized", () => {
+test("a non-null future revocation still refuses a self-dated decision without an independent time witness", () => {
   const { fx, holdId, hold } = createPendingHighRiskHold("future-revocation");
   const gateNow = fx.clock.t;
   fx.trust.keyring[fx.trust.approver.kid]!.revokedAt =
@@ -56,9 +56,11 @@ test("a decision received before a future revocation remains authorized", () => 
   });
   const result = fx.engine.decide(holdId, body(signed));
 
-  assert.equal(result.status, 200, JSON.stringify(result.body));
-  assert.equal(fx.store.getHold(holdId)!.status, "APPROVED");
-  assert.equal(fx.store.listGrants().length, 1);
+  assert.equal(result.status, 422, JSON.stringify(result.body));
+  assert.equal((result.body as { error?: string }).error, "DECISION_ARTIFACT_INVALID");
+  assert.match(String((result.body as { detail?: string }).detail), /revoked.*independent witness/i);
+  assert.equal(fx.store.getHold(holdId)!.status, "PENDING");
+  assert.equal(fx.store.listGrants().length, 0);
 });
 
 test("a live Decision signer cannot claim the revoked receipt signer's approverKid", () => {

@@ -5,9 +5,9 @@ waiting to happen and, worse, a list that can drift from the code it claims to d
 
 Source: `src/index.ts` value exports, resolved through the TypeScript compiler API.
 
-- total value exports: **67**
-- security-sensitive: **15**
-- security-sensitive already bytes-in: **15**
+- total value exports: **69**
+- security-sensitive: **17**
+- security-sensitive already bytes-in: **17**
 - security-sensitive NOT yet bytes-in (ADR §3.1 target): **0**
 
 | Export | Kind | First parameter | Bytes-in | Declared in | Exemption reason |
@@ -64,12 +64,14 @@ Source: `src/index.ts` value exports, resolved through the TypeScript compiler A
 | `receiptHashInput` | UTILITY | `Receipt` | n/a | `src/canonicalize.ts` | pure pre-image construction |
 | `receiptToCose` | PRODUCER | `Receipt` | n/a | `src/cose/receipt-cose.ts` | serializes the caller's own receipt |
 | `REF_EVAL_VERSION` | CONSTANT | `—` | n/a | `src/policy/eval.ts` |  |
+| `resolveVerificationKey` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/verification-keyring.ts` |  |
 | `SafeJsonError` | ERROR_CLASS | `—` | n/a | `src/safe-json.ts` |  |
 | `safeParse` | UTILITY | `string` | n/a | `src/safe-json.ts` | IS the strict parse boundary (src/safe-json.ts); already bytes/text-in |
 | `sha256Digest` | UTILITY | `string \| Buffer<ArrayBufferLike>` | n/a | `src/hash.ts` | pure hash |
 | `sha256Hex` | UTILITY | `string \| Buffer<ArrayBufferLike>` | n/a | `src/hash.ts` | pure hash |
 | `sha256Prefixed` | UTILITY | `string \| Buffer<ArrayBufferLike>` | n/a | `src/hash.ts` | pure hash |
 | `signEd25519` | PRODUCER | `string` | n/a | `src/keys.ts` | signs with the caller's own key |
+| `SIGNING_KEY_LIFECYCLE_SPEC` | SECURITY_SENSITIVE | `—` | n/a | `src/verification-keyring.ts` |  |
 | `validatePolicy` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/policy/validate.ts` |  |
 | `validateReceiptShape` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/schema.ts` |  |
 | `verifyChain` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/verify.ts` |  |

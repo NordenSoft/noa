@@ -28,7 +28,17 @@ export {
 // verify primitives the decision receipt is built/checked with, WITHOUT the mcp-proxy package
 // having to add a direct `noa-receipt` dependency it otherwise never carries. Purely additive —
 // no existing export changes.
-export { generateKeyPair, verifyChain, signEd25519, verifyEd25519, canonicalize, buildReceipt, buildReceiptAsync } from "noa-receipt";
+export {
+  generateKeyPair,
+  verifyChain,
+  signEd25519,
+  verifyEd25519,
+  canonicalize,
+  buildReceipt,
+  buildReceiptAsync,
+  resolveVerificationKey,
+  SIGNING_KEY_LIFECYCLE_SPEC,
+} from "noa-receipt";
 
 // BOUNDARY 2 — the ONE conversion from an arbitrary thrown value to a safe descriptor. Re-exported
 // from the package root as well as the `./safe-throw` subpath so no consumer has a reason to write

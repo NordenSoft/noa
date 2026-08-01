@@ -594,10 +594,12 @@ for (const oc of OUTCOMES) {
   bundle.checkpoint = buildCheckpoint(clone(w.bundle.allowedReceipt) as Receipt, T_CHECKPOINT, rSign("gate-prod-1"));
   emit("reject", "step17-checkpoint-wrong-head", fixtureFrom(w, { description: "STEP_17: an authenticated checkpoint pinned to the ALLOWED receipt while the chain head is the EXECUTED receipt (tail truncated/extended)", expectVerdict: "INVALID", expectStep: "STEP_17_CHECKPOINT_RECONCILE", expectCode: "E_CHECKPOINT_RECONCILE", bundle }));
 }
-// STEP 18 — an approver key revoked BETWEEN decidedAt and the trusted receivedAt (F10 backdating defense).
+// STEP 4 — a retired approver key is refused outright. The phone-written decidedAt and the
+// gate-written receivedAt are both irrelevant to retirement: neither is an independent time witness
+// for this signature, so a non-null revokedAt makes the artifact unverifiable at its own verifier.
 {
   const w = buildWorld("EXECUTED", { approverRevokedAt: "2026-07-14T11:56:15.000Z" }); // after decidedAt 11:56:00, before receivedAt 11:56:30
-  emit("reject", "step18-revoked-at-received", fixtureFrom(w, { description: "STEP_18/F10: the approver key was revoked at 11:56:15 — after the phone-written decidedAt (11:56:00) but BEFORE the gate's trusted receivedAt (11:56:30); the authorization-time check uses receivedAt → rejected", expectVerdict: "INVALID", expectStep: "STEP_18_TEMPORAL_AUTHORIZATION", expectCode: "E_TEMPORAL_AUTH", bundle: w.bundle }));
+  emit("reject", "step04-retired-approver-refused-outright", fixtureFrom(w, { description: "STEP_4/P0-14: the approver key has a non-null revokedAt. The decision artifact is refused outright without comparing retirement to decidedAt, receivedAt, or any other artifact timestamp", expectVerdict: "INVALID", expectStep: "STEP_4_DECISION_ARTIFACT", expectCode: "E_DECISION", bundle: w.bundle }));
 }
 
 // ═══ 3b. CROSS-FAMILY REVIEW REGRESSIONS (2026-07-27) ═════════════════════════════════════════════

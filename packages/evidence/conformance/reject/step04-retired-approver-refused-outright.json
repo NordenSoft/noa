@@ -1,8 +1,8 @@
 {
-  "description": "STEP_18/F10: the approver key was revoked at 11:56:15 — after the phone-written decidedAt (11:56:00) but BEFORE the gate's trusted receivedAt (11:56:30); the authorization-time check uses receivedAt → rejected",
+  "description": "STEP_4/P0-14: the approver key has a non-null revokedAt. The decision artifact is refused outright without comparing retirement to decidedAt, receivedAt, or any other artifact timestamp",
   "expectVerdict": "INVALID",
-  "expectStep": "STEP_18_TEMPORAL_AUTHORIZATION",
-  "expectCode": "E_TEMPORAL_AUTH",
+  "expectStep": "STEP_4_DECISION_ARTIFACT",
+  "expectCode": "E_DECISION",
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {

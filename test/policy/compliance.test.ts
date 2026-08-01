@@ -66,6 +66,26 @@ test("B4: on-receipt compliance proof — re-run reproduces the verdict (ALLOW)"
   assert.equal(res.attribution, "KID_LEVEL", "no manifest ⇒ the weaker guarantee, stated as a FIELD not a comment");
 });
 
+test("P0-14: compliance carrier authentication refuses a lifecycle-retired signer outright", () => {
+  const inputs = { action: "payment.refund", amountMinor: 4200 };
+  const retiredCarrier = receiptWith(inputs, "EXECUTED");
+  const current = generateKeyPair("compliance-current");
+  const lifecycle = b({
+    spec: "noa.signing-key-lifecycle/0.1",
+    keys: {
+      [kp.kid]: { publicKey: kp.publicKey, retiredAt: "2026-08-01T08:36:12.643Z" },
+      [current.kid]: { publicKey: current.publicKey, retiredAt: null },
+    },
+  });
+
+  const staticControl = verifyReceiptCompliance(b(retiredCarrier), b(POLICY), b(inputs), { keyring: b(keyring) });
+  assert.equal(staticControl.ok, true, staticControl.reason);
+
+  const attack = verifyReceiptCompliance(b(retiredCarrier), b(POLICY), b(inputs), { keyring: lifecycle });
+  assert.equal(attack.ok, false, "compliance verifier accepted a carrier signed by a lifecycle-retired key");
+  assert.match(attack.reason ?? "", /retired/i);
+});
+
 test("B4: on-receipt compliance proof — DENY reproduces too", () => {
   const inputs = { action: "payment.refund", amountMinor: 100_000_000 };
   const r = receiptWith(inputs, "BLOCKED");

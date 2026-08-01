@@ -16,6 +16,7 @@
  */
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from 'noa-approval-artifacts';
 import type { GateTrust, GateKeyPair } from 'noa-gate';
+import { SIGNING_KEY_LIFECYCLE_SPEC, type SigningKeyLifecycle } from 'noa-receipt';
 import { deriveSas, sasEquals, buildPairingTranscript } from './mobile.js';
 import type {
   PairingChallenge,
@@ -305,9 +306,12 @@ export function assembleGateTrust(
     [auth.authority.kid]: { publicKey: auth.authority.publicKey, type: 'DELEGATED', roles: ['key-manifest-sign'], validFrom: auth.validFrom, revokedAt: null },
     [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], validFrom: auth.validFrom, revokedAt: null },
   };
-  const receiptKeyring: Record<string, string> = {
-    [gate.kid]: gate.publicKey,
-    [approver.kid]: approver.publicKey,
+  const receiptKeyring: SigningKeyLifecycle = {
+    spec: SIGNING_KEY_LIFECYCLE_SPEC,
+    keys: {
+      [gate.kid]: { publicKey: gate.publicKey, retiredAt: gateWindow.revokedAt },
+      [approver.kid]: { publicKey: approver.publicKey, retiredAt: approverWindow.revokedAt },
+    },
   };
 
   const trust: GateTrust = {

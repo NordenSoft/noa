@@ -61,6 +61,32 @@ test("receipt → COSE_Sign1 → verify round-trips, returns the receipt", () =>
   assert.equal(canonicalize(r.receipt), canonicalize(receipt));
 });
 
+test("P0-14: both public COSE verification surfaces refuse a lifecycle-retired signer outright", () => {
+  const retired = generateKeyPair("cose-retired");
+  const current = generateKeyPair("cose-current");
+  const retiredReceipt = mkReceipt({ kid: retired.kid, privateKey: retired.privateKey });
+  const currentReceipt = mkReceipt({ kid: current.kid, privateKey: current.privateKey });
+  const retiredEnvelope = receiptToCose(retiredReceipt, { kid: retired.kid, privateKey: retired.privateKey });
+  const currentEnvelope = receiptToCose(currentReceipt, { kid: current.kid, privateKey: current.privateKey });
+  const lifecycle = b({
+    spec: "noa.signing-key-lifecycle/0.1",
+    keys: {
+      [retired.kid]: { publicKey: retired.publicKey, retiredAt: "2026-08-01T08:36:12.643Z" },
+      [current.kid]: { publicKey: current.publicKey, retiredAt: null },
+    },
+  });
+
+  assert.equal(coseSign1Verify(currentEnvelope, lifecycle).ok, true, "current-key control must verify");
+  assert.equal(receiptFromCose(currentEnvelope, lifecycle).ok, true, "receipt current-key control must verify");
+
+  const rawAttack = coseSign1Verify(retiredEnvelope, lifecycle);
+  const receiptAttack = receiptFromCose(retiredEnvelope, lifecycle);
+  assert.equal(rawAttack.ok, false, "raw COSE verifier accepted a lifecycle-retired key");
+  assert.match(rawAttack.reason ?? "", /retired/i);
+  assert.equal(receiptAttack.ok, false, "receipt COSE verifier accepted a lifecycle-retired key");
+  assert.match(receiptAttack.reason ?? "", /retired/i);
+});
+
 test("COSE_Sign1: tampered payload fails verification", () => {
   const kp = generateKeyPair("k");
   const keyring = { k: kp.publicKey };

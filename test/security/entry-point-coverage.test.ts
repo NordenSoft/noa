@@ -85,6 +85,7 @@ const CALLS: Record<string, (arg: unknown) => unknown> = {
   verifyCompleteness: (a) => noaReceipt.verifyCompleteness(a as never, EMPTY_ARRAY, EMPTY_TRUST),
   verifyChainWitnessed: (a) => noaReceipt.verifyChainWitnessed(EMPTY_ARRAY, undefined, { anchors: a as never, trustSet: EMPTY_TRUST }),
   verifyReceiptCompliance: (a) => noaReceipt.verifyReceiptCompliance(a as never, EMPTY_POLICY, EMPTY_OBJECT, {}),
+  resolveVerificationKey: (a) => noaReceipt.resolveVerificationKey(a as never, "kid"),
   validateReceiptShape: (a) => noaReceipt.validateReceiptShape(a as never),
   receiptFromCose: (a) => noaReceipt.receiptFromCose(Buffer.from("x"), a as never),
   coseSign1Verify: (a) => noaReceipt.coseSign1Verify(Buffer.from("x"), a as never),

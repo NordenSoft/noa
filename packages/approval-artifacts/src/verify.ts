@@ -8,8 +8,7 @@
  *   1. STRUCTURAL   — the shipped schema/<spec>.schema.json (additionalProperties:false, enums,
  *                     patterns, discriminated pairing union). Catches `unknown-property` + shape.
  *   2. SIGNATURE    — for signed artifacts: sig.kid resolves in the keyring, the key is not revoked
- *                     as of the artifact's time (or the verifier-controlled `authorizationTime` at
- *                     live authorization boundaries), holds the F15 role, and the Ed25519 signature over
+ *                     (a non-null revokedAt is refused outright), holds the F15 role, and the Ed25519 signature over
  *                     `<DOMAIN>: ++ SHA256(JCS(doc without sig))` verifies. Catches `tampered-content`
  *                     + `wrong-key`.
  *   3. REFHASH      — every declared cross-artifact `*Hash` equals the F1-correct hash (rule a/b/c) of
@@ -34,7 +33,7 @@ export interface KeyEntry {
   roles: string[];
   /**
    * Activation time (Key Manifest `validFrom`). A signature made BEFORE its key was activated is
-   * not authorized — the mirror image of `revokedAt`, and evaluated against the same artifact time.
+   * not authorized. Unlike revocation, activation is evaluated against the artifact time.
    * Manifests already carried this field; `KeyEntry` did not, so every keyring resolver silently
    * dropped it and pre-activation signatures verified clean. OPTIONAL: an entry without it (a root
    * key, a test fixture) is treated as always-active, so this is additive for existing callers.
@@ -50,10 +49,8 @@ export interface VerifyContext {
   /** verification-time "now"; enables the expiry + freshness checks. */
   now?: string;
   /**
-   * Verifier-controlled time at which a live authorization is being accepted. When supplied,
-   * revocation is evaluated at this time instead of a signer-controlled artifact timestamp.
-   * Live gates MUST set this; offline evidence verification may omit it and separately prove a
-   * trusted historical acceptance time.
+   * Verifier-controlled time at which a live authorization is being accepted. This remains an
+   * activation-time input; revocation never depends on it because any non-null revokedAt is refused.
    */
   authorizationTime?: string;
   /** riskClass of the held action — selects the F15 approver tier for a Decision Artifact. */
@@ -314,9 +311,8 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
     const entry = ctx.keyring?.[sig.kid];
     if (!entry) return { ok: false, reason: `unknown signing key "${sig.kid}" (not in keyring)` };
 
-    // Revocation normally follows the artifact's own time for historical/offline verification.
-    // A live authorization boundary must instead supply a verifier-controlled authorizationTime;
-    // otherwise a revoked signer can simply backdate its signed document past the revocation.
+    // Activation still uses a time input. Revocation deliberately does not: a compromised retired
+    // key chooses every signed artifact timestamp, so a backdated timestamp cannot prove history.
     const artifactTime =
       ctx.authorizationTime ??
       (doc.issuedAt as string | undefined) ??
@@ -345,14 +341,10 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
       }
     }
     if (entry.revokedAt != null) {
-      const rev = parseTime(entry.revokedAt);
-      const at = parseTime(artifactTime);
-      if (Number.isNaN(rev) || Number.isNaN(at)) {
-        return { ok: false, reason: `cannot evaluate revocation time for signing key "${sig.kid}"` };
-      }
-      if (at >= rev) {
-        return { ok: false, reason: `signing key "${sig.kid}" was revoked at ${entry.revokedAt}` };
-      }
+      return {
+        ok: false,
+        reason: `signing key "${sig.kid}" was revoked at ${entry.revokedAt}; signer-chosen artifact time is not an independent witness`,
+      };
     }
 
     // F15 role/type enforcement (skipped where signerType/Role are null — e.g. pairing).

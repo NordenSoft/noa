@@ -41,6 +41,7 @@ import { receiptHashInput } from "../canonicalize.js";
 import { verifyEd25519, type Keyring, type IdentityManifest } from "../keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../signing.js";
 import { arrayIncludes, arrayJoin, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray } from "../intrinsics.js";
+import { parseVerificationKeyring, type ParsedVerificationKeyring } from "../verification-keyring.js";
 
 export interface ComplianceCommit {
   policyHash: string;
@@ -189,14 +190,11 @@ export function verifyReceiptCompliance(
     // never ran, yet ok:true could still come back. Presence-gating + the non-object guard immediately
     // below makes every supplied-but-malformed keyring fail CLOSED instead of being ignored.
     const haveKeyring = o.keyring !== undefined;
-    let keyringParsed: Keyring | undefined;
+    let keyringParsed: ParsedVerificationKeyring | undefined;
     if (haveKeyring) {
-      const kParsed = parseDocument(o.keyring, "keyring");
+      const kParsed = parseVerificationKeyring(o.keyring, "keyring");
       if (!kParsed.ok) return { ok: false, reason: kParsed.reason };
-      if (typeof kParsed.value !== "object" || kParsed.value === null || isArray(kParsed.value)) {
-        return { ok: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
-      }
-      keyringParsed = kParsed.value as Keyring;
+      keyringParsed = kParsed.value;
     }
     // ── H2 (review #6): NO TRUST ROOT ⇒ NO POSITIVE VERDICT. ──────────────────────────────────────
     // This was the only verifier in the repository that returned a POSITIVE result with no trust
@@ -224,12 +222,19 @@ export function verifyReceiptCompliance(
     }
     let attribution: "KID_LEVEL" | "AGENT_BOUND" = "KID_LEVEL";
     {
-      const keyring = keyringParsed as Keyring;
+      const verification = keyringParsed as ParsedVerificationKeyring;
+      const keyring = verification.keyring;
       const shape = validateReceiptShapeParsed(snap);
       if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${arrayJoin(shape.errors, "; ")}` };
       const hashInput = receiptHashInput(snap);
       if ("sha256:" + sha256Hex(hashInput) !== snap.chain.hash) {
         return { ok: false, reason: "carrier receipt hash mismatch — not authentic" };
+      }
+      if (verification.retiredKids[snap.sig.kid] === true) {
+        return {
+          ok: false,
+          reason: `carrier receipt signing key ${JSON.stringify(snap.sig.kid)} is retired; signer-chosen receipt time is not an independent witness`,
+        };
       }
       const pub = keyring[snap.sig.kid];
       if (!pub) return { ok: false, reason: `carrier receipt signing key "${snap.sig.kid}" not in keyring` };

@@ -13,6 +13,7 @@ import { canonicalize } from "../jcs.js";
 import { safeParse } from "../safe-json.js";
 import { validateReceiptShapeParsed } from "../schema.js";
 import { parseDocument } from "../bytes.js";
+import { parseVerificationKeyring } from "../verification-keyring.js";
 import type { Receipt } from "../types.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
 import { arrayIncludes, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray, bufferFrom, bufToString, bufEquals } from "../intrinsics.js";
@@ -51,21 +52,15 @@ export function receiptFromCose(
   // hand-rolled boundary protects the field its author was thinking about and nothing else, and
   // `slice` itself dispatches through a poisonable prototype slot. The shape-validation pass below
   // is kept for its error messages; what it walks is now parser output.
-  const kParsed = parseDocument(keyringBytes, "keyring");
+  const kParsed = parseVerificationKeyring(keyringBytes, "keyring");
   if (!kParsed.ok) return { ok: false, kid: null, receipt: null, reason: kParsed.reason, warnings: [] };
-  const keyring = kParsed.value as Keyring;
+  const verification = kParsed.value;
+  const keyring = verification.keyring;
   let identityManifest: IdentityManifest | undefined;
   if (identityManifestBytes !== undefined) {
     const mParsed = parseDocument(identityManifestBytes, "identityManifest");
     if (!mParsed.ok) return { ok: false, kid: null, receipt: null, reason: mParsed.reason, warnings: [] };
     identityManifest = mParsed.value as IdentityManifest;
-  }
-  // Fail-closed on a non-object keyring: mirror verifyChain's non-object-keyring guard at the COSE
-  // entry too, BEFORE any manifest work, so a null/array/non-object keyring is a clean ok:false here (not a
-  // raw throw on a later `keyring[kid]`). coseSign1Verify guards as well; this keeps THIS entry point's own
-  // contract fail-closed with a consistent reason.
-  if (keyring === null || typeof keyring !== "object" || isArray(keyring)) {
-    return { ok: false, kid: null, receipt: null, reason: "keyring must be an object (kid -> base64 SPKI)", warnings: [] };
   }
   // Validate the optional manifest AND SNAPSHOT it (fail-closed; matches verifyChain). TOCTOU hardening:
   // read each entry EXACTLY ONCE into a plain Map, copying the array by value (slice captures element
@@ -107,6 +102,15 @@ export function receiptFromCose(
     }
   }
   const r = coseSign1VerifyParsed(coseBytes, keyring);
+  if (r.kid !== null && verification.retiredKids[r.kid] === true) {
+    return {
+      ok: false,
+      kid: r.kid,
+      receipt: null,
+      reason: `signing key ${JSON.stringify(r.kid)} is retired; signer-chosen artifact time is not an independent witness`,
+      warnings: [],
+    };
+  }
   if (!r.ok || !r.payload) return { ok: false, kid: r.kid, receipt: null, reason: r.reason, warnings: [] };
   let parsed: unknown;
   try {

@@ -8,7 +8,7 @@
  * shape-reading + keyring assembly the step consumes. Nothing here trusts a signature by itself.
  */
 import type { KeyEntry } from "noa-approval-artifacts";
-import type { Keyring } from "noa-receipt";
+import { SIGNING_KEY_LIFECYCLE_SPEC, type Keyring, type SigningKeyLifecycle } from "noa-receipt";
 import { parseDocument } from "./bytes.js";
 
 /** A resolved manifest key entry (a read-only reflection of the frozen `noa.key-manifest/0.1`
@@ -107,7 +107,15 @@ export function asStringKeyring(input: Uint8Array | string): Keyring {
   for (const [kid, v] of Object.entries(raw as Record<string, unknown>)) {
     if (typeof v === "string") out[kid] = v;
     else if (typeof v === "object" && v !== null && typeof (v as { publicKey?: unknown }).publicKey === "string") {
+      const fields = Object.getOwnPropertyNames(v);
+      if (fields.length !== 1 || fields[0] !== "publicKey") {
+        throw new Error(
+          `refusing to flatten signing key ${JSON.stringify(kid)}: conversion would discard lifecycle or authorization fields`,
+        );
+      }
       out[kid] = (v as { publicKey: string }).publicKey;
+    } else {
+      throw new Error(`checkpoint keyring entry ${JSON.stringify(kid)} is not a static public key`);
     }
   }
   return out;
@@ -182,17 +190,19 @@ export function buildResolvedKeyring(
  * defeating F7. Chain integrity (this keyring) and tail-completeness (the external checkpoint keyring)
  * are two independent trust roots.
  */
-export function buildReceiptKeyring(manifest: ManifestDoc): Keyring {
+export function buildReceiptKeyring(manifest: ManifestDoc): SigningKeyLifecycle {
   // TODO(bytes-in): same residual as `buildResolvedKeyring` above — on this package's own path the
   // manifest is a sub-tree of the kernel-parsed bundle and carries no getters, but the function is
   // published and a direct caller can still pass a live object. An empty keyring stays the
   // fail-closed outcome for anything this loop cannot read.
-  const out: Keyring = {};
-  if (manifest === null || typeof manifest !== "object" || !Array.isArray(manifest.keys)) return out;
+  const out: Record<string, { publicKey: string; retiredAt: string | null }> = {};
+  if (manifest === null || typeof manifest !== "object" || !Array.isArray(manifest.keys)) {
+    return { spec: SIGNING_KEY_LIFECYCLE_SPEC, keys: out };
+  }
   for (const k of manifest.keys) {
     if ((k.type === "GATE" || k.type === "APPROVER") && typeof k.publicKey === "string") {
-      out[k.kid] = k.publicKey;
+      out[k.kid] = { publicKey: k.publicKey, retiredAt: k.revokedAt ?? null };
     }
   }
-  return out;
+  return { spec: SIGNING_KEY_LIFECYCLE_SPEC, keys: out };
 }

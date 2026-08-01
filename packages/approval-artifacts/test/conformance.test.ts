@@ -154,19 +154,20 @@ test("Decision verifier rejects the OpenSSL small-order universal forgery", () =
   assert.match(result.reason ?? "", /invalid signature/);
 });
 
-test("live authorization evaluates revocation at verifier time, not signer-controlled decidedAt", () => {
+test("P0-14: a lifecycle-revoked artifact signer is refused outright, including backdated history", () => {
   const loaded = vectors.find(({ slug, vec }) => slug === "decision" && vec.expect === "ACCEPT");
   assert.ok(loaded, "valid Decision vector must exist");
   const historicalKeyring = structuredClone(keyring);
   const artifact = structuredClone(loaded.vec.artifact) as { sig: { kid: string } };
   historicalKeyring[artifact.sig.kid]!.revokedAt = "2026-07-14T11:58:00.000Z";
 
-  const historical = verifyArtifact(b(artifact), b({
+  const backdatedAttack = verifyArtifact(b(artifact), b({
     ...loaded.vec.context,
     schemas,
     keyring: historicalKeyring,
   }));
-  assert.equal(historical.ok, true, historical.reason);
+  assert.equal(backdatedAttack.ok, false, "a valid signature plus a pre-revocation artifact timestamp was accepted");
+  assert.match(backdatedAttack.reason ?? "", /revoked/);
 
   const liveAuthorization = verifyArtifact(b(artifact), b({
     ...loaded.vec.context,
@@ -176,6 +177,15 @@ test("live authorization evaluates revocation at verifier time, not signer-contr
   }));
   assert.equal(liveAuthorization.ok, false);
   assert.match(liveAuthorization.reason ?? "", /revoked/);
+
+  const currentControl = structuredClone(keyring);
+  currentControl[artifact.sig.kid]!.revokedAt = null;
+  const current = verifyArtifact(b(artifact), b({
+    ...loaded.vec.context,
+    schemas,
+    keyring: currentControl,
+  }));
+  assert.equal(current.ok, true, current.reason);
 });
 
 test("an invalid verifier-controlled authorization time fails closed", () => {

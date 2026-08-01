@@ -100,6 +100,13 @@ export {
   type VerifyResult,
   type VerifyStatus,
 } from "./verify.js";
+export {
+  SIGNING_KEY_LIFECYCLE_SPEC,
+  resolveVerificationKey,
+  type SigningKeyLifecycle,
+  type SigningKeyLifecycleEntry,
+  type ResolveVerificationKeyResult,
+} from "./verification-keyring.js";
 
 // L2 — policy-compliance (deterministic refEval). All fail-closed: a malformed policy or a
 // bad input yields a reproducible DENY verdict, never an exception or a silent permit.

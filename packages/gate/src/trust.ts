@@ -18,6 +18,7 @@
 
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from "noa-approval-artifacts";
+import { SIGNING_KEY_LIFECYCLE_SPEC, type SigningKeyLifecycle } from "noa-receipt";
 import { encodeDocument } from "./bytes.js";
 
 export interface GateKeyPair {
@@ -77,8 +78,8 @@ export interface GateTrust {
 
   /** kid → KeyEntry for `verifyArtifact` (structural + role checks on the phone Decision Artifact). */
   keyring: Record<string, KeyEntry>;
-  /** kid → base64(DER SPKI) for `verifyChain` (receipt-signature authentication). */
-  receiptKeyring: Record<string, string>;
+  /** Atomic public-key plus retirement state for `verifyChain`. */
+  receiptKeyring: SigningKeyLifecycle;
 
   /** REQUIRED gate liveness (G3), stable for this process, re-derived on restart. */
   bootId: string;
@@ -216,9 +217,12 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
     [authority.kid]: { publicKey: authority.publicKey, type: "DELEGATED", roles: ["key-manifest-sign"], validFrom, revokedAt: null },
     [root.kid]: { publicKey: root.publicKey, type: "ROOT", roles: [], validFrom, revokedAt: null },
   };
-  const receiptKeyring: Record<string, string> = {
-    [gate.kid]: gate.publicKey,
-    [approver.kid]: approver.publicKey,
+  const receiptKeyring: SigningKeyLifecycle = {
+    spec: SIGNING_KEY_LIFECYCLE_SPEC,
+    keys: {
+      [gate.kid]: { publicKey: gate.publicKey, retiredAt: null },
+      [approver.kid]: { publicKey: approver.publicKey, retiredAt: null },
+    },
   };
 
   return {

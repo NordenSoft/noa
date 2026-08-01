@@ -803,7 +803,7 @@ test("A1: requireTenantConsistency:false restores the EXACT previous behaviour (
   );
 });
 
-test("P0-14: a retired key cannot authenticate a fresh post-retirement chain segment", () => {
+test("P0-14: every root chain/checkpoint surface refuses a lifecycle-retired key without consulting signer timestamps", () => {
   const retired = generateKeyPair("p0-14-chain-retired");
   const current = generateKeyPair("p0-14-chain-current");
   const unknown = generateKeyPair("p0-14-chain-unknown");
@@ -838,8 +838,12 @@ test("P0-14: a retired key cannot authenticate a fresh post-retirement chain seg
     b([makeSegment("retired-attack", "2026-08-01T08:36:12.644Z", retired)]),
     { keyring: lifecycle },
   );
-  const historicalControl = verifyChain(
+  const backdatedRetiredAttack = verifyChain(
     b([makeSegment("retired-history", "2026-08-01T08:36:12.642Z", retired)]),
+    { keyring: lifecycle },
+  );
+  const backdatedRetiredTextAttack = verifyChainText(
+    JSON.stringify([makeSegment("retired-history-text", "2026-08-01T08:36:12.642Z", retired)]),
     { keyring: lifecycle },
   );
   const staticSigner = generateKeyPair("p0-14-chain-static");
@@ -859,6 +863,20 @@ test("P0-14: a retired key cannot authenticate a fresh post-retirement chain seg
       "2026-08-01T08:36:12.644Z",
       { kid: retired.kid, privateKey: retired.privateKey },
     )),
+  });
+  const backdatedRetiredCheckpoint = buildCheckpoint(
+    currentSegment,
+    "2026-08-01T08:36:12.642Z",
+    { kid: retired.kid, privateKey: retired.privateKey },
+  );
+  const standaloneCurrentCheckpoint = verifyCheckpoint(
+    b(buildCheckpoint(currentSegment, "2026-08-01T08:36:12.644Z", current)),
+    lifecycle,
+  );
+  const standaloneBackdatedRetiredCheckpoint = verifyCheckpoint(b(backdatedRetiredCheckpoint), lifecycle);
+  const chainWithBackdatedRetiredCheckpoint = verifyChain(b([currentSegment]), {
+    keyring: lifecycle,
+    checkpoint: b(backdatedRetiredCheckpoint),
   });
   const currentCheckpointControl = verifyChain(b([currentSegment]), {
     keyring: lifecycle,
@@ -881,13 +899,20 @@ test("P0-14: a retired key cannot authenticate a fresh post-retirement chain seg
   assert.match(unknownControl.reason ?? "", /unknown signing key/);
   assert.equal(freshRetiredAttack.status, "TAMPERED", `retired at ${retirement}: ${freshRetiredAttack.reason ?? "accepted"}`);
   assert.match(freshRetiredAttack.reason ?? "", /retired/i);
-  assert.equal(historicalControl.status, "VALID", historicalControl.reason);
+  assert.equal(backdatedRetiredAttack.status, "TAMPERED", backdatedRetiredAttack.reason);
+  assert.match(backdatedRetiredAttack.reason ?? "", /retired/i);
+  assert.equal(backdatedRetiredTextAttack.status, "TAMPERED", backdatedRetiredTextAttack.reason);
+  assert.match(backdatedRetiredTextAttack.reason ?? "", /retired/i);
   assert.equal(staticControl.status, "VALID", staticControl.reason);
   assert.equal(staticKeysKidControl.status, "VALID", staticKeysKidControl.reason);
   assert.equal(currentCheckpointControl.status, "VALID", currentCheckpointControl.reason);
   assert.equal(currentCheckpointControl.tailChecked, true);
   assert.equal(retiredCheckpointAttack.status, "TAMPERED");
   assert.match(retiredCheckpointAttack.reason ?? "", /checkpoint signing key.*retired/i);
+  assert.equal(standaloneCurrentCheckpoint, "ok");
+  assert.equal(standaloneBackdatedRetiredCheckpoint, "retired signing key");
+  assert.equal(chainWithBackdatedRetiredCheckpoint.status, "TAMPERED");
+  assert.match(chainWithBackdatedRetiredCheckpoint.reason ?? "", /retired/i);
   assert.equal(missingLifecycleData.status, "MALFORMED");
   assert.match(missingLifecycleData.reason ?? "", /publicKey \+ retiredAt/);
 });

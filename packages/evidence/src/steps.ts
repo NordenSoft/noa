@@ -13,7 +13,7 @@
  * (step 15) that no single-artifact verifier can express.
  */
 import { verifyArtifact, parseDocument, refHash, receiptRefHash, type KeyEntry } from "noa-approval-artifacts";
-import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type Keyring, type VerifyResult } from "noa-receipt";
+import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type SigningKeyLifecycle, type VerifyResult } from "noa-receipt";
 import { encodeDocument } from "./bytes.js";
 
 // PRISTINE DECISIONS (review #6, C1). Every membership/search below is a verdict input; none of them
@@ -50,7 +50,7 @@ export interface Ctx {
   maxAgeMs: number;
   schemas: Record<string, unknown>;
   rootKeyring: Record<string, KeyEntry>;
-  checkpointKeyring: Keyring;
+  checkpointKeyring: Uint8Array | string;
   warnings: string[];
   /**
    * BOUNDARY 1 bookkeeping: every receipt role routed through `roleReceipt` (the chokepoint).
@@ -80,7 +80,7 @@ export interface Ctx {
   delegation?: DelegationDoc;
   manifest?: ManifestDoc;
   resolvedKeyring?: Record<string, KeyEntry>;
-  receiptKeyring?: Keyring;
+  receiptKeyring?: SigningKeyLifecycle;
   orderedChain?: unknown[];
   headReceipt?: unknown;
   chainResult?: VerifyResult;
@@ -1003,7 +1003,7 @@ export function step17_checkpointReconcile(ctx: Ctx): StepResult {
   }
   // authenticate + reconcile the reused checkpoint against the EXTERNAL checkpoint keyring (F7).
   const cp = asObj(b.checkpoint);
-  const cpV = verifyCheckpoint(encodeDocument(b.checkpoint), encodeDocument(ctx.checkpointKeyring));
+  const cpV = verifyCheckpoint(encodeDocument(b.checkpoint), ctx.checkpointKeyring);
   if (cpV === "malformed checkpoint" || cpV === "bad spec") {
     return fail(S, "E_CHECKPOINT_RECONCILE", `checkpoint structurally invalid: ${cpV}`);
   }
@@ -1019,6 +1019,11 @@ export function step17_checkpointReconcile(ctx: Ctx): StepResult {
   } else if (cpV === "bad checkpoint signature") {
     // the checkpoint kid IS in the external keyring but the bytes were tampered → tamper, not "wrong keyring".
     return fail(S, "E_CHECKPOINT_RECONCILE", "checkpoint signature does not verify against the external checkpoint keyring");
+  } else if (cpV === "retired signing key") {
+    // A known-retired signer is not an absent trust root. Treating it like unknown/unverified would
+    // downgrade a positive bundle to VALID_SEGMENT_ONLY, which is still an acceptance verdict for
+    // evidence authenticated by a key the trust root explicitly retired.
+    return fail(S, "E_CHECKPOINT_RECONCILE", "checkpoint signing key is retired; signer-chosen checkpoint time is not an independent witness");
   } else {
     // "unverified": the checkpoint signer is not in the supplied external keyring → NO trusted anchor.
     ctx.checkpointReconciled = false;
@@ -1094,9 +1099,9 @@ export function step15_negativeOutcomePrinciple(ctx: Ctx): StepResult {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
-// STEP 18 — temporal authorization (F10/F15): the AUTHORIZATION-TIME re-assertion. Every signing kid
-// that was actually used must be UNREVOKED as of the gate's trusted `holdResolution.receivedAt` —
-// never the phone-written decidedAt (a revoked approver key cannot backdate past its revocation).
+// STEP 18 — temporal authorization (F10/F15): activation is checked at the applicable instant, while
+// every used key with non-null revokedAt is refused outright. A compromised key can backdate every
+// artifact timestamp it signs; only an independent time witness can establish genuine history.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 export function step18_temporalAuthorization(ctx: Ctx): StepResult {
   const S: StepName = "STEP_18_TEMPORAL_AUTHORIZATION";
@@ -1119,10 +1124,8 @@ export function step18_temporalAuthorization(ctx: Ctx): StepResult {
   // validly signed the genesis DEFERRED receipt at 11:50, because 11:56:30 (receivedAt) is inside
   // the window even though the signature is five minutes older than the key.
   //
-  // BOTH bounds now apply, and they are not redundant — they catch opposite forgeries:
-  //   • at the receipt's OWN ts  — a signature outside its key's activation/revocation window.
-  //   • at the trusted receivedAt — a receipt BACKDATED to before a revocation (which is precisely
-  //     why the receivedAt cohort exists; the producer controls `ts`, the gate controls receivedAt).
+  // Activation is evaluated at the receipt's own ts and the trusted receivedAt. Revocation is never
+  // compared to either: any non-null revokedAt fails in keyAuthorizedAt below.
   // A conforming producer never signs outside its key's window, so this adds no legitimate
   // rejection; it only removes the gap between the two questions.
   for (const r of ctx.orderedChain ?? []) {
@@ -1173,9 +1176,8 @@ export function step18_temporalAuthorization(ctx: Ctx): StepResult {
 }
 
 /**
- * Shared activation/revocation window check for one key at one instant. Returns an error string, or
- * null when the key was authorized at `atMs`. Both ends of the window are closed: `validFrom` was
- * previously unenforced everywhere (see approval-artifacts KeyEntry).
+ * Shared activation/state check for one key. Activation uses `atMs`; revocation is an unconditional
+ * refusal because artifact time is not an independent witness.
  */
 function keyAuthorizedAt(
   kid: string,
@@ -1189,9 +1191,7 @@ function keyAuthorizedAt(
     if (atMs < from) return `signing key "${kid}" signed at ${atLabel}, before its validFrom (${entry.validFrom}) — authorization-time check (F10) fails`;
   }
   if (entry.revokedAt != null) {
-    const rev = parseTime(entry.revokedAt);
-    if (Number.isNaN(rev)) return `signing key "${kid}" has an unparseable revokedAt (${entry.revokedAt})`;
-    if (atMs >= rev) return `signing key "${kid}" was revoked at ${entry.revokedAt}, at or before ${atLabel} — authorization-time check (F10) fails`;
+    return `signing key "${kid}" was revoked at ${entry.revokedAt}; signer-chosen artifact time is not an independent witness`;
   }
   return null;
 }

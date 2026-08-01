@@ -9,6 +9,7 @@
 import { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, type CborValue } from "./cbor.js";
 import { signEd25519, verifyEd25519, type Keyring } from "../keys.js";
 import { parseDocument } from "../bytes.js";
+import { parseVerificationKeyring } from "../verification-keyring.js";
 import { bufEquals, bufToString, bufferFrom, bufferAlloc, isArray } from "../intrinsics.js";
 
 /**
@@ -208,12 +209,19 @@ export function coseSign1Verify(coseBytes: Uint8Array, keyring: Uint8Array | str
   // BOTH arguments are bytes. The COSE message always was; the KEYRING — the trust root this
   // signature is judged against — was a caller object, which is the asymmetry review #6 (C2) found
   // and this migration removes rather than patches.
-  const kParsed = parseDocument(keyring, "keyring");
+  const kParsed = parseVerificationKeyring(keyring, "keyring");
   if (!kParsed.ok) return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: kParsed.reason };
-  if (kParsed.value === null || typeof kParsed.value !== "object" || isArray(kParsed.value)) {
-    return { ok: false, kid: null, payload: null, kidAuthenticated: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
+  const result = coseSign1VerifyParsed(coseBytes, kParsed.value.keyring);
+  if (result.kid !== null && kParsed.value.retiredKids[result.kid] === true) {
+    return {
+      ok: false,
+      kid: result.kid,
+      payload: null,
+      kidAuthenticated: false,
+      reason: `signing key ${JSON.stringify(result.kid)} is retired; signer-chosen artifact time is not an independent witness`,
+    };
   }
-  return coseSign1VerifyParsed(coseBytes, kParsed.value as Keyring);
+  return result;
 }
 
 /**

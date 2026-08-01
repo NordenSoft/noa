@@ -1099,9 +1099,9 @@
       "file": "packages/evidence/src/trust.ts",
       "anchor": "export function asStringKeyring",
       "role": "construct",
-      "output": "Keyring (kid -> base64 SPKI string)",
-      "validFrom": "dropped-by-design",
-      "revokedAt": "dropped-by-design",
+      "output": "Static Keyring only; structured entries with any field beyond publicKey throw instead of narrowing",
+      "validFrom": "refused-not-dropped",
+      "revokedAt": "refused-not-dropped",
       "exception": "EX-STRING-KEYRING",
       "proofs": []
     },
@@ -1110,33 +1110,37 @@
       "file": "packages/evidence/src/trust.ts",
       "anchor": "export function buildReceiptKeyring",
       "role": "transform",
-      "output": "Keyring (manifest GATE/APPROVER keys -> strings)",
+      "output": "SigningKeyLifecycle (manifest GATE/APPROVER publicKey + revokedAt -> publicKey + retiredAt)",
       "validFrom": "dropped-by-design",
-      "revokedAt": "dropped-by-design",
+      "revokedAt": "preserved-as-retiredAt",
       "exception": "EX-STRING-KEYRING",
       "proofs": []
     },
     {
       "id": "gate-receipt-keyring",
       "file": "packages/gate/src/trust.ts",
-      "anchor": "const receiptKeyring: Record<string, string> = {",
+      "anchor": "const receiptKeyring: SigningKeyLifecycle = {",
       "role": "construct",
-      "output": "Keyring (gate+approver receipt signers)",
+      "output": "SigningKeyLifecycle (gate+approver receipt signers)",
       "validFrom": "dropped-by-design",
-      "revokedAt": "dropped-by-design",
+      "revokedAt": "explicit-null-alpha-static",
       "exception": "EX-STRING-KEYRING",
-      "proofs": []
+      "proofs": [
+        "RES-PAR-GATE-KEYRING"
+      ]
     },
     {
       "id": "e2e-receipt-keyring",
       "file": "packages/e2e-demo/src/pairing.ts",
-      "anchor": "const receiptKeyring: Record<string, string> = {",
+      "anchor": "const receiptKeyring: SigningKeyLifecycle = {",
       "role": "construct",
-      "output": "Keyring (gate+approver receipt signers)",
+      "output": "SigningKeyLifecycle (gate+approver receipt signers)",
       "validFrom": "dropped-by-design",
-      "revokedAt": "dropped-by-design",
+      "revokedAt": "preserved-as-retiredAt",
       "exception": "EX-STRING-KEYRING",
-      "proofs": []
+      "proofs": [
+        "RES-PAR-E2E-KEYRING"
+      ]
     },
     {
       "id": "relay-register-device",
@@ -1228,8 +1232,7 @@
     "packages/gate/test/http-e2e.test.ts": "gate tests: consume createAlphaTrust fixtures",
     "packages/gate/test/keyring-resolver-parity.test.ts": "gate tests: consume createAlphaTrust fixtures",
     "packages/gate/test/timeout.test.ts": "gate tests: consume createAlphaTrust fixtures",
-    "packages/mcp-proxy/src/outcome-receipt.mjs": "downstream consumer: passes a string keyring to verify APIs; constructs no KeyEntry",
-    "packages/mcp-proxy/src/rotatable-signer.mjs": "downstream consumer: passes a string keyring to verify APIs; constructs no KeyEntry",
+    "packages/mcp-proxy/test/key-lifecycle.test.mjs": "lifecycle verifier regression tests; constructs no KeyEntry",
     "packages/mcp-proxy/test/smoke.mjs": "downstream consumer: passes a string keyring to verify APIs; constructs no KeyEntry",
     "packages/mcp-proxy/test/thrown-corpus.test.mjs": "downstream consumer: passes a string keyring to verify APIs; constructs no KeyEntry",
     "packages/relay/src/server.ts": "relay HTTP surface: reads DeviceRecord.revokedAt for the 403 guard; constructs no entries",
@@ -1258,6 +1261,7 @@
     "src/cose/receipt-cose.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/federation/verify-witnessed.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/index.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
+    "src/verification-keyring.ts": "root lifecycle resolver: parses static maps or atomic lifecycle documents and preserves retirement for every composed verifier",
     "src/policy/compliance.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/serve.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/verify.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
@@ -1353,7 +1357,7 @@
     "EX-STRING-KEYRING": {
       "version": 1,
       "since": "2026-07-31",
-      "reason": "String keyrings (Keyring = kid -> base64 SPKI) feed verifyChain/verifyCheckpoint, which authenticate receipt-chain signatures only; temporal validity of RECEIPT signers at signing time is NOT evaluated on this path by design — the §13 pipeline enforces activation/revocation on the side-artifact path via the KeyEntry keyring. Dropping the fields here is therefore deliberate and documented, not drift. If receipt-signer temporal validity is ever required, this exception must be deleted and the type changed."
+      "reason": "An explicitly supplied static Keyring (kid -> base64 SPKI) is the compatibility shape for non-rotating consumers and structurally carries no lifecycle assertion. In-repo resolvers must not manufacture it from lifecycle data: rotating trust uses SigningKeyLifecycle, preserves revocation as retiredAt, and refuses every non-null retirement outright. validFrom remains a KeyEntry-side activation rule and is not represented by the receipt lifecycle schema."
     }
   }
 }

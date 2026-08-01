@@ -745,7 +745,7 @@ export class GateEngine {
       return err(422, "APPROVER_KID_MISMATCH", { detail: "decision.approverKid must equal the verdict-receipt signer kid" });
     }
     const approverEntry = this.trust.keyring[approverKid];
-    if (!approverEntry || this.trust.receiptKeyring[receiptKid] !== approverEntry.publicKey) {
+    if (!approverEntry || this.trust.receiptKeyring.keys[receiptKid]?.publicKey !== approverEntry.publicKey) {
       return err(500, "TRUST_KEYRING_INCONSISTENT", {
         detail: "artifact and receipt keyrings must resolve the approver kid to the same public key",
       });

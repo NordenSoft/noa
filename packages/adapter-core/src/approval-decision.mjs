@@ -11,7 +11,7 @@
  * never the agent's private key; per-agent.id key-pinning (enforced by verifyChain's identity
  * manifest) is what keeps this safe within one chain.
  */
-import { buildReceipt, verifyEd25519, receiptHashInput, sha256Prefixed, sha256Digest } from "noa-receipt";
+import { buildReceipt, canonicalize, resolveVerificationKey, verifyEd25519, receiptHashInput, sha256Prefixed, sha256Digest } from "noa-receipt";
 import { randomUUID } from "node:crypto";
 import { assertOpaqueApproverBy } from "./opaque-id.mjs";
 import { describeThrown } from "./safe-throw.mjs";
@@ -111,7 +111,7 @@ export function buildDenialReceipt({ deferredReceipt, by, ts, signer, agentId = 
  * verifies a single receipt directly rather than calling verifyChain.
  *
  * @param {object} allowedReceipt
- * @param {{ approverKeyring?: Record<string,string>, identityManifest?: Record<string,string[]>, expectedChain?: string, expectedAction?: { id?: string, paramsHash?: string } }} [opts]
+ * @param {{ approverKeyring?: Record<string,string>|{spec:string,keys:Record<string,{publicKey:string,retiredAt:string|null}>}, identityManifest?: Record<string,string[]>, expectedChain?: string, expectedAction?: { id?: string, paramsHash?: string } }} [opts]
  * @returns {{ ok: boolean, reason?: string }}
  */
 export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identityManifest, expectedChain, expectedAction } = {}) {
@@ -156,10 +156,14 @@ export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identit
       return { ok: false, reason: "approval receipt hash does not match its content (tampered)" };
     }
 
-    const pub = approverKeyring[sig.kid];
-    if (typeof pub !== "string" || pub.length === 0) {
-      return { ok: false, reason: `signing key ${JSON.stringify(sig.kid)} is not in the trusted approver keyring` };
+    const resolved = resolveVerificationKey(canonicalize(approverKeyring), sig.kid);
+    if (!resolved.ok) {
+      if (resolved.reason.endsWith("not in keyring")) {
+        return { ok: false, reason: `signing key ${JSON.stringify(sig.kid)} is not in the trusted approver keyring` };
+      }
+      return { ok: false, reason: resolved.reason };
     }
+    const pub = resolved.publicKey;
     const message = Buffer.concat([Buffer.from(RECEIPT_SIG_DOMAIN + ":", "utf8"), sha256Digest(hashInput)]);
     let sigOk = false;
     try {

@@ -26,7 +26,7 @@ import {
   type StepResult,
   type VerifyEvidenceResult,
 } from "./types.js";
-import { asRootKeyEntryMap, asStringKeyring } from "./trust.js";
+import { asRootKeyEntryMap } from "./trust.js";
 import {
   type Ctx,
   asObj,
@@ -239,13 +239,19 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
   }
 
   const rootKeyring = asRootKeyEntryMap(optTenantRoot);
-  const checkpointKeyring = asStringKeyring(optCheckpointKeyring);
+  const checkpointTrust = parseDocument(optCheckpointKeyring, "checkpoint keyring");
 
   // (F7a) external trust root REQUIRED — no root / no checkpoint keyring → UNVERIFIED, never VALID.
   if (Object.keys(rootKeyring).length === 0) {
     return result("UNVERIFIED", null, [], warnings, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --tenant-root supplied (F7a): cannot anchor the delegation → manifest chain" });
   }
-  if (Object.keys(checkpointKeyring).length === 0) {
+  if (
+    !checkpointTrust.ok
+    || typeof checkpointTrust.value !== "object"
+    || checkpointTrust.value === null
+    || Array.isArray(checkpointTrust.value)
+    || Object.keys(checkpointTrust.value).length === 0
+  ) {
     return result("UNVERIFIED", null, [], warnings, { step: "STEP_17_CHECKPOINT_RECONCILE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --checkpoint-keyring supplied (F7a): cannot authenticate the tail-completeness anchor" });
   }
 
@@ -287,7 +293,7 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     maxAgeMs: optMaxAgeMs ?? DEFAULT_MAX_AGE_MS,
     schemas: schemas.artifacts,
     rootKeyring,
-    checkpointKeyring,
+    checkpointKeyring: optCheckpointKeyring,
     warnings,
     rolesAsserted: new Set<ReceiptRole>(),
     purpose,
