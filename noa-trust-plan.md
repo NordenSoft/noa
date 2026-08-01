@@ -27,9 +27,27 @@ It is the LEAD: it decides, approves, and does not ask the owner. Never let the 
 **NO QA rounds until every task is done.** Fable supervises codex by **reading the actual `git diff`**, never its report, and corrects it when it wanders.
 **Mechanical gates still run on EVERY batch** — package suites · `npm run typecheck:all` · `node scripts/lint-resolver-parity.mjs` · the relevant knockouts · RED-before-fix evidence per fix. Removing QA removed a *review round*, not verification.
 
-**WHAT IS LEFT — 3 P0s, both already specified so nobody re-derives them:**
-1. **BATCH C — P0-9 + P0-10 + P0-11.** Full spec, reproductions, recommended approach and the three vacuous-reproduction traps: **`docs/BATCH-C-FIX-SPEC-P0-9-10-11.md`**.
-2. **BATCH D — P0-14.** Retired signing key mints new evidence in the **published** `noa-mcp-proxy` 0.2.0. Runnable reproduction: **`node docs/reproductions/repro-P0-14-retired-key-forgery.mjs`** (3 controls + the attack). Interface decision and reachability are in the §P0 row.
+## ✅ P0 = 0 — where the work stopped, 2026-08-01
+
+**`noa-receipt` HEAD `c0701d3`** (branch `impl/adr-0005-trusted-input-provenance`, clean, **nothing pushed**) · **`noa-mobile` HEAD `b768122`** (clean, nothing pushed). Both repos' state is `git log -1`; these hashes are a convenience, not the authority.
+
+| batch | commit | what closed |
+|---|---|---|
+| C | `12baee9` | P0-9 + P0-10 + P0-11 — the timestamp verifier stops depending on `Date` entirely. Closed by REMOVAL, so `CORRECTIONS.md` C-6 (capture defends post-load only) does not apply to it |
+| D | `3af47d0` | P0-14 — a retired signing key can no longer mint new evidence in the **published** `noa-mcp-proxy` 0.2.0 |
+| E | `c84ae56`, `3d56282` | the knockout runner silently ignored `andAlso`, so 4 controls had never been measured. All 4 now proven load-bearing. An unknown registry key is now a HARD ERROR |
+| F | `c0701d3` | F-4 a registered proof must be knockout-covered, not merely live · F-2 `assembleGateTrust` carries the manifest's per-key windows · G4 measured equivalent, no RED forced |
+| G | `b768122` (noa-mobile) | the phone's conformance ORACLE no longer shares the defects it exists to catch; pairing conformance 24 → **66/66** |
+
+**WHAT IS STILL OPEN — nothing is a P0:**
+1. **#85 — `noa-mobile` `signer-parity` 2 tests expect VALID, get MALFORMED.** **PRE-EXISTING, proven not ours** (checked `noa-receipt` out at `cc243a7`, rebuilt, reproduced identically). Undiagnosed. `noa-mobile`'s usable baseline is: pairing conformance GREEN · these 2 known-red by name · ~41 `listen EPERM` = managed-runtime environment, not defects.
+2. **#75 — Round 8 product findings** R8-02/03/14/15/17/18 + F-1. This was batch **H**, never dispatched.
+3. **G4 residual** — the render-node invariant is **asserted but unproven**; its registry mutation was measured EQUIVALENT so it could never have proven anything. Needs a NON-equivalent, reachable mutation. Do **not** force a RED (P1-2 row below).
+4. **#33, #31, #42, #48** — owner-decision or larger items, untouched.
+
+**THE FINAL QA ROUND IS DUE AND BLOCKED ON A REAL GAP.** The owner deferred QA until every task was done. No **non-producer** voice is reachable — verified via 2 paths each: `gemini` `IneligibleTierError` (Google closed the individual tier — a product decision, not billing, so it cannot be fixed here) and `kimi` HTTP 429 account suspended (**owner-only billing top-up**). `codex` wrote batches C–G and I directed and audited them, so **neither of us is independent**; `docs/PRODUCER-LEDGER.md` is LEAD-authored, so I am ITS producer. Per `fail_mode: report-gap`, **report the gap — never fill the panel with a producer.**
+
+**PUSH IS NOW DEFENSIBLE, and it is the owner's call.** It was blocked because `NordenSoft/noa` is **PUBLIC**, `noa-mcp-proxy` 0.2.0 is **live on npm**, and the tree carried a runnable exploit for an UNFIXED defect. That defect is fixed, so the exploit would now ship *with* its patch — the correct order. Pushing also closes the same-disk backup risk by creating the first off-machine copy.
 
 **DO NOT, under any circumstances without an explicit owner instruction:** push · merge · publish · deploy · touch Railway or production · change secrets, keys, KMS, IAM, roles, grants or migrations · silently change `noa.encrypted-display/0.1` bytes · implement ADR-0006 · freeze Stage 1 · start the Go kernel.
 
