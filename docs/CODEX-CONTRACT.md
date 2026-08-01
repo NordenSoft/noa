@@ -17,8 +17,13 @@ cryptographic evidence that **that** human approved **that** action.
 expect hostile traffic immediately."*** That was written here as a statement of fact and it is not
 one. **NOA Trust has NO customers and is NOT launched** — owner statement 2026-07-20, and the
 production database was measured read-only the same day: **0 organizations · 0 users · 0 members ·
-0 holds · 0 decisions · 0 grants.** The "5 customers" in `PROGRESS.md` means *ready to go live on
-request* — a plan, not a live population.
+0 holds · 0 decisions · 0 grants.**
+
+**The owner's exact meaning, clarified 2026-08-01: there are no customers now, and five arrive
+IMMEDIATELY once we launch.** So the pre-launch window is not merely open — it is **short and
+closing on a known trigger**. Read it that way: every breaking change is free today and expensive
+the moment we ship, and the thing that ends the window is our own launch, not somebody else's
+timetable.
 
 **Why this correction is in the contract rather than quietly deleted:** the false version was copied
 into every brief for a day and was given to two independent advisors as fact; both built release
@@ -102,9 +107,21 @@ inverts the exercise.
 
 ## 8. Standing prohibitions — no brief overrides these without an explicit owner instruction
 
-**Do not** push · merge · publish · deploy · release to npm · touch Railway or production · change
-secrets, keys, KMS, IAM, roles, grants or migrations · silently change `noa.encrypted-display/0.1`
-wire bytes · implement ADR-0006 · freeze Stage 1 · start the Go kernel.
+**⚠ UPDATED 2026-08-01 — THE PUSH BAN IS LIFTED BY THE OWNER.** The withdrawn text, verbatim:
+*"**Do not** push · merge · publish · deploy · release to npm · …"*. Owner instruction: *"kaldir o
+yasagi"*. **`git push` is now allowed.** Two things did NOT change with it, and neither is a brief's
+to override:
+
+- **The exploit-before-patch rule stands, and it is not a ban — it is an ORDER.** `NordenSoft/noa`
+  is PUBLIC and `noa-mcp-proxy` is live on npm, so the working exploit under
+  `docs/reproductions/` must not become public while the defect it demonstrates is unfixed.
+  Publish the patched release first; the reproduction goes out **with or after** it, never before.
+- **Still prohibited without an explicit owner instruction:** `npm publish` · Railway or production ·
+  secrets, keys, KMS, IAM, roles, grants or migrations · silently changing
+  `noa.encrypted-display/0.1` wire bytes · implementing ADR-0006 · freezing Stage 1 · starting the
+  Go kernel.
+
+If you believe a task requires one of those, **STOP and report** — do not do it.
 
 ## 9. Known-red baselines — these are NOT yours to fix
 

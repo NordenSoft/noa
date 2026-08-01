@@ -227,9 +227,22 @@ per file, and since `f99a944` a non-compiling mutation is MUTATION_DID_NOT_BUILD
 as a kill. All 43 passed those gates: 0 MUTATION_NOT_APPLIED, 0 MUTATION_DID_NOT_BUILD, 0
 INVALID_TEST, 0 unproven restorations.
 
-**Context that sets the bar:** 5 customers are ready to go live on request, and expect hostile traffic
-immediately. A breach at launch is not recoverable. So the standard is *the shortest path we never
-have to walk back* — not the shortest path.
+**Context that sets the bar (CLARIFIED 2026-08-01 — read this precisely, it was misread for a day):**
+There are **NO customers today** and NOA Trust is **not launched** — measured: 0 organizations,
+0 users, 0 holds, 0 decisions, 0 grants. **Five arrive IMMEDIATELY on launch**, and they expect
+hostile traffic at once. A breach at launch is not recoverable.
+
+Two consequences, and they pull in opposite directions, which is the point:
+- **Nothing is protected yet**, so every breaking change is free RIGHT NOW.
+- **The window closes on our own trigger**, not on someone else's timetable — the day we launch, the
+  same change costs five migrations.
+
+So the standard is *the shortest path we never have to walk back* — not the shortest path.
+
+> ⚠ The earlier wording, *"5 customers are ready to go live on request,"* was read by the lead as a
+> statement that five customers exist NOW. They do not. That misreading travelled into
+> `docs/CODEX-CONTRACT.md` and into two independent advisors, both of whom built release plans around
+> notifying customers who do not exist. Corrected at source rather than deleted.
 
 ---
 
