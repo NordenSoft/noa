@@ -122,23 +122,22 @@ export interface VerifyEvidenceOptions {
   tenantRoot: Uint8Array | string;
   /** EXTERNAL checkpoint keyring DOCUMENT (F7a), as bytes or its JSON text: kid -> base64 SPKI. REQUIRED. */
   checkpointKeyring: Uint8Array | string;
-  /** verification "now" (RFC 3339). Default: actual current time. */
+  /**
+   * Verifier-controlled acceptance time (RFC 3339). Default: actual current time. A historical
+   * value is safe only when the caller has an independent witness for that instant; signed bundle
+   * timestamps cannot supply it.
+   */
   now?: string;
   /** F5 checkpoint max-age in ms. Default 24h. */
   maxAgeMs?: number;
   /** injectable schemas (tests); default loads the shipped schemas from disk. */
   schemas?: LoadedSchemas;
   /**
-   * DESIGN 2 — what this verification is FOR. Default `"audit"`: historical evidence, authority
-   * evaluated at `holdResolution.receivedAt`, which is the legacy behaviour and keeps every
-   * already-issued bundle verifying. Pass `"authorize"` when the answer will be used to make a
-   * CURRENT decision: the delegation and manifest windows are then ALSO checked against `now`, fail
-   * closed, at `STEP_1_HOLD_ENVELOPE` with code `E_AUTHORIZATION_WINDOW`.
-   *
-   * The `"audit"` default is deliberately temporary. It exists so callers migrate deliberately
-   * rather than discovering the change through a rejection; a caller acting on the result must pass
-   * `"authorize"`. `packages/evidence/scripts/authorization-window-scan.mjs` reports exactly which
-   * bundles change verdict between the two.
+   * What this verification is FOR. The default `"audit"` keeps audit-oriented envelope policy;
+   * `"authorize"` additionally labels current-decision window failures as authorization failures.
+   * Both purposes require verifier-controlled `now` inside the root-signed delegation and the
+   * manifest's reject-only window. Neither trusts manifest.issuedAt or holdResolution.receivedAt to
+   * establish historical authority.
    */
   purpose?: VerificationPurpose;
 }

@@ -54,8 +54,8 @@ function main(argv: string[]): void {
     else if (a === "--now") now = args[++i];
     else if (a === "--max-age-hours") maxAgeHours = Number(args[++i]);
     else if (a === "--purpose") {
-      // A caller acting on the result passes `authorize` (adds the fail-closed at-now window check);
-      // the default `audit` verifies historical soundness. Any other value is a usage error here —
+      // Both purposes require authority at verifier-controlled `now`; `authorize` identifies the
+      // result as a current authorization decision. Any other value is a usage error here —
       // verifyEvidence ALSO fail-closes on it, but rejecting at the CLI gives the operator a clear
       // message instead of an UNVERIFIED verdict.
       const p = args[++i];

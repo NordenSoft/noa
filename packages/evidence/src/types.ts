@@ -252,38 +252,34 @@ export interface StepResult {
  * cryptographically perfect (and learns to ignore the verdict), or gets VALID for a trust chain that
  * expired years ago (and cannot tell whether it may act on it).
  *
- * They are now reported separately, so "the evidence is intact AND its authority lapsed in 2027" is
- * expressible — because it is the truth, and because acting on it and auditing it are different
- * decisions with different correct answers.
+ * They are reported separately, but authority still gates an intact verdict: without an independent
+ * historical time witness, a lapsed delegated signer cannot produce verifiable historical evidence.
  */
 export interface VerdictDimensions {
   /** Bytes: signatures, hashes, chain contiguity, checkpoint reconciliation. Permanent. */
   integrity: "INTACT" | "BROKEN";
   /**
    * Authority, as a policy window:
-   *   VALID_AT_DECISION_TIME — the delegation/manifest were valid at `holdResolution.receivedAt`
-   *                            (the gate-attested instant the decision was made). Always required.
-   *   VALID_NOW              — additionally valid at the verifier's `now` (checked only under the
-   *                            `authorize` purpose, where a CURRENT decision is being made).
-   *   EXPIRED_NOW            — was valid at decision time; the window has since closed.
+   *   VALID_NOW              — the root-signed delegation and the manifest's reject-only window
+   *                            both contain verifier-controlled `now`.
+   *   EXPIRED_NOW            — at least one required window has closed at verifier-controlled now.
    *   NOT_YET_VALID_NOW      — the window opens in the future relative to `now`.
    *   UNCHECKED              — the pipeline failed before authorization could be evaluated.
    */
-  authorization: "VALID_AT_DECISION_TIME" | "VALID_NOW" | "EXPIRED_NOW" | "NOT_YET_VALID_NOW" | "UNCHECKED";
+  authorization: "VALID_NOW" | "EXPIRED_NOW" | "NOT_YET_VALID_NOW" | "UNCHECKED";
 }
 
 /**
- * What the caller is asking the verifier FOR. The two purposes need different answers from the same
- * bytes, and conflating them is how an expired authority silently keeps authorizing.
+ * What the caller is asking the verifier FOR.
  *
- *   "audit"     — DEFAULT, and the legacy behaviour: is this HISTORICAL evidence sound? Authority is
- *                 evaluated at `holdResolution.receivedAt`. A lapsed delegation does not retroactively
- *                 un-approve what a valid delegation approved, so this must keep verifying forever.
- *   "authorize" — is this trust chain fit to authorize something NOW? Adds a FAIL-CLOSED check of the
- *                 delegation and manifest windows at `now`. An expired delegation is a hard rejection.
+ *   "audit"     — DEFAULT; applies audit-oriented envelope policy, but still requires the delegated
+ *                 signer to be authorized at verifier-controlled `now`.
+ *   "authorize" — a current authorization decision; reports a closed delegation/manifest window as
+ *                 `E_AUTHORIZATION_WINDOW`.
  *
- * `audit` is documented as the temporary legacy default: it exists so every already-issued bundle
- * keeps verifying while callers migrate. A caller making a live decision must pass `authorize`.
+ * A caller may set `now` to a historical instant only when it has an independent time witness.
+ * Signer-chosen manifest.issuedAt and dependent holdResolution.receivedAt may reject contradictions
+ * but can never establish that historical instant.
  */
 export type VerificationPurpose = "audit" | "authorize";
 
@@ -300,7 +296,7 @@ export interface VerdictPolicy {
 }
 
 /** The rule-set version of this verifier. BUMP when a change can flip a bundle's verdict. */
-export const VERIFIER_POLICY_VERSION = "noa.verify-evidence/2026-07-27" as const;
+export const VERIFIER_POLICY_VERSION = "noa.verify-evidence/2026-08-01" as const;
 
 /** The full `verify-evidence` result. */
 export interface VerifyEvidenceResult {

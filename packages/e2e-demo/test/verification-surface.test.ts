@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { runVerificationSurfaceProbe } from './verification-surface-probe.js';
 
 test('P0-14 verifyBundle preserves checkpoint retirement and gate-only checkpoint authority', () => {
-  const { honest, direct, wrapped, authority, authorityCheckpointKid } = runVerificationSurfaceProbe();
+  const { honest, direct, wrapped, authorityDirect, authority, authorityCheckpointKid } = runVerificationSurfaceProbe();
   assert.equal(
     honest.verdict,
     'VALID_FULL_CHAIN',
@@ -21,6 +21,11 @@ test('P0-14 verifyBundle preserves checkpoint retirement and gate-only checkpoin
   assert.match(wrapped.reason ?? '', /retired/i, 'wrapper refused for a reason other than retirement');
 
   assert.equal(authorityCheckpointKid, 'approver-crit-5', 'authority attack is not using the intended non-gate signer');
+  assert.equal(
+    authorityDirect.verdict,
+    'VALID_FULL_CHAIN',
+    `authority attack fixture cannot reach full validity with its intended external checkpoint keyring: ${authorityDirect.verdict} (${authorityDirect.reason ?? ''})`,
+  );
   assert.equal(
     authority.verdict,
     'VALID_SEGMENT_ONLY',

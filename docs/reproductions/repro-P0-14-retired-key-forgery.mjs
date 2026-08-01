@@ -316,6 +316,26 @@ const artifactControl = verifyArtifact(b(artifactVector.artifact), b(artifactCur
 const artifactAttack = verifyArtifact(b(artifactVector.artifact), b(artifactRetiredCtx));
 probe("verifyArtifact", artifactControl.ok, !artifactAttack.ok && /revoked/i.test(artifactAttack.reason ?? ""), artifactControl.ok ? "ok" : artifactControl.reason, artifactAttack.reason);
 
+// Activation asymmetry, first direction: verifier now is after activation, but the signed artifact
+// claims it was decided one minute before that activation. Signer time cannot authorize the key,
+// but this self-contradiction remains a reject-only reason. The control uses the SAME artifact with
+// an independently supplied historical authorization time inside the key's real window.
+const contradictionAttackCtx = { ...artifactVector.context, schemas: artifactSchemas, keyring: structuredClone(artifactKeyring) };
+contradictionAttackCtx.keyring[artifactKid].validFrom = "2026-07-14T11:57:00.000Z";
+contradictionAttackCtx.keyring[artifactKid].revokedAt = null;
+const historicalControlCtx = { ...artifactVector.context, schemas: artifactSchemas, keyring: structuredClone(artifactKeyring), authorizationTime: "2026-07-14T11:56:00.000Z" };
+historicalControlCtx.keyring[artifactKid].validFrom = "2026-07-14T11:55:00.000Z";
+historicalControlCtx.keyring[artifactKid].revokedAt = null;
+const historicalControl = verifyArtifact(b(artifactVector.artifact), b(historicalControlCtx));
+const contradictionAttack = verifyArtifact(b(artifactVector.artifact), b(contradictionAttackCtx));
+probe(
+  "verifyArtifact claimed pre-activation",
+  historicalControl.ok,
+  !contradictionAttack.ok && /before its validFrom/i.test(contradictionAttack.reason ?? ""),
+  historicalControl.ok ? "same historical artifact accepted at trusted authorization time" : historicalControl.reason,
+  contradictionAttack.reason,
+);
+
 // Activation mirror: the stolen key future-dates a validly-signed Decision past its own activation.
 // Only caller-controlled time may decide activation; the artifact's decidedAt is not a witness.
 const futureArtifactVector = readJson(join(ROOT, "packages/approval-artifacts/conformance/decision/reject-expired.json"));
@@ -469,10 +489,36 @@ probe(
   `${evidenceActivationAttack.verdict}: ${evidenceActivationAttack.reason}`,
 );
 
+// Delegated manifest-signer time: the same committed bundle verifies while verifier-controlled now
+// is inside the root-signed delegation, then refuses after that authority expires. The old genuine
+// bytes and a newly signed/backdated manifest are indistinguishable without an independent time
+// witness, so manifest.issuedAt and dependent holdResolution.receivedAt cannot preserve acceptance.
+const manifestTimeFixture = readJson(join(ROOT, "packages/evidence/conformance/valid/denied.json"));
+const manifestTimeControl = verifyEvidenceFixture(manifestTimeFixture);
+const afterDelegation = new Date(Date.parse(manifestTimeFixture.bundle.keyDelegation.expiresAt) + 60_000).toISOString();
+const manifestTimeAttack = verifyEvidence(b(manifestTimeFixture.bundle), {
+  tenantRoot: b(manifestTimeFixture.tenantRoot),
+  checkpointKeyring: b(manifestTimeFixture.checkpointKeyring),
+  now: afterDelegation,
+  maxAgeMs: 365 * 24 * 60 * 60 * 1000,
+  schemas: evidenceSchemas,
+  purpose: "audit",
+});
+probe(
+  "verifyEvidence manifest signer time",
+  manifestTimeControl.verdict === "VALID_FULL_CHAIN",
+  manifestTimeAttack.verdict === "INVALID"
+    && manifestTimeAttack.code === "E_DELEGATION_CHAIN"
+    && /signer-dependent|never establish historical authority/i.test(manifestTimeAttack.reason ?? ""),
+  manifestTimeControl.verdict,
+  `${manifestTimeAttack.verdict}: ${manifestTimeAttack.reason}`,
+);
+
 const bundleProbe = e2eVerifyBundleProbe();
 const bundleHonest = bundleProbe.result?.honest;
 const bundleDirect = bundleProbe.result?.direct;
 const bundleWrapped = bundleProbe.result?.wrapped;
+const bundleAuthorityDirect = bundleProbe.result?.authorityDirect;
 const bundleAuthority = bundleProbe.result?.authority;
 probe(
   "verifyBundle",
@@ -486,10 +532,12 @@ probe(
 );
 probe(
   "verifyBundle checkpoint authority",
-  bundleProbe.status === 0 && bundleHonest?.verdict === "VALID_FULL_CHAIN",
+  bundleProbe.status === 0 && bundleAuthorityDirect?.verdict === "VALID_FULL_CHAIN",
   bundleProbe.status === 0 && bundleProbe.result?.authorityCheckpointKid === "approver-crit-5"
     && bundleAuthority?.verdict === "VALID_SEGMENT_ONLY",
-  bundleHonest ? bundleHonest.verdict : bundleProbe.output,
+  bundleAuthorityDirect
+    ? `same authority fixture with intended external checkpoint keyring: ${bundleAuthorityDirect.verdict}`
+    : bundleProbe.output,
   bundleAuthority
     ? `${bundleProbe.result.authorityCheckpointKid} cannot anchor full chain: ${bundleAuthority.verdict}`
     : bundleProbe.output,

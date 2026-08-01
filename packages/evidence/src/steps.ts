@@ -256,8 +256,11 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   const receivedAt = ctx.receivedAt;
   if (!receivedAt) return fail(S, "E_HOLD_RESOLUTION", "holdResolution.receivedAt unreadable (needed for delegation/manifest validity)");
 
-  // (G6) delegation: signed by the EXTERNAL tenant-root (F7a), tenant-matched, unexpired at receivedAt,
-  // and carrying `key-manifest-sign`.
+  // (G6) delegation: signed by the EXTERNAL tenant-root (F7a), tenant-matched, carrying
+  // `key-manifest-sign`, and internally
+  // consistent with receivedAt. receivedAt is signed by a gate key appointed by the manifest being
+  // authorized, so it is REJECT-ONLY here: a contradiction refuses, but it can never establish that
+  // the delegated signer was authorized. Verifier-owned `now` supplies that acceptance decision.
   const dv = verifyArtifact(encodeDocument(b.keyDelegation), encodeDocument({
     schemas: ctx.schemas,
     keyring: ctx.rootKeyring,
@@ -275,25 +278,27 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   if (Number.isNaN(rAt) || Number.isNaN(dFrom) || Number.isNaN(dExp) || rAt < dFrom || rAt > dExp) {
     return fail(S, "E_DELEGATION_CHAIN", `keyDelegation not valid at holdResolution.receivedAt (${receivedAt})`);
   }
-  // ── DESIGN 2: AUTHORIZATION-POLICY VALIDITY, AS A SEPARATE DIMENSION ─────────────────────────
-  // The check above answers "was this authority valid when the decision was made" — the right
-  // question for an AUDIT, and the reason a lapsed delegation must never retroactively un-approve
-  // what a valid one approved. It is the WRONG question for a caller about to act: a delegation
-  // that expired last month still passes it, forever.
-  //
-  // The window is therefore ALSO evaluated at `now`, and reported as its own dimension. Under
-  // `purpose: "authorize"` — a CURRENT authorization decision — a closed window is a FAIL-CLOSED
-  // rejection here. Under the default `purpose: "audit"` it is recorded, never fatal, so every
-  // already-issued bundle keeps verifying exactly as before.
+  // TRUSTED ACCEPTANCE TIME. The delegated signer chooses manifest.issuedAt, and the gate key that
+  // chooses holdResolution.receivedAt is itself appointed by that manifest. Neither can witness the
+  // signer's authority. The verifier's `now` must therefore be inside the root-signed delegation
+  // window for BOTH purposes. A caller with an independent historical time may supply it as `now`;
+  // absent such a witness, a genuinely old manifest and a newly backdated forgery are indistinguishable.
   const nowMs = parseTime(ctx.now);
-  if (!Number.isNaN(nowMs) && !Number.isNaN(dFrom) && !Number.isNaN(dExp)) {
-    if (nowMs < dFrom) ctx.authorization = "NOT_YET_VALID_NOW";
-    else if (nowMs > dExp) ctx.authorization = "EXPIRED_NOW";
-    else ctx.authorization = ctx.purpose === "authorize" ? "VALID_NOW" : "VALID_AT_DECISION_TIME";
-  } else {
-    ctx.authorization = "VALID_AT_DECISION_TIME";
+  if (Number.isNaN(nowMs)) {
+    return fail(S, "E_DELEGATION_CHAIN", `cannot evaluate verifier-controlled now (${ctx.now}) for delegated-signer authorization`);
   }
-  if (ctx.purpose === "authorize" && (ctx.authorization === "EXPIRED_NOW" || ctx.authorization === "NOT_YET_VALID_NOW")) {
+  if (nowMs < dFrom) ctx.authorization = "NOT_YET_VALID_NOW";
+  else if (nowMs > dExp) ctx.authorization = "EXPIRED_NOW";
+  else ctx.authorization = "VALID_NOW";
+  if (ctx.authorization === "EXPIRED_NOW" || ctx.authorization === "NOT_YET_VALID_NOW") {
+    if (ctx.purpose === "audit") {
+      return fail(
+        S,
+        "E_DELEGATION_CHAIN",
+        `delegated manifest signer is not authorized at verifier-controlled now (${ctx.now}); ` +
+          `keyManifest.issuedAt and holdResolution.receivedAt are signer-dependent and may only reject, never establish historical authority`,
+      );
+    }
     return fail(
       S,
       "E_AUTHORIZATION_WINDOW",
@@ -322,22 +327,12 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   ctx.resolvedKeyring = buildResolvedKeyring(ctx.rootKeyring, delegation, manifest);
   ctx.receiptKeyring = buildReceiptKeyring(manifest);
 
-  // THE MANIFEST WAS ISSUED INSIDE THE DELEGATION'S OWN WINDOW.
+  // REJECT-ONLY SIGNER CLAIM. The manifest's issuedAt must not contradict the root-signed
+  // delegation window. Passing these comparisons does NOT authorize the signer; only the trusted
+  // `now` check above can do that. Signer time may only move a verdict toward REFUSE, never ACCEPT.
   //
-  // `buildResolvedKeyring` now gives the delegated signer `validFrom = delegation.validFrom`, so the
-  // generic activation check inside verifyArtifact below would also refuse a manifest issued before
-  // the delegation opened. This states the rule FIRST, at both ends, for two reasons that backstop
-  // cannot serve: the upper bound (`expiresAt`) has no representation in a KeyEntry at all, and a
-  // bundle rejected by the generic activation message would not tell an operator WHICH window it
-  // violated.
-  //
-  // MIGRATION — this is the one change on this branch that can turn a previously-VALID bundle
-  // INVALID. A bundle whose manifest is stamped before its delegation's `validFrom` (or after its
-  // `expiresAt`) now fails HERE, hard, naming both timestamps. That is deliberate: such a manifest
-  // was signed outside the authority that authorized the signer, and the alternative — accepting it
-  // quietly — is how a backdated manifest becomes "the trusted key list". A loud, named,
-  // single-step rejection is re-issuable (the tenant root re-signs the delegation, or the signer
-  // re-stamps the manifest); a silent acceptance is not detectable at all.
+  // The explicit upper-bound check remains because expiresAt has no KeyEntry representation; the
+  // lower-bound check gives operators the exact contradictory fields instead of a generic message.
   const mIssuedMs = parseTime(manifest.issuedAt);
   const dFromMs = parseTime(delegation.validFrom);
   const dExpMs = parseTime(delegation.expiresAt);
@@ -354,6 +349,7 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
     schemas: ctx.schemas,
     keyring: ctx.resolvedKeyring,
     now: ctx.now,
+    authorizationTime: ctx.now,
     equals: [{ path: "tenant", value: ctx.tenant }, { path: "sig.kid", value: delegation.delegatedKid }],
   }));
   if (!mv.ok) return fail(S, "E_HOLD_ENVELOPE", `keyManifest invalid: ${mv.reason}`);
@@ -362,27 +358,25 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   if (Number.isNaN(mExp) || rAt > mExp || (!Number.isNaN(mIssued) && rAt < mIssued)) {
     return fail(S, "E_HOLD_ENVELOPE", `keyManifest not current at receivedAt (${receivedAt})`);
   }
-  // DESIGN 2: the manifest's own window, at `now`, for a CURRENT authorization decision. A manifest
-  // that expired after the decision is fine to audit and unfit to authorize.
-  if (ctx.purpose === "authorize" && !Number.isNaN(nowMs) && (nowMs > mExp || (!Number.isNaN(mIssued) && nowMs < mIssued))) {
+  // REJECT-ONLY MANIFEST WINDOW. issuedAt/expiresAt are signer-chosen and cannot establish
+  // authority, but their own contradiction still narrows acceptance. Verifier-controlled `now`
+  // must be inside this claimed window for both purposes; a trusted historical caller can set now
+  // to its independently witnessed instant. Without that witness, old genuine bytes and a new
+  // backdated signature are indistinguishable.
+  if (nowMs > mExp || (!Number.isNaN(mIssued) && nowMs < mIssued)) {
     ctx.authorization = nowMs > mExp ? "EXPIRED_NOW" : "NOT_YET_VALID_NOW";
+    if (ctx.purpose === "audit") {
+      return fail(
+        S,
+        "E_HOLD_ENVELOPE",
+        `keyManifest's reject-only window [${manifest.issuedAt} … ${manifest.expiresAt}] does not contain verifier-controlled now (${ctx.now}); signer time cannot establish historical authority`,
+      );
+    }
     return fail(
       S,
       "E_AUTHORIZATION_WINDOW",
       `keyManifest window [${manifest.issuedAt} … ${manifest.expiresAt}] does not contain the verifier's now (${ctx.now}) — valid at the decision instant, unfit to authorize NOW`,
     );
-  }
-  // DESIGN 2 (AUDIT dimension): even when NOT authorizing, the authorization DIMENSION must reflect
-  // the manifest window at `now`, not only the delegation's. Audit still REPORTS (never fails), but
-  // it must report the TRUTH: the fifth review's HIGH 3 found that the audit authorization dimension
-  // was derived from the delegation window alone, so a bundle with a live delegation but an
-  // already-EXPIRED manifest read as VALID_AT_DECISION_TIME — hiding that its signed key list is no
-  // longer current. Take the MORE restrictive of the two windows; never upgrade an already-closed
-  // dimension. (In `authorize` mode an expired manifest already fail-closed above, so this only ever
-  // downgrades the audit dimension.)
-  if (!Number.isNaN(nowMs) && (ctx.authorization === "VALID_AT_DECISION_TIME" || ctx.authorization === "VALID_NOW")) {
-    if (!Number.isNaN(mExp) && nowMs > mExp) ctx.authorization = "EXPIRED_NOW";
-    else if (!Number.isNaN(mIssued) && nowMs < mIssued) ctx.authorization = "NOT_YET_VALID_NOW";
   }
 
   // Hold Envelope: GATE + hold-signer (F15), gateKid == sig.kid, bound to THIS manifest

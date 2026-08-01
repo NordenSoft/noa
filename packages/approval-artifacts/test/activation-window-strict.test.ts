@@ -46,11 +46,19 @@ const fx = JSON.parse(readFileSync(join(ROOT, "conformance", "decision", "valid.
 };
 const SIGNER = (fx.artifact["sig"] as { kid: string }).kid;
 
-/** Verify the REAL vector with the signer's `validFrom` and a trusted caller time. */
-function verifyWithValidFrom(validFrom: unknown, authorizationTime = String(fx.context["now"])): { ok: boolean; reason: string } {
+/** Verify the REAL vector with the signer's `validFrom`; null deliberately omits trusted historical time. */
+function verifyWithValidFrom(
+  validFrom: unknown,
+  authorizationTime: string | null = String(fx.context["now"]),
+): { ok: boolean; reason: string } {
   const kr = JSON.parse(JSON.stringify(keyring)) as Record<string, KeyEntry>;
   kr[SIGNER] = { ...(kr[SIGNER] as KeyEntry), validFrom: validFrom as string | null };
-  const r = verifyArtifact(enc(fx.artifact), enc({ ...fx.context, schemas, keyring: kr, authorizationTime }));
+  const r = verifyArtifact(enc(fx.artifact), enc({
+    ...fx.context,
+    schemas,
+    keyring: kr,
+    ...(authorizationTime === null ? {} : { authorizationTime }),
+  }));
   return { ok: r.ok, reason: r.ok ? "" : String(r.reason) };
 }
 
@@ -69,6 +77,29 @@ test("P0-6 ANTI-VACUITY: activation IS enforced for a canonical FUTURE time", ()
   const r = verifyWithValidFrom("2099-01-01T00:00:00.000Z");
   assert.equal(r.ok, false, "a key that activates in 2099 verified at an earlier trusted caller time");
   assert.match(r.reason, /before its validFrom/, `refused for the wrong reason: ${r.reason}`);
+});
+
+test("P0-14 activation asymmetry: signer time may only move the verdict toward REFUSE", () => {
+  const decidedAt = String(fx.artifact["decidedAt"]);
+  const now = String(fx.context["now"]);
+  const validFromAfterClaim = new Date(Date.parse(decidedAt) + 60_000).toISOString();
+  assert.ok(Date.parse(now) > Date.parse(validFromAfterClaim), "fixture: verifier now must be after activation");
+
+  // ATTACK: caller omits authorizationTime. Verifier-owned `now` permits acceptance, but the
+  // signer's own claim says the signature predates its key. That contradiction can only REFUSE.
+  const attack = verifyWithValidFrom(validFromAfterClaim, null);
+  assert.equal(attack.ok, false, "a self-contradicting pre-activation artifact verified after the key activated");
+  assert.match(attack.reason, /before its validFrom/, `refused for the wrong reason: ${attack.reason}`);
+
+  // CONTROL, same run: an independently trusted historical authorization time inside the key's
+  // activation window still accepts the unchanged, genuinely historical signed artifact.
+  const validFromBeforeClaim = new Date(Date.parse(decidedAt) - 60_000).toISOString();
+  const historical = verifyWithValidFrom(validFromBeforeClaim, decidedAt);
+  assert.equal(historical.ok, true, `trusted historical control stopped verifying: ${historical.reason}`);
+
+  // CONTROL, same run: a genuinely static entry has no activation assertion and is unaffected.
+  const staticEntry = verifyWithValidFrom(null, null);
+  assert.equal(staticEntry.ok, true, `static non-rotating control stopped verifying: ${staticEntry.reason}`);
 });
 
 // ────────────────────────────────────────────────────────────────────────────────────────────────

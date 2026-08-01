@@ -7,12 +7,10 @@
  * — and learns to ignore the verdict — or sees VALID for a trust chain that expired years ago, and
  * cannot tell whether acting on it is safe.
  *
- * THE RULE NOW. `purpose: "audit"` (default, legacy, temporary) evaluates authority at
- * `holdResolution.receivedAt`: a lapsed delegation does not retroactively un-approve what a valid
- * one approved, so historical bundles keep verifying forever. `purpose: "authorize"` additionally
- * requires the window to contain `now`, FAIL-CLOSED. Both report `dimensions.integrity` and
- * `dimensions.authorization` separately, and `policy.verifierVersion` so a verdict says which rules
- * produced it.
+ * THE RULE NOW. Both purposes require verifier-controlled `now` inside the root-signed delegation
+ * and the manifest's own reject-only window. A caller may use a trusted historical `now`, but the
+ * manifest's issuedAt and the dependent gate's receivedAt cannot supply it. Both purposes report
+ * `dimensions.integrity`, `dimensions.authorization`, and `policy.verifierVersion`.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -65,22 +63,28 @@ const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
 /** A time comfortably after the delegation's window closes, but inside the checkpoint max-age. */
 const AFTER_DELEGATION = new Date(Date.parse(fx.bundle.keyDelegation.expiresAt) + 60_000).toISOString();
 
-test("the default purpose is audit, and it is unchanged by this design", () => {
+test("the default purpose label remains audit", () => {
   const r = run(undefined, fx.now);
   assert.equal(r.verdict, "VALID_FULL_CHAIN");
   assert.equal(r.policy.purpose, "audit", "the legacy default must not move silently");
   assert.equal(r.policy.verifierVersion, VERIFIER_POLICY_VERSION);
 });
 
-test("audit keeps verifying after the delegation window closes — history is not rewritten", () => {
-  const r = run("audit", AFTER_DELEGATION, YEAR_MS);
-  assert.equal(
-    r.verdict,
-    "VALID_FULL_CHAIN",
-    `a lapsed delegation must not retroactively un-approve what a valid one approved: ${r.reason ?? ""}`,
-  );
-  assert.equal(r.dimensions.integrity, "INTACT");
-  assert.equal(r.dimensions.authorization, "EXPIRED_NOW", "…and the lapse must still be REPORTED, not hidden");
+test("audit cannot use signer-chosen manifest time to accept after delegated authority closes", () => {
+  // CONTROL, same run: the committed bundle verifies while verifier-owned time is inside the
+  // root-signed delegation window. The harness can therefore produce acceptance.
+  const control = run("audit", fx.now);
+  assert.equal(control.verdict, "VALID_FULL_CHAIN", control.reason ?? "");
+
+  // ATTACK: after expiry a compromised delegated key can create a new manifest and backdate its
+  // signed issuedAt into the old window. Those bytes are indistinguishable from genuine historical
+  // bytes without an independent time witness, so issuedAt may reject contradictions but cannot
+  // make an expired delegated signer acceptable.
+  const attack = run("audit", AFTER_DELEGATION, YEAR_MS);
+  assert.equal(attack.verdict, "INVALID", "signer-chosen issuedAt kept expired delegated authority acceptable");
+  assert.equal(attack.failedStep, "STEP_1_HOLD_ENVELOPE");
+  assert.equal(attack.code, "E_DELEGATION_CHAIN");
+  assert.match(attack.reason ?? "", /verifier.*now|trusted/i);
 });
 
 test("authorize refuses the same bundle, fail-closed, naming the window", () => {
@@ -109,13 +113,11 @@ test("a window that has not OPENED yet is refused for a current decision", () =>
   assert.equal(r.dimensions.authorization, "NOT_YET_VALID_NOW");
 });
 
-test("the two dimensions can disagree, and both are reported", () => {
-  // The state a single-word verdict cannot express: the bytes are permanently sound AND the
-  // authority is no longer current. An auditor needs the first; a caller about to act needs the
-  // second; neither is served by collapsing them.
+test("an expired delegated signer cannot retain an INTACT audit verdict without a time witness", () => {
   const r = run("audit", AFTER_DELEGATION, YEAR_MS);
-  assert.equal(r.dimensions.integrity, "INTACT");
-  assert.notEqual(r.dimensions.authorization, "VALID_NOW");
+  assert.equal(r.verdict, "INVALID");
+  assert.equal(r.dimensions.integrity, "BROKEN", "step 1 failed before chain/checkpoint integrity was proven");
+  assert.equal(r.dimensions.authorization, "EXPIRED_NOW");
 });
 
 test("a verdict is bound to the rule-set that produced it", () => {

@@ -256,17 +256,21 @@ test('[PROOF:RES-PAR-E2E-TENANTROOT] the external tenant root map CARRIES the de
   assert.equal(e.revokedAt, null, 'tenantRoot lost revokedAt — resolver broken, not the field');
 });
 
-test('[PROOF:RES-PAR-E2E-KEYRING] ENFORCED at the real verifier: a trusted caller time before delegated-signer activation is REFUSED through the assembled keyring', async () => {
+test('[PROOF:RES-PAR-E2E-KEYRING] ENFORCED at the real verifier: a signer-claimed time before delegated-signer activation is REFUSED through the assembled keyring', async () => {
   const { auth, clock, trust } = await pairedTrust();
   const preIso = new Date(Date.parse(auth.validFrom) - 60 * 60 * 1000).toISOString();
+  assert.ok(
+    Date.parse(clock.iso()) >= Date.parse(auth.validFrom),
+    'fixture error: verifier-owned now must be after activation so only the signer-claimed time can refuse',
+  );
 
   const probe = manifestIssuedAt(auth, trust.keyManifest, preIso);
-  const r = verifyArtifact(enc(probe), enc({ schemas, keyring: trust.keyring, now: clock.iso(), authorizationTime: preIso }));
+  const r = verifyArtifact(enc(probe), enc({ schemas, keyring: trust.keyring, now: clock.iso() }));
   assert.equal(
     r.ok,
     false,
-    'a manifest evaluated at a trusted time BEFORE the delegated signer’s activation verified through the ' +
-      'live keyring — the resolver dropped validFrom, so verifyArtifact skipped the check',
+    'a manifest that claims it was signed BEFORE the delegated signer’s activation verified merely because ' +
+      'verifier-owned now is after activation — signer time may reject but must never activate',
   );
   assert.match(r.reason ?? '', /before its validFrom/, `refused, but for the wrong reason: ${r.reason}`);
 

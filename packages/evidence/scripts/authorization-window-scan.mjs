@@ -2,11 +2,10 @@
 /**
  * DESIGN 2's MIGRATION SCANNER — which bundles change verdict, exactly, and why.
  *
- * The delegation/manifest validity window is now enforced fail-closed for CURRENT authorization
- * decisions (`purpose: "authorize"`), while historical audit (`purpose: "audit"`, the default) keeps
- * evaluating authority at `holdResolution.receivedAt`. That is a real behaviour change, and the one
- * thing a change like this must never do is rewrite history quietly: a bundle that verified
- * yesterday and does not verify today has to be nameable, with the reason and both timestamps.
+ * Both purposes enforce the delegation/manifest validity window at verifier-controlled `now`.
+ * Signer-chosen manifest.issuedAt and dependent holdResolution.receivedAt are reject-only. This
+ * scanner names bundles whose verdict changes when verifier time moves, so the historical-time
+ * requirement is measured rather than described from field counts.
  *
  * So this scanner runs the ENTIRE shipped corpus under both purposes and prints every verdict that
  * differs, plus a third column for the harshest case — evaluating at the machine's actual clock,
@@ -25,6 +24,7 @@ import { verifyEvidence, loadSchemas } from "../dist/src/verify-evidence.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CONF = join(HERE, "..", "conformance");
 const schemas = loadSchemas();
+const doc = (value) => JSON.stringify(value);
 
 const fixtures = [];
 for (const slug of readdirSync(CONF)) {
@@ -39,9 +39,9 @@ fixtures.sort((a, b) => a.id.localeCompare(b.id));
 
 function run(fx, purpose, now) {
   try {
-    const r = verifyEvidence(fx.bundle, {
-      tenantRoot: fx.tenantRoot,
-      checkpointKeyring: fx.checkpointKeyring,
+    const r = verifyEvidence(doc(fx.bundle), {
+      tenantRoot: doc(fx.tenantRoot),
+      checkpointKeyring: doc(fx.checkpointKeyring),
       now: now ?? fx.now,
       maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
       schemas,
@@ -56,14 +56,18 @@ function run(fx, purpose, now) {
 const wallClockNow = new Date().toISOString();
 const rows = [];
 for (const { id, fx } of fixtures) {
-  const audit = run(fx, "audit");
+  const auditAtFixtureNow = run(fx, "audit");
   const authorizeAtFixtureNow = run(fx, "authorize");
+  const auditAtWallClock = run(fx, "audit", wallClockNow);
   const authorizeAtWallClock = run(fx, "authorize", wallClockNow);
-  rows.push({ id, audit, authorizeAtFixtureNow, authorizeAtWallClock });
+  rows.push({ id, auditAtFixtureNow, authorizeAtFixtureNow, auditAtWallClock, authorizeAtWallClock });
 }
 
-const changedAtFixtureNow = rows.filter((r) => r.audit.verdict !== r.authorizeAtFixtureNow.verdict);
-const changedAtWallClock = rows.filter((r) => r.audit.verdict !== r.authorizeAtWallClock.verdict);
+const changedAtFixtureNow = rows.filter((r) => r.auditAtFixtureNow.verdict !== r.authorizeAtFixtureNow.verdict);
+const changedAtWallClock = rows.filter(
+  (r) => r.auditAtFixtureNow.verdict !== r.auditAtWallClock.verdict
+    || r.authorizeAtFixtureNow.verdict !== r.authorizeAtWallClock.verdict,
+);
 
 if (process.argv.includes("--json")) {
   console.log(JSON.stringify({ wallClockNow, total: rows.length, changedAtFixtureNow, changedAtWallClock, rows }, null, 2));
@@ -74,24 +78,22 @@ console.log(`authorization-window scan — ${rows.length} shipped bundles, verif
 
 console.log(`A. purpose "audit" vs purpose "authorize", each at the bundle's OWN declared \`now\`:`);
 if (changedAtFixtureNow.length === 0) {
-  console.log("   NO bundle changes verdict. Every shipped bundle's delegation and manifest windows");
-  console.log("   contain its own declared verification time, so enforcing them for a current decision");
-  console.log("   rejects none of them. The new rule adds no retroactive rejection to the corpus.\n");
+  console.log("   NO bundle changes verdict between purposes at its fixture-owned verification time.");
+  console.log("   This section does not measure later historical acceptance; the wall-clock comparison does.\n");
 } else {
   for (const r of changedAtFixtureNow) {
-    console.log(`   ${r.id}: ${r.audit.verdict} -> ${r.authorizeAtFixtureNow.verdict} (${r.authorizeAtFixtureNow.step ?? "-"} / ${r.authorizeAtFixtureNow.code ?? "-"})`);
+    console.log(`   ${r.id}: ${r.auditAtFixtureNow.verdict} -> ${r.authorizeAtFixtureNow.verdict} (${r.authorizeAtFixtureNow.step ?? "-"} / ${r.authorizeAtFixtureNow.code ?? "-"})`);
   }
   console.log("");
 }
 
-console.log(`B. purpose "authorize" evaluated at the WALL CLOCK (${wallClockNow}) — what a caller gets`);
-console.log(`   who asks to authorize NOW without pinning \`now\`:`);
+console.log(`B. both purposes evaluated at the WALL CLOCK (${wallClockNow}) instead of fixture time:`);
 if (changedAtWallClock.length === 0) {
   console.log("   NO bundle changes verdict.\n");
 } else {
   const byCode = new Map();
   for (const r of changedAtWallClock) {
-    const key = `${r.authorizeAtWallClock.step ?? "-"} / ${r.authorizeAtWallClock.code ?? "-"} / ${r.authorizeAtWallClock.authorization}`;
+    const key = `audit=${r.auditAtWallClock.verdict}/${r.auditAtWallClock.code ?? "-"}; authorize=${r.authorizeAtWallClock.verdict}/${r.authorizeAtWallClock.code ?? "-"}; authorization=${r.auditAtWallClock.authorization}`;
     byCode.set(key, [...(byCode.get(key) ?? []), r.id]);
   }
   for (const [key, ids] of [...byCode.entries()].sort()) {
@@ -99,17 +101,14 @@ if (changedAtWallClock.length === 0) {
     for (const id of ids) console.log(`       ${id}`);
   }
   console.log("");
-  console.log("   READ THIS AS DESIGNED BEHAVIOUR, NOT BREAKAGE: these are fixed-clock test bundles whose");
-  console.log("   delegation window closed in the past. A real caller authorizing NOW against an authority");
-  console.log("   that expired IS supposed to be refused — that is the whole point of the `authorize`");
-  console.log("   purpose. The same bundles all still verify under `audit`, which is what an auditor uses,");
-  console.log("   and no shipped bundle's AUDIT verdict changed (section A).");
+  console.log("   These are fixed-clock fixtures whose trust windows do not contain the wall clock.");
+  console.log("   Historical acceptance requires an independently witnessed historical `now`; the bundle's");
+  console.log("   own issuedAt/receivedAt fields cannot provide it for either purpose.");
 }
 
-const integrityIntactButAuthorityLapsed = rows.filter(
-  (r) => r.audit.integrity === "INTACT" && r.authorizeAtWallClock.authorization === "EXPIRED_NOW",
+const refusedWithoutHistoricalWitness = rows.filter(
+  (r) => r.auditAtFixtureNow.verdict.startsWith("VALID") && !r.auditAtWallClock.verdict.startsWith("VALID"),
 );
-console.log(`\nC. bundles whose evidence is INTACT while their authority has LAPSED: ${integrityIntactButAuthorityLapsed.length}`);
-console.log("   This is the state a single-word verdict cannot express, and the reason the two dimensions");
-console.log("   are reported separately: the bytes are permanently sound, the authority is not current.");
+console.log(`\nC. fixture-valid audit bundles refused at wall clock without a historical witness: ${refusedWithoutHistoricalWitness.length}`);
+console.log("   This is an executed verdict comparison. It is not a count of timestamp mentions or wrappers.");
 process.exit(0);

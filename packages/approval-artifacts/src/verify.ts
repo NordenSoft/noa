@@ -312,10 +312,19 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
     if (!entry) return { ok: false, reason: `unknown signing key "${sig.kid}" (not in keyring)` };
 
     // Activation and revocation have the same trust asymmetry: a stolen key chooses every timestamp
-    // inside the document it signs. Activation therefore uses only caller-controlled time. A
-    // lifecycle-bearing entry with no such time fails closed; a static entry has no activation claim
-    // and retains the legacy always-active contract.
+    // inside the document it signs. Only caller-controlled time may move a verdict toward ACCEPT.
+    // A signer-claimed time is still useful in the opposite direction: if the document admits that
+    // its event predates validFrom, that self-contradiction moves the verdict toward REFUSE. It can
+    // never activate the key. Keep both checks; deleting either reopens one side of the mirror.
     const trustedActivationTime = ctx.authorizationTime ?? ctx.now;
+    const signerClaimedTime =
+      (doc.issuedAt as string | undefined) ??
+      (doc.receivedAt as string | undefined) ??
+      (doc.decidedAt as string | undefined) ??
+      (doc.consumedAt as string | undefined) ??
+      (doc.detectedAt as string | undefined) ??
+      (doc.confirmedAt as string | undefined) ??
+      (doc.acceptedAt as string | undefined);
     if (ctx.authorizationTime !== undefined && Number.isNaN(parseTime(ctx.authorizationTime))) {
       return { ok: false, reason: "invalid verifier-controlled authorizationTime" };
     }
@@ -334,6 +343,15 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
       }
       if (at < from) {
         return { ok: false, reason: `signing key "${sig.kid}" was evaluated at trusted time ${trustedActivationTime}, before its validFrom ${entry.validFrom}` };
+      }
+      if (signerClaimedTime !== undefined) {
+        const claimedAt = parseTime(signerClaimedTime);
+        if (Number.isNaN(claimedAt)) {
+          return { ok: false, reason: `cannot evaluate signer-claimed activation time for signing key "${sig.kid}"` };
+        }
+        if (claimedAt < from) {
+          return { ok: false, reason: `signing key "${sig.kid}" claims artifact time ${signerClaimedTime}, before its validFrom ${entry.validFrom}; signer time is reject-only and cannot activate a key` };
+        }
       }
     }
     if (entry.revokedAt != null) {

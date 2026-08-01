@@ -27,6 +27,7 @@ const authorityFixture = JSON.parse(
   tenantRoot: Record<string, KeyEntry>;
   checkpointKeyring: Record<string, string>;
   now: string;
+  maxAgeHours: number;
 };
 
 function trustWithCheckpointLifecycle(retiredAt: string | null): GateTrust {
@@ -80,7 +81,13 @@ export function runVerificationSurfaceProbe() {
     authorityFixture.tenantRoot,
     { iso: () => authorityFixture.now } as Clock,
   );
-  return { honest, direct, wrapped, authority, authorityCheckpointKid: checkpointKid };
+  const authorityDirect = verifyEvidence(encodeDocument(authorityFixture.bundle), {
+    tenantRoot: encodeDocument(authorityFixture.tenantRoot),
+    checkpointKeyring: encodeDocument(authorityFixture.checkpointKeyring),
+    now: authorityFixture.now,
+    maxAgeMs: authorityFixture.maxAgeHours * 60 * 60 * 1000,
+  });
+  return { honest, direct, wrapped, authorityDirect, authority, authorityCheckpointKid: checkpointKid };
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

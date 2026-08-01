@@ -54,10 +54,11 @@ mismatch fails the build (§15 P1b-alpha DoD).
 - **Rule c / F2 (virtual):** `transcriptHash` and `displayCiphertextHash` hash the WHOLE object as-is
   (nothing stripped) — so a relay-added `recipients[]` entry breaks the parent's signed hash.
 - **Activation and revocation:** a signed artifact's own timestamp is never evidence that its signing
-  key was active. When a `KeyEntry` declares `validFrom`, `verifyArtifact` evaluates it only at the
-  caller-supplied `authorizationTime`, falling back to caller-supplied `now`, and fails closed if both
-  are absent. Any non-null `revokedAt` is refused outright because signer-chosen time cannot prove
-  history. A static entry with no lifecycle fields remains always-active for compatibility.
+  key was active. When a `KeyEntry` declares `validFrom`, caller-supplied `authorizationTime` (falling
+  back to caller-supplied `now`) is required for acceptance. The artifact's claimed event time is
+  reject-only: a claim before `validFrom` refuses, but can never activate the key. Any non-null
+  `revokedAt` is refused outright because signer-chosen time cannot prove history. A static entry
+  with no lifecycle fields remains always-active for compatibility.
 - **Signer identity:** self-identifying signed artifacts enforce their declared signer field
   (`gateKid` or `approverKid`) against `sig.kid` inside `verifyArtifact`; callers cannot accidentally
   omit this binding and authorize one principal's receipt with another principal's Decision.

@@ -1,7 +1,19 @@
 {
   "spec": "noa.resolver-inventory/1",
   "updated": "2026-08-01",
-  "authority": "The machine-readable census of every path that constructs, transforms, declares or consumes a trust-key entry. Enforced by scripts/lint-resolver-parity.mjs (BLOCKING): a resolver that appears, disappears, or changes its validFrom/revokedAt carriage, an exception without a versioned non-empty reason, a proof that stops resolving, and a vocabulary file left unclassified each fail the gate for its own named reason. `line` is informational (reported on drift, not failed): identity is (file, scope, ordinal).",
+  "authority": "Declared machine-readable inventory of AST-recognized trust-key sites plus human-reviewed anchors. scripts/lint-resolver-parity.mjs blocks drift for syntax it recognizes; it does not prove a whole-program census. Factory returns, callbacks, property mutation, dynamic/CommonJS indirection, verifier reassignment and ambiguous aliases require the manual wrapper trace in docs/P0-14-VERIFICATION-SURFACES.md. `line` is informational (reported on drift, not failed): identity is (file, scope, ordinal).",
+  "limitations": {
+    "mechanicalGuarantee": "Exact reconciliation for scanner-recognized sites and declared anchors only.",
+    "humanReviewRequired": [
+      "factory returns",
+      "callbacks",
+      "property mutation",
+      "dynamic imports and CommonJS destructuring",
+      "verifier function reassignment",
+      "ambiguous aliases"
+    ],
+    "countCorrection": "The seven staticConstructedKeyrings entries are example call sites, not seven wrappers reclassified as narrowing. The former seven-row wrapper table resolves to five pass-through compositions, one independent narrowing surface, and one aggregate internal-call row by direct source trace."
+  },
   "policy": {
     "version": 1,
     "policyClasses": [

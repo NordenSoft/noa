@@ -1,5 +1,5 @@
 {
-  "description": "STEP_1: keyManifest.issuedAt (09:30) precedes keyDelegation.validFrom (10:00) — the manifest was stamped before the delegation authorizing its signer existed. This is exactly the inconsistency the shipped fixtures used to carry; the fixture was the defect, and this pins the corrected rule",
+  "description": "STEP_1: signer-claimed keyManifest.issuedAt (09:30) precedes keyDelegation.validFrom (10:00). The claim is reject-only: it cannot authorize the signer, but this self-contradiction must refuse",
   "expectVerdict": "INVALID",
   "expectStep": "STEP_1_HOLD_ENVELOPE",
   "expectCode": "E_DELEGATION_CHAIN",

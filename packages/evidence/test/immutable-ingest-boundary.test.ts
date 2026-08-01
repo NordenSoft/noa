@@ -180,12 +180,12 @@ test("H3: an unrecognised purpose fails CLOSED (UNVERIFIED), never silently down
   assert.equal(run(fx, { purpose: "audit" }).verdict, "VALID_FULL_CHAIN");
 });
 
-test("H3: the AUDIT authorization dimension reflects the MANIFEST window at now, not only the delegation's", () => {
+test("H3: AUDIT refuses an expired MANIFEST window at verifier-controlled now", () => {
   // DENIED skips the envelope-liveness gate (a terminal negative), so `now` can advance past the
   // manifest window without tripping an unrelated liveness check. denied.json: manifest expires
   // 2026-07-15T09:30Z; delegation expires 2026-07-20T10:00Z. A `now` AFTER the manifest window but
-  // INSIDE the delegation window is the isolating case: the pre-fix dimension (delegation-only) read
-  // VALID_AT_DECISION_TIME, hiding that the signed key list is no longer current. maxAgeMs is widened
+  // INSIDE the delegation window is the isolating case: the pre-fix audit verdict stayed valid,
+  // trusting the dependent receivedAt as history. maxAgeMs is widened
   // so the checkpoint stays fresh at the advanced `now` (a negative outcome needs a fresh checkpoint).
   const fx = loadValid("denied.json");
   const now = "2026-07-16T00:00:00.000Z";
@@ -196,6 +196,8 @@ test("H3: the AUDIT authorization dimension reflects the MANIFEST window at now,
     maxAgeMs: 240 * 60 * 60 * 1000, // 10 days — keeps the checkpoint fresh at the advanced `now`
     schemas,
   });
-  assert.equal(res.verdict, "VALID_FULL_CHAIN", `audit NEVER fails on a lapsed window; got ${res.verdict} (${res.reason ?? ""})`);
+  assert.equal(res.verdict, "INVALID", "an expired signer-claimed manifest window still verified under audit");
+  assert.equal(res.failedStep, "STEP_1_HOLD_ENVELOPE");
+  assert.equal(res.code, "E_HOLD_ENVELOPE");
   assert.equal(res.dimensions.authorization, "EXPIRED_NOW", "the audit dimension must report the manifest is EXPIRED_NOW even though the delegation is still open at `now`");
 });

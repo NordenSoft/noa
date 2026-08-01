@@ -74,11 +74,10 @@ const DELEG_FROM = "2026-07-14T10:00:00.000Z";
 const DELEG_EXP = "2026-07-20T10:00:00.000Z";
 // FIXTURE DEFECT, CORRECTED: this was 09:30 — THIRTY MINUTES BEFORE the delegation that authorizes
 // the manifest signer opens (DELEG_FROM 10:00). A manifest cannot be issued before the delegation
-// permitting its signer exists; `verifyArtifact` resolves a manifest's artifact time from
-// `issuedAt`, so `issuedAt` is the issuance/signing instant by this codebase's own convention. The
-// inconsistency was previously used as the reason NOT to apply `delegation.validFrom` to the
-// delegated key — the fixture was wrong, not the rule. Delegation opens 10:00, manifest is stamped
-// 10:30, and both precede every receipt/decision/resolution time below.
+// permitting its signer exists. issuedAt is signer-chosen and therefore cannot authorize the key,
+// but it remains a reject-only consistency claim: an artifact admitting it predates its authority
+// must be refused. Delegation opens 10:00, manifest is stamped 10:30, and both precede every
+// receipt/decision/resolution time below.
 const MAN_ISSUED = "2026-07-14T10:30:00.000Z";
 const MAN_EXP = "2026-07-15T09:30:00.000Z";
 const PARAMS_HASH = "sha256:" + "a".repeat(64);
@@ -731,13 +730,11 @@ for (const oc of OUTCOMES) {
   emit("reject", "step18-checkpoint-future-date-cannot-activate-key", fixtureFrom(attack, { description: "STEP_18/P0-14 activation mirror: verifier now is 12:00:00 and the checkpoint key activates at 12:00:15; its signer-chosen 12:00:30 timestamp must not activate it", expectVerdict: "INVALID", expectStep: "STEP_18_TEMPORAL_AUTHORIZATION", expectCode: "E_TEMPORAL_AUTH" }));
 }
 
-// STEP 1 — MANIFEST ISSUED OUTSIDE ITS DELEGATION'S WINDOW (the delegation.validFrom decision).
-// `delegation.validFrom` is now the delegated signer's activation time, and the manifest's issuedAt
-// must fall inside the delegation window. MIGRATION: this is the one change on this branch that can
-// turn a previously-VALID bundle INVALID — loudly, at a named step, with both timestamps quoted.
+// STEP 1 — REJECT-ONLY MANIFEST CLAIM OUTSIDE ITS DELEGATION WINDOW. issuedAt cannot authorize the
+// signer, but a claim before validFrom is self-contradicting and must refuse at a named step.
 {
   const w = buildWorld("EXECUTED", { manifestIssuedAt: "2026-07-14T09:30:00.000Z" }); // before DELEG_FROM 10:00
-  emit("reject", "step01-manifest-issued-before-delegation", fixtureFrom(w, { description: "STEP_1: keyManifest.issuedAt (09:30) precedes keyDelegation.validFrom (10:00) — the manifest was stamped before the delegation authorizing its signer existed. This is exactly the inconsistency the shipped fixtures used to carry; the fixture was the defect, and this pins the corrected rule", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_DELEGATION_CHAIN", bundle: w.bundle }));
+  emit("reject", "step01-manifest-issued-before-delegation", fixtureFrom(w, { description: "STEP_1: signer-claimed keyManifest.issuedAt (09:30) precedes keyDelegation.validFrom (10:00). The claim is reject-only: it cannot authorize the signer, but this self-contradiction must refuse", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_DELEGATION_CHAIN", bundle: w.bundle }));
 }
 
 // ═══ 3b. BOUNDARY 1 — RECEIPT SEMANTIC INTEGRITY, ONE FIXTURE PER ROLE (2026-07-27) ═══════════════
