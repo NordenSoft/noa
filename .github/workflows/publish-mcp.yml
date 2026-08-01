@@ -40,6 +40,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          # REQUIRED by the kernel-parity gate below: it compares HEAD against the kernel's release
+          # TAG, and the default shallow checkout carries no tags. The gate fails closed rather than
+          # skipping when it cannot see them, so a shallow clone breaks the release loudly instead
+          # of silently publishing against an unverified kernel.
+          fetch-depth: 0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -89,6 +94,24 @@ jobs:
               ;;
           esac
 
+      - name: Gate — the kernel on the registry is the kernel these packages were tested against
+        # These packages are TESTED against the kernel in this tree (`file:../..`) and SHIPPED
+        # depending on the kernel on the registry. Those are only the same artifact if the kernel
+        # version was bumped and released whenever its published surface changed.
+        #
+        # The step below that rewrites the dependency already asks whether `noa-receipt@$KV` exists
+        # on the registry — which catches "bumped but not published". It cannot catch the opposite
+        # and more likely mistake, "changed but NOT bumped", because then the old version string
+        # still resolves and the check goes green while the two kernels differ. Measured 2026-08-01:
+        # published 0.5.0 had 51 exports and no retirement enforcement, this tree's 0.5.0 had 69 and
+        # the P0-14 fix, 37 commits apart, and that check passed. Publishing then would have shipped
+        # `import { resolveVerificationKey } from "noa-receipt"` against a kernel that does not
+        # export it — a load-time crash for every consumer, unpublishable back off the registry.
+        #
+        # This gate asks the question in the form that can fail: has anything in the kernel's
+        # published surface moved since its release tag? It fails closed when it cannot measure.
+        run: node scripts/lint-kernel-release-parity.mjs
+
       - name: adapter-core test gate (never publish broken)
         working-directory: packages/adapter-core
         run: |
@@ -130,9 +153,14 @@ jobs:
         # install failure. The version is read from the root package.json, NOT hardcoded.
         #
         # FAIL-CLOSED ON AN UNPUBLISHED KERNEL: if the root version is not on the registry, this
-        # would ship a dependency nobody can install. That happens exactly when the kernel has been
-        # changed but not released — so the correct action is to release the kernel first, never to
-        # publish adapter-core pointing at a version that does not exist.
+        # would ship a dependency nobody can install. The correct action is to release the kernel
+        # first, never to publish adapter-core pointing at a version that does not exist.
+        #
+        # THIS CHECK ALONE IS NOT SUFFICIENT, and the original wording of this comment claimed it
+        # covered "the kernel has been changed but not released" — it does not. Existence of the
+        # version string says nothing about the content behind it, and the changed-but-not-bumped
+        # case leaves the string resolvable. That half is covered by the kernel-parity gate above;
+        # the two are complementary and neither is redundant.
         working-directory: packages/adapter-core
         run: |
           KV="$(node -p "require('../../package.json').version")"

@@ -6,8 +6,68 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [Unreleased]
 
-> **NOT RELEASED, NOT PUBLISHED, NO VERSION BUMP.** These land on a feature branch. The two
-> BREAKING items below require a MAJOR release; that decision and its timing are the maintainer's.
+_Nothing yet._
+
+## [0.6.0] - 2026-08-01
+
+> **READ BEFORE UPGRADING.** This is a security release and it is deliberately stricter than 0.5.0.
+> Artifacts that previously verified `VALID` can now verify `REFUSE` or `TAMPERED`. That is the
+> point of the release, not a regression — but it means an upgrade can change the answer your system
+> gets for evidence it already holds. Two of the changes are listed under **BREAKING** below with
+> their migrations; the third is the P0-14 tightening described immediately after this note, whose
+> operational cost is stated at the end of that section.
+>
+> **Why MINOR and not 1.0.0.** Under SemVer, `0.y.z` is the range where breaking changes belong in
+> the MINOR position, so `0.6.0` is this project's major-equivalent bump. Declaring `1.0.0` would
+> assert that the public API is stable, and this changelog documents ongoing breaking security work
+> across consecutive review rounds. Claiming a property the project cannot currently honour is the
+> one thing this codebase refuses to do, in a release number as much as in a comment.
+
+### Security — a retired signing key could mint new execution evidence (P0-14)
+
+The class, stated plainly: **key rotation is the remedy for a compromised key, and rotation did not
+actually revoke anything on the evidence path.** A key that had been retired could still produce
+outcome receipts and checkpoints that verified `VALID`. The control an operator reaches for during
+an incident was the control that did not work.
+
+The root error took four attempts to name, and it is worth stating because it generalises:
+
+> **A check that compares against a timestamp the SIGNER chose is not a check.**
+
+It existed at three call sites and was twice "fixed" by tightening the comparison rather than
+removing the dependency — each time leaving the attacker in control of the input the decision read.
+The final shape is an asymmetry, written into the code so it cannot be quietly reverted:
+
+> **Signer-chosen time may move a verdict toward REFUSE. It may never move it toward ACCEPT.**
+
+Only trusted time (`authorizationTime ?? now`) can permit acceptance. A self-contradicting artifact
+is refused regardless of whose clock you believe.
+
+Mechanisms:
+
+- `src/verification-keyring.ts` — a parsed keyring is a value with lifecycle state attached, so a
+  key and its retirement cannot be read apart. `resolveVerificationKey` is the single resolution
+  point and refuses a retired or not-yet-active `kid` outright.
+- `verifyCheckpoint(cp, keyring?)` accepts a parsed verification keyring. It had never been patched
+  in the two earlier attempts, which is why "refused on both paths" was false when it was written.
+- Timestamps are parsed with integer epoch arithmetic (Howard Hinnant's `daysFromCivil`) instead of
+  `Date`, so a poisoned `Date` cannot move a bound. RFC 3339 offsets are honoured, and the parser
+  accepts every spelling the published `noa-decision-0.1` schema permits — a reject-only check that
+  is stricter than the schema refuses validly signed artifacts, which is its own defect.
+- `packages/mcp-proxy` exposes an atomic `verificationLifecycle()` snapshot. The bare `keyring()`
+  accessor was **removed** rather than documented: separate `keyring()` / `retirements()` accessors
+  could return snapshots from different sides of a rotation, and the fix for a call that cannot be
+  made safely is to make it unrepresentable.
+
+Evidence: `docs/P0-14-VERIFICATION-SURFACES.md` enumerates every keyring-accepting surface and
+states its own limit (a complete JS call graph is not statically enumerable).
+`docs/reproductions/repro-P0-14-retired-key-forgery.mjs` carries 24 attack lines, each shipping a
+control that passes in the same run — an attack test whose control fails proves nothing.
+
+**Not fixed, and not claimed as fixed.** `packages/tsa-anchor` is unpublished, so there is no
+independent time witness. A *genuine* receipt signed before its key retired is therefore
+unverifiable after retirement. That is the correct fail-closed consequence of having no trusted
+time, not an oversight — but it is a real operational cost and you should know it before you rotate.
 
 ### Security (cross-family review ROUND 6, 2026-07-28) — the classes, not the mechanisms
 
