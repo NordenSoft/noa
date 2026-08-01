@@ -274,18 +274,34 @@ export function assembleGateTrust(
   const gate: GateKeyPair = { kid: auth.gate.kid, publicKey: auth.gate.publicKey, privateKey: auth.gate.privateKey };
   const approver: GateKeyPair = { kid: phone.approverKid, publicKey: phone.approverPublicKey, privateKey: '' };
 
+  // The manifest is the declaration for its GATE/APPROVER entries. Preserve the old auth-derived
+  // window only when a direct caller hands this private demo helper a manifest without that kid;
+  // first-party acceptPairing always declares both. A present declaration wins even when its value
+  // differs from auth — otherwise the live verifier would enforce a different window from the one
+  // the manifest states.
+  const manifestWindow = (kid: string): { validFrom: string | null; revokedAt: string | null } => {
+    const declared = manifest.keys.find((key) => key.kid === kid);
+    return declared === undefined
+      ? { validFrom: auth.validFrom, revokedAt: null }
+      : { validFrom: declared.validFrom, revokedAt: declared.revokedAt };
+  };
+  const gateWindow = manifestWindow(gate.kid);
+  const approverWindow = manifestWindow(approver.kid);
+
   // ── P0-8 (2026-07-31): THIS WAS THE SEVENTH RESOLVER THAT DROPPED `validFrom` ────────────────
   // The v2 manifest signed in `acceptPairing` above declares `validFrom` on every key; this keyring
   // — the exact map the gate engine hands to `verifyArtifact` for LIVE Decision verification — was
   // rebuilt from the same inputs with `revokedAt: null` but NO `validFrom`, so the declared
   // activation window was open at one end on the golden live path. Identical drift to P0-5
   // (`gate/src/trust.ts`) and P0-1 (`evidence/src/trust.ts`), found AFTER the resolver inventory
-  // had twice been declared complete. Activation is now carried from the same declared value the
-  // manifest uses. [proof: RES-PAR-E2E-KEYRING] (test/keyring-resolver-parity.test.ts, RED before
-  // this fix); the resolver census is reconciled mechanically by scripts/lint-resolver-parity.mjs.
+  // had twice been declared complete. The GATE and APPROVER windows are now carried from their
+  // per-key manifest declarations, including a non-null revocation; the delegation and ROOT keep
+  // their separately-declared bootstrap window. [proof: RES-PAR-E2E-KEYRING]
+  // (test/keyring-resolver-parity.test.ts, RED before this fix); the resolver census is reconciled
+  // mechanically by scripts/lint-resolver-parity.mjs.
   const keyring: Record<string, KeyEntry> = {
-    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], validFrom: auth.validFrom, revokedAt: null },
-    [approver.kid]: { publicKey: approver.publicKey, type: 'APPROVER', roles: ['approve-high'], validFrom: auth.validFrom, revokedAt: null },
+    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], validFrom: gateWindow.validFrom, revokedAt: gateWindow.revokedAt },
+    [approver.kid]: { publicKey: approver.publicKey, type: 'APPROVER', roles: ['approve-high'], validFrom: approverWindow.validFrom, revokedAt: approverWindow.revokedAt },
     [auth.authority.kid]: { publicKey: auth.authority.publicKey, type: 'DELEGATED', roles: ['key-manifest-sign'], validFrom: auth.validFrom, revokedAt: null },
     [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], validFrom: auth.validFrom, revokedAt: null },
   };

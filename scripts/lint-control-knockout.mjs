@@ -51,6 +51,41 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WARN_ONLY = process.argv.includes("--warn");
 const onlyIdx = process.argv.indexOf("--only");
 const ONLY = onlyIdx > -1 ? process.argv[onlyIdx + 1] : null;
+const PROOF_INVENTORY = JSON.parse(
+  fs.readFileSync(path.join(ROOT, "scripts", "resolver-inventory.json"), "utf8"),
+).proofs ?? {};
+
+/** Machine-readable proof bindings carried inside an entry's already-required control string. */
+function proofIdsFor(entry) {
+  const ids = [];
+  for (const match of entry.control.matchAll(/\[proof:\s*([^\]]+)\]/g)) {
+    ids.push(...match[1].split(",").map((v) => v.trim()).filter(Boolean));
+  }
+  return [...new Set(ids)];
+}
+
+/**
+ * A knockout tagged for a proof is successful only when THAT proof's registered marker is among
+ * the new red tests. A different sibling failure is not meaningfulness evidence for this proof.
+ */
+function requireNamedProofFailures(entry, result) {
+  const ids = proofIdsFor(entry);
+  if (ids.length === 0) return result;
+  const missing = ids.filter((id) => {
+    const marker = PROOF_INVENTORY[id]?.marker;
+    return typeof marker !== "string" || !result.newFailures?.some((name) => name.includes(marker));
+  });
+  if (missing.length === 0) {
+    result.detail = `${result.detail}; named proof(s) went RED: ${ids.join(", ")}`;
+    return result;
+  }
+  if (result.verdict === VERDICT.DETECTOR_TRIGGERED) {
+    result.verdict = VERDICT.ANTI_VACUITY_FAILED;
+  }
+  result.detail = `${result.detail} Named proof(s) did not go RED: ${missing.join(", ")}. ` +
+    `A different new failure cannot certify that these proof bodies measure the mutated control.`;
+  return result;
+}
 
 /**
  * Each entry names ONE defensive mechanism, the exact source edit that removes it, and the suite
@@ -90,18 +125,32 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
-  // G4 REGISTRY CLAIM WITHDRAWN (Batch E, 2026-08-01; canonical ADR correction still open).
-  // A scoped runner built the actual mutation and ran only the public `getProjection().run()` Slice
-  // 2 tests, excluding the two owner-deferred ADR-0006 failures. Clean: 6/6 GREEN. Mutated: 6/6
-  // GREEN (`DETECTOR_DID_NOT_TRIGGER`). The package-wide red baseline was not used as evidence.
+  // G4 DECISION B — DEFENCE-IN-DEPTH, NOT A MEASURED CONTROL (Batch F, 2026-08-01).
+  // The exact historical mutation was recovered from commit 4ff3a76:
+  //
+  //   commandView(canonical)
+  //     -> commandView(canonicalize(snapshot as Record<string, unknown>))
+  //
+  // It does NOT make render consume the parsed request object. `canonical` was assigned from
+  // `canonicalize(snapshot)` immediately above, and `snapshot` is a local object made from captured
+  // strings plus the fresh capture-once argv array. The mutant therefore passes canonical bytes made
+  // from the SAME normalized value to commandView a second time. No reachable caller can distinguish
+  // the security-relevant return value; the mutant only repeats work.
+  //
+  // NUMBERS, re-measured in Batch F without the two owner-deferred ADR-0006 failures: the source has
+  // 2 first-party `.run()` call sites (engine + wrapper) and 1 public direct-call surface. The scoped
+  // public-surface Slice-2 run was clean 6/6 GREEN and mutated 6/6 GREEN, including the honest-path
+  // anti-vacuity test. A separate clean-vs-mutant differential corpus was 10/10 return-value
+  // identical (6 accepted, 4 rejected: honest, destructive and adversarial capture shapes).
+  // `DETECTOR_DID_NOT_TRIGGER` is therefore the correct result for an observationally equivalent
+  // mutant, not evidence that canonical bytes are unimportant.
   //
   // WITHDRAWN CLAIM (verbatim): "ADR-0005 §7 G4 — the render node reads the CANONICAL BYTES, so the display and the paramsHash cannot disagree (M7)"
   //
-  // This withdraws the knockout claim, not the production invariant. `getProjection()` is publicly
-  // exported and its `run()` is directly reachable, while capture-once independently closes every
-  // split reachable today. The source records why the canonical render node remains a structural
-  // defence against a future second input; reachability justifies retaining code, not calling a
-  // 6/6-green mutation load-bearing.
+  // This withdraws the knockout claim, not the production invariant. Capture-once independently
+  // closes every current split; the canonical render node is retained as structural defence against
+  // a FUTURE second input. It must not be called load-bearing until a non-equivalent reachable mutant
+  // makes a detector RED.
   {
     id: "g6-riskclass-derived-not-accepted",
     control: "ADR-0005 §7 G6 — riskClass is DERIVED inside the boundary; the caller's hint may raise the floor and can never lower it (M2)",
@@ -520,12 +569,30 @@ const KNOCKOUTS = [
   },
   {
     id: "p01-root-validfrom-carried",
-    control: "P0-1 \u2014 asRootKeyEntryMap carries `validFrom` on ROOT entries. It carried revokedAt but DROPPED validFrom, and verify.ts:234 enforces activation only when the field is non-null \u2014 so a trust-root signature dated BEFORE its own declared activation verified clean. The manifest sibling (trust.ts:156) was fixed for exactly this class and says so; the ROOT resolver 80 lines above was not.",
+    control: "P0-1 \u2014 asRootKeyEntryMap carries `validFrom` on ROOT entries. It carried revokedAt but DROPPED validFrom, and verify.ts:234 enforces activation only when the field is non-null \u2014 so a trust-root signature dated BEFORE its own declared activation verified clean. The manifest sibling (trust.ts:156) was fixed for exactly this class and says so; the ROOT resolver 80 lines above was not. [proof: RES-PAR-EVID-ROOT, RES-PAR-ROOT-ENFORCED-E2E]",
     file: "packages/evidence/src/trust.ts",
     find: "validFrom: e.validFrom ?? null, revokedAt: e.revokedAt ?? null };",
     replace: "revokedAt: e.revokedAt ?? null };",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "p05-gate-keyring-validfrom-carried",
+    control: "P0-5 — createAlphaTrust carries the generated GATE activation into the live keyring; deleting it makes the registered resolver proof itself fail. [proof: RES-PAR-GATE-KEYRING]",
+    file: "packages/gate/src/trust.ts",
+    find: '    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], validFrom, revokedAt: null },',
+    replace: '    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], revokedAt: null },',
+    kind: "tests",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
+    id: "p06-activation-time-strict",
+    control: "P0-6 — a non-canonical declared activation is refused instead of being normalised by Date.parse into a usable instant. [proof: RES-PAR-AA-STRICT]",
+    file: "packages/approval-artifacts/src/verify.ts",
+    find: '  if (!CANONICAL_INSTANT.test(v)) return NaN;',
+    replace: '  if (!CANONICAL_INSTANT.test(v)) return Date.parse(v);',
+    kind: "tests",
+    suite: ["packages/approval-artifacts", "npm", ["test"]],
   },
   {
     id: "c77-display-captured-decode",
@@ -663,8 +730,35 @@ const KNOCKOUTS = [
     id: "p08-e2e-keyring-validfrom-carried",
     control: "P0-8 — the pairing live keyring carries the manifest-declared validFrom on every entry; dropping ONE entry's activation must fail the parity test [proof: RES-PAR-E2E-KEYRING]",
     file: "packages/e2e-demo/src/pairing.ts",
-    find: "    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], validFrom: auth.validFrom, revokedAt: null },",
-    replace: "    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], revokedAt: null },",
+    find: "    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], validFrom: gateWindow.validFrom, revokedAt: gateWindow.revokedAt },",
+    replace: "    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], revokedAt: gateWindow.revokedAt },",
+    kind: "tests",
+    suite: ["packages/e2e-demo", "npm", ["test"]],
+  },
+  {
+    id: "f2-e2e-keyring-window-from-manifest",
+    control: "F-2 — a present manifest key's per-key activation/revocation wins over auth defaults; restoring the old auth-derived/null behaviour makes only the differing-manifest proof go RED. [proof: RES-PAR-E2E-KEYRING]",
+    file: "packages/e2e-demo/src/pairing.ts",
+    find: "    return declared === undefined\n      ? { validFrom: auth.validFrom, revokedAt: null }\n      : { validFrom: declared.validFrom, revokedAt: declared.revokedAt };",
+    replace: "    return { validFrom: auth.validFrom, revokedAt: null };",
+    kind: "tests",
+    suite: ["packages/e2e-demo", "npm", ["test"]],
+  },
+  {
+    id: "p08-e2e-tenantroot-validfrom-carried",
+    control: "P0-8 — the pairing resolver carries the ROOT activation into the external tenant-root map; deleting it makes the tenant-root proof itself fail. [proof: RES-PAR-E2E-TENANTROOT]",
+    file: "packages/e2e-demo/src/pairing.ts",
+    find: "  const tenantRoot: Record<string, KeyEntry> = {\n    // P0-8, same change as the live keyring above: the external anchor carries the ROOT's declared\n    // activation, exactly as `gate/src/trust.ts` and the P0-1 fix do. [proof: RES-PAR-E2E-TENANTROOT]\n    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], validFrom: auth.validFrom, revokedAt: null },",
+    replace: "  const tenantRoot: Record<string, KeyEntry> = {\n    // P0-8, same change as the live keyring above: the external anchor carries the ROOT's declared\n    // activation, exactly as `gate/src/trust.ts` and the P0-1 fix do. [proof: RES-PAR-E2E-TENANTROOT]\n    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], revokedAt: null },",
+    kind: "tests",
+    suite: ["packages/e2e-demo", "npm", ["test"]],
+  },
+  {
+    id: "p08-cross-resolver-equivalence",
+    control: "P0-8 — the cross-resolver proof observes the assembled DELEGATED entry's activation at the real verifier; deleting that carried value makes the equivalence proof itself fail. [proof: RES-PAR-XRES-EQUIV]",
+    file: "packages/e2e-demo/src/pairing.ts",
+    find: "    [auth.authority.kid]: { publicKey: auth.authority.publicKey, type: 'DELEGATED', roles: ['key-manifest-sign'], validFrom: auth.validFrom, revokedAt: null },",
+    replace: "    [auth.authority.kid]: { publicKey: auth.authority.publicKey, type: 'DELEGATED', roles: ['key-manifest-sign'], revokedAt: null },",
     kind: "tests",
     suite: ["packages/e2e-demo", "npm", ["test"]],
   },
@@ -692,7 +786,7 @@ const KNOCKOUTS = [
   // "skip". Each knockout targets the NEW control, not the old defect.
   {
     id: "p12-root-activation-enforced",
-    control: "P0-12 — a trust ROOT is subject to its OWN activation window. Exempting ROOT from the activation branch left 1040 tests across five suites green before these proofs existed: carriage (P0-1) was proven, enforcement was not. [proof: RES-PAR-ROOT-ENFORCED, RES-PAR-ROOT-ENFORCED-E2E]",
+    control: "P0-12 — a trust ROOT is subject to its OWN activation window. Exempting ROOT from the activation branch left 1040 tests across five suites green before these proofs existed: carriage (P0-1) was proven, enforcement was not. [proof: RES-PAR-ROOT-ENFORCED]",
     file: "packages/approval-artifacts/src/verify.ts",
     find: "    if (entry.validFrom != null) {",
     replace: '    if (entry.validFrom != null && entry.type !== "ROOT") {',
@@ -723,11 +817,27 @@ const KNOCKOUTS = [
     kind: "gate",
     suite: [".", "npm", ["run", "lint:resolver-parity"]],
   },
+  {
+    id: "res-proof-knockout-coverage-required",
+    control: "F-4 — removing the sole behavioural-knockout binding for one registered proof makes resolver parity fail with PROOF_WITHOUT_KNOCKOUT; a live but empty proof cannot certify.",
+    file: "scripts/lint-control-knockout.mjs",
+    find: '    control: "P0-6 — a non-canonical declared activation is refused instead of being normalised by Date.parse into a usable instant. [proof: RES-PAR-AA-STRICT]",\n    file: "packages/approval-artifacts/src/verify.ts",',
+    replace: '    control: "P0-6 — a non-canonical declared activation is refused instead of being normalised by Date.parse into a usable instant.",\n    file: "packages/approval-artifacts/src/verify.ts",',
+    kind: "gate",
+    suite: [".", "node", ["scripts/lint-resolver-parity.mjs"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment
 // the runner does not implement, so running a partial experiment would manufacture evidence.
 validateKnockoutRegistry(KNOCKOUTS);
+for (const k of KNOCKOUTS) {
+  for (const id of proofIdsFor(k)) {
+    if (!PROOF_INVENTORY[id]) {
+      throw new Error(`invalid knockout entry ${JSON.stringify(k.id)}: unknown proof id ${JSON.stringify(id)}`);
+    }
+  }
+}
 
 // ── R8-26/R8-27: MEASURE EVERY SUITE'S CLEAN BASELINE FIRST ────────────────────────────────────
 // Without this, "the suite failed" cannot be distinguished from "the suite was already failing".
@@ -764,7 +874,8 @@ for (const k of selected) {
       detail: `the suite's CLEAN baseline timed out, so no mutation result from it can mean anything`, restored: true });
     continue;
   }
-  results.push(runKnockout({ root: ROOT, entry: k, registry: KNOCKOUTS, baseline }));
+  const result = runKnockout({ root: ROOT, entry: k, registry: KNOCKOUTS, baseline });
+  results.push(requireNamedProofFailures(k, result));
 }
 
 // ── REPORT ─────────────────────────────────────────────────────────────────────────────────────

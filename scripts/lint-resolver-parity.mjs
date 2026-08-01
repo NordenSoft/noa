@@ -41,12 +41,14 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import ts from "typescript";
 import { scanTrustKeySurface, VOCABULARY } from "./lib/resolver-scan.mjs";
 import { resolveProof, runProofFiles, runnerStatusFor } from "./lib/proof-resolve.mjs";
 import * as verdict from "./lib/verdict.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const INVENTORY_PATH = path.join(ROOT, "scripts", "resolver-inventory.json");
+const KNOCKOUT_PATH = path.join(ROOT, "scripts", "lint-control-knockout.mjs");
 
 const findings = [];
 const notices = [];
@@ -127,6 +129,64 @@ for (const rec of invSites) {
 
 // ── proofs must RESOLVE: tier 1 diagnoses statically, tier 2 (the runner) decides ───────────────
 const proofs = inventory.proofs ?? {};
+
+// ── proofs must be MEANINGFUL: a registered knockout must make each proof turn RED ──────────
+// Liveness proves that a test ran; it cannot prove the body asserted anything. Knockout entries
+// therefore bind the proof they make fail with a machine-readable `[proof: ID, ...]` tag in their
+// `control` string. Read only actual KNOCKOUTS object literals from the AST: a comment mentioning an
+// ID is not coverage, and neither is the `find` text of the meta-knockout that tests this check.
+function knockoutProofIds() {
+  const source = fs.readFileSync(KNOCKOUT_PATH, "utf8");
+  const sf = ts.createSourceFile(KNOCKOUT_PATH, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
+  const covered = new Set();
+  let registry = null;
+
+  const findRegistry = (node) => {
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.name.text === "KNOCKOUTS" &&
+      node.initializer &&
+      ts.isArrayLiteralExpression(node.initializer)
+    ) {
+      registry = node.initializer;
+      return;
+    }
+    ts.forEachChild(node, findRegistry);
+  };
+  findRegistry(sf);
+  if (registry === null) return covered;
+
+  for (const element of registry.elements) {
+    if (!ts.isObjectLiteralExpression(element)) continue;
+    const control = element.properties.find((p) =>
+      ts.isPropertyAssignment(p) &&
+      ((ts.isIdentifier(p.name) && p.name.text === "control") ||
+        (ts.isStringLiteral(p.name) && p.name.text === "control")),
+    );
+    if (!control || !ts.isPropertyAssignment(control)) continue;
+    const value = control.initializer;
+    if (!ts.isStringLiteral(value) && !ts.isNoSubstitutionTemplateLiteral(value)) continue;
+    for (const match of value.text.matchAll(/\[proof:\s*([^\]]+)\]/g)) {
+      for (const id of match[1].split(",").map((v) => v.trim()).filter(Boolean)) covered.add(id);
+    }
+  }
+  return covered;
+}
+
+const knockoutCoveredProofs = knockoutProofIds();
+const uncoveredProofs = Object.keys(proofs).filter((id) => !knockoutCoveredProofs.has(id)).sort();
+notices.push(`knockout coverage: ${Object.keys(proofs).length - uncoveredProofs.length}/${Object.keys(proofs).length} registered proof(s)`);
+if (uncoveredProofs.length > 0) {
+  add(
+    "PROOF_WITHOUT_KNOCKOUT",
+    uncoveredProofs.join(", "),
+    `${uncoveredProofs.length} registered proof id(s) have no knockout entry whose mutation makes ` +
+      `that proof turn RED. Liveness alone permits an empty test body; add a behavioural knockout ` +
+      `with an explicit \`[proof: ID]\` binding in scripts/lint-control-knockout.mjs.`,
+  );
+}
+
 const runtimeQueue = [];
 const referencedProofs = new Set();
 for (const rec of [...invSites, ...(inventory.anchoredResolvers ?? [])]) for (const p of rec.proofs ?? []) referencedProofs.add(p);

@@ -33,6 +33,7 @@ import { createAlphaTrust, loadSchemas } from 'noa-gate';
 import {
   ARTIFACTS,
   generateKeyPair,
+  refHash,
   signArtifact,
   verifyArtifact,
   type KeyEntry,
@@ -53,6 +54,7 @@ import {
 } from '../src/pairing.js';
 import { HeadlessPhone } from '../src/phone.js';
 import { sasEquals } from '../src/mobile.js';
+import type { KeyManifest } from '../src/mobile.js';
 import { makeClock, makeIds, type Clock } from '../src/support.js';
 import { createLogger } from '../src/log.js';
 import { encodeDocument } from '../src/bytes.js';
@@ -84,6 +86,8 @@ async function pairedTrust(): Promise<{
   clock: Clock;
   trust: GateTrust;
   tenantRoot: Record<string, KeyEntry>;
+  manifest: KeyManifest;
+  phoneKeys: { approverKid: string; approverPublicKey: string; approverHpkePublicKey: string };
 }> {
   const clock = makeClock();
   const ids = makeIds('parity');
@@ -110,7 +114,7 @@ async function pairedTrust(): Promise<{
     nowIso: clock.iso(),
   });
   const { trust, tenantRoot } = assembleGateTrust(auth, accept.manifest, accept.manifestHash, phoneKeys, clock, ids);
-  return { auth, clock, trust, tenantRoot };
+  return { auth, clock, trust, tenantRoot, manifest: accept.manifest, phoneKeys };
 }
 
 /** Re-sign the REAL v2 manifest with a chosen issuedAt, using the REAL delegated authority key.
@@ -129,25 +133,75 @@ function manifestIssuedAt(auth: DemoAuthority, manifest: unknown, issuedAt: stri
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 
 test('[PROOF:RES-PAR-E2E-KEYRING] the live keyring CARRIES the declared activation on every entry', async () => {
-  const { auth, trust } = await pairedTrust();
-  for (const [kid, what] of [
-    [trust.gate.kid, 'GATE'],
-    [trust.approver.kid, 'APPROVER'],
-    [auth.authority.kid, 'DELEGATED'],
-    [auth.root.kid, 'ROOT'],
-  ] as const) {
-    const e = entryOf(trust.keyring, kid, `live keyring (${what})`);
+  const { auth, trust, manifest } = await pairedTrust();
+  let manifestSigners = 0;
+  for (const declared of manifest.keys) {
+    if (typeof declared.publicKey !== 'string') continue; // AUDIT is HPKE-only, not a signer.
+    const e = entryOf(trust.keyring, declared.kid, `live keyring (${declared.type})`);
     assert.equal(
       e.validFrom,
-      auth.validFrom,
-      `${what} keyring entry dropped its declared validFrom — the v2 manifest in the same file ` +
-        `declares it, so the activation window is open at one end on the LIVE decision path ` +
-        `(gate/src/engine.ts:711 verifies with exactly this map)`,
+      declared.validFrom,
+      `${declared.type} keyring entry contradicted the manifest-declared validFrom on the LIVE ` +
+        `decision path (gate/src/engine.ts:711 verifies with exactly this map)`,
     );
-    // ANTI-VACUITY sibling: revokedAt IS carried on the same branch, so a dropped validFrom is a
-    // SPECIFIC omission, not a broken resolver.
-    assert.equal(e.revokedAt, null, `${what} keyring entry lost its revokedAt — resolver broken`);
+    assert.equal(
+      e.revokedAt,
+      declared.revokedAt,
+      `${declared.type} keyring entry contradicted the manifest-declared revokedAt`,
+    );
+    manifestSigners++;
   }
+  assert.equal(manifestSigners, 2, 'fixture: expected exactly the GATE and APPROVER manifest signers');
+
+  // DELEGATED and ROOT are not manifest keys; they retain their separately-declared bootstrap
+  // activation instead of inventing a manifest declaration that does not exist.
+  assert.equal(entryOf(trust.keyring, auth.authority.kid, 'live keyring (DELEGATED)').validFrom, auth.validFrom);
+  assert.equal(entryOf(trust.keyring, auth.root.kid, 'live keyring (ROOT)').validFrom, auth.validFrom);
+});
+
+test('[PROOF:RES-PAR-E2E-KEYRING] a direct caller gets manifest per-key windows even when they DIFFER from auth', async () => {
+  const { auth, clock, manifest, phoneKeys } = await pairedTrust();
+  const gateValidFrom = new Date(Date.parse(auth.validFrom) + 2 * 60 * 60 * 1000).toISOString();
+  const approverRevokedAt = new Date(Date.parse(auth.validFrom) + 3 * 60 * 60 * 1000).toISOString();
+  const originalApprover = manifest.keys.find((key) => key.kid === phoneKeys.approverKid);
+  assert.ok(originalApprover !== undefined, 'fixture: manifest lost the APPROVER entry');
+  assert.notEqual(gateValidFrom, auth.validFrom, 'fixture: gate manifest activation must differ from auth');
+  assert.equal(originalApprover.revokedAt, null, 'fixture: original APPROVER must begin unrevoked');
+  assert.notEqual(approverRevokedAt, originalApprover.revokedAt, 'fixture: APPROVER revocation must differ from the original/auth default');
+
+  const differingManifest: KeyManifest = structuredClone(manifest);
+  const differingGate = differingManifest.keys.find((key) => key.kid === auth.gate.kid);
+  const differingApprover = differingManifest.keys.find((key) => key.kid === phoneKeys.approverKid);
+  assert.ok(differingGate !== undefined, 'fixture: copied manifest lost the GATE entry');
+  assert.ok(differingApprover !== undefined, 'fixture: copied manifest lost the APPROVER entry');
+  differingGate.validFrom = gateValidFrom;
+  differingApprover.revokedAt = approverRevokedAt;
+  const { sig: _oldSig, ...differingBody } = differingManifest;
+  const signedDifferingManifest = signArtifact(
+    enc(differingBody),
+    domainOf('noa.key-manifest/0.1'),
+    { kid: auth.authority.kid, privateKey: auth.authority.privateKey },
+  ) as unknown as KeyManifest;
+  const differingManifestHash = refHash(signedDifferingManifest as unknown as object);
+  const { trust } = assembleGateTrust(
+    auth,
+    signedDifferingManifest,
+    differingManifestHash,
+    phoneKeys,
+    clock,
+    makeIds('manifest-window-diff'),
+  );
+
+  assert.equal(
+    entryOf(trust.keyring, auth.gate.kid, 'differing manifest GATE').validFrom,
+    gateValidFrom,
+    'GATE validFrom came from auth instead of the manifest entry',
+  );
+  assert.equal(
+    entryOf(trust.keyring, phoneKeys.approverKid, 'differing manifest APPROVER').revokedAt,
+    approverRevokedAt,
+    'APPROVER revokedAt was hardcoded null instead of carrying the manifest entry',
+  );
 });
 
 test('[PROOF:RES-PAR-E2E-TENANTROOT] the external tenant root map CARRIES the declared activation', async () => {
