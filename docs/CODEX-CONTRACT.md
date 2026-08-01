@@ -11,8 +11,25 @@ NOA Trust is the approval/evidence layer between a privileged request — an AI 
 deleting data, deploying — and real execution. A human approves on a phone; the system produces
 cryptographic evidence that **that** human approved **that** action.
 
-**The catastrophic failure is a FORGED or MISATTRIBUTED approval, not downtime.** Five customers go
-live on request and expect hostile traffic immediately.
+**The catastrophic failure is a FORGED or MISATTRIBUTED approval, not downtime.**
+
+⚠ **CORRECTED 2026-08-01. The withdrawn sentence, verbatim: *"Five customers go live on request and
+expect hostile traffic immediately."*** That was written here as a statement of fact and it is not
+one. **NOA Trust has NO customers and is NOT launched** — owner statement 2026-07-20, and the
+production database was measured read-only the same day: **0 organizations · 0 users · 0 members ·
+0 holds · 0 decisions · 0 grants.** The "5 customers" in `PROGRESS.md` means *ready to go live on
+request* — a plan, not a live population.
+
+**Why this correction is in the contract rather than quietly deleted:** the false version was copied
+into every brief for a day and was given to two independent advisors as fact; both built release
+plans around notifying customers who do not exist. An unverified claim that travels is exactly the
+defect class this file exists to prevent, and it travelled from here.
+
+**What it changes:** the pre-launch window is OPEN. There is no backward-compatibility debt, no
+migration debt, and no customer to protect. A breaking change is not an objection right now — it is
+the cheapest it will ever be. **Exception:** `noa-receipt` and `noa-mcp-proxy` ARE published on npm,
+so the published wire spec and package APIs still have external consumers who may exist. The window
+is open for the console, the phone app and the relay; it is NOT open for a published spec.
 
 Two repositories, symlinked together:
 - `~/noa-receipt` — the engine and the published npm packages. **PUBLIC on GitHub.**
