@@ -61,6 +61,20 @@ The stated basis does not hold universally: the adopter path is fixed, while con
 
 **⚠ THE PUSH BAN IS LIFTED — owner instruction 2026-08-01, *"kaldir o yasagi"*.** Withdrawn text, verbatim: *"DO NOT … push · merge · publish · deploy · …"*. **`git push` is now allowed.**
 
+### RELEASE SEQUENCE — the lead decides the timing (owner delegation 2026-08-01)
+
+Owner: *"Ne zaman tum yapilanlarin commitli commitsiz merge push deploy edilecegine sen karar verirsin."* The five actions are **not one event**; each has a different cost and a different payoff, so each has its own trigger.
+
+| # | action | when | why that trigger, and not sooner |
+|---|---|---|---|
+| 1 | **commit** | continuously, no gate | Work that is not committed is the only work that can actually be lost. |
+| 2 | **`git push`** | the moment **batch J lands green** | Creates the **first off-machine copy** — today every backup shares one disk, so a disk failure is still total loss. Also unblocks hosted CI, which has **never** run on this branch. Held only by the ordering rule below, which clears in minutes. |
+| 3 | **`npm publish` 0.3.0** | after push **+ a green independent review** | This is the step with real-world value: it is the only one that protects strangers currently running 0.2.0. It must not ship on unreviewed work. |
+| 4 | **merge to `main`** | after the final review passes on the **whole** body of work | `main` is what a new reader trusts. Merging while a P0 is open makes `main` lie, and nothing is gained by hurrying it. |
+| 5 | **deploy to Railway/production** | **not yet — and not for risk reasons** | Production has **0 tenants**. Deploying an unlaunched product to an empty environment gains nothing and adds a live attack surface. Deploy when we are actually launching, not before. |
+
+**THE ORDERING RULE that gates step 2, stated once:** the exploit reproduction is in **3 committed commits**, so pushing the branch publishes it whatever the tip looks like — it cannot be separated without rewriting history, and history will not be rewritten (destructive, and it breaks the provenance chain this project exists to protect). Therefore: **batch J closes the defect first, then the push carries exploit and patch together.** That is minutes of delay, not days, and it is the difference between disclosing a fixed defect and arming strangers against an unfixed one.
+
 **Still prohibited without an explicit owner instruction:** `npm publish` · touch Railway or production · change secrets, keys, KMS, IAM, roles, grants or migrations · silently change `noa.encrypted-display/0.1` bytes · implement ADR-0006 · freeze Stage 1 · start the Go kernel.
 
 **And one ORDERING rule that is not a ban and does not expire:** `NordenSoft/noa` is **PUBLIC** and `noa-mcp-proxy` is live on npm, so the working exploit under `docs/reproductions/` must not become public while the defect it demonstrates is unfixed. **Ship the patched release first; the reproduction goes out with it or after it, never before.** This is not caution — publishing a working attack against unpatched published code arms strangers who downloaded the package, and no customer count changes that.
