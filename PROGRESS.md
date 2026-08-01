@@ -180,20 +180,24 @@ C (P0-11) are specified there and in the owner's 2026-07-31 handover mandate.
 VALID 38 · UNTESTED 5 · INVALID 0 · DUPLICATE 0 · ADR_0006_DEFERRED 0
 ```
 
-> ⚠ **SUPERSEDED 2026-08-01 (`c84ae56`). Four of these five are now PROVEN, and the reason they
-> were not is the most instructive result in this file.** They declared `andAlso` — a paired
+> ⚠ **SUPERSEDED 2026-08-01 (`c84ae56`). WITHDRAWN CLAIM (verbatim): "Four of these five are now PROVEN". Four paired entries now execute as declared, and the reason they
+> had not is the most instructive result in this file.** They declared `andAlso` — a paired
 > mutation — and the runner read that key **zero** times, so each applied half the mutation its own
 > text described. `DETECTOR_DID_NOT_TRIGGER` did not mean "the control does nothing"; it meant
 > **the instrument never asked**. codex proposed deleting all four on the first reading; the lead
-> overruled it, fixed the runner, and all four came back `proven load-bearing 1/1`.
+> overruled it and fixed the runner. **WITHDRAWN CLAIM (verbatim): "all four came back `proven load-bearing 1/1`".** Each 1/1 result proves the declared PAIR, not both halves independently:
+> the inert-array/inert-wrapper half was independently load-bearing; each index-walk half stayed
+> GREEN alone and is evidenced only by the additional failure under paired removal.
 > **Absence of a finding and absence of a check are the same value in code and opposite facts in
 > reality** — that sentence is why the four controls still exist.
 > Only `g4-render-node-single-input` remains open: measured clean 6/6 GREEN and mutated 6/6 GREEN,
 > so its "must go red" claim is withdrawn (ADR-0005:252). The invariant stands; nothing measures it.
 > An unknown registry key is now a hard error, so this class of silent mis-measurement cannot recur.
 
-The five UNTESTED, by stable id — these stay OPEN AND VISIBLE (owner instruction); none is labelled
-INVALID until a detector genuinely turns RED:
+> **BATCH I G4 CORRECTION (2026-08-01). WITHDRAWN CLAIM (verbatim): "Only `g4-render-node-single-input` remains open: measured clean 6/6 GREEN and mutated 6/6 GREEN, so its \"must go red\" claim is withdrawn (ADR-0005:252). The invariant stands; nothing measures it."** The exact historical mutant is observationally distinguishable under a stateful post-load `Object.keys`: clean focused test file **6/6**, mutant **5/6** with the G4 test newly RED, knockout `DETECTOR_TRIGGERED` **1/1**. The earlier corpus omitted that mutable-intrinsic case.
+
+The five UNTESTED in the historical `7e5c579` snapshot, by stable id (G4's status is superseded by
+the Batch I correction above):
 
 ```
 t19-validator-index-walk        suite stayed GREEN without the control
@@ -203,9 +207,10 @@ r4-a2-manifest-index-walk       suite stayed GREEN without the control
 g4-render-node-single-input     ANTI_VACUITY_FAILED — no failure beyond the 2-failure baseline
 ```
 
-`INVALID` is 0 because nothing earned it, not because nothing is wrong. `g4` is the closest
-candidate — `projections.ts:148` already ADMITS in a comment that it survives its own knockout —
-but an author's admission is not a measurement, so it stays UNTESTED.
+`INVALID` was 0 because nothing had earned it, not because nothing was wrong. **WITHDRAWN CLAIM
+(verbatim): "`g4` is the closest candidate — `projections.ts:148` already ADMITS in a comment that
+it survives its own knockout — but an author's admission is not a measurement, so it stays
+UNTESTED."** Batch I supplied the missing measurement and supersedes that status.
 
 `ADR_0006_DEFERRED` is 0 and that is stated rather than left blank: the gate suite's two persistent
 failures ARE the owner-deferred ADR-0006 pair, but they are TEST failures, not registry entries, and

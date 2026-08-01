@@ -125,32 +125,40 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },
-  // G4 DECISION B — DEFENCE-IN-DEPTH, NOT A MEASURED CONTROL (Batch F, 2026-08-01).
+  // G4 BATCH-I CORRECTION (2026-08-01): the exact historical mutant IS distinguishable.
   // The exact historical mutation was recovered from commit 4ff3a76:
   //
   //   commandView(canonical)
   //     -> commandView(canonicalize(snapshot as Record<string, unknown>))
   //
-  // It does NOT make render consume the parsed request object. `canonical` was assigned from
-  // `canonicalize(snapshot)` immediately above, and `snapshot` is a local object made from captured
-  // strings plus the fresh capture-once argv array. The mutant therefore passes canonical bytes made
-  // from the SAME normalized value to commandView a second time. No reachable caller can distinguish
-  // the security-relevant return value; the mutant only repeats work.
+  // WITHDRAWN CLAIM (verbatim): "No reachable caller can distinguish the security-relevant return value; the mutant only repeats work."
+  // `canonicalize` reads live `Object.keys`. A stateful post-load replacement can return the complete
+  // snapshot keys for the first canonicalization and omit `targetEnv` on the next matching call. The
+  // shipped path renders the first canonical string and remains accepted; the exact mutant performs
+  // the second canonicalization and loses a required field. The public `getProjection().run()` surface
+  // reaches this distinction without a caller-owned object surviving the capture-once boundary.
   //
   // NUMBERS, re-measured in Batch F without the two owner-deferred ADR-0006 failures: the source has
   // 2 first-party `.run()` call sites (engine + wrapper) and 1 public direct-call surface. The scoped
   // public-surface Slice-2 run was clean 6/6 GREEN and mutated 6/6 GREEN, including the honest-path
   // anti-vacuity test. A separate clean-vs-mutant differential corpus was 10/10 return-value
   // identical (6 accepted, 4 rejected: honest, destructive and adversarial capture shapes).
-  // `DETECTOR_DID_NOT_TRIGGER` is therefore the correct result for an observationally equivalent
-  // mutant, not evidence that canonical bytes are unimportant.
+  // WITHDRAWN CLAIM (verbatim): "`DETECTOR_DID_NOT_TRIGGER` is therefore the correct result for an observationally equivalent mutant, not evidence that canonical bytes are unimportant."
+  // The previous 6/6 and 10/10 corpora did not include a stateful mutable-intrinsic probe. The
+  // registered knockout below now applies the exact mutant and runs a test that does.
   //
   // WITHDRAWN CLAIM (verbatim): "ADR-0005 §7 G4 — the render node reads the CANONICAL BYTES, so the display and the paramsHash cannot disagree (M7)"
   //
-  // This withdraws the knockout claim, not the production invariant. Capture-once independently
-  // closes every current split; the canonical render node is retained as structural defence against
-  // a FUTURE second input. It must not be called load-bearing until a non-equivalent reachable mutant
-  // makes a detector RED.
+  // The older claim above remains preserved as history; this entry measures the current correction.
+  {
+    id: "g4-render-node-single-input",
+    control: "ADR-0005 §7 G4 — the render node consumes the first canonical byte string. Re-canonicalizing the local snapshot lets a stateful post-load Object.keys replacement supply a different second key set, so the display/risk input can differ from the bytes hashed into paramsHash.",
+    file: "packages/gate/src/projections.ts",
+    find: "    const view = commandView(canonical);",
+    replace: "    const view = commandView(canonicalize(snapshot as Record<string, unknown>));",
+    kind: "tests",
+    suite: ["packages/e2e-demo", "node", ["--import", "tsx", "--test", "test/keyring-resolver-parity.test.ts"]],
+  },
   {
     id: "g6-riskclass-derived-not-accepted",
     control: "ADR-0005 §7 G6 — riskClass is DERIVED inside the boundary; the caller's hint may raise the floor and can never lower it (M2)",
@@ -819,7 +827,7 @@ const KNOCKOUTS = [
   },
   {
     id: "res-proof-knockout-coverage-required",
-    control: "F-4 — removing the sole behavioural-knockout binding for one registered proof makes resolver parity fail with PROOF_WITHOUT_KNOCKOUT; a live but empty proof cannot certify.",
+    control: "F-4 — removing the sole declared knockout binding for one registered proof makes resolver parity fail with PROOF_WITHOUT_KNOCKOUT_BINDING. This meta-gate proves the binding rule only; requireNamedProofFailures separately checks behaviour when the tagged knockout executes.",
     file: "scripts/lint-control-knockout.mjs",
     find: '    control: "P0-6 — a non-canonical declared activation is refused instead of being normalised by Date.parse into a usable instant. [proof: RES-PAR-AA-STRICT]",\n    file: "packages/approval-artifacts/src/verify.ts",',
     replace: '    control: "P0-6 — a non-canonical declared activation is refused instead of being normalised by Date.parse into a usable instant.",\n    file: "packages/approval-artifacts/src/verify.ts",',

@@ -130,12 +130,14 @@ for (const rec of invSites) {
 // ── proofs must RESOLVE: tier 1 diagnoses statically, tier 2 (the runner) decides ───────────────
 const proofs = inventory.proofs ?? {};
 
-// ── proofs must be MEANINGFUL: a registered knockout must make each proof turn RED ──────────
-// Liveness proves that a test ran; it cannot prove the body asserted anything. Knockout entries
-// therefore bind the proof they make fail with a machine-readable `[proof: ID, ...]` tag in their
-// `control` string. Read only actual KNOCKOUTS object literals from the AST: a comment mentioning an
-// ID is not coverage, and neither is the `find` text of the meta-knockout that tests this check.
-function knockoutProofIds() {
+// ── proofs must DECLARE A KNOCKOUT BINDING; this gate checks wiring, not mutation behaviour ─────
+// Liveness proves that a test ran; it cannot prove the body asserted anything. Knockout entries bind
+// a proof with a machine-readable `[proof: ID, ...]` tag in their `control` string. THIS static gate
+// checks only that the binding exists. `lint-control-knockout.mjs` performs the separate behavioural
+// measurement and requires the tagged proof's marker among the mutation's new failures. Read only
+// actual KNOCKOUTS object literals from the AST: a comment mentioning an ID is not a binding, and
+// neither is the `find` text of the meta-knockout that tests this check.
+function declaredKnockoutProofIds() {
   const source = fs.readFileSync(KNOCKOUT_PATH, "utf8");
   const sf = ts.createSourceFile(KNOCKOUT_PATH, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   const covered = new Set();
@@ -174,16 +176,16 @@ function knockoutProofIds() {
   return covered;
 }
 
-const knockoutCoveredProofs = knockoutProofIds();
-const uncoveredProofs = Object.keys(proofs).filter((id) => !knockoutCoveredProofs.has(id)).sort();
-notices.push(`knockout coverage: ${Object.keys(proofs).length - uncoveredProofs.length}/${Object.keys(proofs).length} registered proof(s)`);
-if (uncoveredProofs.length > 0) {
+const knockoutBoundProofs = declaredKnockoutProofIds();
+const unboundProofs = Object.keys(proofs).filter((id) => !knockoutBoundProofs.has(id)).sort();
+notices.push(`knockout bindings: ${Object.keys(proofs).length - unboundProofs.length}/${Object.keys(proofs).length} registered proof(s)`);
+if (unboundProofs.length > 0) {
   add(
-    "PROOF_WITHOUT_KNOCKOUT",
-    uncoveredProofs.join(", "),
-    `${uncoveredProofs.length} registered proof id(s) have no knockout entry whose mutation makes ` +
-      `that proof turn RED. Liveness alone permits an empty test body; add a behavioural knockout ` +
-      `with an explicit \`[proof: ID]\` binding in scripts/lint-control-knockout.mjs.`,
+    "PROOF_WITHOUT_KNOCKOUT_BINDING",
+    unboundProofs.join(", "),
+    `${unboundProofs.length} registered proof id(s) have no knockout entry with an explicit ` +
+      `\`[proof: ID]\` binding. This gate checks the declared binding only; the knockout runner must ` +
+      `separately observe that proof marker among the mutation's new failures.`,
   );
 }
 

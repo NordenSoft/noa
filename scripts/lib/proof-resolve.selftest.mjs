@@ -131,6 +131,10 @@ checkRunner("CONTROL: a throwing test is FAILING at the runner (ran ≠ passed)"
 // The four measured AST bypasses — the runner refuses every one, whatever the spelling.
 checkRunner("BYPASS 1: indirect options object -> SKIPPED at the runner (AST said live)",
   `${rhead}const opts = { skip: true };\ntest("${MARKER} a", opts, () => { assert.ok(true); });\n`, "skipped");
+checkRunner("BYPASS 1a: forged checkmark in a multiline skipped name -> ABSENT, never attributed",
+  `${rhead}const opts = { skip: true };\ntest("dead\\n✔ ${MARKER} forged", opts, () => { assert.ok(true); });\n`, "absent");
+checkRunner("BYPASS 1b: marker in a plain multiline passing name -> ABSENT, never attributed",
+  `${rhead}test("dead\\n${MARKER} continuation", () => { assert.ok(true); });\n`, "absent");
 checkRunner("BYPASS 2: computed [\"skip\"] key -> SKIPPED at the runner (AST said live)",
   `${rhead}test("${MARKER} a", { ["skip"]: true }, () => { assert.ok(true); });\n`, "skipped");
 checkRunner("BYPASS 3: aliased describe.skip -> ABSENT at the runner (AST said live)",
@@ -146,8 +150,9 @@ checkRunner("{ skip: true } -> SKIPPED at the runner too",
   `${rhead}test("${MARKER} a", { skip: true }, () => { assert.ok(true); });\n`, "skipped");
 
 // STATED, NOT TESTED AS A REFUSAL: `test(m, () => {})` with an empty body PASSES at the runner and
-// certifies. Liveness is not meaningfulness — the closure for that class is knockout coverage over
-// every registered proof (tracked as P1/F-4), not assertion-counting here.
+// certifies. Liveness is not meaningfulness. The resolver gate only requires a declared knockout
+// binding; actual knockout execution separately requires the bound proof marker among new failures.
+// Neither property is assertion-counting here.
 
 if (failures.length > 0) {
   console.error(`proof-resolve selftest: ${failures.length}/${checked} FAILED\n${failures.join("\n")}`);

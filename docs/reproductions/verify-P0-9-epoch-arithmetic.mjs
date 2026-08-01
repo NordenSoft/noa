@@ -132,3 +132,13 @@ try {
 }
 Date.parse = realParse; Date.now = realNow; Date.prototype.toISOString = realISO;
 console.log(`Date-independence: with Date.parse/now/toISOString ALL poisoned, parseTime -> ${poisonResult}`);
+
+if (
+  mismatches.length !== 0 ||
+  corruptSeen !== 2 ||
+  badRejects.length !== 0 ||
+  badAccepts.length !== 0 ||
+  poisonResult !== "clean"
+) {
+  process.exitCode = 1;
+}

@@ -1269,6 +1269,7 @@ async function main() {
   section("Scenario X (R2) — signing-key rotation: old kid verifies history, new kid signs new segments");
   const poisonNowMsX = Date.UTC(2026, 6, 15, 0, 0, 0, 0);
   const rotateRoundTripErrorX = "rotate: clock/formatter produced an instant that does not represent `now()`; rotation was not recorded";
+  const originalDateNowX = Date.now;
   const originalToISOStringX = Date.prototype.toISOString;
   try {
     const garbageOldX = generateKeyPair("smoke:session-X:garbage-old");
@@ -1310,6 +1311,22 @@ async function main() {
     );
 
     Date.prototype.toISOString = originalToISOStringX;
+    const defaultClockOldX = generateKeyPair("smoke:session-X:default-clock-old");
+    const defaultClockNewX = generateKeyPair("smoke:session-X:default-clock-new");
+    const beforeDefaultRotateX = originalDateNowX();
+    Date.now = () => Date.UTC(2100, 0, 1, 0, 0, 0, 0);
+    const defaultClockRotX = createRotatableSigner(defaultClockOldX);
+    defaultClockRotX.rotate(defaultClockNewX);
+    const afterDefaultRotateX = originalDateNowX();
+    Date.now = originalDateNowX;
+    const recordedDefaultRetirementX = Date.parse(defaultClockRotX.retirements()[defaultClockOldX.kid]);
+    ok(
+      "(x) attack C: post-load Date.now poison cannot move the default retirement bound",
+      recordedDefaultRetirementX >= beforeDefaultRotateX
+        && recordedDefaultRetirementX <= afterDefaultRotateX
+        && recordedDefaultRetirementX !== Date.UTC(2100, 0, 1, 0, 0, 0, 0),
+    );
+
     const controlOldX = generateKeyPair("smoke:session-X:formatter-control-old");
     const controlNewX = generateKeyPair("smoke:session-X:formatter-control-new");
     const controlRotX = createRotatableSigner(controlOldX, { now: () => poisonNowMsX });
@@ -1337,6 +1354,7 @@ async function main() {
         && fractionalRotX.currentKid === fractionalOldX.kid,
     );
   } finally {
+    Date.now = originalDateNowX;
     Date.prototype.toISOString = originalToISOStringX;
   }
 

@@ -1,5 +1,12 @@
 import { parseCanonicalInstant } from "./outcome-receipt.mjs";
 
+// Capture the default clock when this module loads, so replacing Date.now afterwards cannot move a
+// retirement bound. This defends post-load mutation only: a Date.now poisoned before module
+// evaluation is already the captured input and is outside this module's ability to detect. Callers
+// that require a trustworthy retirement instant must inject `options.now` from a trusted source;
+// this helper cannot self-verify a clock input.
+const moduleLoadDateNow = Date.now;
+
 /**
  * rotatable-signer.mjs (R2 #5) — signing-key ROTATION for the proxy's LOCAL signer.
  *
@@ -51,7 +58,7 @@ import { parseCanonicalInstant } from "./outcome-receipt.mjs";
 
 /**
  * @param {{ kid: string, privateKey: string, publicKey: string }} initialKeyPair
- * @param {{ now?: () => number }} [options] clock returning epoch milliseconds (defaults to Date.now)
+ * @param {{ now?: () => number }} [options] clock returning epoch milliseconds (defaults to the module-load snapshot of Date.now)
  * @returns {{
  *   readonly kid: string,
  *   readonly privateKey: string,
@@ -67,7 +74,7 @@ export function createRotatableSigner(initialKeyPair, options = {}) {
   if (!initialKeyPair || !initialKeyPair.kid || !initialKeyPair.privateKey || !initialKeyPair.publicKey) {
     throw new Error("createRotatableSigner: `initialKeyPair` with { kid, privateKey, publicKey } is required");
   }
-  const now = options?.now ?? Date.now;
+  const now = options?.now ?? moduleLoadDateNow;
   if (typeof now !== "function") throw new Error("createRotatableSigner: `now` must be a function");
   let current = { ...initialKeyPair };
   // kid -> { publicKey, retiredAt }; historical verification material only, with NO private keys kept.

@@ -31,7 +31,11 @@ for(const s of same.flat()){const m=parseTime(s),r=Date.parse(s);
 console.log(bad?`FAIL: ${bad} problem(s)`:"OK: every group agrees internally AND matches Date.parse");
 console.log("--- ANTI-VACUITY: the harness must be able to FAIL ---");
 const wrong="2026-07-14T13:00:00.000+02:00"; // deliberately NOT the same instant
-console.log("a genuinely different instant differs: "+(parseTime(wrong)!==parseTime("2026-07-14T12:00:00.000Z")));
+const wrongDiffers=parseTime(wrong)!==parseTime("2026-07-14T12:00:00.000Z");
+console.log("a genuinely different instant differs: "+wrongDiffers);
 console.log("--- malformed offsets must fail closed ---");
-for(const s of ["2026-07-14T12:00:00.000+24:00","2026-07-14T12:00:00.000+02:60","2026-07-14T12:00:00.000+2:00","2026-07-14T12:00:00.000 +02:00"])
+const malformed=["2026-07-14T12:00:00.000+24:00","2026-07-14T12:00:00.000+02:60","2026-07-14T12:00:00.000+2:00","2026-07-14T12:00:00.000 +02:00"];
+for(const s of malformed)
  console.log("  "+JSON.stringify(s)+" -> "+(Number.isNaN(parseTime(s))?"NaN (refused)":"ACCEPTED  <-- LEAK"));
+const malformedLeaks=malformed.filter(s=>!Number.isNaN(parseTime(s)));
+if(bad!==0||!wrongDiffers||malformedLeaks.length!==0)process.exitCode=1;

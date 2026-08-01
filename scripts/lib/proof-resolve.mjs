@@ -231,7 +231,10 @@ export function runRecipeFor(relFile) {
  * What did the RUNNER say about this marker? Read from `node --test`'s own per-test lines:
  * `✔ name` pass · `✖ name` fail · `﹣ name … # SKIP` / `# TODO` skipped · no line at all = the
  * test never existed at runtime (dead branch, skipped suite, aliased disable — the runner does not
- * care which, and neither does this verdict).
+ * care which, and neither does this verdict). Node emits a multi-line test name as several physical
+ * lines with the result duration only on the last one. A marker on any such continuation is refused
+ * as absent: the parser cannot safely attribute it to a test result, especially when the name itself
+ * forges a status glyph.
  * Priority when a marker names several tests: one PASSING occurrence certifies (the mirror of the
  * AST tier's any-live rule); otherwise a failure outranks a skip, because "ran and went red" must
  * never be softened into "was skipped".
@@ -239,11 +242,23 @@ export function runRecipeFor(relFile) {
 export function runnerStatusFor(output, marker) {
   let sawFail = false;
   let sawSkip = false;
+  let inMultilineName = false;
   for (const line of String(output).split("\n")) {
+    const resultPrefix = /^\s*[✔✖﹣]/.test(line);
+    const resultEndsHere = /\(\d+(?:\.\d+)?ms\)(?:\s+#\s*(?:SKIP|TODO)\b.*)?\s*$/.test(line);
+    if (inMultilineName) {
+      if (resultEndsHere) inMultilineName = false;
+      continue;
+    }
+    if (resultPrefix && !resultEndsHere) {
+      inMultilineName = true;
+      continue;
+    }
     if (!line.includes(marker)) continue;
+    if (/#\s*(SKIP|TODO)\b/.test(line)) { sawSkip = true; continue; }
     if (/^\s*✔/.test(line)) return "passing";
     if (/^\s*✖/.test(line)) { sawFail = true; continue; }
-    if (/^\s*﹣/.test(line) || /#\s*(SKIP|TODO)\b/.test(line)) { sawSkip = true; continue; }
+    if (/^\s*﹣/.test(line)) { sawSkip = true; continue; }
   }
   if (sawFail) return "failing";
   if (sawSkip) return "skipped";

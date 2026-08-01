@@ -14,13 +14,15 @@
  * declared complete — which is why these tests exist per-resolver and the resolver census is now
  * reconciled mechanically (`scripts/lint-resolver-parity.mjs`).
  *
- * ─── THE NORMATIVE RULE (all resolvers, one sentence) ───────────────────────────────────────────
+ * ─── THE RESOLVER-SPECIFIC RULE ─────────────────────────────────────────────────────────────────
  *
- * A DECLARED `validFrom`/`revokedAt` is CARRIED into every produced KeyEntry and ENFORCED by the
- * consuming verifier; an UNDECLARED value stays ABSENT (documented legacy always-active — no
- * default is invented); a MALFORMED declared value is CARRIED so the verifier fails CLOSED
- * ("cannot evaluate activation time"), never dropped (dropping would skip the check and fail
- * OPEN).
+ * WITHDRAWN CLAIM (verbatim): "A DECLARED `validFrom`/`revokedAt` is CARRIED into every produced KeyEntry and ENFORCED by the consuming verifier; an UNDECLARED value stays ABSENT (documented legacy always-active — no default is invented); a MALFORMED declared value is CARRIED so the verifier fails CLOSED ("cannot evaluate activation time"), never dropped (dropping would skip the check and fail OPEN)."
+ *
+ * What the tests measure: a declared value is carried and enforced, and a malformed declaration is
+ * carried so verification refuses it. Undeclared handling is resolver-specific: terse evidence
+ * keyrings preserve absence, while `assembleGateTrust` falls back to `auth.validFrom` when a direct
+ * caller supplies a manifest with no matching GATE/APPROVER entry (`pairing.ts:282-286`). The normal
+ * first-party pairing path declares both entries, so that fallback is not exercised there.
  *
  * Proof IDs referenced by scripts/resolver-inventory.json — do not rename without updating it:
  *   [PROOF:RES-PAR-E2E-KEYRING]    the pairing live keyring carries + the verifier enforces
@@ -30,6 +32,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createAlphaTrust, loadSchemas } from 'noa-gate';
+import { getProjection as getGateProjectionSource } from '../../gate/src/projections.js';
 import {
   ARTIFACTS,
   generateKeyPair,
@@ -65,6 +68,44 @@ const schemas = loadSchemas();
 
 type J = Record<string, unknown>;
 const enc = (o: unknown): Uint8Array => encodeDocument(o as J);
+
+test('G4: render uses the first canonical bytes when a stateful Object.keys changes its second face', () => {
+  const projection = getGateProjectionSource('noa.command.exec');
+  assert.ok(projection !== undefined, 'fixture: noa.command.exec projection is registered');
+  const params = {
+    executable: 'rm',
+    argv: ['--help'],
+    cwd: '/srv',
+    targetEnv: 'production',
+    allowedEnvHash: null,
+    stdinHash: null,
+  };
+  const honest = projection.run(params);
+  assert.equal(honest.ok, true, 'control: the ordinary projection input must be accepted');
+
+  const realObjectKeys = Object.keys;
+  let matchingReads = 0;
+  Object.keys = (value: object): string[] => {
+    const keys = realObjectKeys(value);
+    const isSnapshotShape = keys.includes('executable') && keys.includes('argv') && keys.includes('targetEnv');
+    if (!isSnapshotShape) return keys;
+    matchingReads++;
+    return matchingReads === 2 ? keys.filter((key) => key !== 'targetEnv') : keys;
+  };
+  let underPoison: ReturnType<typeof projection.run>;
+  try {
+    underPoison = projection.run(params);
+  } finally {
+    Object.keys = realObjectKeys;
+  }
+
+  assert.equal(matchingReads, 2, 'fixture: the stateful poison never reached its second face');
+  assert.deepEqual(
+    underPoison,
+    honest,
+    'render re-canonicalized the snapshot instead of consuming the same canonical bytes as paramsHash',
+  );
+});
 
 /** ARTIFACTS lookup under noUncheckedIndexedAccess: a missing domain is a fixture bug. */
 function domainOf(spec: string): string {

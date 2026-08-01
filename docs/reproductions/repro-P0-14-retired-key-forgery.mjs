@@ -72,15 +72,18 @@ console.log("BACKWARD-COMPATIBILITY without retirements ->", JSON.stringify(back
 
 console.log("\nreceipt kid   :", forged.sig.kid);
 console.log("receipt ts    :", forged.ts);
+const defenceActive = !attack.ok && backwardCompatibility.ok;
 console.log(
   "\nVERDICT:",
-  !attack.ok && backwardCompatibility.ok
+  defenceActive
     ? "DEFENCE ACTIVE FOR ADOPTERS — retired key refused with retirements; legacy omission remains exposed"
     : "BROKEN — expected adopter refusal plus published-0.2.0 backward-compatible acceptance",
 );
+const controlsPass = r0.ok && r1.ok && !r2.ok;
 console.log(
   "controls:",
-  r0.ok && r1.ok && !r2.ok
+  controlsPass
     ? "ALL GREEN (honest paths verify, unknown key refused) — the attack result is meaningful"
     : "BROKEN — the attack result means NOTHING, fix the harness first",
 );
+if (!defenceActive || !controlsPass) process.exitCode = 1;
