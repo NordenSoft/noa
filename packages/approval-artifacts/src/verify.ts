@@ -24,7 +24,7 @@ import { signingMessage, verifyEd25519 } from "./crypto.js";
 import { canonicalize } from "./jcs.js";
 import { refHash, receiptRefHash, virtualHash } from "./refhash.js";
 import { parseDocument } from "./inert-core/bytes.js";
-import { hasOwn } from "./inert-core/intrinsics.js";
+import { hasOwn, isInteger, strCharCodeAt, toBigInt } from "./inert-core/intrinsics.js";
 import { arrayIncludes, arraySome, strSplit } from "./inert-core/intrinsics.js";
 
 export interface KeyEntry {
@@ -108,21 +108,23 @@ function computeRefHash(rule: "side" | "receipt" | "virtual", artifact: unknown)
  * that severity rather than inflated.)
  *
  * The parser is now STRICT: calendar validity plus the epoch value are computed directly from the
- * numeric components. P0-11 widened accepted RFC 3339 spellings to `Z` or a numeric offset while
- * preserving `Z` as the only emitted spelling. It does not call `Date` or any `Date` method; the test
- * "P0-9: a targeted Date.prototype.toISOString poison cannot admit a non-existent activation
- * date" installs the targeted poison while pinning both refusal and an accepted control.
+ * numeric components. Its lexical grammar is NOT restated here: it evaluates the shipped artifact
+ * schema's `$defs.rfc3339` rule, so lowercase `t`/`z`, 1-9 fractional digits, and numeric offsets
+ * accepted by the published schema reach the semantic parser. Nanoseconds are retained as an exact
+ * bigint so two schema-valid instants inside the same millisecond still compare in the right order.
+ * It does not call `Date` or any `Date` method; the test "P0-9: a targeted
+ * Date.prototype.toISOString poison cannot admit a non-existent activation date" installs the
+ * targeted poison while pinning both refusal and an accepted control.
  *
- * COMPATIBILITY MEASURED BEFORE THIS CHANGE, not after: 1727 timestamps across the shipped
- * conformance corpora were scanned; **0** are non-canonical-but-parseable, so no record that
- * verified before stops verifying now.
+ * Batch N corrected the compatibility measurement. The earlier scan found no non-canonical values
+ * in the repository corpus, but the compatibility surface is the published schema, not that corpus
+ * or the canonical form emitted here. Real re-signed Decisions using lowercase `t`/`z` and 1-9
+ * fractional digits reproduced the regression; those spellings are permanent tests now.
  *
  * Fixed HERE rather than in a separate activation-only parser, deliberately: all 11 comparisons in
  * this file are security comparisons, and giving activation its own parser would create exactly the
  * resolver drift this batch exists to close.
  */
-const CANONICAL_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?(?:Z|[+-]\d{2}:\d{2})$/;
-
 function integerQuotient(nonNegative: number, divisor: number): number {
   return (nonNegative - (nonNegative % divisor)) / divisor;
 }
@@ -152,11 +154,25 @@ function daysFromCivil(year: number, month: number, day: number): number {
   return era * 146_097 + dayOfEra - 719_468;
 }
 
-function parseTime(v: unknown): number {
-  if (typeof v !== "string") return NaN;
-  if (!CANONICAL_INSTANT.test(v)) return NaN;
+/** Resolve the lexical timestamp grammar from the schema that just accepted this artifact. */
+function publishedTimeSchema(schema: unknown): Record<string, unknown> | null {
+  if (typeof schema !== "object" || schema === null || Array.isArray(schema)) return null;
+  const defs = hasOwn(schema, "$defs") ? (schema as Record<string, unknown>)["$defs"] : undefined;
+  if (typeof defs !== "object" || defs === null || Array.isArray(defs)) return null;
+  const rfc3339 = hasOwn(defs, "rfc3339") ? (defs as Record<string, unknown>)["rfc3339"] : undefined;
+  if (typeof rfc3339 !== "object" || rfc3339 === null || Array.isArray(rfc3339)) return null;
+  return rfc3339 as Record<string, unknown>;
+}
 
-  const digit = (offset: number): number => +v[offset]!;
+function parseTime(v: unknown, timeSchema: Record<string, unknown> | null): bigint | null {
+  if (timeSchema === null || !evalSchema(timeSchema, v).ok || typeof v !== "string") return null;
+  if (v.length < 20 || v[4] !== "-" || v[7] !== "-"
+    || (v[10] !== "T" && v[10] !== "t") || v[13] !== ":" || v[16] !== ":") return null;
+
+  const digit = (offset: number): number => {
+    const code = strCharCodeAt(v, offset);
+    return code >= 48 && code <= 57 ? code - 48 : NaN;
+  };
   const twoDigits = (offset: number): number => digit(offset) * 10 + digit(offset + 1);
   const year = digit(0) * 1_000 + digit(1) * 100 + digit(2) * 10 + digit(3);
   const month = twoDigits(5);
@@ -164,39 +180,52 @@ function parseTime(v: unknown): number {
   const hour = twoDigits(11);
   const minute = twoDigits(14);
   const second = twoDigits(17);
-  const hasMilliseconds = v[19] === ".";
-  const millisecond = hasMilliseconds
-    ? digit(20) * 100 + digit(21) * 10 + digit(22)
-    : 0;
-  const zoneOffset = hasMilliseconds ? 23 : 19;
+  if (!isInteger(year) || !isInteger(month) || !isInteger(day)
+    || !isInteger(hour) || !isInteger(minute) || !isInteger(second)) return null;
+  let fractionalNanoseconds = 0;
+  let fractionalDigits = 0;
+  let zoneOffset = 19;
+  if (v[zoneOffset] === ".") {
+    zoneOffset += 1;
+    while (zoneOffset < v.length
+      && v[zoneOffset] !== "Z" && v[zoneOffset] !== "z"
+      && v[zoneOffset] !== "+" && v[zoneOffset] !== "-") {
+      fractionalNanoseconds = fractionalNanoseconds * 10 + digit(zoneOffset);
+      fractionalDigits += 1;
+      zoneOffset += 1;
+    }
+    if (fractionalDigits < 1 || fractionalDigits > 9 || !isInteger(fractionalNanoseconds)) return null;
+    while (fractionalDigits < 9) {
+      fractionalNanoseconds *= 10;
+      fractionalDigits += 1;
+    }
+  }
+  if (zoneOffset >= v.length) return null;
+  const zone = v[zoneOffset];
   let offsetMinutes = 0;
-  if (v[zoneOffset] !== "Z") {
+  if (zone === "Z" || zone === "z") {
+    if (zoneOffset !== v.length - 1) return null;
+  } else {
+    if ((zone !== "+" && zone !== "-") || zoneOffset + 6 !== v.length || v[zoneOffset + 3] !== ":") return null;
     const offsetHour = twoDigits(zoneOffset + 1);
     const offsetMinute = twoDigits(zoneOffset + 4);
-    if (offsetHour > 23 || offsetMinute > 59) return NaN;
-    const offsetSign = v[zoneOffset] === "+" ? 1 : -1;
+    if (!isInteger(offsetHour) || !isInteger(offsetMinute) || offsetHour > 23 || offsetMinute > 59) return null;
+    const offsetSign = zone === "+" ? 1 : -1;
     offsetMinutes = offsetSign * (offsetHour * 60 + offsetMinute);
   }
 
-  if (month < 1 || month > 12) return NaN;
-  if (day < 1 || day > daysInMonth(year, month)) return NaN;
-  if (hour > 23 || minute > 59) return NaN;
+  if (month < 1 || month > 12) return null;
+  if (day < 1 || day > daysInMonth(year, month)) return null;
+  if (hour > 23 || minute > 59) return null;
   // Leap seconds (`:60`) are explicitly refused, preserving the existing parser contract.
-  if (second > 59) return NaN;
+  if (second > 59) return null;
 
-  return daysFromCivil(year, month, day) * 86_400_000
-    + hour * 3_600_000
-    + minute * 60_000
-    + second * 1_000
-    + millisecond
-    - offsetMinutes * 60_000;
-}
-
-function hasInvalidTime(...times: number[]): boolean {
-  for (const time of times) {
-    if (Number.isNaN(time)) return true;
-  }
-  return false;
+  return toBigInt(daysFromCivil(year, month, day)) * 86_400_000_000_000n
+    + toBigInt(hour) * 3_600_000_000_000n
+    + toBigInt(minute) * 60_000_000_000n
+    + toBigInt(second) * 1_000_000_000n
+    + toBigInt(fractionalNanoseconds)
+    - toBigInt(offsetMinutes) * 60_000_000_000n;
 }
 
 /** Artifact fields that declare the identity of their own signer, independent of caller context. */
@@ -297,6 +326,7 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
   if (!schema) return { ok: false, reason: `no schema loaded for ${spec}` };
   const structural = evalSchema(schema as Record<string, unknown>, artifact);
   if (!structural.ok) return { ok: false, reason: `schema: ${structural.errors.join("; ")}` };
+  const timeSchema = publishedTimeSchema(schema);
 
   // 2. SIGNATURE (signed artifacts only)
   if (meta.domain !== null) {
@@ -325,7 +355,7 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
       (doc.detectedAt as string | undefined) ??
       (doc.confirmedAt as string | undefined) ??
       (doc.acceptedAt as string | undefined);
-    if (ctx.authorizationTime !== undefined && Number.isNaN(parseTime(ctx.authorizationTime))) {
+    if (ctx.authorizationTime !== undefined && parseTime(ctx.authorizationTime, timeSchema) === null) {
       return { ok: false, reason: "invalid verifier-controlled authorizationTime" };
     }
     // ACTIVATION (validFrom) — the mirror of revocation, evaluated only at trusted caller time.
@@ -336,17 +366,20 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
           reason: `cannot evaluate trusted activation time for signing key "${sig.kid}": caller must supply authorizationTime or now`,
         };
       }
-      const from = parseTime(entry.validFrom);
-      const at = parseTime(trustedActivationTime);
-      if (Number.isNaN(from) || Number.isNaN(at)) {
+      const from = parseTime(entry.validFrom, timeSchema);
+      const at = parseTime(trustedActivationTime, timeSchema);
+      if (from === null || at === null) {
         return { ok: false, reason: `cannot evaluate activation time for signing key "${sig.kid}"` };
       }
       if (at < from) {
         return { ok: false, reason: `signing key "${sig.kid}" was evaluated at trusted time ${trustedActivationTime}, before its validFrom ${entry.validFrom}` };
       }
       if (signerClaimedTime !== undefined) {
-        const claimedAt = parseTime(signerClaimedTime);
-        if (Number.isNaN(claimedAt)) {
+        const claimedAt = parseTime(signerClaimedTime, timeSchema);
+        if (claimedAt === null) {
+          // Deliberate fail-closed choice: an unparseable signer claim is refused. Skipping this
+          // reject-only check would preserve the trusted-time acceptance gate, but would discard a
+          // possible self-contradiction from an artifact whose schema admitted only its lexical form.
           return { ok: false, reason: `cannot evaluate signer-claimed activation time for signing key "${sig.kid}"` };
         }
         if (claimedAt < from) {
@@ -414,17 +447,17 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
 
   // 5. TIME
   for (const mb of ctx.mustBeAfter ?? []) {
-    const t = parseTime(getPath(doc, mb.path));
-    const limit = parseTime(mb.time);
-    if (hasInvalidTime(t, limit) || t <= limit) {
+    const t = parseTime(getPath(doc, mb.path), timeSchema);
+    const limit = parseTime(mb.time, timeSchema);
+    if (t === null || limit === null || t <= limit) {
       return { ok: false, reason: `time check failed: ${mb.path} must be after ${mb.time}` };
     }
   }
   for (const mw of ctx.mustBeWithin ?? []) {
-    const t = parseTime(getPath(doc, mw.path));
-    const min = parseTime(mw.min);
-    const max = parseTime(mw.max);
-    if (hasInvalidTime(t, min, max) || t < min || t > max) {
+    const t = parseTime(getPath(doc, mw.path), timeSchema);
+    const min = parseTime(mw.min, timeSchema);
+    const max = parseTime(mw.max, timeSchema);
+    if (t === null || min === null || max === null || t < min || t > max) {
       return { ok: false, reason: `time check failed: ${mw.path} must be within [${mw.min}, ${mw.max}]` };
     }
   }

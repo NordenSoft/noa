@@ -303,7 +303,7 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
       S,
       "E_AUTHORIZATION_WINDOW",
       `keyDelegation window [${String(del.validFrom)} … ${String(del.expiresAt)}] does not contain the verifier's now (${ctx.now}) — ` +
-        `this bundle's authority was valid when the decision was made (audit purpose still verifies it) but is ${ctx.authorization === "EXPIRED_NOW" ? "EXPIRED" : "NOT YET VALID"} for a CURRENT authorization decision`,
+        `signer-dependent artifact times cannot establish historical authority; the delegation is ${ctx.authorization === "EXPIRED_NOW" ? "EXPIRED" : "NOT YET VALID"} at verifier-controlled now`,
     );
   }
 
@@ -375,7 +375,7 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
     return fail(
       S,
       "E_AUTHORIZATION_WINDOW",
-      `keyManifest window [${manifest.issuedAt} … ${manifest.expiresAt}] does not contain the verifier's now (${ctx.now}) — valid at the decision instant, unfit to authorize NOW`,
+      `keyManifest window [${manifest.issuedAt} … ${manifest.expiresAt}] does not contain the verifier's now (${ctx.now}) — signer-dependent artifact times cannot establish historical authority`,
     );
   }
 
@@ -386,9 +386,10 @@ export function step1_holdEnvelope(ctx: Ctx): StepResult {
   // hold window is still open at verify-time, which is meaningful ONLY when the claim is a positive
   // execution (EXECUTED / EXECUTION_FAILED / …) or "the hold is still actionable". For the two
   // TERMINAL-NEGATIVE outcomes (EXPIRED, DENIED) the hold is DEFINITIONALLY closed and the bundle
-  // already carries its own POLICY/approver-signed terminal receipt (timeout / blocked) — permanent,
-  // auditable proof that the action did NOT run. An audit performed after the (short) hold window has
-  // lapsed must still verify such a bundle; forever-auditability is the point of the evidence layer.
+  // already carries its own POLICY/approver-signed terminal receipt (timeout / blocked). An audit
+  // after the short hold window may still verify while the upstream delegation and manifest pass
+  // their verifier-controlled-time checks. This exemption does not provide indefinite historical
+  // authority; the reject-only checks above still refuse when trusted time cannot establish it.
   // So for EXPIRED/DENIED we DROP the `expiresAt > now` TIME-rejection ONLY — every structural check
   // stays strict for every outcome: the signature, the tenant/gateKid equalities, and the
   // keyManifestVersion/Hash bindings below all still run. This opens NO laundering hole: EXPIRED/DENIED

@@ -532,14 +532,16 @@ probe(
 );
 probe(
   "verifyBundle checkpoint authority",
-  bundleProbe.status === 0 && bundleAuthorityDirect?.verdict === "VALID_FULL_CHAIN",
+  bundleProbe.status === 0 && bundleHonest?.verdict === "VALID_FULL_CHAIN",
   bundleProbe.status === 0 && bundleProbe.result?.authorityCheckpointKid === "approver-crit-5"
+    && bundleAuthorityDirect?.verdict === "VALID_FULL_CHAIN"
     && bundleAuthority?.verdict === "VALID_SEGMENT_ONLY",
-  bundleAuthorityDirect
-    ? `same authority fixture with intended external checkpoint keyring: ${bundleAuthorityDirect.verdict}`
+  bundleHonest
+    ? `gate-authorized checkpoint through verifyBundle: ${bundleHonest.verdict}`
     : bundleProbe.output,
   bundleAuthority
-    ? `${bundleProbe.result.authorityCheckpointKid} cannot anchor full chain: ${bundleAuthority.verdict}`
+    ? `${bundleProbe.result.authorityCheckpointKid} cannot anchor full chain: ${bundleAuthority.verdict}; ` +
+      `direct fixture control=${bundleAuthorityDirect?.verdict}`
     : bundleProbe.output,
 );
 

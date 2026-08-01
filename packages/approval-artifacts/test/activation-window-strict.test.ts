@@ -30,6 +30,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyArtifact } from "../src/verify.js";
 import { ARTIFACTS } from "../src/domains.js";
+import { generateKeyPair } from "../src/crypto.js";
+import { signArtifact } from "../src/sign.js";
 import type { KeyEntry } from "../src/verify.js";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -45,6 +47,62 @@ const fx = JSON.parse(readFileSync(join(ROOT, "conformance", "decision", "valid.
   context: Record<string, unknown>;
 };
 const SIGNER = (fx.artifact["sig"] as { kid: string }).kid;
+
+const BATCH_N_SIGNER = generateKeyPair(SIGNER);
+
+function verifyBatchNDecision(
+  decidedAt: string,
+  options: {
+    validFrom?: string | null;
+    revokedAt?: string | null;
+    now?: string | null;
+    authorizationTime?: string | null;
+    timeSchema?: Record<string, unknown>;
+  } = {},
+): { ok: boolean; reason: string } {
+  const unsigned: Record<string, unknown> = {
+    ...fx.artifact,
+    decidedAt,
+    approverKid: BATCH_N_SIGNER.kid,
+  };
+  delete unsigned.sig;
+  const signed = signArtifact(
+    enc(unsigned),
+    ARTIFACTS["noa.decision/0.1"]!.domain!,
+    BATCH_N_SIGNER,
+  );
+  const kr = JSON.parse(JSON.stringify(keyring)) as Record<string, KeyEntry>;
+  const entry = kr[SIGNER]!;
+  entry.publicKey = BATCH_N_SIGNER.publicKey;
+  entry.type = "APPROVER";
+  entry.roles = ["approve-high"];
+  entry.validFrom = options.validFrom === undefined ? "2026-07-14T11:55:00.000Z" : options.validFrom;
+  entry.revokedAt = options.revokedAt ?? null;
+  const now = options.now === undefined ? "2026-07-14T12:00:00.000Z" : options.now;
+  const authorizationTime = options.authorizationTime === undefined
+    ? "2026-07-14T12:00:00.000Z"
+    : options.authorizationTime;
+  let selectedSchemas = schemas;
+  if (options.timeSchema !== undefined) {
+    const decisionSchema = JSON.parse(JSON.stringify(schemas["noa.decision/0.1"])) as Record<string, unknown>;
+    const defs = decisionSchema["$defs"] as Record<string, unknown>;
+    defs["rfc3339"] = options.timeSchema;
+    selectedSchemas = { ...schemas, "noa.decision/0.1": decisionSchema };
+  }
+  const r = verifyArtifact(enc(signed), enc({
+    schemas: selectedSchemas,
+    keyring: kr,
+    riskClass: "HIGH",
+    mustBeWithin: [{
+      path: "decidedAt",
+      min: "2026-07-14T11:00:00.000Z",
+      max: "2026-07-14T12:05:00.000Z",
+    }],
+    ...(now === null ? {} : { now }),
+    ...(authorizationTime === null ? {} : { authorizationTime }),
+  }));
+  return { ok: r.ok, reason: r.ok ? "" : String(r.reason) };
+}
 
 /** Verify the REAL vector with the signer's `validFrom`; null deliberately omits trusted historical time. */
 function verifyWithValidFrom(
@@ -102,6 +160,86 @@ test("P0-14 activation asymmetry: signer time may only move the verdict toward R
   assert.equal(staticEntry.ok, true, `static non-rotating control stopped verifying: ${staticEntry.reason}`);
 });
 
+test("Batch N: every published Decision timestamp spelling verifies while lifecycle time stays asymmetric", () => {
+  const spellings = [
+    "2026-07-14T11:56:00.000Z",
+    "2026-07-14t11:56:00.000z",
+    "2026-07-14T11:56:00.1Z",
+    "2026-07-14T11:56:00.123456789Z",
+    "2026-07-14T13:56:00.000+02:00",
+  ];
+  const compatibility = spellings.map((decidedAt) => ({
+    decidedAt,
+    outcome: verifyBatchNDecision(decidedAt),
+  }));
+
+  const contradictionWithoutAnyTrustedTime = verifyBatchNDecision(
+    "2026-07-14T11:56:00.000Z",
+    { validFrom: "2026-07-14T11:57:00.000Z", now: null, authorizationTime: null },
+  );
+  const rejectOnlyContradiction = verifyBatchNDecision(
+    "2026-07-14T11:56:00.000Z",
+    { validFrom: "2026-07-14T11:57:00.000Z", authorizationTime: null },
+  );
+  const futureDatedBeforeActivation = verifyBatchNDecision(
+    "2026-07-14T20:00:00.000Z",
+    { validFrom: "2026-07-14T13:00:00.000Z" },
+  );
+  const retired = verifyBatchNDecision(
+    "2026-07-14T11:56:00.000Z",
+    { validFrom: null, revokedAt: "2026-07-14T11:59:00.000Z" },
+  );
+  const unparseableSignerClaim = verifyBatchNDecision(
+    "2026-02-30T11:56:00.000Z",
+  );
+  const subMillisecondContradiction = verifyBatchNDecision(
+    "2026-07-14T11:56:00.123456788Z",
+    { validFrom: "2026-07-14T11:56:00.123456789Z" },
+  );
+  // A raw throw fails this test before the returned-verdict assertions run.
+  const permissiveSchemaOutcome = verifyBatchNDecision(
+    "2026-07-14T11:56:00Q",
+    { timeSchema: { type: "string" } },
+  );
+  const staticConsumer = verifyBatchNDecision(
+    "2026-07-14T11:56:00.000Z",
+    { validFrom: null, now: null, authorizationTime: null },
+  );
+
+  for (const row of compatibility) {
+    assert.equal(row.outcome.ok, true,
+      `${row.decidedAt} is permitted by the published Decision schema but was refused: ${row.outcome.reason}`);
+  }
+  assert.equal(contradictionWithoutAnyTrustedTime.ok, false,
+    "a lifecycle-bearing key verified without verifier-controlled time");
+  assert.match(contradictionWithoutAnyTrustedTime.reason, /trusted activation time/,
+    `missing trusted time was refused for the wrong reason: ${contradictionWithoutAnyTrustedTime.reason}`);
+  assert.equal(rejectOnlyContradiction.ok, false,
+    "a signer-claimed time before validFrom verified after the key activated");
+  assert.match(rejectOnlyContradiction.reason, /before its validFrom/,
+    `the self-contradiction was refused for the wrong reason: ${rejectOnlyContradiction.reason}`);
+  assert.equal(futureDatedBeforeActivation.ok, false,
+    "a future-dated artifact activated a key before verifier-controlled time reached validFrom");
+  assert.match(futureDatedBeforeActivation.reason, /evaluated at trusted time.*before its validFrom/,
+    `the future-dated artifact was refused for the wrong reason: ${futureDatedBeforeActivation.reason}`);
+  assert.equal(retired.ok, false, "a retired signer verified on the Decision surface");
+  assert.match(retired.reason, /was revoked at/, `the retired signer was refused for the wrong reason: ${retired.reason}`);
+  assert.equal(unparseableSignerClaim.ok, false,
+    "a signer-claimed timestamp with a non-existent calendar date was accepted");
+  assert.match(unparseableSignerClaim.reason, /cannot evaluate signer-claimed activation time/,
+    `the unparseable signer claim was refused for the wrong reason: ${unparseableSignerClaim.reason}`);
+  assert.equal(subMillisecondContradiction.ok, false,
+    "a signer claim one nanosecond before validFrom was rounded into the activation window");
+  assert.match(subMillisecondContradiction.reason, /before its validFrom/,
+    `the nanosecond contradiction was refused for the wrong reason: ${subMillisecondContradiction.reason}`);
+  assert.equal(permissiveSchemaOutcome.ok, false,
+    "a timestamp the semantic parser cannot decode was accepted under a permissive supplied schema");
+  assert.match(permissiveSchemaOutcome.reason, /cannot evaluate signer-claimed activation time/,
+    `the permissive-schema timestamp was refused for the wrong reason: ${permissiveSchemaOutcome.reason}`);
+  assert.equal(staticConsumer.ok, true,
+    `a static non-rotating consumer stopped verifying: ${staticConsumer.reason}`);
+});
+
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 // THE DEFECT — a malformed declared activation must NEVER become a usable past instant.
 // ────────────────────────────────────────────────────────────────────────────────────────────────
@@ -113,7 +251,6 @@ test("P0-6: a malformed `validFrom` cannot be normalised into a past instant", (
     "2026-13-01",             // month 13
     "2026-01-01",             // date only, no time or zone — ambiguous
     "2026-01-01T00:00:00",    // no zone designator
-    "2026-01-01t00:00:00z",   // lowercase, non-canonical
     " 2026-01-01T00:00:00Z",  // leading whitespace
   ]) {
     const r = verifyWithValidFrom(bad);
@@ -147,10 +284,12 @@ test("P0-6: the documented legacy rule holds — an ABSENT validFrom is always-a
     "timestamps depend on it");
 });
 
-test("P0-6: a canonical PAST activation still verifies, in both accepted spellings", () => {
+test("P0-6: every published PAST activation spelling reaches the same semantic parser", () => {
   assert.equal(verifyWithValidFrom("2000-01-01T00:00:00.000Z").ok, true, "millisecond form rejected");
   assert.equal(verifyWithValidFrom("2000-01-01T00:00:00Z").ok, true, "second-precision form rejected");
-  // The rule changed deliberately in P0-11 because the CLI documents RFC 3339; emit stays `Z`.
+  assert.equal(verifyWithValidFrom("2000-01-01t00:00:00.1z").ok, true, "lowercase/fractional form rejected");
+  assert.equal(verifyWithValidFrom("2000-01-01T00:00:00.123456789Z").ok, true, "nanosecond form rejected");
+  // Accepted grammar comes from the published schema; emit stays uppercase `T`/`Z`.
   assert.equal(verifyWithValidFrom("2026-01-01T00:00:00+01:00").ok, true, "RFC 3339 offset form rejected");
 });
 
