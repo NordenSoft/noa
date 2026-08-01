@@ -28,14 +28,48 @@ It is the LEAD: it decides, approves, and does not ask the owner. Never let the 
 **NO QA rounds until every task is done.** Fable supervises codex by **reading the actual `git diff`**, never its report, and corrects it when it wanders.
 **Mechanical gates still run on EVERY batch** — package suites · `npm run typecheck:all` · `node scripts/lint-resolver-parity.mjs` · the relevant knockouts · RED-before-fix evidence per fix. Removing QA removed a *review round*, not verification.
 
-## ⚠ P0-14 remains open for consumers that omit retirement bounds — state at 2026-08-01
+## P0-14 — third attempt landed, 12 surfaces closed, ONE gate left · state at 2026-08-01
 
-**WITHDRAWN CLAIM (verbatim): "✅ P0 = 0 — where the work stopped, 2026-08-01".** The P0-14
-implementation is an adopter-scoped defence: callers that pass both `keyring()` and `retirements()`
-refuse post-retirement evidence; callers that omit `retirements` retain the published 0.2.0 behaviour
-and remain exposed. This is not universal closure.
+**Superseded, verbatim, both of them.** First: *"✅ P0 = 0 — where the work stopped, 2026-08-01"* —
+false, the fix was adopter-scoped. Second: *"P0-14 remains open for consumers that omit retirement
+bounds… adopter-scoped defence… not universal closure"* — true of attempts 1 and 2, superseded by
+**batch K (`da38d50`, pushed)**.
 
-**`noa-receipt` HEAD `c0701d3`** (branch `impl/adr-0005-trusted-input-provenance`, clean, **nothing pushed**) · **`noa-mobile` HEAD `b768122`** (clean, nothing pushed). Both repos' state is `git log -1`; these hashes are a convenience, not the authority.
+**What changed is the METHOD, not just the code.** Attempts 1 and 2 patched the doors somebody
+happened to look at, and each was declared closed and was not. Batch K began from an **enumeration**
+— `docs/P0-14-VERIFICATION-SURFACES.md` — and that document states its own limit: a complete JS call
+graph is not statically enumerable, so dynamic imports and external consumers sit outside it.
+
+**The root error, finally named and written into the refusal message itself:** *"signer-chosen
+artifact time is not an independent witness."* A check comparing against a timestamp **the signer
+chose** is not a check — the thief writes whatever `ts` makes it pass. That mistake sat in THREE
+places and was twice "fixed" by tightening the comparison instead of removing the dependency. A
+non-null retirement is now **terminal** on every surface, with no timestamp consulted.
+
+**LEAD-VERIFIED** — 12 surfaces, each with an ATTACK *and* a CONTROL, every control passing and every
+attack refused: `resolveVerificationKey` · `verifyChain` · `verifyChainText` · `verifyCheckpoint` ·
+`verifyChainWitnessed` · the `noa verify` CLI · the `--serve` IPC path · `coseSign1Verify` ·
+`receiptFromCose` · `verifyReceiptCompliance` · `verifyArtifact` · `verifyApprovalReceipt`.
+Gates: root **530/530** · evidence **128/128** · `typecheck:all` **0** · `lint:resolver-parity` **0**.
+
+**What the lead could NOT verify independently, recorded rather than glossed:** its own probe of
+`verifyCheckpoint` failed to build a schema-valid checkpoint — the CONTROL returned *"malformed
+checkpoint"*, so nothing in that run counts. What was confirmed directly is that `verifyCheckpoint`
+now takes a `ParsedVerificationKeyring` and forwards it, where before it supported no lifecycle at
+all. The 12-surface evidence is the implementer's artifact **re-run** by the lead, not rebuilt from
+scratch.
+
+**NOT CONTAINED, and not claimed:** TSA/time-witness integration (`packages/tsa-anchor` unpublished,
+so a genuine pre-retirement artifact is now unverifiable after retirement — the correct, honest
+consequence) · lifecycle schema for the Python/Go/Rust/C# ports · detecting an operator who manually
+relabels a retired public key as a legacy static key.
+
+**⚠ THE ONE GATE LEFT: batch K is UNREVIEWED.** Two earlier batches passed a lead audit and died to
+independent review — one had its retirement check defeated by poisoning the clock before module load,
+the other certified a skipped test as passing via a forged checkmark inside a test name. Batch K
+exists only because the review refused attempt 2. **Treat it as unreviewed, not as closed.**
+
+**`noa-receipt` HEAD `da38d50`** (branch `impl/adr-0005-trusted-input-provenance`, clean, **PUSHED** — remote tip verified equal to local with `git ls-remote`) · **`noa-mobile` HEAD `b768122`** (clean, PUSHED). Both repos state is `git log -1`; these hashes are a convenience, not the authority.
 
 | batch | commit | what changed / bounded closure |
 |---|---|---|
@@ -45,7 +79,8 @@ and remain exposed. This is not universal closure.
 | F | `c0701d3` + Batch I correction | F-4 **WITHDRAWN CLAIM (verbatim): "a registered proof must be knockout-covered, not merely live"**; the resolver gate now states what it measures (a declared knockout binding), while actual knockout execution separately requires the tagged proof to go RED · F-2 `assembleGateTrust` carries manifest per-key windows · G4 **WITHDRAWN CLAIM (verbatim): "G4 measured equivalent, no RED forced"**; exact mutant is distinguishable and now turns the focused test 6/6 → 5/6 with the G4 test RED |
 | G | `b768122` (noa-mobile) | the phone's conformance ORACLE no longer shares the defects it exists to catch; pairing conformance 24 → **66/66** |
 
-**WHAT IS STILL OPEN — P0-14 remains open for non-adopting consumers:**
+**WHAT IS STILL OPEN — P0-14's code is done; its REVIEW is not:**
+0. **The independent review of `da38d50`** — the only gate between here and `npm publish` 0.3.0. See the section above for why this is not a formality.
 1. **#85 — `noa-mobile` `signer-parity` 2 tests expect VALID, get MALFORMED.** **PRE-EXISTING, proven not ours** (checked `noa-receipt` out at `cc243a7`, rebuilt, reproduced identically). Undiagnosed. `noa-mobile`'s usable baseline is: pairing conformance GREEN · these 2 known-red by name · ~41 `listen EPERM` = managed-runtime environment, not defects.
 2. **#75 — Round 8 product findings** R8-02/03/14/15/17/18 + F-1. This was batch **H**, never dispatched.
 3. ~~**G4 residual**~~ — **WITHDRAWN CLAIM (verbatim): "the render-node invariant is asserted but unproven; its registry mutation was measured EQUIVALENT so it could never have proven anything. Needs a NON-equivalent, reachable mutation. Do not force a RED".** Batch I applied the exact historical mutant; a stateful post-load `Object.keys` makes it observationally different. Focused clean 6/6, mutant 5/6 with only the G4 test newly RED; knockout `DETECTOR_TRIGGERED` 1/1.
