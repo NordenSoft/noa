@@ -37,6 +37,8 @@ import { canonicalize, signEd25519, verifyEd25519, describeThrown, truncateThrow
 export const OUTCOME_SIG_DOMAIN = "NOA-MCP-Outcome-Receipt-v1-sig";
 /** Distinct `spec` tag so a verifier can tell an outcome receipt apart from a `noa.receipt/0.1` at a glance. */
 export const OUTCOME_RECEIPT_SPEC = "noa.mcp.outcome/0.1";
+/** Atomic public-key + retirement document emitted by createRotatableSigner(). */
+export const SIGNING_KEY_LIFECYCLE_SPEC = "noa.signing-key-lifecycle/0.1";
 
 const MAX_ERROR_LEN = 512;
 
@@ -187,22 +189,26 @@ export async function buildOutcomeReceiptAsync({ decisionReceipt, tool, outcome,
 }
 
 /**
- * Fully-offline verification of an outcome receipt. Pure function of (receipt, keyring[, expected
- * decision, retirements]). Returns `{ ok, reason?, decisionId?, status? }` — never throws.
+ * Fully-offline verification of an outcome receipt. Returns
+ * `{ ok, reason?, decisionId?, status? }` — never throws.
  *
  * @param {object} outcomeReceipt
- * @param {{ keyring: Record<string,string>, expectedDecisionReceipt?: object,
- *   retirements?: Record<string,string> }} opts
- *   `keyring` maps kid -> base64 SPKI public key (same shape verifyChain takes). When
+ * @param {{ verification: Record<string,string>|{ spec: string, keys: Record<string,
+ *   { publicKey: string, retiredAt: string|null }> }, expectedDecisionReceipt?: object }} opts
+ *   `verification` is either a static one-key `kid -> publicKey` map or the atomic lifecycle value
+ *   returned by `createRotatableSigner().verificationLifecycle()`. When
  *   `expectedDecisionReceipt` is given, ALSO asserts the outcome is bound to THAT exact decision
  *   (id + chain.hash) — catches a signed-but-mismatched outcome spliced next to the wrong decision.
- *   When `retirements` is supplied, a retired kid may verify only receipts strictly before its
- *   canonical retirement instant. This separate channel preserves the string-valued keyring
- *   contract. Omitting it deliberately preserves published-0.2.0 behaviour, so library consumers
- *   adopting rotation must pass both `rot.keyring()` and `rot.retirements()` to activate the bound.
+ *
+ *   Outcome receipts are standalone: their signer-chosen timestamp has no independently ordered
+ *   context. A lifecycle entry with non-null `retiredAt` is therefore refused regardless of the
+ *   outcome's `ts`. This also refuses genuine historical outcomes once their key retires; accepting
+ *   those requires an independent time witness, which this API does not yet accept.
  */
-export function verifyOutcomeReceipt(outcomeReceipt, { keyring, expectedDecisionReceipt, retirements } = {}) {
+export function verifyOutcomeReceipt(outcomeReceipt, opts = {}) {
   try {
+    const verification = opts?.verification;
+    const expectedDecisionReceipt = opts?.expectedDecisionReceipt;
     if (!outcomeReceipt || typeof outcomeReceipt !== "object") return { ok: false, reason: "not an object" };
     if (outcomeReceipt.spec !== OUTCOME_RECEIPT_SPEC) return { ok: false, reason: `not an outcome receipt (spec ${JSON.stringify(outcomeReceipt.spec)})` };
     const { sig, ...unsigned } = outcomeReceipt;
@@ -213,24 +219,67 @@ export function verifyOutcomeReceipt(outcomeReceipt, { keyring, expectedDecision
     if (!unsigned.decision || typeof unsigned.decision.id !== "string" || typeof unsigned.decision.hash !== "string") {
       return { ok: false, reason: "malformed decision binding" };
     }
-    const pub = keyring?.[sig.kid];
+    if (!verification || typeof verification !== "object" || Array.isArray(verification)) {
+      return { ok: false, reason: "missing or malformed verification data" };
+    }
+
+    let pub;
+    let retiredAt = null;
+    const verificationKeys = Object.getOwnPropertyNames(verification);
+    const hasLifecycleSpec = verificationKeys.includes("spec") && verification.spec === SIGNING_KEY_LIFECYCLE_SPEC;
+    const hasStructuredKeys = verificationKeys.includes("keys") && typeof verification.keys !== "string";
+    const isLifecycle = hasLifecycleSpec || hasStructuredKeys;
+    if (isLifecycle) {
+      if (
+        verification.spec !== SIGNING_KEY_LIFECYCLE_SPEC
+        || verificationKeys.length !== 2
+        || !verificationKeys.includes("spec")
+        || !verificationKeys.includes("keys")
+        || !verification.keys
+        || typeof verification.keys !== "object"
+        || Array.isArray(verification.keys)
+      ) {
+        return { ok: false, reason: "malformed signing key lifecycle" };
+      }
+      const kids = Object.getOwnPropertyNames(verification.keys);
+      let currentKeys = 0;
+      for (const kid of kids) {
+        const entry = verification.keys[kid];
+        const fields = entry && typeof entry === "object" && !Array.isArray(entry)
+          ? Object.getOwnPropertyNames(entry)
+          : [];
+        if (
+          fields.length !== 2
+          || !fields.includes("publicKey")
+          || !fields.includes("retiredAt")
+          || typeof entry.publicKey !== "string"
+          || entry.publicKey.length === 0
+          || (entry.retiredAt !== null && Number.isNaN(parseCanonicalInstant(entry.retiredAt)))
+        ) {
+          return { ok: false, reason: `malformed lifecycle data for signing key ${JSON.stringify(kid)}` };
+        }
+        if (entry.retiredAt === null) currentKeys++;
+      }
+      if (currentKeys !== 1) {
+        return { ok: false, reason: `signing key lifecycle must identify exactly one current key (found ${currentKeys})` };
+      }
+      const entry = verification.keys[sig.kid];
+      pub = entry?.publicKey;
+      retiredAt = entry?.retiredAt ?? null;
+    } else {
+      const keyring = verification;
+      if (verificationKeys.length !== 1 || typeof keyring[verificationKeys[0]] !== "string") {
+        return { ok: false, reason: "multi-key verification requires an atomic signing key lifecycle" };
+      }
+      pub = keyring[sig.kid];
+    }
     if (!pub) return { ok: false, reason: `kid ${JSON.stringify(sig.kid)} not in keyring` };
     if (!verifyEd25519(pub, signingBytes(unsigned), sig.value)) return { ok: false, reason: "signature mismatch" };
-    if (retirements !== undefined) {
-      if (retirements === null || typeof retirements !== "object") {
-        return { ok: false, reason: "malformed retirements" };
-      }
-      if (Object.prototype.hasOwnProperty.call(retirements, sig.kid)) {
-        const retiredAt = retirements[sig.kid];
-        const retirementTime = parseCanonicalInstant(retiredAt);
-        const receiptTime = parseCanonicalInstant(unsigned.ts);
-        if (Number.isNaN(retirementTime) || Number.isNaN(receiptTime)) {
-          return { ok: false, reason: `cannot evaluate retirement time for signing key ${JSON.stringify(sig.kid)}` };
-        }
-        if (receiptTime >= retirementTime) {
-          return { ok: false, reason: `signing key ${JSON.stringify(sig.kid)} was retired at ${retiredAt}` };
-        }
-      }
+    if (retiredAt !== null) {
+      return {
+        ok: false,
+        reason: `signing key ${JSON.stringify(sig.kid)} is retired; outcome signing time is not independently witnessed`,
+      };
     }
     if (expectedDecisionReceipt) {
       if (

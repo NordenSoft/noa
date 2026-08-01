@@ -802,3 +802,92 @@ test("A1: requireTenantConsistency:false restores the EXACT previous behaviour (
     `the opt-out must still REPORT the drift, got: ${JSON.stringify(optOut.warnings)}`,
   );
 });
+
+test("P0-14: a retired key cannot authenticate a fresh post-retirement chain segment", () => {
+  const retired = generateKeyPair("p0-14-chain-retired");
+  const current = generateKeyPair("p0-14-chain-current");
+  const unknown = generateKeyPair("p0-14-chain-unknown");
+  const retirement = "2026-08-01T08:36:12.643Z";
+
+  const makeSegment = (id: string, ts: string, signer: typeof retired) => buildReceipt({
+    id,
+    ts,
+    scope: { chain: `chain-${id}`, tenant: "tenant-p0-14" },
+    agent: { id: "proxy-p0-14", model: null, principal: "SERVICE" },
+    action: { id: "wire.transfer", canonical: "wire.transfer", riskClass: "HIGH", paramsHash: sha256Prefixed(id), reversible: false, rollbackRef: null },
+    governance: { mode: "on", verdict: "EXECUTED", ruleId: null, approval: null, sandboxed: false },
+  }, null, { kid: signer.kid, privateKey: signer.privateKey });
+
+  const lifecycle = b({
+    spec: "noa.signing-key-lifecycle/0.1",
+    keys: {
+      [retired.kid]: { publicKey: retired.publicKey, retiredAt: retirement },
+      [current.kid]: { publicKey: current.publicKey, retiredAt: null },
+    },
+  });
+  const currentSegment = makeSegment("current-control", "2026-08-01T08:36:12.644Z", current);
+  const currentControl = verifyChain(
+    b([currentSegment]),
+    { keyring: lifecycle },
+  );
+  const unknownControl = verifyChain(
+    b([makeSegment("unknown-control", "2026-08-01T08:36:12.644Z", unknown)]),
+    { keyring: lifecycle },
+  );
+  const freshRetiredAttack = verifyChain(
+    b([makeSegment("retired-attack", "2026-08-01T08:36:12.644Z", retired)]),
+    { keyring: lifecycle },
+  );
+  const historicalControl = verifyChain(
+    b([makeSegment("retired-history", "2026-08-01T08:36:12.642Z", retired)]),
+    { keyring: lifecycle },
+  );
+  const staticSigner = generateKeyPair("p0-14-chain-static");
+  const staticControl = verifyChain(
+    b([makeSegment("static-control", "2026-08-01T08:36:12.644Z", staticSigner)]),
+    { keyring: b({ [staticSigner.kid]: staticSigner.publicKey } satisfies Keyring) },
+  );
+  const staticKeysKid = generateKeyPair("keys");
+  const staticKeysKidControl = verifyChain(
+    b([makeSegment("static-keys-kid", "2026-08-01T08:36:12.644Z", staticKeysKid)]),
+    { keyring: b({ [staticKeysKid.kid]: staticKeysKid.publicKey } satisfies Keyring) },
+  );
+  const retiredCheckpointAttack = verifyChain(b([currentSegment]), {
+    keyring: lifecycle,
+    checkpoint: b(buildCheckpoint(
+      currentSegment,
+      "2026-08-01T08:36:12.644Z",
+      { kid: retired.kid, privateKey: retired.privateKey },
+    )),
+  });
+  const currentCheckpointControl = verifyChain(b([currentSegment]), {
+    keyring: lifecycle,
+    checkpoint: b(buildCheckpoint(
+      currentSegment,
+      "2026-08-01T08:36:12.644Z",
+      { kid: current.kid, privateKey: current.privateKey },
+    )),
+  });
+  const missingLifecycleData = verifyChain(
+    b([makeSegment("missing-lifecycle", "2026-08-01T08:36:12.644Z", current)]),
+    { keyring: b({
+      spec: "noa.signing-key-lifecycle/0.1",
+      keys: { [current.kid]: { publicKey: current.publicKey } },
+    }) },
+  );
+
+  assert.equal(currentControl.status, "VALID", currentControl.reason);
+  assert.equal(unknownControl.status, "TAMPERED");
+  assert.match(unknownControl.reason ?? "", /unknown signing key/);
+  assert.equal(freshRetiredAttack.status, "TAMPERED", `retired at ${retirement}: ${freshRetiredAttack.reason ?? "accepted"}`);
+  assert.match(freshRetiredAttack.reason ?? "", /retired/i);
+  assert.equal(historicalControl.status, "VALID", historicalControl.reason);
+  assert.equal(staticControl.status, "VALID", staticControl.reason);
+  assert.equal(staticKeysKidControl.status, "VALID", staticKeysKidControl.reason);
+  assert.equal(currentCheckpointControl.status, "VALID", currentCheckpointControl.reason);
+  assert.equal(currentCheckpointControl.tailChecked, true);
+  assert.equal(retiredCheckpointAttack.status, "TAMPERED");
+  assert.match(retiredCheckpointAttack.reason ?? "", /checkpoint signing key.*retired/i);
+  assert.equal(missingLifecycleData.status, "MALFORMED");
+  assert.match(missingLifecycleData.reason ?? "", /publicKey \+ retiredAt/);
+});

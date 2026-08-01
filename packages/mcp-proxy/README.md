@@ -36,6 +36,37 @@ would have spawned it directly. The proxy:
   and a static, proxy-config `agentId` (`--agent-id`) that a tool call's own arguments can never
   override.
 
+## 0.3.0 release notes (breaking, not published)
+
+The rotatable signer no longer exposes separate `keyring()` and `retirements()` calls. Use its one
+`verificationLifecycle()` snapshot for both verifiers:
+
+```js
+const lifecycle = rotatable.verificationLifecycle();
+verifyOutcomeReceipt(outcome, { verification: lifecycle });
+verifyChain(chainBytes, { keyring: new TextEncoder().encode(JSON.stringify(lifecycle)) });
+```
+
+The lifecycle document places every public key beside a required `retiredAt` value (`null` for the
+single current key). `verifyOutcomeReceipt` now takes one `verification` value instead of the 0.2.x
+`keyring` + optional `retirements` pair. A static, non-rotating outcome consumer passes its one-key
+flat map as `verification`; a rotatable or multi-key consumer must pass the lifecycle document.
+`verifyChain` keeps its existing `keyring` option and its flat-map behavior for static consumers, but
+also recognizes the lifecycle document and refuses receipts or checkpoints at or after their signing
+key's cutoff.
+
+`historicalKeyring()` is retained only as a clearly named flat-map accessor for APIs or historical
+workflows that cannot consume lifecycle entries. It drops retirement data and therefore provides no
+retirement enforcement.
+
+This release does **not** claim complete containment of a stolen retired key. A retired key can sign
+a chain receipt with a backdated timestamp because that timestamp is authenticated only by the same
+compromised key. The chain cutoff forces a post-retirement forgery to backdate, and chain ordering
+can expose some such attempts, but it is not an independent time proof. Complete containment needs
+an independent time witness; `packages/tsa-anchor` is code-ready and unpublished. Standalone outcome
+receipts have no chain ordering at all, so 0.3.0 refuses every retired-key outcome, including a
+genuine pre-retirement outcome that lacks independent time evidence.
+
 ## Flags (all optional)
 
 | Flag | Default | Meaning |
@@ -44,7 +75,7 @@ would have spawned it directly. The proxy:
 | `--tenant <name>` | `"default-tenant"` | receipt `scope.tenant` |
 | `--agent-id <id>` | the session id | STATIC `receipt.agent.id` — never read from a tool call's own arguments |
 | `--receipt-log <path>` | (none) | append each DECISION receipt as one JSON line, written via a non-blocking, per-file-ordered `fs.promises.appendFile` |
-| `--outcome-log <path>` | (none) | (R2) append each POST-execution OUTCOME receipt as one JSON line (same non-blocking appender). Verify offline with `verifyOutcomeReceipt()` against the `--keyring-file`. |
+| `--outcome-log <path>` | (none) | (R2) append each POST-execution OUTCOME receipt as one JSON line (same non-blocking appender). For this static single-key CLI path, pass the parsed `--keyring-file` map as `verifyOutcomeReceipt(..., { verification })`. |
 | `--http-port <n>` | (none — stdio) | (R2) serve over HTTP+SSE (Streamable HTTP) on this port INSTEAD of stdio. Each MCP session gets its own downstream connection + receipt chain, fronted by the same fail-closed gate as stdio. |
 | `--http-host <host>` | `127.0.0.1` | (R2) bind address for `--http-port` (loopback only by default; set `0.0.0.0` deliberately to expose beyond localhost). |
 | `--keyring-file <path>` | (none) | write `{ [kid]: publicKey }` once at startup for an external verifier |
@@ -136,20 +167,14 @@ npm test   # node test/smoke.mjs — real child processes, real MCP Client/Serve
   session (the same one-downstream-per-session model as stdio).
 - **Signing identity persistence is opt-in, not automatic — and (R2) key rotation is now supported
   as a capability.** Without `--key-file`, `proxy.mjs` still generates a fresh Ed25519 keypair every
-  process start (the original, unchanged default). **Correction to the prior rotation claim:**
-  “`createRotatableSigner` retires an old `kid` while keeping historical receipts verifiable under a
-  multi-key keyring, and new receipts sign under the new `kid` (Scenario X).” More precisely,
-  `keyring()` intentionally remains a flat `kid -> base64 publicKey` map so `verifyChain` keeps
-  working, while `retirements()` separately returns `kid -> retiredAt`. A library verifier must pass
-  both to `verifyOutcomeReceipt(receipt, { keyring: rot.keyring(), retirements: rot.retirements() })`:
-  receipts dated strictly before retirement remain verifiable, while receipts at or after retirement
-  are refused. Omitting `retirements` deliberately preserves published-0.2.0 behaviour and therefore
-  leaves that library consumer exposed to post-retirement minting. The CLI does not import this
-  rotation helper and its `--keyring-file` contains only the current key, so this is the documented
-  library-consumer path, not every proxy user. Hard invariant: rotate ONLY at a chain-SEGMENT boundary
-  (between sessions / at restart) — a mid-chain `kid` swap for one agent is flagged `TAMPERED` by
-  `verifyChain` by design. Rotation covers the LOCAL signer; a remote `--signer-socket` sidecar rotates
-  on its own side. A production rotation *policy* (when/how often) remains a deployment concern.
+  process start (the original, unchanged default). In 0.3.0, `verificationLifecycle()` returns the
+  retired and current public keys with their temporal state in one snapshot; the separate
+  `keyring()` / `retirements()` downgrade path no longer exists. Pass that snapshot as the outcome
+  verifier's `verification` value or encode it into `verifyChain`'s existing `keyring` option. Rotate
+  only at a chain-segment boundary (between sessions / at restart): a mid-chain `kid` swap for one
+  agent is flagged `TAMPERED`. Rotation covers the LOCAL signer; a remote `--signer-socket` sidecar
+  rotates on its own side. The stolen-key/time-witness non-claim is stated in the 0.3.0 notes above.
+  A production rotation policy (when/how often) remains a deployment concern.
 - **`--key-file` gives restart-continuity of the SIGNING IDENTITY, not of one CHAIN — unless you
   ALSO configure `--session-dir`.** Reusing the same `--key-file` across a restart keeps every
   receipt (before AND after the restart) verifiable under the SAME `kid`/external keyring — but by

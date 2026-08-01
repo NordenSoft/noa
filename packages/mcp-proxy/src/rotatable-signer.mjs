@@ -1,4 +1,4 @@
-import { parseCanonicalInstant } from "./outcome-receipt.mjs";
+import { parseCanonicalInstant, SIGNING_KEY_LIFECYCLE_SPEC } from "./outcome-receipt.mjs";
 
 // Capture the default clock when this module loads, so replacing Date.now afterwards cannot move a
 // retirement bound. This defends post-load mutation only: a Date.now poisoned before module
@@ -11,10 +11,9 @@ const moduleLoadDateNow = Date.now;
  * rotatable-signer.mjs (R2 #5) — signing-key ROTATION for the proxy's LOCAL signer.
  *
  * The problem it solves: a long-lived proxy should be able to retire its signing key and start
- * signing new receipts under a fresh key WITHOUT invalidating the receipts it already signed. In a
- * hash-chained, offline-verifiable design that reduces to one requirement — the verification keyring
- * must map EVERY kid the proxy has ever signed under (retired + current) to its public key, while
- * the private key used to SIGN is only ever the current one.
+ * signing new receipts under a fresh key while keeping the old public key available for bounded
+ * historical chain verification. The verification lifecycle maps every kid the proxy signed under
+ * to its public key and temporal state, while the private key used to SIGN is only the current one.
  *
  * This wraps a local `{ kid, privateKey, publicKey }` identity in an object that:
  *   - exposes `kid` + `privateKey` as live GETTERS reflecting the CURRENT key, so the exact same
@@ -25,17 +24,16 @@ const moduleLoadDateNow = Date.now;
  *     remote sidecar signer rotates on the sidecar's own side, out of this module's scope).
  *
  * `rotate(newKeyPair)` records the OUTGOING key's public key + retirement instant and swaps the
- * current key in place. `keyring()` deliberately remains `{ [kid]: publicKey }` for retired +
- * current keys — the exact string-valued shape `verifyChain` takes. The separate `retirements()`
- * channel lets a library consumer pass the retirement bounds to `verifyOutcomeReceipt`, keeping
- * pre-retirement receipts verifiable while refusing newly minted post-retirement evidence.
+ * current key in place. `verificationLifecycle()` returns one snapshot containing both public keys
+ * and every key's temporal state. The previous `keyring()` + `retirements()` pair was removed in
+ * 0.3.0: rotation could occur between those calls, and omitting the second call silently discarded
+ * the only retirement information.
  *
- * This temporal defence is opt-in at verification for published-0.2.0 compatibility: a library
- * consumer that adopts this documented rotation helper must pass BOTH `keyring()` and
- * `retirements()`. Omitting `retirements()` intentionally preserves the old verification behaviour.
- * The proxy CLI is not a caller of `createRotatableSigner` and its `--keyring-file` contains only
- * the current key, so this exposure is the documented library-consumer rotation path, not every
- * proxy user.
+ * `historicalKeyring()` is the deliberately loud escape hatch for APIs that require the historical
+ * flat `{ [kid]: publicKey }` shape. It carries no temporal evidence and must not be used to decide
+ * whether newly presented evidence was signed before retirement. `verifyChain` accepts the atomic
+ * lifecycle document through its existing `keyring` option, while a genuinely static keyring keeps
+ * its existing flat shape.
  *
  * ⚠️ ROTATE ONLY AT A CHAIN-SEGMENT BOUNDARY (between sessions, or at a process restart) — NEVER
  * mid-segment. This is a hard invariant, not a style preference: `verifyChain` enforces "one agent,
@@ -44,16 +42,17 @@ const moduleLoadDateNow = Date.now;
  * session is its own segment (distinct `scope.chain`), so the realistic rotation is: session/segment
  * N signs under the old kid, the operator rotates, session/segment N+1 signs under the new kid.
  * Group receipts by `scope.chain` and verify each segment on its own (exactly as noa-receipt's
- * README already instructs) — the retired kid keeps verifying the old segments, the new kid verifies
- * the new ones, and the combined `keyring()` verifies them all. (This is DISTINCT from the R4
+ * README already instructs) — the lifecycle snapshot lets the old kid verify timestamped history
+ * before its cutoff and the new kid verify current segments. (This is DISTINCT from the R4
  * human-approval flow, where two DIFFERENT agent.ids — the proxy and the approver — legitimately
  * co-sign one chain under different kids; that is not a per-agent swap and is not flagged.)
  *
  * HONEST LIMITS: rotation does NOT re-key or re-sign historical receipts (that would destroy their
  * provenance), and covers the LOCAL signer only — a remote sidecar signer rotates on the sidecar's
- * own side. If an operator pins agent identity with a verifyChain identityManifest, that manifest
- * must list the kid each SEGMENT was signed under, or that segment reads UNTRUSTED — the manifest
- * doing its job, not a rotation bug.
+ * own side. A compromised key can backdate a chain receipt because its timestamp is covered only by
+ * that same key; complete stolen-key containment requires an independent time witness. If an
+ * operator pins agent identity with a verifyChain identityManifest, that manifest must list the kid
+ * each SEGMENT was signed under, or that segment reads UNTRUSTED.
  */
 
 /**
@@ -65,8 +64,8 @@ const moduleLoadDateNow = Date.now;
  *   readonly publicKey: string,
  *   readonly currentKid: string,
  *   rotate: (newKeyPair: { kid: string, privateKey: string, publicKey: string }) => any,
- *   keyring: () => Record<string,string>,
- *   retirements: () => Record<string,string>,
+ *   verificationLifecycle: () => { spec: string, keys: Record<string,{ publicKey: string, retiredAt: string|null }> },
+ *   historicalKeyring: () => Record<string,string>,
  *   retiredKids: () => string[],
  * }}
  */
@@ -124,16 +123,22 @@ export function createRotatableSigner(initialKeyPair, options = {}) {
       current = { ...newKeyPair };
       return signer;
     },
-    keyring() {
-      const kr = {};
-      for (const [kid, entry] of retired) kr[kid] = entry.publicKey;
-      kr[current.kid] = current.publicKey; // current wins if a kid somehow appears twice (it cannot)
-      return kr;
+    verificationLifecycle() {
+      const keys = Object.create(null);
+      for (const [kid, entry] of retired) {
+        keys[kid] = Object.freeze({ publicKey: entry.publicKey, retiredAt: entry.retiredAt });
+      }
+      keys[current.kid] = Object.freeze({ publicKey: current.publicKey, retiredAt: null });
+      return Object.freeze({
+        spec: SIGNING_KEY_LIFECYCLE_SPEC,
+        keys: Object.freeze(keys),
+      });
     },
-    retirements() {
-      const bounds = {};
-      for (const [kid, entry] of retired) bounds[kid] = entry.retiredAt;
-      return bounds;
+    historicalKeyring() {
+      const keyring = Object.create(null);
+      for (const [kid, entry] of retired) keyring[kid] = entry.publicKey;
+      keyring[current.kid] = current.publicKey;
+      return keyring;
     },
     retiredKids() {
       return [...retired.keys()];

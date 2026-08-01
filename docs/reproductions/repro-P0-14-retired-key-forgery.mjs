@@ -1,89 +1,130 @@
 /**
- * REGRESSION DEMONSTRATION for P0-14 / codex QA finding F-5.
+ * P0-14 regression probe: atomic key lifecycle, backdated outcomes, and fresh chain segments.
  *
- * `createRotatableSigner(...).retirements()` supplies the separate temporal bounds that keep the
- * string-valued `keyring()` compatible with verifyChain. The defence refuses a NEW post-retirement
- * receipt when the caller passes those bounds. Omitting `retirements` intentionally preserves the
- * published-0.2.0 behaviour, so non-adopting library consumers remain exposed and the same receipt
- * still verifies in the BACKWARD-COMPATIBILITY control below.
- *
- * Read-only against the repo: this script imports the shipped source and writes nothing.
- * Anti-vacuity: the honest current-key path must VERIFY in the same run, and an unknown key must be
- * REFUSED — otherwise "it verified" would prove nothing about retirement specifically.
+ * The outcome verifier refuses every retired-key outcome because its standalone signer-chosen `ts`
+ * cannot distinguish genuine history from attacker backdating. The chain verifier retains a
+ * retirement cutoff so timestamped pre-cutoff chain history remains readable. The final LIMIT probe
+ * deliberately shows why this is not complete stolen-key containment: the retired key can backdate a
+ * fresh chain segment until an independent time witness (packages/tsa-anchor, unpublished) is used.
  */
-import { generateKeyPairSync } from "node:crypto";
+import {
+  generateKeyPair,
+  buildReceipt,
+  buildCheckpoint,
+  verifyChain,
+  sha256Prefixed,
+} from "/Users/toratoraman/noa-receipt/dist/src/index.js";
 import { createRotatableSigner } from "/Users/toratoraman/noa-receipt/packages/mcp-proxy/src/rotatable-signer.mjs";
 import { buildOutcomeReceipt, verifyOutcomeReceipt } from "/Users/toratoraman/noa-receipt/packages/mcp-proxy/src/outcome-receipt.mjs";
 
-function kp(kid) {
-  const { publicKey, privateKey } = generateKeyPairSync("ed25519");
-  return {
-    kid,
-    publicKey: publicKey.export({ type: "spki", format: "der" }).toString("base64"),
-    privateKey: privateKey.export({ type: "pkcs8", format: "der" }).toString("base64"),
-  };
-}
+const b = (value) => new TextEncoder().encode(JSON.stringify(value));
+const RETIRED_AT = "2026-08-01T08:36:12.643Z";
+const AFTER = "2026-08-01T08:36:12.644Z";
+const BEFORE = "2020-01-01T00:00:00.000Z";
 
 const decisionReceipt = {
   id: "dec-0001",
-  chain: { hash: "sha256:" + "a".repeat(64) },
+  chain: { hash: `sha256:${"a".repeat(64)}` },
 };
 
-const mkReceipt = (signer, ts) =>
-  buildOutcomeReceipt(
-    { decisionReceipt, tool: "wire.transfer", outcome: "success", ts },
-    signer,
-  );
-
-const old = kp("kid-OLD");
-const fresh = kp("kid-NEW");
-
-const rot = createRotatableSigner(old, { now: () => Date.UTC(2026, 6, 15, 0, 0, 0, 0) });
-
-// ── CONTROL 1: before any rotation, the current key signs and verifies. Harness works. ──────────
-const before = mkReceipt(rot, "2026-07-14T12:00:00.000Z");
-const r0 = verifyOutcomeReceipt(before, { keyring: rot.keyring() });
-console.log("CONTROL 1  current key, pre-rotation      ->", JSON.stringify(r0));
-
-// ── ROTATE. `old` is now RETIRED. In reality the operator rotates BECAUSE the old key is gone. ──
-rot.rotate(fresh);
-console.log("retiredKids after rotate                 ->", JSON.stringify(rot.retiredKids()));
-console.log("keyring kids after rotate                ->", JSON.stringify(Object.keys(rot.keyring())));
-
-// ── CONTROL 2: the NEW current key still signs and verifies. ────────────────────────────────────
-const afterNew = mkReceipt(rot, "2026-07-15T12:00:00.000Z");
-const r1 = verifyOutcomeReceipt(afterNew, { keyring: rot.keyring() });
-console.log("CONTROL 2  new current key, post-rotation ->", JSON.stringify(r1));
-
-// ── CONTROL 3: a key that was NEVER in the keyring is REFUSED. Proves the keyring gates anything.
-const stranger = kp("kid-STRANGER");
-const strangerSigner = { get kid() { return stranger.kid; }, get privateKey() { return stranger.privateKey; } };
-const forgedByStranger = mkReceipt(strangerSigner, "2099-01-01T00:00:00.000Z");
-const r2 = verifyOutcomeReceipt(forgedByStranger, { keyring: rot.keyring() });
-console.log("CONTROL 3  unknown key                   ->", JSON.stringify(r2));
-
-// ── THE ATTACK: the RETIRED private key signs a BRAND-NEW outcome, dated long after retirement. ──
-const retiredSigner = { get kid() { return old.kid; }, get privateKey() { return old.privateKey; } };
-const forged = mkReceipt(retiredSigner, "2099-01-01T00:00:00.000Z");
-const attack = verifyOutcomeReceipt(forged, { keyring: rot.keyring(), retirements: rot.retirements() });
-console.log("ATTACK     RETIRED key, ts=2099          ->", JSON.stringify(attack));
-const backwardCompatibility = verifyOutcomeReceipt(forged, { keyring: rot.keyring() });
-console.log("BACKWARD-COMPATIBILITY without retirements ->", JSON.stringify(backwardCompatibility));
-
-console.log("\nreceipt kid   :", forged.sig.kid);
-console.log("receipt ts    :", forged.ts);
-const defenceActive = !attack.ok && backwardCompatibility.ok;
-console.log(
-  "\nVERDICT:",
-  defenceActive
-    ? "DEFENCE ACTIVE FOR ADOPTERS — retired key refused with retirements; legacy omission remains exposed"
-    : "BROKEN — expected adopter refusal plus published-0.2.0 backward-compatible acceptance",
+const mkOutcome = (signer, ts) => buildOutcomeReceipt(
+  { decisionReceipt, tool: "wire.transfer", outcome: "success", ts },
+  signer,
 );
-const controlsPass = r0.ok && r1.ok && !r2.ok;
-console.log(
-  "controls:",
-  controlsPass
-    ? "ALL GREEN (honest paths verify, unknown key refused) — the attack result is meaningful"
-    : "BROKEN — the attack result means NOTHING, fix the harness first",
+
+const mkSegment = (signer, id, ts) => buildReceipt({
+  id,
+  ts,
+  scope: { chain: `chain-${id}`, tenant: "tenant-p0-14" },
+  agent: { id: "proxy-p0-14", model: null, principal: "SERVICE" },
+  action: {
+    id: "wire.transfer",
+    canonical: "wire.transfer",
+    riskClass: "HIGH",
+    paramsHash: sha256Prefixed(id),
+    reversible: false,
+    rollbackRef: null,
+  },
+  governance: { mode: "on", verdict: "EXECUTED", ruleId: null, approval: null, sandboxed: false },
+}, null, { kid: signer.kid, privateKey: signer.privateKey });
+
+const oldKey = generateKeyPair("repro-p0-14-old");
+const currentKey = generateKeyPair("repro-p0-14-current");
+const unknownKey = generateKeyPair("repro-p0-14-unknown");
+const staticKey = generateKeyPair("repro-p0-14-static");
+const rotatable = createRotatableSigner(oldKey, { now: () => Date.parse(RETIRED_AT) });
+
+const genuineHistoricalOutcome = mkOutcome(oldKey, BEFORE);
+rotatable.rotate(currentKey);
+const lifecycle = rotatable.verificationLifecycle();
+const historicalKeyring = rotatable.historicalKeyring();
+
+const currentOutcome = verifyOutcomeReceipt(mkOutcome(rotatable, AFTER), { verification: lifecycle });
+const unknownOutcome = verifyOutcomeReceipt(mkOutcome(unknownKey, AFTER), { verification: lifecycle });
+const retiredAfter = verifyOutcomeReceipt(mkOutcome(oldKey, AFTER), { verification: lifecycle });
+const retiredBackdated = verifyOutcomeReceipt(mkOutcome(oldKey, BEFORE), { verification: lifecycle });
+const historicalUnwitnessed = verifyOutcomeReceipt(genuineHistoricalOutcome, { verification: lifecycle });
+const missingLifecycle = verifyOutcomeReceipt(mkOutcome(oldKey, AFTER), { verification: historicalKeyring });
+const staticOutcome = verifyOutcomeReceipt(mkOutcome(staticKey, AFTER), {
+  verification: { [staticKey.kid]: staticKey.publicKey },
+});
+
+const currentSegment = mkSegment(currentKey, "current", AFTER);
+const currentChain = verifyChain(b([currentSegment]), { keyring: b(lifecycle) });
+const retiredFreshChain = verifyChain(b([mkSegment(oldKey, "retired-fresh", AFTER)]), { keyring: b(lifecycle) });
+const historicalChain = verifyChain(b([mkSegment(oldKey, "historical", BEFORE)]), { keyring: b(lifecycle) });
+const backdatedFreshChain = verifyChain(b([mkSegment(oldKey, "retired-backdated", BEFORE)]), { keyring: b(lifecycle) });
+const staticChain = verifyChain(
+  b([mkSegment(staticKey, "static", AFTER)]),
+  { keyring: b({ [staticKey.kid]: staticKey.publicKey }) },
 );
-if (!defenceActive || !controlsPass) process.exitCode = 1;
+const retiredCheckpoint = verifyChain(b([currentSegment]), {
+  keyring: b(lifecycle),
+  checkpoint: b(buildCheckpoint(currentSegment, AFTER, oldKey)),
+});
+const currentCheckpoint = verifyChain(b([currentSegment]), {
+  keyring: b(lifecycle),
+  checkpoint: b(buildCheckpoint(currentSegment, AFTER, currentKey)),
+});
+
+console.log("CONTROL current outcome                         ->", JSON.stringify(currentOutcome));
+console.log("CONTROL static non-rotating outcome             ->", JSON.stringify(staticOutcome));
+console.log("CONTROL unknown kid                              ->", JSON.stringify(unknownOutcome));
+console.log("ATTACK  retired outcome ts AFTER retirement      ->", JSON.stringify(retiredAfter));
+console.log("ATTACK  retired outcome ts BEFORE (BACKDATED)    ->", JSON.stringify(retiredBackdated));
+console.log("DESIGN  genuine pre-retirement outcome, no TSA   ->", JSON.stringify(historicalUnwitnessed));
+console.log("ATTACK  missing lifecycle, historical flat map   ->", JSON.stringify(missingLifecycle));
+console.log("CONTROL current-key fresh chain segment          ->", currentChain.status, currentChain.reason ?? "");
+console.log("ATTACK  retired-key fresh chain segment          ->", retiredFreshChain.status, retiredFreshChain.reason ?? "");
+console.log("CONTROL pre-cutoff historical chain segment      ->", historicalChain.status, historicalChain.reason ?? "");
+console.log("CONTROL static non-rotating chain consumer       ->", staticChain.status, staticChain.reason ?? "");
+console.log("CONTROL current-key checkpoint                  ->", currentCheckpoint.status, `tailChecked=${currentCheckpoint.tailChecked}`);
+console.log("ATTACK  retired-key post-cutoff checkpoint       ->", retiredCheckpoint.status, retiredCheckpoint.reason ?? "");
+console.log("LIMIT   retired-key BACKDATED fresh chain segment ->", backdatedFreshChain.status, backdatedFreshChain.reason ?? "");
+
+const controlsPass = currentOutcome.ok
+  && staticOutcome.ok
+  && !unknownOutcome.ok
+  && unknownOutcome.reason === `kid ${JSON.stringify(unknownKey.kid)} not in keyring`
+  && currentChain.status === "VALID"
+  && historicalChain.status === "VALID"
+  && staticChain.status === "VALID"
+  && currentCheckpoint.status === "VALID"
+  && currentCheckpoint.tailChecked;
+const attacksRefused = !retiredAfter.ok
+  && !retiredBackdated.ok
+  && !historicalUnwitnessed.ok
+  && !missingLifecycle.ok
+  && retiredFreshChain.status === "TAMPERED"
+  && retiredCheckpoint.status === "TAMPERED";
+const nonClaimMeasured = backdatedFreshChain.status === "VALID";
+
+console.log("\ncontrols:", controlsPass ? "PASS" : "BROKEN");
+console.log("bounded defenses:", attacksRefused ? "PASS" : "BROKEN");
+console.log(
+  "non-claim:",
+  nonClaimMeasured
+    ? "MEASURED — cutoff is not complete containment; independent time witness still required"
+    : "CHANGED — re-evaluate the documented independent-time-witness limitation",
+);
+if (!controlsPass || !attacksRefused || !nonClaimMeasured) process.exitCode = 1;

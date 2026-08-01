@@ -45,7 +45,7 @@ for (const entry of THROWN_CORPUS) {
     assert.equal(typeof receipt.outcome.error, "string", "the recorded error must be a string, always");
     assert.ok(receipt.outcome.error.length > 0, "an empty error string would read as 'no error'");
     assert.ok(receipt.outcome.error.length <= 560, `unbounded error string (${receipt.outcome.error.length})`);
-    const v = verifyOutcomeReceipt(receipt, { keyring, expectedDecisionReceipt: decisionReceipt });
+    const v = verifyOutcomeReceipt(receipt, { verification: keyring, expectedDecisionReceipt: decisionReceipt });
     assert.equal(v.ok, true, `the receipt must verify offline: ${v.reason ?? ""}`);
   });
 
@@ -54,7 +54,7 @@ for (const entry of THROWN_CORPUS) {
     const remote = { kid: kp.kid, sign: async (msg) => (await import("noa-mcp-adapter-core")).signEd25519(kp.privateKey, msg) };
     const receipt = await buildOutcomeReceiptAsync({ decisionReceipt, tool: "demo.tool", outcome: "error", error }, remote);
     assert.equal(typeof receipt.outcome.error, "string");
-    assert.equal(verifyOutcomeReceipt(receipt, { keyring }).ok, true);
+    assert.equal(verifyOutcomeReceipt(receipt, { verification: keyring }).ok, true);
   });
 
   test(`verifyOutcomeReceipt honours its never-throws contract for: ${entry.name}`, () => {
@@ -63,7 +63,7 @@ for (const entry of THROWN_CORPUS) {
     const value = entry.make();
     let result;
     assert.doesNotThrow(() => {
-      result = verifyOutcomeReceipt(value, { keyring });
+      result = verifyOutcomeReceipt(value, { verification: keyring });
     }, "a documented never-throws verifier that throws leaves its callers with no handler at all");
     assert.equal(typeof result, "object");
     assert.equal(result.ok, false, "a hostile value is not a valid outcome receipt");
@@ -75,7 +75,7 @@ test("a hostile `sig` object cannot make the verifier throw either", () => {
   for (const entry of THROWN_CORPUS) {
     const receipt = { spec: OUTCOME_RECEIPT_SPEC, sig: entry.make() };
     let r;
-    assert.doesNotThrow(() => { r = verifyOutcomeReceipt(receipt, { keyring }); }, entry.name);
+    assert.doesNotThrow(() => { r = verifyOutcomeReceipt(receipt, { verification: keyring }); }, entry.name);
     assert.equal(r.ok, false);
   }
 });

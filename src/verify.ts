@@ -7,7 +7,7 @@ import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./sig
 import { nonNfcPaths, isNFC } from "./nfc.js";
 import { parseDocument } from "./bytes.js";
 import { inertOptions, type OptionSchema } from "./opts.js";
-import { arrayPush, arrayIncludes, arrayEvery, arrayLength, arrayJoin, publishArray, dateParse, mapHas, mapGet, mapSet, newMap, newSet, objectKeys, objectGetOwnPropertyNames, isSafeInteger, arraySlice, setAdd, setSize, isArray, isNaNValue, jsonStringify } from "./intrinsics.js";
+import { arrayPush, arrayIncludes, arrayEvery, arrayLength, arrayJoin, publishArray, dateParse, mapHas, mapGet, mapSet, newMap, newSet, objectKeys, objectGetOwnPropertyNames, objectCreateNull, isSafeInteger, arraySlice, setAdd, setSize, isArray, isNaNValue, jsonStringify } from "./intrinsics.js";
 import { isSha256Hash, isRfc3339 } from "./scan.js";
 import { frozenTable } from "./inert.js";
 
@@ -37,7 +37,11 @@ export type VerifyStatus =
  * is gone.
  */
 export interface VerifyOptions {
-  /** Trust root as JSON bytes: `{ kid: base64-SPKI }`. Supply it to authenticate signatures. */
+  /**
+   * Trust root as JSON bytes. A static consumer supplies `{ kid: base64-SPKI }`. A rotatable signer
+   * supplies the atomic `noa.signing-key-lifecycle/0.1` document containing public keys plus each
+   * key's `retiredAt` (`null` for the one current key). The lifecycle form applies retirement cutoffs.
+   */
   keyring?: Uint8Array | string;
   /** Signed checkpoint as JSON bytes, asserting the expected head — enables tail-truncation detection. */
   checkpoint?: Uint8Array | string;
@@ -192,6 +196,13 @@ const VERIFY_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.cr
   requireTenantConsistency: { kind: "boolean" },
   requireNFC: { kind: "boolean" },
 })) as OptionSchema;
+
+const SIGNING_KEY_LIFECYCLE_SPEC = "noa.signing-key-lifecycle/0.1";
+
+interface RetirementBound {
+  readonly instant: number;
+  readonly text: string;
+}
 
 /**
  * The chain verifier over PARSED data. Module-private on purpose: it assumes its input came from
@@ -385,24 +396,90 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
   }
 
   const haveKeyring = o.keyring !== undefined;
-  // Fail-closed on a non-object keyring: the keyring is a trust input (kid -> base64 SPKI). A
+  // Fail-closed on a non-object keyring: the keyring is a trust input. A
   // null / array / non-object keyring is an operator error, not "an empty trust root" — silently treating it
   // as `{}` would index `keyring[kid]` to undefined → an unknown-kid TAMPERED, diverging from the Python
   // verifier (which already returns MALFORMED on a non-dict keyring). Reject it as MALFORMED so
   // both impls agree on the SAME verdict class for the SAME malformed trust file.
   let keyring: Keyring = {};
+  const retirementBounds = newMap<string, RetirementBound>();
   if (haveKeyring) {
     const kParsed = parseDocument(o.keyring, "keyring");
     if (!kParsed.ok) return fail("MALFORMED", kParsed.reason, chainId, list.length);
     const kv = kParsed.value;
     if (typeof kv !== "object" || kv === null || isArray(kv)) {
-      return fail("MALFORMED", "keyring must be an object (kid -> base64 SPKI)", chainId, list.length);
+      return fail("MALFORMED", "keyring must be an object (static kid map or atomic signing key lifecycle)", chainId, list.length);
     }
-    // ONE parse, shared by BOTH authenticated surfaces — the chain walk (`keyring[r.sig.kid]`) and
-    // `verifyCheckpointParsed`. The old code needed a snapshot to guarantee that; parsed bytes
-    // guarantee it by construction, so a "real pubkey to the walk, attacker pubkey to the
-    // checkpoint" split has nothing to split.
-    keyring = kv as Keyring;
+    const verificationDocument = kv as Record<string, unknown>;
+    const topNames = objectGetOwnPropertyNames(verificationDocument);
+    const hasLifecycleSpec = arrayIncludes(topNames, "spec")
+      && verificationDocument.spec === SIGNING_KEY_LIFECYCLE_SPEC;
+    const hasStructuredKeys = arrayIncludes(topNames, "keys")
+      && typeof verificationDocument.keys !== "string";
+    const looksLikeLifecycle = hasLifecycleSpec || hasStructuredKeys;
+    if (!looksLikeLifecycle) {
+      // Static consumers retain the published flat map unchanged. No rotation is represented here,
+      // so there is no retirement cutoff to apply.
+      keyring = verificationDocument as Keyring;
+    } else {
+      if (
+        verificationDocument.spec !== SIGNING_KEY_LIFECYCLE_SPEC
+        || topNames.length !== 2
+        || !arrayIncludes(topNames, "spec")
+        || !arrayIncludes(topNames, "keys")
+      ) {
+        return fail("MALFORMED", "malformed signing key lifecycle", chainId, list.length);
+      }
+      const entries = verificationDocument.keys;
+      if (typeof entries !== "object" || entries === null || isArray(entries)) {
+        return fail("MALFORMED", "signing key lifecycle keys must be an object", chainId, list.length);
+      }
+      const kids = objectGetOwnPropertyNames(entries);
+      if (kids.length === 0) {
+        return fail("MALFORMED", "signing key lifecycle must contain at least one key", chainId, list.length);
+      }
+      const derived = objectCreateNull<Keyring>();
+      let currentKeys = 0;
+      for (let ki = 0; ki < kids.length; ki++) {
+        const kid = kids[ki] as string;
+        const entry = (entries as Record<string, unknown>)[kid];
+        if (typeof entry !== "object" || entry === null || isArray(entry)) {
+          return fail("MALFORMED", `lifecycle entry for signing key "${kid}" must be an object`, chainId, list.length);
+        }
+        const fields = objectGetOwnPropertyNames(entry);
+        if (
+          fields.length !== 2
+          || !arrayIncludes(fields, "publicKey")
+          || !arrayIncludes(fields, "retiredAt")
+        ) {
+          return fail("MALFORMED", `lifecycle entry for signing key "${kid}" must contain exactly publicKey + retiredAt`, chainId, list.length);
+        }
+        const publicKey = (entry as Record<string, unknown>).publicKey;
+        const retiredAt = (entry as Record<string, unknown>).retiredAt;
+        if (typeof publicKey !== "string" || publicKey.length === 0) {
+          return fail("MALFORMED", `lifecycle publicKey for signing key "${kid}" must be a non-empty string`, chainId, list.length);
+        }
+        derived[kid] = publicKey;
+        if (retiredAt === null) {
+          currentKeys++;
+          continue;
+        }
+        if (typeof retiredAt !== "string" || !isRfc3339(retiredAt)) {
+          return fail("MALFORMED", `lifecycle retiredAt for signing key "${kid}" must be null or RFC 3339`, chainId, list.length);
+        }
+        const retirementInstant = dateParse(retiredAt);
+        if (isNaNValue(retirementInstant)) {
+          return fail("MALFORMED", `lifecycle retiredAt for signing key "${kid}" is not a parseable instant`, chainId, list.length);
+        }
+        mapSet(retirementBounds, kid, { instant: retirementInstant, text: retiredAt });
+      }
+      if (currentKeys !== 1) {
+        return fail("MALFORMED", `signing key lifecycle must identify exactly one current key (found ${currentKeys})`, chainId, list.length);
+      }
+      // ONE parsed document produced both structures. There is no second retirement read that can
+      // race a rotation or be omitted while retaining the retired public key.
+      keyring = derived;
+    }
   }
   // PUBLISHED as an ordinary array (round-4, A1). `arraySlice` returns an INERT-rooted copy now, and
   // `warnings` is a documented field of a PUBLIC result object — shipping an array whose
@@ -483,6 +560,16 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
       if (!pub) return fail("TAMPERED", `unknown signing key "${r.sig.kid}" not in keyring`, chainId, list.length, seq);
       const ok = verifyEd25519(pub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), r.sig.value);
       if (!ok) return fail("TAMPERED", `invalid signature (kid ${r.sig.kid})`, chainId, list.length, seq);
+      const retirement = mapGet(retirementBounds, r.sig.kid);
+      if (retirement !== undefined) {
+        const receiptInstant = dateParse(r.ts);
+        if (isNaNValue(receiptInstant)) {
+          return fail("MALFORMED", `cannot evaluate signing-key retirement at seq ${seq}`, chainId, list.length, seq);
+        }
+        if (receiptInstant >= retirement.instant) {
+          return fail("TAMPERED", `signing key "${r.sig.kid}" was retired at ${retirement.text}`, chainId, list.length, seq);
+        }
+      }
     }
 
     // 4c-bis. Identity binding — ONLY meaningful once the signature is AUTHENTICATED (gated on
@@ -559,6 +646,16 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
     // anti-truncation control). Mirrors the receipt unknown-kid rule above.
     if (haveKeyring && cpVerify !== "ok") {
       return fail("TAMPERED", `checkpoint not authenticated against keyring (${cpVerify})`, chainId, list.length);
+    }
+    const checkpointRetirement = mapGet(retirementBounds, cp.sig.kid);
+    if (checkpointRetirement !== undefined) {
+      const checkpointInstant = dateParse(cp.ts);
+      if (isNaNValue(checkpointInstant)) {
+        return fail("MALFORMED", "cannot evaluate checkpoint signing-key retirement", chainId, list.length, head.chain.seq);
+      }
+      if (checkpointInstant >= checkpointRetirement.instant) {
+        return fail("TAMPERED", `checkpoint signing key "${cp.sig.kid}" was retired at ${checkpointRetirement.text}`, chainId, list.length, head.chain.seq);
+      }
     }
     if (cp.chain !== chainId) return fail("TAMPERED", "checkpoint chain mismatch", chainId, list.length);
     if (cp.highestSeq !== head.chain.seq || cp.headHash !== head.chain.hash) {
