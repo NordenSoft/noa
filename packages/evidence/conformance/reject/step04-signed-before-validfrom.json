@@ -1,5 +1,5 @@
 {
-  "description": "STEP_4/F10: the approver signs at 11:56 but its manifest validFrom is 11:57 — a signature made before the key was activated is not authorized (the mirror of revocation)",
+  "description": "STEP_4/P0-14: trusted gate receivedAt is 11:56:30 but the approver key activates at 11:57; refuse without consulting the phone-written decidedAt",
   "expectVerdict": "INVALID",
   "expectStep": "STEP_4_DECISION_ARTIFACT",
   "expectCode": "E_DECISION",

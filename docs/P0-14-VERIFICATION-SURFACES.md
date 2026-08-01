@@ -1,6 +1,6 @@
 # P0-14 retired-key verification-surface inventory
 
-Status: enumerated before the third-attempt patch and reconciled after implementation, 2026-08-01.
+Status: Batch L correction reconciled after the wrapper/activation fixes, 2026-08-01.
 
 ## Boundary and method
 
@@ -21,6 +21,22 @@ repository. Repository call sites were enumerated textually and each wrapper bel
 decision primitive it reaches. A new keyring-verifying export therefore still requires both the
 existing entry-point registry and an update to this inventory/reproduction.
 
+**Wrapper classification rule (corrected in Batch L):** a wrapper may say it inherits a verifier's
+keyring outcome only when it forwards the received keyring document unchanged. A wrapper that
+constructs a keyring, selects a security-weaker shape, or drops lifecycle fields is itself an
+independent verification surface and needs its own attack/control outcome. `verifyBundle` was the
+missed 13th surface: it accepted `GateTrust`, rebuilt `{ [gateKid]: publicKey }`, and discarded the
+retirement state before calling `verifyEvidence`.
+
+`lint-resolver-parity.mjs` now AST-scans production verifier calls for inline or single-alias keyring
+literals, including renamed ES imports, literal computed option names, and options-object spreads.
+Its same-run synthetic controls prove all four discarded-lifecycle spellings are detected and an
+unchanged `trust.receiptKeyring` pass-through is not. The scan is not whole-program dataflow: factory
+returns, callbacks, property mutation, dynamic imports/CommonJS destructuring, arbitrary verifier
+function reassignment, and ambiguous aliases are not mechanically decidable here. For those, a
+reviewer must trace the wrapper's accepted trust type to the exact bytes passed to the verifier and
+compare every lifecycle/security field by hand.
+
 ## Independent verification decisions
 
 "Lifecycle" below means `noa.signing-key-lifecycle/0.1`. The required rule is independent of all
@@ -37,22 +53,32 @@ the repository must not manufacture a flat map by discarding known lifecycle fie
 | `coseSign1Verify` | root export | retired COSE signer accepted under a narrowed historical map | shared lifecycle resolver; current/static accepted, retired refused |
 | `receiptFromCose` | root export | retired COSE receipt accepted under a narrowed historical map | same shared rule as `coseSign1Verify` |
 | `verifyReceiptCompliance` | root export; adapter-core re-export | flat lookup had no lifecycle decision | shared lifecycle resolver; current/static carrier accepted, retired carrier refused |
-| `verifyArtifact` | `noa-approval-artifacts` root export; evidence/gate call sites | compared `revokedAt` with signer/verifier time and accepted older artifacts | any non-null `revokedAt` refused outright; current entry accepted |
+| `verifyArtifact` | `noa-approval-artifacts` root export; evidence/gate call sites | retirement accepted signer-backdating; activation accepted signer-future-dating | any non-null `revokedAt` refused outright; `validFrom` uses only caller `authorizationTime ?? now` and fails closed without either; static entry accepted |
 | `verifyApprovalReceipt` | adapter-core root export; MCP approval gate/policy-change call sites | flat lookup had no lifecycle decision | shared lifecycle resolver; multiple current keys accepted, retired approver refused |
 | `verifyOutcomeReceipt` | MCP proxy source/public package file | cached pre-rotation snapshot or retired-key flat subset accepted | cached frozen handle stays live; retired refused; multi-key static controls accepted; flat historical API removed |
-| `verifyEvidence` | `noa-approval-evidence` root export and CLI | checkpoint lifecycle was discarded; manifest receipt keyring dropped revocation | raw lifecycle reaches step 17; retired checkpoint is `INVALID`, not downgraded to `VALID_SEGMENT_ONLY`; manifest receipt lifecycle is preserved |
+| `verifyEvidence` | `noa-approval-evidence` root export and CLI | checkpoint lifecycle was discarded; manifest receipt keyring dropped revocation; step 18 let checkpoint `ts` activate its own not-yet-active key | raw lifecycle reaches step 17; retired checkpoint is `INVALID`, not downgraded to `VALID_SEGMENT_ONLY`; step 18 uses verifier-owned `now` for manifest activation and refuses the future-dated checkpoint mirror; manifest receipt lifecycle is preserved |
+| `verifyBundle` | private e2e-demo application wrapper; called by `runApprovedFlow` and `runTimeoutFlow` | wrapper `VALID_FULL_CHAIN` while direct `verifyEvidence` on the same retired lifecycle was `INVALID` | independently constructs a gate-only lifecycle subset: current gate checkpoint `VALID_FULL_CHAIN`; retired gate checkpoint `INVALID` in wrapper and direct verifier; approver checkpoint cannot exceed `VALID_SEGMENT_ONLY` |
 
-## Wrappers and compositions (no separate signature decision)
+## Re-audit of every former "inherits" row
 
-| Surface | Route | Outcome ownership |
-|---|---|---|
-| `verifyChainText` | direct alias to `verifyChain` | inherits `verifyChain`; independently attack/control probed because it is a public export |
-| `verifyChainWitnessed` | forwards its keyring to `verifyChain` | chain half inherits `verifyChain`; witness acceptance has a different trust-set schema |
-| root `noa verify` CLI | `src/cli.ts` -> `verifyChain` / `verifyChainWitnessed` | inherits the selected root primitive; CLI exit is probed |
-| root `noa --serve` IPC | `src/serve.ts` -> `verifyChain` | same primitive; existing IPC parity covers framing, P0-14 covers the primitive |
-| evidence CLI | `packages/evidence/src/cli.ts` -> `verifyEvidence` | inherits `verifyEvidence` |
-| e2e evidence composition | `packages/e2e-demo/src/evidence.ts` -> `verifyEvidence` | inherits `verifyEvidence` |
-| gate/evidence internal call sites | gate -> `verifyArtifact`/`verifyChain`; evidence steps -> `verifyArtifact`/`verifyChain`/`verifyCheckpoint` | no duplicate cryptographic decision; each primitive above owns lifecycle enforcement |
+| Surface | Re-audited keyring handling | Corrected classification | Measured outcome |
+|---|---|---|---|
+| `verifyChainText` | forwards the received `opts` object unchanged to `verifyChain` | pass-through alias; inherits the keyring decision | current lifecycle `VALID`; retired lifecycle `TAMPERED` |
+| `verifyChainWitnessed` | creates `verifyOpts`, but assigns the received keyring bytes unchanged | pass-through for chain lifecycle; witness trust-set remains a separate schema | current lifecycle chain `VALID`; retired lifecycle chain `TAMPERED` |
+| root `noa verify` CLI | reads keyring text and forwards those bytes through `opts.keyring` or the witnessed positional argument | pass-through CLI composition | current exit `0`; retired exit `2` |
+| root `noa --serve` IPC | copies the parsed TLV keyring bytes unchanged into `opts.keyring` | pass-through IPC composition | current `VALID`; retired `TAMPERED` |
+| evidence CLI | reads keyring file bytes and forwards them unchanged as `checkpointKeyring` | pass-through CLI composition | current exit `0`; retired exit `2` |
+| e2e `verifyBundle` | **pre-fix:** manufactured a flat gate map and lost retirement; **post-fix:** constructs a gate-only lifecycle subset by copying the gate entry intact | independent 13th surface, not inherited; exact AST site, classification, reason, and attack/control proof are machine-pinned | current gate `VALID_FULL_CHAIN`; retired gate `INVALID`; direct `verifyEvidence` also `INVALID`; approver checkpoint only `VALID_SEGMENT_ONLY` |
+| gate/evidence internal call sites | pass resolved keyring variables unchanged at verifier call sites; resolver construction is inventoried separately below | compositions, not additional keyring constructors at the call boundary | lifecycle outcomes are owned by the named primitives and resolver proofs |
+
+The mechanical scan classifies the one intentional construction above as an independent surface and
+also finds seven inline flat-map calls in four `examples/` files. Each example map is
+built from a locally generated, non-rotating key and no lifecycle-bearing input exists to narrow.
+They remain inside the documented static compatibility boundary; they are not classified as
+inherited wrappers. Each exception is machine-pinned to the exact file, lexical scope, verifier,
+field, forwarding expression, construction expression, and a non-empty reason. The independent
+surface additionally requires a resolving proof marker. A new call in the same file or a changed
+expression is therefore red; a stale classification is red too.
 
 ## Lifecycle narrowing and production surfaces
 

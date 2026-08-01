@@ -11,6 +11,85 @@
     "fieldRule": "For policyClasses sites: validFrom and revokedAt must be 'explicit' or 'spread'; 'absent' requires a named exception. Other classes resolve absence through EX-TEST-FIXTURES but remain fully censused.",
     "proofRule": "For policyClasses sites with output KeyEntry and kind != declare: at least one proof id that RESOLVES to a live (uncommented, unskipped) test. This is the mechanical form of the P0-7 lesson: a claimed control must exist."
   },
+  "staticConstructedKeyrings": [
+    {
+      "file": "examples/killer-demo/demo.mjs",
+      "scope": "result>keyring",
+      "verifier": "verifyChain",
+      "field": "keyring",
+      "expression": "b(keyring)",
+      "construction": "{ [kp.kid]: kp.publicKey }",
+      "reason": "Leaf demo generates one local non-rotating keypair and has no lifecycle-bearing input to narrow."
+    },
+    {
+      "file": "examples/mcp-preflight/preflight.mjs",
+      "scope": "main>v>keyring",
+      "verifier": "verifyChain",
+      "field": "keyring",
+      "expression": "b(keyring)",
+      "construction": "{ [kp.kid]: kp.publicKey }",
+      "reason": "Leaf example generates one local non-rotating keypair and has no lifecycle-bearing input to narrow."
+    },
+    {
+      "file": "examples/mcp-preflight/preflight.mjs",
+      "scope": "main>cc>keyring",
+      "verifier": "verifyReceiptCompliance",
+      "field": "keyring",
+      "expression": "b(keyring)",
+      "construction": "{ [kp.kid]: kp.publicKey }",
+      "reason": "Leaf example reuses its one local static key for the authentic compliance control."
+    },
+    {
+      "file": "examples/mcp-preflight/preflight.mjs",
+      "scope": "main>tampered>keyring",
+      "verifier": "verifyReceiptCompliance",
+      "field": "keyring",
+      "expression": "b(keyring)",
+      "construction": "{ [kp.kid]: kp.publicKey }",
+      "reason": "Leaf example reuses its one local static key for the tampered-carrier refusal."
+    },
+    {
+      "file": "examples/mcp-preflight/preflight.mjs",
+      "scope": "main>vr>keyring",
+      "verifier": "verifyReceiptCompliance",
+      "field": "keyring",
+      "expression": "b(keyring)",
+      "construction": "{ [kp.kid]: kp.publicKey }",
+      "reason": "Leaf example reuses its one local static key for the verdict-reconciliation control."
+    },
+    {
+      "file": "examples/mcp-proxy/proxy.mjs",
+      "scope": "keyring",
+      "verifier": "verifyChain",
+      "field": "keyring",
+      "expression": "b(keyring)",
+      "construction": "{ [kp.kid]: kp.publicKey }",
+      "reason": "Leaf proxy example generates one local non-rotating keypair and has no lifecycle-bearing input to narrow."
+    },
+    {
+      "file": "examples/sdk-guard/guard.mjs",
+      "scope": "keyring",
+      "verifier": "verifyChain",
+      "field": "keyring",
+      "expression": "b(keyring)",
+      "construction": "{ [kp.kid]: kp.publicKey }",
+      "reason": "Leaf SDK example generates one local non-rotating keypair and has no lifecycle-bearing input to narrow."
+    }
+  ],
+  "constructedKeyringSurfaces": [
+    {
+      "file": "packages/e2e-demo/src/evidence.ts",
+      "scope": "verifyBundle>checkpointKeyring",
+      "verifier": "verifyEvidence",
+      "field": "checkpointKeyring",
+      "expression": "encodeDocument(checkpointTrust)",
+      "construction": "{\n    spec: trust.receiptKeyring.spec,\n    keys: gateLifecycle === undefined ? {} : { [trust.gate.kid]: gateLifecycle },\n  }",
+      "classification": "independent verification surface",
+      "reason": "verifyBundle narrows checkpoint authority to the gate kid while copying that kid's complete lifecycle entry; flattening would lose retirement and passing the whole ring would grant approvers checkpoint authority.",
+      "proofFile": "packages/e2e-demo/test/verification-surface.test.ts",
+      "proofMarker": "P0-14 verifyBundle preserves checkpoint retirement and gate-only checkpoint authority"
+    }
+  ],
   "keyEntrySites": [
     {
       "id": "approval-artifacts-keyring-tenant-authority-1-0",
@@ -1208,11 +1287,12 @@
     "packages/approval-artifacts/test/security.test.ts": "verifier tests: KeyEntry keyrings built inline are census sites; this file only consumes",
     "packages/e2e-demo/examples/http-agent/run-local-stack.mjs": "demo tests/examples: consumers of the pairing resolvers",
     "packages/e2e-demo/src/demo.ts": "demo driver: consumes GateTrust keyrings / device keys; resolver sites live in pairing.ts",
-    "packages/e2e-demo/src/evidence.ts": "demo driver: consumes GateTrust keyrings / device keys; resolver sites live in pairing.ts",
+    "packages/e2e-demo/src/evidence.ts": "independent demo verification surface: constructs a gate-only checkpoint lifecycle subset while preserving the gate entry's retirement; exact construction and proof are pinned in constructedKeyringSurfaces",
     "packages/e2e-demo/src/harness.ts": "demo driver: consumes GateTrust keyrings / device keys; resolver sites live in pairing.ts",
     "packages/e2e-demo/src/phone.ts": "demo driver: consumes GateTrust keyrings / device keys; resolver sites live in pairing.ts",
     "packages/e2e-demo/src/relay-transport.ts": "demo driver: consumes GateTrust keyrings / device keys; resolver sites live in pairing.ts",
     "packages/e2e-demo/test/e2e.test.ts": "demo tests/examples: consumers of the pairing resolvers",
+    "packages/e2e-demo/test/verification-surface-probe.ts": "demo regression helper: executes current, retired-wrapper and retired-direct outcomes for verifyBundle without rebuilding lifecycle state",
     "packages/evidence/scripts/authorization-window-scan.mjs": "evidence tests/tools: consumers of the evidence resolvers",
     "packages/evidence/src/cli.ts": "CLI: reads --tenant-root/--checkpoint-keyring documents as BYTES for the resolvers; constructs no entries",
     "packages/evidence/src/steps.ts": "§13 consumer: wires asRootKeyEntryMap/buildResolvedKeyring/buildReceiptKeyring outputs into verifyArtifact/verifyChain",

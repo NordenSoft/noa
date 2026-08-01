@@ -87,12 +87,21 @@ export function verifyBundle(
   tenantRoot: Record<string, KeyEntry>,
   clock: Clock,
 ): VerifyEvidenceResult {
+  const gateLifecycle = trust.receiptKeyring.keys[trust.gate.kid];
+  // This wrapper intentionally narrows checkpoint authority to the gate signer. It is therefore an
+  // independent verification surface, not an inherited alias: copy the gate's atomic lifecycle
+  // entry rather than flattening it, and fail closed with an empty lifecycle if GateTrust is
+  // internally inconsistent. Passing the whole receipt ring would let an approver mint checkpoints.
+  const checkpointTrust = {
+    spec: trust.receiptKeyring.spec,
+    keys: gateLifecycle === undefined ? {} : { [trust.gate.kid]: gateLifecycle },
+  };
   // BYTES-IN: the bundle, the external trust root and the checkpoint keyring are DOCUMENTS. This is
   // also the more honest demo: what it proves is that the BYTES a relying party would receive
   // verify, not that an object graph the demo happened to be holding in-process did.
   return verifyEvidence(encodeDocument(bundle), {
     tenantRoot: encodeDocument(tenantRoot),
-    checkpointKeyring: encodeDocument({ [trust.gate.kid]: trust.gate.publicKey }),
+    checkpointKeyring: encodeDocument(checkpointTrust),
     now: clock.iso(),
     maxAgeMs: 24 * 60 * 60 * 1000,
   });

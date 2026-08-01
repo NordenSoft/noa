@@ -200,3 +200,48 @@ test("an invalid verifier-controlled authorization time fails closed", () => {
   assert.equal(result.ok, false);
   assert.match(result.reason ?? "", /authorizationTime/);
 });
+
+test("P0-14 activation mirror: signer-chosen future time cannot activate a not-yet-active key", () => {
+  const valid = vectors.find(({ slug, vec }) => slug === "decision" && vec.expect === "ACCEPT");
+  const futureDated = vectors.find(({ slug, file }) => slug === "decision" && file === "reject-expired.json");
+  assert.ok(valid, "valid Decision control vector must exist");
+  assert.ok(futureDated, "future-dated Decision attack vector must exist");
+
+  const signerKid = ((futureDated.vec.artifact as { sig: { kid: string } }).sig.kid);
+  const notYetActive = structuredClone(keyring);
+  notYetActive[signerKid]!.validFrom = "2026-07-14T13:00:00.000Z";
+  notYetActive[signerKid]!.revokedAt = null;
+
+  // ATTACK: verifier time is 12:00 and activation is 13:00, but the stolen key signed a document
+  // dated 20:00. The signed timestamp is attacker-controlled and must not move the activation check.
+  const mirrorAttack = verifyArtifact(b(futureDated.vec.artifact), b({
+    schemas,
+    keyring: notYetActive,
+    now: "2026-07-14T12:00:00.000Z",
+    riskClass: "HIGH",
+  }));
+  assert.equal(mirrorAttack.ok, false, "a future-dated artifact activated its own not-yet-active key");
+  assert.match(mirrorAttack.reason ?? "", /before its validFrom/, "mirror attack was refused for the wrong reason");
+
+  // CONTROL: the same rotating signer is active at an honest verifier-controlled acceptance time.
+  const active = structuredClone(keyring);
+  const validKid = ((valid.vec.artifact as { sig: { kid: string } }).sig.kid);
+  active[validKid]!.validFrom = "2026-07-14T11:00:00.000Z";
+  active[validKid]!.revokedAt = null;
+  const honestControl = verifyArtifact(b(valid.vec.artifact), b({
+    schemas,
+    keyring: active,
+    authorizationTime: "2026-07-14T12:00:00.000Z",
+    riskClass: "HIGH",
+  }));
+  assert.equal(honestControl.ok, true, honestControl.reason);
+
+  // CONTROL: a genuine static key has no lifecycle assertion and keeps the legacy contract.
+  const staticControl = verifyArtifact(b(valid.vec.artifact), b({ schemas, keyring, riskClass: "HIGH" }));
+  assert.equal(staticControl.ok, true, staticControl.reason);
+
+  // FAIL CLOSED: a lifecycle-bearing key needs a verifier-controlled time from the caller.
+  const noTrustedTime = verifyArtifact(b(valid.vec.artifact), b({ schemas, keyring: active, riskClass: "HIGH" }));
+  assert.equal(noTrustedTime.ok, false, "a lifecycle-bearing key verified without a caller-supplied trusted time");
+  assert.match(noTrustedTime.reason ?? "", /trusted activation time/, "missing-time refusal named the wrong rule");
+});

@@ -100,7 +100,7 @@ test("[PROOF:RES-PAR-GATE-KEYRING] resolver parity: every DECLARED activation/re
   );
 });
 
-test("[PROOF:RES-PAR-GATE-KEYRING] offline consumer: a pre-activation decision is REFUSED through the resolver's own keyring", () => {
+test("[PROOF:RES-PAR-GATE-KEYRING] offline consumer: a pre-activation trusted time is REFUSED through the resolver's own keyring", () => {
   const T0 = Date.parse("2026-07-14T12:00:00.000Z");
   const trust = createAlphaTrust({ tenant: "acme-tenant", now: () => T0 });
   const preIso = new Date(T0 - 2 * 60 * 60 * 1000).toISOString(); // long before validFrom (T0-60s)
@@ -118,16 +118,17 @@ test("[PROOF:RES-PAR-GATE-KEYRING] offline consumer: a pre-activation decision i
       approverKid: trust.approver.kid,
     });
 
-  // Offline/§13 shape: NO authorizationTime, so the artifact time is the decision's own decidedAt.
+  // The caller supplies the independent time at which it accepted the decision. The phone-written
+  // decidedAt is deliberately not an activation witness.
   const probe = signArtifact(signed(preIso), "NOA-Decision-v0.1-sig", {
     kid: trust.approver.kid,
     privateKey: trust.approver.privateKey,
   });
-  const r = verifyArtifact(b(probe), b({ schemas, keyring: trust.keyring, now: new Date(T0).toISOString(), riskClass: "HIGH" }));
+  const r = verifyArtifact(b(probe), b({ schemas, keyring: trust.keyring, now: new Date(T0).toISOString(), authorizationTime: preIso, riskClass: "HIGH" }));
   assert.equal(
     r.ok,
     false,
-    "a decision dated BEFORE the approver's declared activation verified clean through the " +
+    "a decision accepted at a trusted time BEFORE the approver's activation verified through the " +
       "resolver's keyring — validFrom was dropped or unenforced",
   );
   assert.match(r.reason ?? "", /before its validFrom/, `refused for the wrong reason: ${r.reason}`);
@@ -137,7 +138,7 @@ test("[PROOF:RES-PAR-GATE-KEYRING] offline consumer: a pre-activation decision i
     kid: trust.approver.kid,
     privateKey: trust.approver.privateKey,
   });
-  const c = verifyArtifact(b(ctl), b({ schemas, keyring: trust.keyring, now: new Date(T0).toISOString(), riskClass: "HIGH" }));
+  const c = verifyArtifact(b(ctl), b({ schemas, keyring: trust.keyring, now: new Date(T0).toISOString(), authorizationTime: new Date(T0).toISOString(), riskClass: "HIGH" }));
   assert.equal(c.ok, true, `control failed — probe wiring broken, not the activation check: ${c.reason}`);
 });
 

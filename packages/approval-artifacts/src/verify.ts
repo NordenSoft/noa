@@ -32,11 +32,10 @@ export interface KeyEntry {
   type: "GATE" | "APPROVER" | "AUDIT" | "ROOT" | "DELEGATED";
   roles: string[];
   /**
-   * Activation time (Key Manifest `validFrom`). A signature made BEFORE its key was activated is
-   * not authorized. Unlike revocation, activation is evaluated against the artifact time.
-   * Manifests already carried this field; `KeyEntry` did not, so every keyring resolver silently
-   * dropped it and pre-activation signatures verified clean. OPTIONAL: an entry without it (a root
-   * key, a test fixture) is treated as always-active, so this is additive for existing callers.
+   * Activation time (Key Manifest `validFrom`). The verifier evaluates it only against caller-owned
+   * `authorizationTime`, falling back to caller-owned `now`; it never trusts the signed artifact's
+   * timestamp. An entry without `validFrom` is a static key and remains always-active for legacy
+   * compatibility.
    */
   validFrom?: string | null;
   revokedAt?: string | null;
@@ -46,11 +45,12 @@ export interface VerifyContext {
   /** spec -> parsed schema object (the shipped schema/<spec>.schema.json). */
   schemas: Record<string, unknown>;
   keyring?: Record<string, KeyEntry>;
-  /** verification-time "now"; enables the expiry + freshness checks. */
+  /** Caller-owned verification time; enables expiry/freshness and is the activation fallback. */
   now?: string;
   /**
-   * Verifier-controlled time at which a live authorization is being accepted. This remains an
-   * activation-time input; revocation never depends on it because any non-null revokedAt is refused.
+   * Verifier-controlled time at which an authorization was accepted. Activation uses this first,
+   * then `now`; it never uses a timestamp carried by the signed artifact. Revocation never depends
+   * on time because any non-null revokedAt is refused.
    */
   authorizationTime?: string;
   /** riskClass of the held action — selects the F15 approver tier for a Decision Artifact. */
@@ -311,33 +311,29 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
     const entry = ctx.keyring?.[sig.kid];
     if (!entry) return { ok: false, reason: `unknown signing key "${sig.kid}" (not in keyring)` };
 
-    // Activation still uses a time input. Revocation deliberately does not: a compromised retired
-    // key chooses every signed artifact timestamp, so a backdated timestamp cannot prove history.
-    const artifactTime =
-      ctx.authorizationTime ??
-      (doc.issuedAt as string | undefined) ??
-      (doc.receivedAt as string | undefined) ??
-      (doc.decidedAt as string | undefined) ??
-      (doc.consumedAt as string | undefined) ??
-      (doc.detectedAt as string | undefined) ??
-      (doc.confirmedAt as string | undefined) ??
-      (doc.acceptedAt as string | undefined) ??
-      ctx.now;
+    // Activation and revocation have the same trust asymmetry: a stolen key chooses every timestamp
+    // inside the document it signs. Activation therefore uses only caller-controlled time. A
+    // lifecycle-bearing entry with no such time fails closed; a static entry has no activation claim
+    // and retains the legacy always-active contract.
+    const trustedActivationTime = ctx.authorizationTime ?? ctx.now;
     if (ctx.authorizationTime !== undefined && Number.isNaN(parseTime(ctx.authorizationTime))) {
       return { ok: false, reason: "invalid verifier-controlled authorizationTime" };
     }
-    // ACTIVATION (validFrom) — the mirror of revocation, evaluated at the SAME artifact time. A key
-    // that was not yet active cannot have validly signed: without this a compromised or
-    // not-yet-issued device key could sign documents dated before its own activation and every
-    // check downstream would pass, because the window was only ever closed at one end.
+    // ACTIVATION (validFrom) — the mirror of revocation, evaluated only at trusted caller time.
     if (entry.validFrom != null) {
+      if (trustedActivationTime === undefined) {
+        return {
+          ok: false,
+          reason: `cannot evaluate trusted activation time for signing key "${sig.kid}": caller must supply authorizationTime or now`,
+        };
+      }
       const from = parseTime(entry.validFrom);
-      const at = parseTime(artifactTime);
+      const at = parseTime(trustedActivationTime);
       if (Number.isNaN(from) || Number.isNaN(at)) {
         return { ok: false, reason: `cannot evaluate activation time for signing key "${sig.kid}"` };
       }
       if (at < from) {
-        return { ok: false, reason: `signing key "${sig.kid}" signed at ${artifactTime}, before its validFrom ${entry.validFrom}` };
+        return { ok: false, reason: `signing key "${sig.kid}" was evaluated at trusted time ${trustedActivationTime}, before its validFrom ${entry.validFrom}` };
       }
     }
     if (entry.revokedAt != null) {

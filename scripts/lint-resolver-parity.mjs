@@ -42,7 +42,12 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
-import { scanTrustKeySurface, VOCABULARY } from "./lib/resolver-scan.mjs";
+import {
+  scanConstructedVerifierKeyrings,
+  scanConstructedVerifierKeyringsInSource,
+  scanTrustKeySurface,
+  VOCABULARY,
+} from "./lib/resolver-scan.mjs";
 import { resolveProof, runProofFiles, runnerStatusFor } from "./lib/proof-resolve.mjs";
 import * as verdict from "./lib/verdict.mjs";
 
@@ -56,6 +61,134 @@ const add = (rule, subject, detail) => findings.push({ rule, subject, detail });
 
 const inventory = JSON.parse(fs.readFileSync(INVENTORY_PATH, "utf8"));
 const { sites: observed, vocabFiles } = scanTrustKeySurface(ROOT);
+
+// ── wrapper narrowing: executable self-control + repository sweep ───────────────────────────────
+// The check that would have caught verifyBundle's `{ [kid]: publicKey }` downgrade proves its own
+// positive and negative paths in this same run. A scanner that cannot find the synthetic defect, or
+// that calls a pass-through keyring a defect, is RED before repository state is considered.
+const wrapperBadControls = [
+  "verifyEvidence(bundle, { checkpointKeyring: encodeDocument({ [trust.gate.kid]: trust.gate.publicKey }) });",
+  "import { verifyEvidence as verify } from 'pkg'; verify(bundle, { checkpointKeyring: encodeDocument({ [kid]: publicKey }) });",
+  "verifyEvidence(bundle, { ['checkpointKeyring']: encodeDocument({ [kid]: publicKey }) });",
+  "const base = { checkpointKeyring: encodeDocument({ [kid]: publicKey }) }; verifyEvidence(bundle, { ...base });",
+].map((source, index) => scanConstructedVerifierKeyringsInSource(`synthetic-bad-${index}.ts`, source));
+const wrapperGoodControl = scanConstructedVerifierKeyringsInSource(
+  "synthetic-good.ts",
+  "verifyEvidence(bundle, { checkpointKeyring: encodeDocument(trust.receiptKeyring) });",
+);
+const badControlCounts = wrapperBadControls.map((result) => result.findings.length);
+if (badControlCounts.some((count) => count !== 1) || wrapperGoodControl.findings.length !== 0) {
+  add(
+    "WRAPPER_SCAN_SELFTEST",
+    "constructed-keyring detector",
+    `synthetic attack findings=${badControlCounts.join(",")}, pass-through findings=${wrapperGoodControl.findings.length}`,
+  );
+}
+const wrapperSweep = scanConstructedVerifierKeyrings(ROOT);
+const staticSiteKey = (site) => JSON.stringify([
+  site.file,
+  site.scope,
+  site.verifier,
+  site.field,
+  site.expression,
+  site.construction,
+]);
+const declaredStaticSites = new Map();
+for (const site of inventory.staticConstructedKeyrings ?? []) {
+  const key = staticSiteKey(site);
+  if (declaredStaticSites.has(key)) {
+    add("DUPLICATE_STATIC_KEYRING_EXCEPTION", `${site.file}:${site.scope}`, "duplicate exact constructed-keyring exception");
+  } else if (typeof site.reason !== "string" || site.reason.trim() === "") {
+    add("EMPTY_STATIC_KEYRING_REASON", `${site.file}:${site.scope}`, "static constructed-keyring exception has no reason");
+  } else {
+    declaredStaticSites.set(key, site);
+  }
+}
+const declaredSurfaceSites = new Map();
+for (const site of inventory.constructedKeyringSurfaces ?? []) {
+  const key = staticSiteKey(site);
+  const proofPath = typeof site.proofFile === "string" ? path.join(ROOT, site.proofFile) : "";
+  if (declaredSurfaceSites.has(key) || declaredStaticSites.has(key)) {
+    add("DUPLICATE_CONSTRUCTED_KEYRING_SURFACE", `${site.file}:${site.scope}`, "duplicate exact constructed-keyring classification");
+  } else if (site.classification !== "independent verification surface") {
+    add("INVALID_CONSTRUCTED_KEYRING_CLASSIFICATION", `${site.file}:${site.scope}`, "constructed wrapper must be classified as an independent verification surface");
+  } else if (typeof site.reason !== "string" || site.reason.trim() === "") {
+    add("EMPTY_CONSTRUCTED_KEYRING_REASON", `${site.file}:${site.scope}`, "constructed verification surface has no reason");
+  } else {
+    declaredSurfaceSites.set(key, site);
+    if (!proofPath || !fs.existsSync(proofPath) || typeof site.proofMarker !== "string") {
+      add("MISSING_CONSTRUCTED_KEYRING_PROOF", `${site.file}:${site.scope}`, "constructed verification surface has no attack/control proof file and marker");
+    } else {
+      const resolved = resolveProof(proofPath, site.proofMarker);
+      if (resolved.status !== "live") {
+        add("MISSING_CONSTRUCTED_KEYRING_PROOF", `${site.file}:${site.scope}`, `${site.proofFile}: ${resolved.status} — ${resolved.detail}`);
+      }
+    }
+  }
+}
+const surfaceProofFiles = [...new Set(
+  [...declaredSurfaceSites.values()]
+    .map((site) => site.proofFile)
+    .filter((file) => typeof file === "string" && fs.existsSync(path.join(ROOT, file))),
+)];
+const surfaceProofRuns = runProofFiles(ROOT, surfaceProofFiles);
+for (const site of declaredSurfaceSites.values()) {
+  const run = surfaceProofRuns.get(site.proofFile);
+  if (!run?.ok) {
+    add("MISSING_CONSTRUCTED_KEYRING_PROOF", `${site.file}:${site.scope}`, `${site.proofFile}: proof runner could not certify the file${run?.error ? ` — ${run.error}` : ""}`);
+    continue;
+  }
+  const status = runnerStatusFor(run.output, site.proofMarker);
+  if (status !== "passing") {
+    add("MISSING_CONSTRUCTED_KEYRING_PROOF", `${site.file}:${site.scope}`, `${site.proofFile}: runner status for ${site.proofMarker} is ${status}`);
+  }
+}
+notices.push(`constructed surface proof runner: ${declaredSurfaceSites.size} classified surface(s) across ${surfaceProofFiles.length} test file(s)`);
+const observedStaticSites = new Set();
+const observedSurfaceSites = new Set();
+let classifiedStaticWrappers = 0;
+let classifiedConstructedSurfaces = 0;
+for (const finding of wrapperSweep.findings) {
+  const key = staticSiteKey(finding);
+  if (declaredStaticSites.has(key)) {
+    classifiedStaticWrappers++;
+    observedStaticSites.add(key);
+    continue;
+  }
+  if (declaredSurfaceSites.has(key)) {
+    classifiedConstructedSurfaces++;
+    observedSurfaceSites.add(key);
+    continue;
+  }
+  add(
+    "KEYRING_LITERAL_FORWARDED",
+    `${finding.file}:${finding.line}`,
+    `${finding.verifier} receives a constructed ${finding.field}; this wrapper is a verification surface and may not be classified as inherited pass-through`,
+  );
+}
+for (const [key, site] of declaredStaticSites) {
+  if (!observedStaticSites.has(key)) {
+    add(
+      "STALE_STATIC_KEYRING_EXCEPTION",
+      `${site.file}:${site.scope}`,
+      "declared static constructed-keyring call no longer matches the exact AST site; review and remove or reclassify it",
+    );
+  }
+}
+for (const [key, site] of declaredSurfaceSites) {
+  if (!observedSurfaceSites.has(key)) {
+    add(
+      "STALE_CONSTRUCTED_KEYRING_SURFACE",
+      `${site.file}:${site.scope}`,
+      "declared constructed verification surface no longer matches the exact AST site; review and reclassify it",
+    );
+  }
+}
+notices.push(
+  `wrapper narrowing: ${wrapperSweep.callsExamined} production verifier call(s) examined across ${wrapperSweep.filesScanned} file(s); ` +
+  `${wrapperSweep.findings.length} constructed keyring(s), ${classifiedConstructedSurfaces} independent surface(s), ` +
+  `${classifiedStaticWrappers} static consumer(s)`,
+);
 
 const POLICY_CLASSES = new Set(inventory.policy?.policyClasses ?? []);
 const UNRESOLVED_REASON = /\b(todo|tbd|unresolved|fill ?me|fix ?me)\b|\?\?\?|^\s*$/i;
@@ -293,7 +426,8 @@ verdict.emit({ gate: "RES", subject: "AST-detected key-entry sites", examined: o
 verdict.emit({ gate: "RES", subject: "vocabulary files", examined: vocabFiles.size });
 verdict.emit({ gate: "RES", subject: "anchored resolvers", examined: anchored.length });
 verdict.emit({ gate: "RES", subject: "registered proofs", examined: Object.keys(proofs).length });
-if (observed.length === 0 || vocabFiles.size === 0 || anchored.length === 0 || Object.keys(proofs).length === 0) {
+verdict.emit({ gate: "RES", subject: "production verifier wrapper calls", examined: wrapperSweep.callsExamined, findings: wrapperSweep.findings.length });
+if (observed.length === 0 || vocabFiles.size === 0 || anchored.length === 0 || Object.keys(proofs).length === 0 || wrapperSweep.callsExamined === 0) {
   add("VACUOUS", "resolver-parity", "the gate examined zero subjects in a class it claims to cover — a scan that saw nothing proves nothing");
 }
 

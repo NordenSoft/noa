@@ -575,6 +575,9 @@ export function step4_decision(ctx: Ctx): StepResult {
     schemas: ctx.schemas,
     keyring: ctx.resolvedKeyring!,
     now: ctx.now,
+    // Step 3 already authenticated the gate-signed Hold Resolution. Its receivedAt is independent
+    // of the phone/approver signer and is therefore the trusted activation time for this Decision.
+    authorizationTime: ctx.receivedAt,
     refHashChecks: [{ path: "holdEnvelopeHash", rule: "side", artifact: b.holdEnvelope, refEquals: [{ path: "tenant", value: ctx.tenant }] }],
   }));
   if (!dv.ok) return fail(S, "E_DECISION", `decisionArtifact invalid: ${dv.reason}`);
@@ -1099,85 +1102,45 @@ export function step15_negativeOutcomePrinciple(ctx: Ctx): StepResult {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
-// STEP 18 — temporal authorization (F10/F15): activation is checked at the applicable instant, while
-// every used key with non-null revokedAt is refused outright. A compromised key can backdate every
-// artifact timestamp it signs; only an independent time witness can establish genuine history.
+// STEP 18 — temporal authorization (F10/F15): activation is checked only at verifier-owned `now`,
+// while every used key with non-null revokedAt is refused outright. A compromised key chooses every
+// receipt/checkpoint/artifact timestamp it signs, so none of those timestamps can establish its own
+// activation history.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 export function step18_temporalAuthorization(ctx: Ctx): StepResult {
   const S: StepName = "STEP_18_TEMPORAL_AUTHORIZATION";
   const b = ctx.bundle;
-  const rAt = parseTime(ctx.receivedAt);
-  if (Number.isNaN(rAt)) return fail(S, "E_TEMPORAL_AUTH", "holdResolution.receivedAt unparseable");
+  const trustedAt = parseTime(ctx.now);
+  if (Number.isNaN(trustedAt)) return fail(S, "E_TEMPORAL_AUTH", "verifier-owned now is unparseable");
   const usedKids = new Set<string>();
   for (const a of [b.holdEnvelope, b.decisionArtifact, b.holdResolution, b.executionGrant, b.executionConsumption, b.executionUncertainty]) {
     const kid = asStr(getPath(a, "sig.kid"));
     if (kid) setAdd(usedKids, kid);
   }
-  // ── RECEIPTS ARE JUDGED AT THEIR OWN `ts`, TOO ────────────────────────────────────────────────
-  // Every receipt kid used to be thrown into the `receivedAt` cohort below and judged ONLY there.
-  // That asks one question ("was this key live at the moment the gate accepted the resolution?")
-  // and never the other ("was this key live when it signed?"). `verifyArtifact` has always asked
-  // the second question for SIDE artifacts — each is evaluated at its own issuedAt/decidedAt/
-  // consumedAt — but a receipt never passes through `verifyArtifact`, and `verifyChain` takes a
-  // kid→publicKey keyring with no window information at all. So the whole receipt chain was
-  // evaluated at one instant that belongs to none of its members: a gate key activated at 11:55
-  // validly signed the genesis DEFERRED receipt at 11:50, because 11:56:30 (receivedAt) is inside
-  // the window even though the signature is five minutes older than the key.
-  //
-  // Activation is evaluated at the receipt's own ts and the trusted receivedAt. Revocation is never
-  // compared to either: any non-null revokedAt fails in keyAuthorizedAt below.
-  // A conforming producer never signs outside its key's window, so this adds no legitimate
-  // rejection; it only removes the gap between the two questions.
+  // Receipt timestamps are signed by the same key whose activation is under test. They are useful
+  // for chain chronology, but cannot witness that key's own activation. Collect only signer IDs;
+  // the single trusted-time check below owns the lifecycle decision.
   for (const r of ctx.orderedChain ?? []) {
     const rk = asStr(getPath(r, "sig.kid"));
-    if (!rk) continue;
-    setAdd(usedKids, rk); // keep the receivedAt (anti-backdating) assertion below
-    const entry = ctx.resolvedKeyring?.[rk];
-    if (!entry) continue; // unknown kid: verifyChain (step 17) already rejected it
-    const tsRaw = asStr(getPath(r, "ts"));
-    const at = parseTime(tsRaw);
-    if (Number.isNaN(at)) {
-      return fail(S, "E_TEMPORAL_AUTH", `receipt seq ${String(getPath(r, "chain.seq"))} has an unparseable ts — its signer's authorization cannot be evaluated`);
-    }
-    const err = keyAuthorizedAt(rk, entry, at, tsRaw ?? "(unset)");
-    if (err) return fail(S, "E_TEMPORAL_AUTH", `${err} (evaluated at the receipt's own ts, not holdResolution.receivedAt)`);
+    if (rk) setAdd(usedKids, rk);
   }
-  // The CHECKPOINT is deliberately NOT folded into the receivedAt cohort below. Every other artifact
-  // here was produced during the approval, so `holdResolution.receivedAt` is the right trusted
-  // instant to judge them at. A checkpoint is produced LATER — it anchors the chain head after
-  // execution — so judging it at receivedAt asks the wrong question and answers it favourably: a key
-  // valid at receivedAt but revoked before the checkpoint was signed passed cleanly, which let a
-  // revoked signer still anchor the tail. A checkpoint is authorized at ITS OWN timestamp.
   const cpKid = asStr(getPath(b.checkpoint, "sig.kid"));
+  if (cpKid) setAdd(usedKids, cpKid);
 
   for (const kid of setToArray(usedKids)) {
     const entry = ctx.resolvedKeyring?.[kid];
-    if (!entry) continue;
-    const err = keyAuthorizedAt(kid, entry, rAt, ctx.receivedAt ?? "(unset)");
-    if (err) return fail(S, "E_TEMPORAL_AUTH", err);
-  }
-
-  if (cpKid) {
-    const entry = ctx.resolvedKeyring?.[cpKid];
     // A checkpoint signer outside the manifest is authenticated separately against the external
-    // checkpoint keyring (step 17) — an independent trust root by design (F7), so there is no
-    // manifest entry to evaluate and nothing to check here.
-    if (entry) {
-      const cpTsRaw = asStr(getPath(b.checkpoint, "ts"));
-      const cpAt = parseTime(cpTsRaw);
-      if (Number.isNaN(cpAt)) {
-        return fail(S, "E_TEMPORAL_AUTH", "checkpoint.ts is unparseable — the checkpoint signer's authorization cannot be evaluated");
-      }
-      const err = keyAuthorizedAt(cpKid, entry, cpAt, cpTsRaw ?? "(unset)");
-      if (err) return fail(S, "E_TEMPORAL_AUTH", `${err} (evaluated at the checkpoint's own ts, not holdResolution.receivedAt)`);
-    }
+    // checkpoint keyring (step 17); without a manifest entry, this layer has no activation claim.
+    if (!entry) continue;
+    const err = keyAuthorizedAt(kid, entry, trustedAt, ctx.now);
+    if (err) return fail(S, "E_TEMPORAL_AUTH", err);
   }
   return ok(S);
 }
 
 /**
- * Shared activation/state check for one key. Activation uses `atMs`; revocation is an unconditional
- * refusal because artifact time is not an independent witness.
+ * Shared activation/state check for one key. Activation uses verifier-owned time; revocation is an
+ * unconditional refusal because signer-chosen time is not an independent witness.
  */
 function keyAuthorizedAt(
   kid: string,
@@ -1188,7 +1151,7 @@ function keyAuthorizedAt(
   if (entry.validFrom != null) {
     const from = parseTime(entry.validFrom);
     if (Number.isNaN(from)) return `signing key "${kid}" has an unparseable validFrom (${entry.validFrom})`;
-    if (atMs < from) return `signing key "${kid}" signed at ${atLabel}, before its validFrom (${entry.validFrom}) — authorization-time check (F10) fails`;
+    if (atMs < from) return `signing key "${kid}" was evaluated at trusted time ${atLabel}, before its validFrom (${entry.validFrom}) — authorization-time check (F10) fails`;
   }
   if (entry.revokedAt != null) {
     return `signing key "${kid}" was revoked at ${entry.revokedAt}; signer-chosen artifact time is not an independent witness`;

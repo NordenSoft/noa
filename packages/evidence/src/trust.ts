@@ -154,18 +154,15 @@ export function buildResolvedKeyring(
     publicKey: delegation.delegatedPublicKey,
     type: "DELEGATED",
     roles: Array.isArray(delegation.permissions) ? [...delegation.permissions] : [],
-    // `delegation.validFrom` IS this key's activation time — the same rule every manifest key below
-    // already follows, and the same rule `verifyArtifact` applies to every other signer: a key is
-    // authorized from its activation instant, evaluated at the ARTIFACT's own time.
+    // `delegation.validFrom` IS this key's activation time — the same lifecycle field every manifest
+    // key below carries. `verifyArtifact` evaluates it only at caller-owned `authorizationTime` or
+    // `now`; it never treats the manifest's signed `issuedAt` as an activation witness.
     //
     // This was previously left unapplied, with the shipped fixtures cited as the reason to defer the
-    // question (their manifest `issuedAt` 09:30 precedes this delegation's `validFrom` 10:00). That
-    // reasoning had it backwards: `verifyArtifact` already resolves a Key Manifest's artifact time
-    // from `doc.issuedAt`, so the codebase's own convention is that `issuedAt` IS the issuance/
-    // signing instant — which makes the fixture a defect, not a rival reading, and the fixture has
-    // been corrected (delegation opens 10:00, manifest issued 10:30). Leaving the field unapplied
-    // meant a delegated signer could stamp a manifest with any date before its own delegation and
-    // every downstream check still passed, because the window was open at neither end here.
+    // question (their manifest `issuedAt` 09:30 precedes this delegation's `validFrom` 10:00). The
+    // fixture was corrected (delegation opens 10:00, manifest issued 10:30), but signer-chosen
+    // `issuedAt` is only a chronology constraint inside the delegation document model; it is not
+    // the trusted time used by the generic key-activation check.
     validFrom: delegation.validFrom ?? null,
   };
   // the gate/approver/audit keys the manifest lists.

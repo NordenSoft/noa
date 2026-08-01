@@ -1,7 +1,7 @@
 /**
  * P0-14 class regression: every repository JavaScript/TypeScript keyring verifier gets a current
- * control and a retired-key attack. The attack always uses a signer-chosen timestamp from before
- * retirement; a pass would therefore reproduce the backdated retired-key forgery.
+ * control and an adversarial lifecycle case. Retirement attacks backdate signer-owned timestamps;
+ * activation attacks future-date them. Neither direction may let a signer witness its own state.
  *
  * Flat maps remain the compatibility contract for genuinely static, non-rotating trust roots. This
  * probe never manufactures a flat map from lifecycle data: the downgrade helpers are tested below.
@@ -63,10 +63,16 @@ const BEFORE = "2020-01-01T00:00:00.000Z";
 const AFTER = "2026-08-01T08:36:12.644Z";
 
 const rows = [];
+const controlRows = [];
 function probe(surface, controlOk, attackRefused, controlDetail, attackDetail) {
   rows.push({ surface, controlOk, attackRefused, controlDetail, attackDetail });
   console.log(`CONTROL ${surface.padEnd(34)} -> ${controlOk ? "PASS" : "FAIL"}  ${controlDetail}`);
   console.log(`ATTACK  ${surface.padEnd(34)} -> ${attackRefused ? "REFUSED" : "ACCEPTED"}  ${attackDetail}`);
+}
+
+function controlOnly(surface, ok, detail) {
+  controlRows.push({ surface, ok, detail });
+  console.log(`CONTROL ${surface.padEnd(34)} -> ${ok ? "PASS" : "FAIL"}  ${detail}`);
 }
 
 function receipt(signer, id, ts, compliance = undefined) {
@@ -141,6 +147,21 @@ function evidenceCliVerify(fixture, checkpointKeyring) {
     return { status: run.status, output: `${run.stdout}${run.stderr}`.trim() };
   } finally {
     rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+function e2eVerifyBundleProbe() {
+  const run = spawnSync(process.execPath, [
+    "--import", "tsx",
+    "test/verification-surface-probe.ts",
+  ], { cwd: join(ROOT, "packages/e2e-demo"), encoding: "utf8" });
+  if (run.status !== 0) {
+    return { status: run.status, output: `${run.stdout}${run.stderr}`.trim(), result: null };
+  }
+  try {
+    return { status: run.status, output: run.stderr.trim(), result: JSON.parse(run.stdout) };
+  } catch (error) {
+    return { status: run.status, output: `invalid probe JSON: ${String(error)}; ${run.stdout}${run.stderr}`.trim(), result: null };
   }
 }
 
@@ -295,6 +316,20 @@ const artifactControl = verifyArtifact(b(artifactVector.artifact), b(artifactCur
 const artifactAttack = verifyArtifact(b(artifactVector.artifact), b(artifactRetiredCtx));
 probe("verifyArtifact", artifactControl.ok, !artifactAttack.ok && /revoked/i.test(artifactAttack.reason ?? ""), artifactControl.ok ? "ok" : artifactControl.reason, artifactAttack.reason);
 
+// Activation mirror: the stolen key future-dates a validly-signed Decision past its own activation.
+// Only caller-controlled time may decide activation; the artifact's decidedAt is not a witness.
+const futureArtifactVector = readJson(join(ROOT, "packages/approval-artifacts/conformance/decision/reject-expired.json"));
+const activationKid = futureArtifactVector.artifact.sig.kid;
+const activationControlCtx = { schemas: artifactSchemas, keyring: structuredClone(artifactKeyring), riskClass: "HIGH", authorizationTime: "2026-07-14T12:00:00.000Z" };
+activationControlCtx.keyring[activationKid].validFrom = "2026-07-14T11:00:00.000Z";
+activationControlCtx.keyring[activationKid].revokedAt = null;
+const activationAttackCtx = { schemas: artifactSchemas, keyring: structuredClone(artifactKeyring), riskClass: "HIGH", now: "2026-07-14T12:00:00.000Z" };
+activationAttackCtx.keyring[activationKid].validFrom = "2026-07-14T13:00:00.000Z";
+activationAttackCtx.keyring[activationKid].revokedAt = null;
+const activationControl = verifyArtifact(b(artifactVector.artifact), b(activationControlCtx));
+const activationAttack = verifyArtifact(b(futureArtifactVector.artifact), b(activationAttackCtx));
+probe("verifyArtifact activation mirror", activationControl.ok, !activationAttack.ok && /before its validFrom/i.test(activationAttack.reason ?? ""), activationControl.ok ? "active at trusted time" : activationControl.reason, activationAttack.reason);
+
 // Approval receipt verification, including the legitimate multi-current lifecycle regression.
 const deferred = buildReceipt({
   id: "approval-deferred",
@@ -333,19 +368,21 @@ probe("verifyOutcomeReceipt", outcomeControl.ok, !outcomeAttack.ok && /retired/i
 
 const originalMapIterator = Map.prototype[Symbol.iterator];
 let poisonedOutcomeAttack;
+let poisonedOutcomeControl;
 Map.prototype[Symbol.iterator] = function* forgedRetirementIterator() {
   yield [retired.kid, { publicKey: retired.publicKey, retiredAt: null }];
 };
 try {
+  poisonedOutcomeControl = verifyOutcomeReceipt(newOutcome, { verification: cachedLifecycle });
   poisonedOutcomeAttack = verifyOutcomeReceipt(oldOutcome, { verification: cachedLifecycle });
 } finally {
   Map.prototype[Symbol.iterator] = originalMapIterator;
 }
 probe(
   "verifyOutcomeReceipt Map poison",
-  outcomeControl.ok,
+  poisonedOutcomeControl.ok,
   !poisonedOutcomeAttack.ok && /retired/i.test(poisonedOutcomeAttack.reason ?? ""),
-  "current key verified before poison",
+  poisonedOutcomeControl.ok ? "current key verified under the same poison" : poisonedOutcomeControl.reason,
   poisonedOutcomeAttack.reason,
 );
 
@@ -410,6 +447,54 @@ const evidenceControl = verifyEvidence(b(evidenceFixture.bundle), { ...evidenceO
 const evidenceAttack = verifyEvidence(b(evidenceFixture.bundle), { ...evidenceOptions, checkpointKeyring: b(evidenceRetiredRing) });
 probe("verifyEvidence", evidenceControl.verdict === "VALID_FULL_CHAIN", evidenceAttack.verdict !== "VALID_FULL_CHAIN" && /retired/i.test(evidenceAttack.reason ?? ""), evidenceControl.verdict, `${evidenceAttack.verdict}: ${evidenceAttack.reason}`);
 
+// Evidence's own checkpoint-lifecycle layer is another activation surface. The attacker moves the
+// checkpoint's signed timestamp 30 seconds forward, beyond its key's activation but within the
+// accepted freshness skew; verifier-owned `now` remains 15 seconds before activation.
+const evidenceActivationControlFixture = readJson(join(ROOT, "packages/evidence/conformance/control/step18-checkpoint-key-active-at-trusted-now.json"));
+const evidenceActivationAttackFixture = readJson(join(ROOT, "packages/evidence/conformance/reject/step18-checkpoint-future-date-cannot-activate-key.json"));
+const verifyEvidenceFixture = (fixture) => verifyEvidence(b(fixture.bundle), {
+  tenantRoot: b(fixture.tenantRoot),
+  checkpointKeyring: b(fixture.checkpointKeyring),
+  now: fixture.now,
+  maxAgeMs: fixture.maxAgeHours * 60 * 60 * 1000,
+  schemas: evidenceSchemas,
+});
+const evidenceActivationControl = verifyEvidenceFixture(evidenceActivationControlFixture);
+const evidenceActivationAttack = verifyEvidenceFixture(evidenceActivationAttackFixture);
+probe(
+  "verifyEvidence activation mirror",
+  evidenceActivationControl.verdict === "VALID_FULL_CHAIN",
+  evidenceActivationAttack.verdict === "INVALID" && /before its validFrom/i.test(evidenceActivationAttack.reason ?? ""),
+  evidenceActivationControl.verdict,
+  `${evidenceActivationAttack.verdict}: ${evidenceActivationAttack.reason}`,
+);
+
+const bundleProbe = e2eVerifyBundleProbe();
+const bundleHonest = bundleProbe.result?.honest;
+const bundleDirect = bundleProbe.result?.direct;
+const bundleWrapped = bundleProbe.result?.wrapped;
+const bundleAuthority = bundleProbe.result?.authority;
+probe(
+  "verifyBundle",
+  bundleProbe.status === 0 && bundleHonest?.verdict === "VALID_FULL_CHAIN",
+  bundleProbe.status === 0 && bundleWrapped?.verdict === "INVALID" && /retired/i.test(bundleWrapped.reason ?? "")
+    && bundleDirect?.verdict === "INVALID" && /retired/i.test(bundleDirect.reason ?? ""),
+  bundleHonest ? bundleHonest.verdict : bundleProbe.output,
+  bundleWrapped
+    ? `${bundleWrapped.verdict}: ${bundleWrapped.reason}; direct=${bundleDirect?.verdict}: ${bundleDirect?.reason}`
+    : bundleProbe.output,
+);
+probe(
+  "verifyBundle checkpoint authority",
+  bundleProbe.status === 0 && bundleHonest?.verdict === "VALID_FULL_CHAIN",
+  bundleProbe.status === 0 && bundleProbe.result?.authorityCheckpointKid === "approver-crit-5"
+    && bundleAuthority?.verdict === "VALID_SEGMENT_ONLY",
+  bundleHonest ? bundleHonest.verdict : bundleProbe.output,
+  bundleAuthority
+    ? `${bundleProbe.result.authorityCheckpointKid} cannot anchor full chain: ${bundleAuthority.verdict}`
+    : bundleProbe.output,
+);
+
 const evidenceCliControl = evidenceCliVerify(evidenceFixture, evidenceCurrentRing);
 const evidenceCliAttack = evidenceCliVerify(evidenceFixture, evidenceRetiredRing);
 probe(
@@ -424,11 +509,12 @@ probe(
 const staticChain = verifyChain(b([staticReceipt]), { keyring: b(staticMap) });
 const staticOutcome = buildOutcomeReceipt({ decisionReceipt: staticReceipt, tool: "wire.transfer", outcome: "success", ts: AFTER }, { kid: staticKey.kid, privateKey: staticKey.privateKey });
 const multiStaticOutcome = verifyOutcomeReceipt(staticOutcome, { verification: { ...staticMap, [current.kid]: current.publicKey } });
-probe("static map compatibility", staticChain.status === "VALID" && multiStaticOutcome.ok, true, `${staticChain.status}; multi-key outcome=${multiStaticOutcome.ok}`, "structurally carries no lifecycle field; no in-repo lifecycle-to-flat conversion used");
+controlOnly("static map compatibility", staticChain.status === "VALID" && multiStaticOutcome.ok, `${staticChain.status}; multi-key outcome=${multiStaticOutcome.ok}; structurally carries no lifecycle field`);
 
 const failed = rows.filter((row) => !row.controlOk || !row.attackRefused);
-console.log(`\nP0-14 surface matrix: ${rows.length - failed.length}/${rows.length} PASS`);
-if (failed.length > 0) {
-  console.log("BROKEN:", failed.map((row) => row.surface).join(", "));
+const failedControls = controlRows.filter((row) => !row.ok);
+console.log(`\nP0-14 attack surface matrix: ${rows.length - failed.length}/${rows.length} PASS; compatibility controls: ${controlRows.length - failedControls.length}/${controlRows.length} PASS`);
+if (failed.length > 0 || failedControls.length > 0) {
+  console.log("BROKEN:", [...failed.map((row) => row.surface), ...failedControls.map((row) => row.surface)].join(", "));
   process.exitCode = 1;
 }

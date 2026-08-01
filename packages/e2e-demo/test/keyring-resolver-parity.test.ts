@@ -256,16 +256,16 @@ test('[PROOF:RES-PAR-E2E-TENANTROOT] the external tenant root map CARRIES the de
   assert.equal(e.revokedAt, null, 'tenantRoot lost revokedAt — resolver broken, not the field');
 });
 
-test('[PROOF:RES-PAR-E2E-KEYRING] ENFORCED at the real verifier: a manifest issued before the delegated signer’s activation is REFUSED through the assembled keyring', async () => {
+test('[PROOF:RES-PAR-E2E-KEYRING] ENFORCED at the real verifier: a trusted caller time before delegated-signer activation is REFUSED through the assembled keyring', async () => {
   const { auth, clock, trust } = await pairedTrust();
   const preIso = new Date(Date.parse(auth.validFrom) - 60 * 60 * 1000).toISOString();
 
   const probe = manifestIssuedAt(auth, trust.keyManifest, preIso);
-  const r = verifyArtifact(enc(probe), enc({ schemas, keyring: trust.keyring, now: clock.iso() }));
+  const r = verifyArtifact(enc(probe), enc({ schemas, keyring: trust.keyring, now: clock.iso(), authorizationTime: preIso }));
   assert.equal(
     r.ok,
     false,
-    'a manifest stamped BEFORE the delegated signer’s own activation verified clean through the ' +
+    'a manifest evaluated at a trusted time BEFORE the delegated signer’s activation verified through the ' +
       'live keyring — the resolver dropped validFrom, so verifyArtifact skipped the check',
   );
   assert.match(r.reason ?? '', /before its validFrom/, `refused, but for the wrong reason: ${r.reason}`);
@@ -303,8 +303,8 @@ function decisionBy(kid: string, privateKey: string, decidedAt: string): J {
   );
 }
 
-function verdict(decision: J, keyring: Record<string, KeyEntry>): { ok: boolean; reason?: string } {
-  return verifyArtifact(enc(decision), enc({ schemas, keyring, now: POST, riskClass: 'HIGH' }));
+function verdict(decision: J, keyring: Record<string, KeyEntry>, authorizationTime: string): { ok: boolean; reason?: string } {
+  return verifyArtifact(enc(decision), enc({ schemas, keyring, now: POST, authorizationTime, riskClass: 'HIGH' }));
 }
 
 test('[PROOF:RES-PAR-XRES-EQUIV] evidence, gate and e2e resolvers yield the SAME activation semantics at the real verifier', async () => {
@@ -353,22 +353,22 @@ test('[PROOF:RES-PAR-XRES-EQUIV] evidence, gate and e2e resolvers yield the SAME
     ) as unknown as ManifestDoc;
     const keyring = buildResolvedKeyring({}, delegation, manifest);
 
-    const pre = verdict(decisionBy(approver.kid, approver.privateKey, PRE), keyring);
-    const post = verdict(decisionBy(approver.kid, approver.privateKey, POST), keyring);
+    const pre = verdict(decisionBy(approver.kid, approver.privateKey, PRE), keyring, PRE);
+    const post = verdict(decisionBy(approver.kid, approver.privateKey, POST), keyring, POST);
     assert.match(pre.reason ?? '', /before its validFrom/, `evidence resolver: pre-activation reason: ${pre.reason}`);
     outcomes['evidence.buildResolvedKeyring'] = { preRefused: !pre.ok, postAccepted: post.ok };
 
     // declared revocation is carried AND enforced through the same resolver
-    const rev = verdict(decisionBy(revoked.kid, revoked.privateKey, POST), keyring);
+    const rev = verdict(decisionBy(revoked.kid, revoked.privateKey, POST), keyring, POST);
     assert.equal(rev.ok, false, 'a decision signed AFTER the declared revocation verified clean');
     assert.match(rev.reason ?? '', /was revoked at/, `revocation reason: ${rev.reason}`);
 
     // undeclared activation keeps the documented legacy always-active behaviour (no invented default)
-    const leg = verdict(decisionBy(legacy.kid, legacy.privateKey, PRE), keyring);
+    const leg = verdict(decisionBy(legacy.kid, legacy.privateKey, PRE), keyring, PRE);
     assert.equal(leg.ok, true, `legacy (no declared validFrom) must stay always-active: ${leg.reason}`);
 
     // malformed declared activation fails CLOSED at the verifier — carried, never dropped
-    const mal = verdict(decisionBy(malformed.kid, malformed.privateKey, POST), keyring);
+    const mal = verdict(decisionBy(malformed.kid, malformed.privateKey, POST), keyring, POST);
     assert.equal(mal.ok, false, 'a MALFORMED declared validFrom was dropped — the check was skipped (fail OPEN)');
     assert.match(mal.reason ?? '', /cannot evaluate activation time/, `malformed reason: ${mal.reason}`);
   }
@@ -389,8 +389,10 @@ test('[PROOF:RES-PAR-XRES-EQUIV] evidence, gate and e2e resolvers yield the SAME
     const alpha = createAlphaTrust({ tenant: TENANT, now: () => T0 });
     const alphaFrom = entryOf(alpha.keyring, alpha.approver.kid, 'alpha keyring').validFrom;
     assert.ok(typeof alphaFrom === 'string', 'alpha resolver dropped validFrom — P0-5 regressed');
-    const pre = verdict(decisionBy(alpha.approver.kid, alpha.approver.privateKey, new Date(Date.parse(alphaFrom) - 3_600_000).toISOString()), alpha.keyring);
-    const post = verdict(decisionBy(alpha.approver.kid, alpha.approver.privateKey, new Date(T0 + 1_000).toISOString()), alpha.keyring);
+    const preAt = new Date(Date.parse(alphaFrom) - 3_600_000).toISOString();
+    const postAt = new Date(T0 + 1_000).toISOString();
+    const pre = verdict(decisionBy(alpha.approver.kid, alpha.approver.privateKey, preAt), alpha.keyring, preAt);
+    const post = verdict(decisionBy(alpha.approver.kid, alpha.approver.privateKey, postAt), alpha.keyring, postAt);
     assert.match(pre.reason ?? '', /before its validFrom/, `gate resolver: pre-activation reason: ${pre.reason}`);
     outcomes['gate.createAlphaTrust'] = { preRefused: !pre.ok, postAccepted: post.ok };
   }
@@ -399,7 +401,7 @@ test('[PROOF:RES-PAR-XRES-EQUIV] evidence, gate and e2e resolvers yield the SAME
   {
     const { auth, clock, trust } = await pairedTrust();
     const preIso = new Date(Date.parse(auth.validFrom) - 3_600_000).toISOString();
-    const pre = verifyArtifact(enc(manifestIssuedAt(auth, trust.keyManifest, preIso)), enc({ schemas, keyring: trust.keyring, now: clock.iso() }));
+    const pre = verifyArtifact(enc(manifestIssuedAt(auth, trust.keyManifest, preIso)), enc({ schemas, keyring: trust.keyring, now: clock.iso(), authorizationTime: preIso }));
     const post = verifyArtifact(enc(trust.keyManifest), enc({ schemas, keyring: trust.keyring, now: clock.iso() }));
     outcomes['e2e.assembleGateTrust'] = { preRefused: !pre.ok, postAccepted: post.ok };
   }

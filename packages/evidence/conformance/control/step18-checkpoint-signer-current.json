@@ -1,8 +1,8 @@
 {
-  "description": "STEP_18/P0-14: the checkpoint signer has non-null revokedAt; refuse it outright without treating checkpoint.ts or holdResolution.receivedAt as an independent time witness",
-  "expectVerdict": "INVALID",
-  "expectStep": "STEP_18_TEMPORAL_AUTHORIZATION",
-  "expectCode": "E_TEMPORAL_AUTH",
+  "description": "CONTROL for STEP_18 retired-checkpoint attack: approver-crit-5 signs the same 11:59 checkpoint while its manifest entry is current",
+  "expectVerdict": "VALID_FULL_CHAIN",
+  "expectStep": null,
+  "expectCode": null,
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {
@@ -27,7 +27,7 @@
       },
       "canonicalization": "JCS-RFC8785",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:d423ff9c9b90fb25d3c03cc0cabec16d13c1b97e4424fb0d2d5bdf956ee53d97",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "tenant": "tenant-acme",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "nonce": "envelope-nonce-01",
@@ -35,7 +35,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "XGgeXPLAJXrfZpvAM1VgqPr1vkO6PvEBwcPq6sAVJCom04/2BE36slMwFpFhHFHLYAkboIx0EK4jUmmNLSxEBw=="
+        "value": "0sSXFUpEMfgAK9Jacoa9TYWGnLmU27qlEMeI08wupPGn8n3uJ48hd6lFnNSQw8JkM18Ot6FldNxeO60i6fRVCg=="
       }
     },
     "deferredReceipt": {
@@ -114,7 +114,7 @@
           "publicKey": "MCowBQYDK2VwAyEAtN4H1lCn75RSP7yjvFOXA8mX3RNhjmPvMcGqRBjIlhY=",
           "hpkePublicKey": "6d7d71dc3d1948fd59db600f3f342789f57c2da1998306b4a2f88a92acb18b75",
           "validFrom": "2026-07-14T10:00:00.000Z",
-          "revokedAt": "2026-07-14T11:58:30.000Z"
+          "revokedAt": null
         },
         {
           "kid": "audit-1",
@@ -130,7 +130,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "manifest-signer-3",
-        "value": "kbhCWS6qUB0mO0CBS9IDcRD+yivTTUNSqfWHrFFDeeO7QzAyxTzgxOkzF5yGF2l45qI99flYWkmpu+nvugyMBQ=="
+        "value": "49QimrPznzz9h17Bm4lyMyH9sprj+p1+7Ywt4I0OQhiwASoOrtRRL9TCziSlX+Ae8WUvoU/az1N9na+QXvRXAg=="
       }
     },
     "keyDelegation": {
@@ -152,18 +152,18 @@
     "holdResolution": {
       "spec": "noa.hold-resolution/0.1",
       "holdId": "hold-001",
-      "holdEnvelopeHash": "sha256:63eea7ff8f91e8c159e04a3492fb5a150550a857d5c322c075c1bd04cf6b5511",
-      "decisionArtifactHash": "sha256:d069104677db0f6307d1706edc058192c6b15b4c5c08b68df6806ad031cc965f",
+      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
+      "decisionArtifactHash": "sha256:cf5d42de1c29eb11e4232f28dd71eb022e43ab510fcebd861486b5bae2147cd7",
       "verdictReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
       "status": "APPROVED",
       "reasonCode": null,
       "receivedAt": "2026-07-14T11:56:30.000Z",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:d423ff9c9b90fb25d3c03cc0cabec16d13c1b97e4424fb0d2d5bdf956ee53d97",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "HHdsDLKoQze5sj8iriXsbAIexHU4HQYFLTYUAGKiFztBVgOdoXKCpxm0UXAYHfCZfP2BojoR+ZsOIfFVBEoZBA=="
+        "value": "G2p4mDW4ILMRP1HYM5chK+sSjmqHaCIq9j8FOa9R+zOL0qDlsCN8MKNfnq/6Ukk+fEAAZIsHc0BEuY9jtmHYCw=="
       }
     },
     "allowedReceipt": {
@@ -210,7 +210,7 @@
     },
     "decisionArtifact": {
       "spec": "noa.decision/0.1",
-      "holdEnvelopeHash": "sha256:63eea7ff8f91e8c159e04a3492fb5a150550a857d5c322c075c1bd04cf6b5511",
+      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
       "decision": "APPROVE",
       "reasonCode": "vendor-verified",
       "reasonEncryption": {
@@ -230,7 +230,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "approver-1-device-2",
-        "value": "FgU8CDMG8K/6teMO4Rk5tia1UZsPVEZ/X28EIBTF6wIhUhpnh5/xnvGk9EiFxNlhekig4yDg+4Rmgf6iAtleBw=="
+        "value": "5AlbtcOv6ItKmnErDHxjx5un/FpxKm6EhdiHIXw8cmvCmKVEZKDxxeV8VlZ6tYkh+y1bQDnYgW7wAljEaiVUCg=="
       }
     },
     "executionGrant": {
@@ -238,7 +238,7 @@
       "grantId": "grant-001",
       "holdId": "hold-001",
       "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "holdEnvelopeHash": "sha256:63eea7ff8f91e8c159e04a3492fb5a150550a857d5c322c075c1bd04cf6b5511",
+      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
       "approvalReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T12:30:00.000Z",
@@ -247,19 +247,19 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "SweO1frIs7w/YZgyVt68U4tiTzHMb8yX0Js5t95BakxyMrMilX2rWNjTnUzzEShfvFU7owK54DHJNz86i7f5Bw=="
+        "value": "w5e7Iq3d9GIPN/xW9bGba45UmNB+k7VEW5ytrvahHNsXihUypNQ52tKQ2Jn0+3fPnLB61yf3Y1rmL7y9aIaQCw=="
       }
     },
     "executionConsumption": {
       "spec": "noa.execution-consumption/0.1",
-      "grantHash": "sha256:486c852e1bafc6ea09912e32827ff12a5171a5b96adc4527bddb22d2b4d340a4",
+      "grantHash": "sha256:2e47b7e519e50e81f322575b26a1e27c37d11677fe7f4ce6fcbb19da3729c146",
       "consumedAt": "2026-07-14T11:58:00.000Z",
       "attemptReceiptHash": "sha256:c1eedfbe6e5526e3925ba1195d6d63a44e7cb9bbde66cb400fc1fe33c8d217ba",
       "result": "DISPATCHED",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "RTroSyJDQOvmYkidv+LbVYaZr1uMk1EozdZl+3WKJq9PYdVuvdkyStZlaXOZ3f+17xajRkEAI3jzWGojAEINCw=="
+        "value": "/+yF5lkJmPlAR+HbofkSkAPX690QFjeCxnWx6670thttq9LlfrjvIEcUpvNCC1fKOElGGHQLc5UsKFKpr7QXBQ=="
       }
     },
     "checkpoint": {

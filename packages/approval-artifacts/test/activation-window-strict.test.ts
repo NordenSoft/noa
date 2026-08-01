@@ -46,11 +46,11 @@ const fx = JSON.parse(readFileSync(join(ROOT, "conformance", "decision", "valid.
 };
 const SIGNER = (fx.artifact["sig"] as { kid: string }).kid;
 
-/** Verify the REAL vector with the signer's `validFrom` replaced. Returns the FINAL result. */
-function verifyWithValidFrom(validFrom: unknown): { ok: boolean; reason: string } {
+/** Verify the REAL vector with the signer's `validFrom` and a trusted caller time. */
+function verifyWithValidFrom(validFrom: unknown, authorizationTime = String(fx.context["now"])): { ok: boolean; reason: string } {
   const kr = JSON.parse(JSON.stringify(keyring)) as Record<string, KeyEntry>;
   kr[SIGNER] = { ...(kr[SIGNER] as KeyEntry), validFrom: validFrom as string | null };
-  const r = verifyArtifact(enc(fx.artifact), enc({ ...fx.context, schemas, keyring: kr }));
+  const r = verifyArtifact(enc(fx.artifact), enc({ ...fx.context, schemas, keyring: kr, authorizationTime }));
   return { ok: r.ok, reason: r.ok ? "" : String(r.reason) };
 }
 
@@ -67,7 +67,7 @@ test("P0-6 ANTI-VACUITY: activation IS enforced for a canonical FUTURE time", ()
   // If this passed, the activation check would not be running at all and the malformed cases below
   // would be refused for some unrelated reason.
   const r = verifyWithValidFrom("2099-01-01T00:00:00.000Z");
-  assert.equal(r.ok, false, "a key that activates in 2099 verified a signature made now");
+  assert.equal(r.ok, false, "a key that activates in 2099 verified at an earlier trusted caller time");
   assert.match(r.reason, /before its validFrom/, `refused for the wrong reason: ${r.reason}`);
 });
 
@@ -143,11 +143,11 @@ const dfx = JSON.parse(readFileSync(join(ROOT, "conformance", "key-delegation", 
 };
 const ROOT_SIGNER = (dfx.artifact["sig"] as { kid: string }).kid;
 
-/** Verify the REAL root-signed delegation vector with the ROOT signer's `validFrom` replaced. */
+/** Verify the REAL root-signed delegation vector at a trusted caller time. */
 function verifyDelegationWithRootValidFrom(validFrom: unknown): { ok: boolean; reason: string } {
   const kr = JSON.parse(JSON.stringify(keyring)) as Record<string, KeyEntry>;
   kr[ROOT_SIGNER] = { ...(kr[ROOT_SIGNER] as KeyEntry), validFrom: validFrom as string | null };
-  const r = verifyArtifact(enc(dfx.artifact), enc({ ...dfx.context, schemas, keyring: kr }));
+  const r = verifyArtifact(enc(dfx.artifact), enc({ ...dfx.context, schemas, keyring: kr, authorizationTime: dfx.context["now"] }));
   return { ok: r.ok, reason: r.ok ? "" : String(r.reason) };
 }
 
@@ -161,9 +161,7 @@ test("P0-12 [PROOF:RES-PAR-ROOT-ENFORCED]: a trust ROOT is NOT exempt from its o
   const nonRoot = verifyWithValidFrom("2099-01-01T00:00:00.000Z");
   assert.equal(nonRoot.ok, false, "non-ROOT activation stopped being enforced — the branch itself is broken, not the ROOT case");
 
-  // The probe: a ROOT that activates in 2099 must not vouch for a delegation NOW. The delegation
-  // carries no time field of its own, so its artifact time is `context.now` — the ROOT's window is
-  // evaluated at verification time, exactly like every other signer.
+  // The probe: a ROOT that activates in 2099 must not vouch at the earlier trusted caller time.
   const r = verifyDelegationWithRootValidFrom("2099-01-01T00:00:00.000Z");
   assert.equal(r.ok, false,
     "a trust ROOT with a declared FUTURE activation vouched for a delegation NOW. The trust anchor " +
@@ -184,17 +182,15 @@ test("P0-12: ROOT compatibility + fail-closed follow the SAME rules as every sig
   assert.match(mal.reason, /cannot evaluate activation time/, `wrong refusal reason: ${mal.reason}`);
 });
 
-test("P0-6: the boundary is INCLUSIVE — signing exactly AT validFrom is allowed", () => {
+test("P0-6: the boundary is INCLUSIVE — verification exactly AT validFrom is allowed", () => {
   // `verify.ts:242` compares `at < from`, so equality is accepted. Pinned explicitly so a future
   // change to `<=` is a test failure rather than a silent semantic shift.
   //
-  // The comparand is the ARTIFACT's own time, not `context.now`. My first version of this test used
-  // `context.now` (12:00:00Z) while the vector's `decidedAt` is 11:56:00Z, so it asserted the wrong
-  // boundary and failed — the test was wrong, not the code. Reading the comparand from the artifact
-  // is what makes this pin meaningful.
+  // The comparand is explicitly caller-controlled. Using the artifact's decidedAt as an implicit
+  // fallback would reopen the activation-mirror attack.
   const at = String((fx.artifact as Record<string, unknown>)["decidedAt"] ?? (fx.artifact as Record<string, unknown>)["ts"]);
   assert.match(at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{3})?Z$/, "the fixture's artifact time is not canonical — this pin cannot be trusted");
-  assert.equal(verifyWithValidFrom(at).ok, true, "a key activating at exactly the artifact time was refused — the boundary flipped to exclusive");
+  assert.equal(verifyWithValidFrom(at, at).ok, true, "a key evaluated exactly at activation was refused — the boundary flipped to exclusive");
 });
 
 test("P0-10 ANTI-VACUITY: mustBeWithin runs against the verifying decision vector", () => {
@@ -278,16 +274,17 @@ test("P0-11: equivalent RFC 3339 instant spellings produce the same activation o
       `malformed offset ${JSON.stringify(malformed)} was refused for the wrong reason: ${refused.reason}`);
   }
 
-  const outsideWindow = verifyWithValidFrom("2026-07-14T14:56:00.000+02:00");
+  const boundary = "2026-07-14T11:56:00.000Z";
+  const outsideWindow = verifyWithValidFrom("2026-07-14T14:56:00.000+02:00", boundary);
   assert.equal(outsideWindow.ok, false,
-    "a well-formed offset activation instant one hour after the signature was accepted");
+    "a well-formed offset activation instant one hour after the trusted time was accepted");
 
   const spellings = [
     "2026-07-14T11:56:00.000Z",
     "2026-07-14T13:56:00.000+02:00",
     "2026-07-14T06:56:00.000-05:00",
   ];
-  const outcomes = spellings.map(verifyWithValidFrom);
+  const outcomes = spellings.map((spelling) => verifyWithValidFrom(spelling, boundary));
   assert.equal(outcomes[0]!.ok, true, "the Z spelling at the activation boundary was refused");
   for (let i = 1; i < outcomes.length; i += 1) {
     assert.deepEqual(outcomes[i], outcomes[0],

@@ -53,11 +53,11 @@ mismatch fails the build (§15 P1b-alpha DoD).
   (`SHA256(JCS(receipt without chain.hash and sig.value))`).
 - **Rule c / F2 (virtual):** `transcriptHash` and `displayCiphertextHash` hash the WHOLE object as-is
   (nothing stripped) — so a relay-added `recipients[]` entry breaks the parent's signed hash.
-- **Revocation time:** offline verification preserves historical semantics by evaluating a key at the
-  signed artifact's own timestamp. A service accepting a **live authorization** must pass its trusted
-  receipt time as `VerifyContext.authorizationTime`; otherwise a revoked signer could self-backdate a
-  fresh decision. Evidence verifiers may omit it only when they separately bind and enforce a trusted
-  historical acceptance timestamp (for example, the gate-signed Hold Resolution `receivedAt`).
+- **Activation and revocation:** a signed artifact's own timestamp is never evidence that its signing
+  key was active. When a `KeyEntry` declares `validFrom`, `verifyArtifact` evaluates it only at the
+  caller-supplied `authorizationTime`, falling back to caller-supplied `now`, and fails closed if both
+  are absent. Any non-null `revokedAt` is refused outright because signer-chosen time cannot prove
+  history. A static entry with no lifecycle fields remains always-active for compatibility.
 - **Signer identity:** self-identifying signed artifacts enforce their declared signer field
   (`gateKid` or `approverKid`) against `sig.kid` inside `verifyArtifact`; callers cannot accidentally
   omit this binding and authorize one principal's receipt with another principal's Decision.

@@ -115,6 +115,199 @@ function scannableFiles(root) {
   return out.sort();
 }
 
+const VERIFIER_KEYRING_ARGUMENTS = Object.freeze({
+  verifyCheckpoint: 1,
+  verifyChainWitnessed: 1,
+  coseSign1Verify: 1,
+  receiptFromCose: 1,
+});
+const VERIFIER_OPTION_ARGUMENTS = Object.freeze({
+  verifyChain: { index: 1, properties: ["keyring"] },
+  verifyChainText: { index: 1, properties: ["keyring"] },
+  verifyReceiptCompliance: { index: 3, properties: ["keyring"] },
+  verifyArtifact: { index: 1, properties: ["keyring"] },
+  verifyApprovalReceipt: { index: 1, properties: ["approverKeyring"] },
+  verifyOutcomeReceipt: { index: 1, properties: ["verification"] },
+  verifyEvidence: { index: 1, properties: ["tenantRoot", "checkpointKeyring"] },
+});
+
+function unwrapExpression(node) {
+  let value = node;
+  while (
+    value &&
+    (ts.isParenthesizedExpression(value) || ts.isAsExpression(value) ||
+      ts.isTypeAssertionExpression(value) || ts.isNonNullExpression(value) ||
+      ts.isSatisfiesExpression(value))
+  ) value = value.expression;
+  return value;
+}
+
+function calleeName(node) {
+  const expr = unwrapExpression(node);
+  if (ts.isIdentifier(expr)) return expr.text;
+  if (ts.isPropertyAccessExpression(expr)) return expr.name.text;
+  return null;
+}
+
+function propertyNameOf(node) {
+  const direct = nameOf(node);
+  if (direct !== null) return direct;
+  if (ts.isComputedPropertyName(node)) {
+    const expr = unwrapExpression(node.expression);
+    if (ts.isStringLiteral(expr) || ts.isNoSubstitutionTemplateLiteral(expr)) return expr.text;
+  }
+  return null;
+}
+
+function uniqueBindings(sf) {
+  const candidates = new Map();
+  const visit = (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      const found = candidates.get(node.name.text) ?? [];
+      found.push(node.initializer);
+      candidates.set(node.name.text, found);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return new Map([...candidates].filter(([, values]) => values.length === 1).map(([name, values]) => [name, values[0]]));
+}
+
+function resolveExpression(node, bindings, seen = new Set()) {
+  const value = unwrapExpression(node);
+  if (!ts.isIdentifier(value) || seen.has(value.text) || !bindings.has(value.text)) return value;
+  seen.add(value.text);
+  return resolveExpression(bindings.get(value.text), bindings, seen);
+}
+
+function constructedObject(node, bindings, seen = new Set()) {
+  const value = resolveExpression(node, bindings, seen);
+  if (ts.isObjectLiteralExpression(value)) return value;
+  if (ts.isCallExpression(value)) {
+    for (const argument of value.arguments) {
+      const found = constructedObject(argument, bindings, new Set(seen));
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+function optionObject(node, bindings) {
+  const value = resolveExpression(node, bindings);
+  return ts.isObjectLiteralExpression(value) ? value : null;
+}
+
+function verifierAliases(sf) {
+  const canonical = new Set([
+    ...Object.keys(VERIFIER_KEYRING_ARGUMENTS),
+    ...Object.keys(VERIFIER_OPTION_ARGUMENTS),
+  ]);
+  const aliases = new Map([...canonical].map((name) => [name, name]));
+  for (const statement of sf.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const bindings = statement.importClause?.namedBindings;
+    if (!bindings || !ts.isNamedImports(bindings)) continue;
+    for (const specifier of bindings.elements) {
+      const imported = specifier.propertyName?.text ?? specifier.name.text;
+      if (canonical.has(imported)) aliases.set(specifier.name.text, imported);
+    }
+  }
+  return aliases;
+}
+
+function optionPropertyInitializers(node, target, bindings, seen = new Set()) {
+  const options = optionObject(node, bindings);
+  if (!options || seen.has(options)) return [];
+  seen.add(options);
+  const found = [];
+  for (const property of options.properties) {
+    if (ts.isSpreadAssignment(property)) {
+      found.push(...optionPropertyInitializers(property.expression, target, bindings, seen));
+      continue;
+    }
+    if (propertyNameOf(property.name) !== target) continue;
+    if (ts.isPropertyAssignment(property)) found.push(property.initializer);
+    else if (ts.isShorthandPropertyAssignment(property)) found.push(property.name);
+  }
+  return found;
+}
+
+/**
+ * Detect the exact wrapper defect mechanically: a production verifier call receives a keyring/trust
+ * root built from an object literal, inline or through one unambiguous local alias. This is a
+ * syntactic guard, not whole-program dataflow; returned objects, mutations, callbacks and verifier
+ * functions reassigned through arbitrary values still require the manual wrapper audit documented
+ * in P0-14-VERIFICATION-SURFACES.md.
+ */
+export function scanConstructedVerifierKeyringsInSource(rel, text) {
+  const sf = ts.createSourceFile(rel, text, ts.ScriptTarget.Latest, true, scriptKindFor(rel));
+  const bindings = uniqueBindings(sf);
+  const aliases = verifierAliases(sf);
+  const findings = [];
+  let callsExamined = 0;
+
+  const record = (node, verifier, field, construction) => {
+    const { line } = sf.getLineAndCharacterOfPosition(node.getStart());
+    findings.push({
+      file: rel,
+      line: line + 1,
+      scope: scopeChain(node),
+      verifier,
+      field,
+      expression: node.getText(sf),
+      construction: construction.getText(sf),
+    });
+  };
+
+  const visit = (node) => {
+    if (ts.isCallExpression(node)) {
+      const called = calleeName(node.expression);
+      const verifier = called === null ? null : (aliases.get(called) ?? called);
+      if (verifier && Object.hasOwn(VERIFIER_KEYRING_ARGUMENTS, verifier)) {
+        callsExamined++;
+        const index = VERIFIER_KEYRING_ARGUMENTS[verifier];
+        const argument = node.arguments[index];
+        const construction = argument ? constructedObject(argument, bindings) : null;
+        if (argument && construction) record(argument, verifier, "positional keyring", construction);
+      } else if (verifier && Object.hasOwn(VERIFIER_OPTION_ARGUMENTS, verifier)) {
+        callsExamined++;
+        const config = VERIFIER_OPTION_ARGUMENTS[verifier];
+        const argument = node.arguments[config.index];
+        if (argument) {
+          for (const property of config.properties) {
+            for (const initializer of optionPropertyInitializers(argument, property, bindings)) {
+              const construction = constructedObject(initializer, bindings);
+              if (construction) record(initializer, verifier, property, construction);
+            }
+          }
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sf);
+  return { findings, callsExamined };
+}
+
+export function scanConstructedVerifierKeyrings(root) {
+  const findings = [];
+  let callsExamined = 0;
+  let filesScanned = 0;
+  const isProductionSurface = (rel) =>
+    rel.startsWith("src/") || /^packages\/[^/]+\/src\//.test(rel) || rel.startsWith("examples/");
+
+  for (const rel of scannableFiles(root)) {
+    if (!isProductionSurface(rel)) continue;
+    const text = fs.readFileSync(path.join(root, rel), "utf8");
+    if (![...Object.keys(VERIFIER_KEYRING_ARGUMENTS), ...Object.keys(VERIFIER_OPTION_ARGUMENTS)].some((name) => text.includes(name))) continue;
+    filesScanned++;
+    const result = scanConstructedVerifierKeyringsInSource(rel, text);
+    findings.push(...result.findings);
+    callsExamined += result.callsExamined;
+  }
+  return { findings, callsExamined, filesScanned };
+}
+
 export function scanTrustKeySurface(root) {
   const sites = [];
   const vocabFiles = new Map();

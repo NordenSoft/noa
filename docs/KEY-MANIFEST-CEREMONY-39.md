@@ -32,7 +32,7 @@
 | **3** | The root signs the delegation and the authority signs the manifest — the **hierarchy is structurally correct** and Red Line 16 holds (the gate never signs the manifest) | `trust.ts:107-119`, `:122-160` |
 | **4** | `previousManifestHash: null` and one static manifest, `expiresAt = now + 365 days`, described in the source as *"issued once, never rotated"* | `trust.ts:129`, `:104`, `:86` |
 | **5** | **No code anywhere in this repository verifies a `noa.key-manifest/0.1` signature.** The relay stores it opaquely and defers to the mobile app (*"the relay does not verify the delegation's signature (that is mobile's `verifyManifestChain`, S1)"*); the gate builds its own and never verifies one | `relay/src/engine.ts:492-499`; `grep` for `verifyManifestChain` in this repo returns **only that comment** |
-| **6** | `verifyArtifact` **does** enforce `validFrom` and `revokedAt` against artifact time, correctly | `approval-artifacts/src/verify.ts:236-255` ✅ |
+| **6** | `verifyArtifact` enforces `validFrom` only against caller-owned `authorizationTime`/`now`, and refuses any non-null `revokedAt`; signer timestamps cannot establish their own key lifecycle | `approval-artifacts/src/verify.ts` ✅ |
 | **7** | …but it reads them from the **keyring it is handed**, and that keyring is built in-process with `revokedAt: null` hardcoded on every entry. **There is no path by which a revocation performed by the tenant authority reaches a running gate.** | `trust.ts:164-173` |
 | **8** | The gate cross-checks that `keyring` and `receiptKeyring` resolve the same kid to the same public key | `engine.ts:477-481` ✅ — a real control, and the only defence against the two keyrings diverging |
 | **9** | The signer sidecar signs **arbitrary base64 bytes** with zero validation of their meaning: `{"op":"sign","message":"<base64>"}` → `signEd25519(identity.privateKey, message)` | `packages/signer-sidecar/src/sidecar.mjs:166-172` |
@@ -177,7 +177,7 @@ The decision requires that a retired or revoked leaf **cease to validate**, per 
 **Normative rules** (for `noa.key-manifest/0.2`):
 
 - **R1** A verifier resolves a key by `(purpose, environment, generation)`, then requires the artifact's `kid` to match. **`kid` never selects a key.**
-- **R2** An artifact validates only if `validFrom <= artifactTime` and (`revokedAt` is null or `artifactTime < revokedAt`) and `artifactTime <= leaf.expiresAt`. *(The first two are already implemented at `verify.ts:236-255` ✅; per-leaf `expiresAt` is the new part.)*
+- **R2** An artifact validates only if `validFrom <= trustedAuthorizationTime <= leaf.expiresAt` and `revokedAt` is null. `trustedAuthorizationTime` must be supplied by the verifier; a timestamp signed by the leaf is not its own lifecycle witness. *(Activation plus outright revocation are implemented in `verifyArtifact`; per-leaf `expiresAt` remains the new part.)*
 - **R3** At most two generations of one purpose validate simultaneously; the older only until its `overlapUntil`.
 - **R4** A leaf absent from the current manifest **MUST NOT validate**, whatever a client has cached. Absence is a decision, not a gap. *(This is the `relay/src/engine.ts:506-514` lesson — "an omission is not an absence of opinion" — applied to keys.)*
 - **R5** `algorithms` is a closed set. An artifact whose `sig.alg` is outside it fails **before** any signature computation.
