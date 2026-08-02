@@ -215,6 +215,52 @@ test("verifyApprovalReceipt: identityManifest binds the approver seat — an aut
   assert.match(r.reason, /identity manifest/);
 });
 
+// REDTEAM 2026-08-02, reproduced by the lead before any fix was written.
+//
+// The identity manifest is the control that stops a CO-TRUSTED key — one legitimately in
+// approverKeyring for some other seat — from signing in the human-approval seat. Its decision was
+// `authorizedKids.includes(sig.kid)`, a live read of Array.prototype. An attacker who can run any
+// code in the process before this call replaces that method and every membership test answers yes.
+//
+// The signature stays genuine, the key stays trusted, the receipt stays untampered — so nothing
+// upstream fires. Only the seat binding breaks, which is exactly the guarantee the product sells:
+// evidence that THAT human approved THAT action. `create-proxy-server.mjs:345` consumes this result
+// immediately before adopting the approval and executing the held call, so the bypass is reachable.
+test("verifyApprovalReceipt: a poisoned Array.prototype.includes cannot authorize a co-trusted key into the approval seat", () => {
+  const { allowed, approverKp, approverKeyring } = makeApprovedFixture("v-manifest-poison");
+  const otherKp = generateKeyPair("v-manifest-poison-other");
+  const manifest = { "human-approval-cli": [otherKp.kid] };   // does NOT authorize the signing key
+
+  // CONTROL 1 — the harness can produce an acceptance, so a later refusal means something.
+  assert.equal(
+    verifyApprovalReceipt(allowed, { approverKeyring, identityManifest: { "human-approval-cli": [approverKp.kid] } }).ok,
+    true, "control: an AUTHORIZED kid must pass, or this test cannot distinguish refusal from breakage");
+
+  // CONTROL 2 — the check under test genuinely runs on this input, unpoisoned.
+  const clean = verifyApprovalReceipt(allowed, { approverKeyring, identityManifest: manifest });
+  assert.equal(clean.ok, false, "control: the unauthorized kid must be refused before poisoning");
+  assert.match(clean.reason, /identity manifest/);
+
+  // ATTACK — one method, replaced post-load, restored in `finally`.
+  const realIncludes = Array.prototype.includes;
+  let poisoned;
+  try {
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.includes = () => true;
+    poisoned = verifyApprovalReceipt(allowed, { approverKeyring, identityManifest: manifest });
+  } finally {
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.includes = realIncludes;
+  }
+  assert.equal(poisoned.ok, false,
+    "a poisoned Array.prototype.includes authorized a key the identity manifest does not list — the " +
+    "approval seat is no longer bound to the human it names, which is the product's core guarantee");
+  assert.match(poisoned.reason, /identity manifest/);
+
+  // CONTROL 3 — the poison really was removed; a leaked poison would make every later test lie.
+  assert.equal(Array.prototype.includes, realIncludes, "control: Array.prototype.includes was not restored");
+});
+
 test("verifyApprovalReceipt (G1): expectedAction binds the approval to the EXACT held action — a genuine signed approval for a DIFFERENT action.paramsHash (or a different action.id) is refused, the matching one passes", () => {
   const { allowed, approverKeyring } = makeApprovedFixture("v-action-bind");
   // The genuine, validly-signed approval, checked against its OWN action, still verifies ok.
