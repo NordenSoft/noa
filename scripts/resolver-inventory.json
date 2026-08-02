@@ -1405,11 +1405,11 @@
     },
     "RES-PAR-EVID-ROOT": {
       "file": "packages/evidence/test/root-activation-window.test.ts",
-      "marker": "P0-1: a ROOT entry's validFrom SURVIVES parsing"
+      "marker": "[PROOF:RES-PAR-EVID-ROOT]"
     },
     "RES-PAR-AA-STRICT": {
       "file": "packages/approval-artifacts/test/activation-window-strict.test.ts",
-      "marker": "P0-6: a malformed `validFrom` cannot be normalised into a past instant"
+      "marker": "[PROOF:RES-PAR-AA-STRICT]"
     },
     "RES-PAR-ROOT-ENFORCED": {
       "file": "packages/approval-artifacts/test/activation-window-strict.test.ts",

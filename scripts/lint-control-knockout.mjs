@@ -597,8 +597,27 @@ const KNOCKOUTS = [
     id: "p06-activation-time-strict",
     control: "P0-6 — a non-canonical declared activation is refused instead of being normalised by Date.parse into a usable instant. [proof: RES-PAR-AA-STRICT]",
     file: "packages/approval-artifacts/src/verify.ts",
-    find: '  if (!CANONICAL_INSTANT.test(v)) return NaN;',
-    replace: '  if (!CANONICAL_INSTANT.test(v)) return Date.parse(v);',
+    // RE-AIMED 2026-08-01. The previous pair targeted `CANONICAL_INSTANT.test(v)`, a regex guard that
+    // batch C deleted when `parseTime` became epoch arithmetic. `find` then matched 0×, the runner
+    // reported MUTATION_NOT_APPLIED, and this control went UNMEASURED — its test kept passing and
+    // proved nothing, because nothing was mutating the line it was supposed to watch. A knockout whose
+    // anchor rots is worse than no knockout: it keeps printing a row in a table people read as coverage.
+    //
+    // WHY THE WHOLE FUNCTION AND NOT ONE LINE, measured rather than chosen. Two narrower mutations were
+    // tried first and BOTH failed to kill the control, which is itself the finding:
+    //   structural guard -> Date.parse fallback   => DETECTOR_DID_NOT_TRIGGER (schema refuses first)
+    //   schema check removed                      => still refused, by the structural guard
+    // The strictness is defended by TWO independent layers, so no single line carries it. Wrapping the
+    // function — strict parse first, `Date.parse` only where the strict parse REFUSES — reproduces the
+    // original defect exactly (refusals become plausible instants, acceptances are untouched) and is
+    // the only shape that removes the control without also changing what the parser accepts.
+    //
+    // Its `marker` in resolver-inventory.json was the FULL TEXT OF THE TEST NAME, so tagging the test
+    // with [PROOF:RES-PAR-AA-STRICT] unbound it instantly. Changed to the tag form that
+    // RES-PAR-ROOT-ENFORCED already used: a marker that is a sentence is one rewording away from
+    // silently certifying nothing.
+    find: 'function parseTime(v: unknown, timeSchema: Record<string, unknown> | null): bigint | null {',
+    replace: 'function parseTime(v: unknown, timeSchema: Record<string, unknown> | null): bigint | null {\n  const strict = parseTimeStrict(v, timeSchema);\n  if (strict !== null) return strict;\n  const ms = typeof v === "string" ? Date.parse(v) : NaN;\n  return ms === ms ? toBigInt(ms) * 1_000_000n : null;\n}\nfunction parseTimeStrict(v: unknown, timeSchema: Record<string, unknown> | null): bigint | null {',
     kind: "tests",
     suite: ["packages/approval-artifacts", "npm", ["test"]],
   },

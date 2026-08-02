@@ -10,7 +10,7 @@ import { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, type CborVa
 import { signEd25519, verifyEd25519, type Keyring } from "../keys.js";
 import { parseDocument } from "../bytes.js";
 import { parseVerificationKeyring } from "../verification-keyring.js";
-import { bufEquals, bufToString, bufferFrom, bufferAlloc, isArray } from "../intrinsics.js";
+import { bufEquals, bufToString, bufferFrom, bufferAlloc, isArray, jsonStringify } from "../intrinsics.js";
 
 /**
  * H1 — LIFT A SIGNED BYTE STRING INTO A JS STRING ONLY IF IT ROUND-TRIPS.
@@ -218,7 +218,7 @@ export function coseSign1Verify(coseBytes: Uint8Array, keyring: Uint8Array | str
       kid: result.kid,
       payload: null,
       kidAuthenticated: false,
-      reason: `signing key ${JSON.stringify(result.kid)} is retired; signer-chosen artifact time is not an independent witness`,
+      reason: `signing key ${jsonStringify(result.kid)} is retired; signer-chosen artifact time is not an independent witness`,
     };
   }
   return result;

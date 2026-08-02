@@ -67,6 +67,23 @@ const OUT_OF_TCB = {
 
 const TCB = [
   "src/verify.ts",
+  // THE KEY-LIFECYCLE DECISION PATH (P0-14, added 2026-08-01). `resolveVerificationKey` decides
+  // whether a signing key was live at the moment it signed — retired, not yet active, or current —
+  // and every retirement verdict in the kernel routes through it. It is a decision path by
+  // construction, not by discovery.
+  //
+  // IT SHIPPED UNCLASSIFIED, AND THAT IS THE POINT OF RECORDING IT HERE. The module was written to
+  // CLOSE P0-14 and reviewed six times, and in that whole span L2 and L3 never linted a line of it,
+  // because an unclassified file is not a file with no findings — it is a file nobody looked at. The
+  // gates printed green for the same reason a missing test prints green. L0 caught it only when this
+  // branch was finally put in front of CI.
+  //
+  // This is the SECOND instance of exactly this bypass in exactly this list; see the `src/ingest.ts`
+  // note below, which records the first. Both times the module declared SECURITY_SENSITIVE exports,
+  // so both times it was in the TCB by derivation and out of it by omission. A rule that has now
+  // failed twice the same way is a rule the next author will fail a third time, so state it plainly:
+  // adding a SECURITY_SENSITIVE export and adding the file here are one action, not two.
+  "src/verification-keyring.ts",
   // THE BYTES-IN BOUNDARY (ADR §3, P3). Both are decision paths by construction: `bytes.ts` decides
   // whether a value is a document at all, and `opts.ts` decides whether a caller-owned object may be
   // read. They are in the TCB from their first commit rather than after someone notices.

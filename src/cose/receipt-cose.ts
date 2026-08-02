@@ -16,7 +16,7 @@ import { parseDocument } from "../bytes.js";
 import { parseVerificationKeyring } from "../verification-keyring.js";
 import type { Receipt } from "../types.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
-import { arrayIncludes, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray, bufferFrom, bufToString, bufEquals } from "../intrinsics.js";
+import { arrayIncludes, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray, bufferFrom, bufToString, bufEquals, jsonStringify } from "../intrinsics.js";
 
 /** Wrap a receipt as a COSE_Sign1 (CBOR bytes). Payload = JCS-canonical receipt. */
 export function receiptToCose(receipt: Receipt, signer: CoseSigner): Buffer {
@@ -107,7 +107,7 @@ export function receiptFromCose(
       ok: false,
       kid: r.kid,
       receipt: null,
-      reason: `signing key ${JSON.stringify(r.kid)} is retired; signer-chosen artifact time is not an independent witness`,
+      reason: `signing key ${jsonStringify(r.kid)} is retired; signer-chosen artifact time is not an independent witness`,
       warnings: [],
     };
   }

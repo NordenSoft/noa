@@ -244,7 +244,13 @@ test("Batch N: every published Decision timestamp spelling verifies while lifecy
 // THE DEFECT — a malformed declared activation must NEVER become a usable past instant.
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
-test("P0-6: a malformed `validFrom` cannot be normalised into a past instant", () => {
+// [PROOF:RES-PAR-AA-STRICT] — the knockout `p06-activation-time-strict` mutates the structural
+// guard in `parseTime` back into a `Date.parse` fallback and requires THIS test to go red. The tag
+// was lost when batch C replaced the regex parser with epoch arithmetic: the test kept measuring the
+// property, the registry kept pointing at a line that no longer existed, and the knockout reported
+// MUTATION_NOT_APPLIED — a control with no instrument watching it, which is indistinguishable from a
+// control that passes until someone looks.
+test("P0-6 [PROOF:RES-PAR-AA-STRICT]: a malformed `validFrom` cannot be normalised into a past instant", () => {
   for (const bad of [
     "0",                      // Date.parse => 1999-12-31
     "2026-02-30",             // a day that does not exist; Date.parse rolls it to 2026-03-02

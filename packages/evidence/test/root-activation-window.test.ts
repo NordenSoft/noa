@@ -74,7 +74,11 @@ function root(extra: Record<string, unknown>) {
 // THE DEFECT — the field must survive the parse, or nothing downstream can enforce it.
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
-test("P0-1: a ROOT entry's validFrom SURVIVES parsing", () => {
+// [PROOF:RES-PAR-EVID-ROOT] — the tag, not this sentence, is what binds this test to the knockout
+// that certifies it. Its sibling RES-PAR-AA-STRICT was bound by its full test name until 2026-08-01,
+// and adding a proof tag to that name silently unbound it: the knockout kept running and stopped
+// certifying anything. A marker that is prose survives only until someone improves the prose.
+test("P0-1 [PROOF:RES-PAR-EVID-ROOT]: a ROOT entry's validFrom SURVIVES parsing", () => {
   const e = root({ validFrom: "2026-01-01T00:00:00.000Z", revokedAt: null });
   assert.equal(
     e.validFrom, "2026-01-01T00:00:00.000Z",
