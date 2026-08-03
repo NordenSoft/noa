@@ -624,14 +624,30 @@ test("projection identity: the identity COMMITS to the implementation artifact �
 // file are pinned with passing controls; this is the tenth and it is NOT yet pinned. Fixing the
 // harness is a Phase 2 remainder, not a Phase 4 dependency.
 
-test("execute(): the wrapper must not report success for an action it cannot verify", async () => {
+/** ADR-0006-A PART B — THE BOUNDARY CONSTRUCTS THE COMMAND.
+ *
+ *  This replaces `execute(): the wrapper must not report success for an action it cannot verify`,
+ *  whose failure message named the remedy: *"The boundary must accept a typed execution command it
+ *  constructs, not an opaque caller-supplied closure."* That remedy is implemented, so the old
+ *  assertion (`outcome !== "EXECUTED"`) can no longer be the measurement — it would assert the
+ *  absence of a capability the boundary was just given.
+ *
+ *  What the old test PROVED is not discarded. It proved TWO things and only one is fixed:
+ *    (1) the gate had no way to tell the executor what was authorized  → CLOSED, asserted here;
+ *    (2) the gate cannot observe what the executor actually did        → STILL TRUE, asserted in
+ *        `RESIDUAL` below, so nobody reads this rewrite as the stronger claim.
+ *
+ *  Deleting (2) instead of restating it is the silent scope reduction this repository counts as a
+ *  false completion. */
+test("execute(): the boundary hands the executor a typed command IT constructed from what was granted", async () => {
   const { guard, InProcessGateClient } = await import("../src/wrapper.js");
+  const { getProjection } = await import("../src/projections.js");
   const fx = setupGate({ approverRole: "approve-critical" });
   const client = new InProcessGateClient(fx.engine, fx.agent);
 
-  // What actually happens at the target, recorded independently of anything the caller reports.
-  const sideEffects: Array<Record<string, unknown>> = [];
   const approved = sampleCommandParams();
+  let handed: unknown = "NOTHING WAS HANDED TO THE EXECUTOR";
+  let argCount = -1;
 
   const run = guard({
     client,
@@ -640,25 +656,204 @@ test("execute(): the wrapper must not report success for an action it cannot ver
     idempotencyKey: "idem-exec",
     chain: "chain-exec",
     waitMs: 2000,
-    // The grant binds `approved`. This closure performs something else entirely, and the gate is
-    // never told what it did, because `execute` takes no arguments and returns only a boolean.
-    execute: async () => {
-      sideEffects.push({ executable: "/bin/rm", argv: ["-rf", "/"] });
-      return { ok: true };
-    },
+    execute: async (...args: unknown[]) => { argCount = args.length; handed = args[0]; return { ok: true }; },
+  });
+
+  await approveFirstPending(fx);
+  const outcome = await run;
+  assert.equal(outcome.outcome, "EXECUTED", outcome.detail);
+
+  // 1. The executor is CALLED WITH something. Before this change it was called with nothing at all.
+  assert.equal(argCount, 1, "the executor was invoked with no arguments — it cannot know what was authorized");
+  const cmd = handed as Record<string, unknown>;
+  assert.equal(typeof cmd, "object", `the executor was handed ${JSON.stringify(handed)}`);
+
+  // 2. The command carries the APPROVED params — the gate's own snapshot, not the caller's live object.
+  assert.deepEqual(cmd["params"], approved, "the command does not carry the approved parameters");
+  assert.notStrictEqual(cmd["params"], approved,
+    "the command handed back the CALLER'S OWN object. A snapshot the caller still holds a reference " +
+      "to is not a snapshot — mutating it after this point changes what the executor sees");
+
+  // 3. The hash is the gate's OWN derivation over those params, independently reproducible here.
+  const expected = getProjection("noa.command.exec")!.run(approved);
+  assert.ok(expected.ok, "fixture precondition: the reviewed adapter accepts the sample params");
+  assert.equal(cmd["paramsHash"], expected.paramsHash,
+    "the command's paramsHash is not the hash the gate derived and the grant bound");
+
+  // 4. It is INERT, and DEEPLY so. A hostile executor must not be able to edit the record of what was
+  //    authorized and pass it onward to a nested consumer as if the gate had granted the edit.
+  //    The nested assertion matters: a SHALLOW freeze passes the outer check and leaves `argv` — the
+  //    part that says what actually runs — writable. Vacuity of exactly the kind this suite hunts.
+  assert.ok(Object.isFrozen(cmd), "the execution command is mutable");
+  assert.ok(Object.isFrozen(cmd["params"]), "the command's params are mutable");
+  assert.ok(Object.isFrozen((cmd["params"] as Record<string, unknown>)["argv"]),
+    "the command's params are only SHALLOW-frozen — argv, which names what runs, is still writable");
+
+  // 5. It names the authorization it came from, so an auditor can join it to the signed consumption.
+  //    NOTE the deliberate absence: no `riskClass`, no `reversible`. Those are the CALLER'S labels,
+  //    which the wrapper never verified and B-1 moved inside the trusted boundary. Echoing them here
+  //    would let a nested consumer read `command.riskClass` as "the gate classified this" — the M2
+  //    launder, reborn on a new surface. The authoritative tuple is in the signed envelope, joined
+  //    via grantId.
+  assert.equal(cmd["canonical"], "noa.command.exec");
+  assert.equal(cmd["grantId"], outcome.grantId);
+  assert.equal(cmd["holdId"], outcome.holdId);
+  assert.equal("riskClass" in cmd, false, "the command echoes a caller-supplied risk label");
+  assert.equal("reversible" in cmd, false, "the command echoes a caller-supplied reversibility label");
+});
+
+/** RESIDUAL — DELIBERATELY NOT A FAILURE, AND DELIBERATELY NOT DELETED.
+ *
+ *  ADR-0006-A gives the executor the authorized command. It does NOT make the executor use it, and
+ *  no in-realm mechanism can: TypeScript accepts a zero-argument function where a one-argument type
+ *  is expected, and a closure may read its argument and then do something else entirely.
+ *
+ *  ADR-0006 §9.1 is the reason, and it is a fact about the world rather than a gap in this design:
+ *  binding what RAN to what was GRANTED needs either credential custody at the boundary (so the
+ *  executed request is the boundary's own construction) or a target that validates a request-bound
+ *  capability under its own key. Neither exists. Those are stages 9 and 10 — one-way doors, still
+ *  the owner's, and NOT taken here. */
+test("execute(): RESIDUAL — an executor that IGNORES the command is still unconstrained, and the gate must not pretend otherwise", async () => {
+  const { guard, InProcessGateClient } = await import("../src/wrapper.js");
+  const { getProjection } = await import("../src/projections.js");
+  const fx = setupGate({ approverRole: "approve-critical" });
+  const client = new InProcessGateClient(fx.engine, fx.agent);
+
+  const sideEffects: Array<Record<string, unknown>> = [];
+  const approved = sampleCommandParams();
+
+  const run = guard({
+    client,
+    action: { canonical: "noa.command.exec", riskClass: "CRITICAL", reversible: false },
+    params: approved,
+    idempotencyKey: "idem-exec-residual",
+    chain: "chain-exec-residual",
+    waitMs: 2000,
+    // Handed the authorized command; performs something else. Nothing stops it.
+    execute: async () => { sideEffects.push({ executable: "/bin/rm", argv: ["-rf", "/"] }); return { ok: true }; },
   });
 
   await approveFirstPending(fx);
   const outcome = await run;
 
-  const performed = sideEffects[0];
-  assert.ok(performed !== undefined && performed["executable"] !== approved["executable"],
-    `fixture precondition: the closure must have run a DIFFERENT action (got ${JSON.stringify(performed)})`);
+  const performed = sideEffects[0]!;
+  assert.notEqual(performed["executable"], approved["executable"],
+    "fixture precondition: the closure must have performed a DIFFERENT action");
 
-  assert.notEqual(outcome.outcome, "EXECUTED",
-    "the wrapper reported EXECUTED for an action it has no way to observe: `execute` takes no " +
-      "arguments, so the executed command is never compared to the granted one. The boundary must " +
-      "accept a typed execution command it constructs, not an opaque caller-supplied closure");
+  assert.equal(outcome.outcome, "EXECUTED",
+    "if this ever stops being EXECUTED, the boundary has acquired an execution binding — that is " +
+      "ADR-0006 stage 9 and it is an owner decision, not a refactor");
+
+  // WHOSE RECORD IS IT. Asserting merely that `command` EXISTS would stay green if a future change
+  // populated it from the executor's self-report — and the residual would become stage-9 theatre.
+  // So the assertion is that it equals the GRANTED derivation, computed here independently.
+  const expected = getProjection("noa.command.exec")!.run(approved);
+  assert.ok(expected.ok);
+  assert.equal(outcome.command?.paramsHash, expected.paramsHash,
+    "the residual record must be the GRANTED command; a record of what the executor CLAIMS it did " +
+      "would be an execution binding the gate does not have");
+  assert.notDeepEqual(outcome.command?.params, performed,
+    "fixture: the granted command and the performed action differ, which is the whole point");
+});
+
+/** THE FREEZE WALKER'S RED-FIRST VECTOR (ADR-0006-A part B, spec item 3).
+ *
+ *  The command hands the executor the gate's own snapshot. If that snapshot were freezable only in
+ *  appearance, the executor could edit the record of what was authorized. `Object.freeze` is a lie on
+ *  most clonables — it does not disable `Map.prototype.set` (this repo already paid to learn that:
+ *  `approval-artifacts/src/inert-core/inert.ts:131`), does not stop `Date.prototype.setTime`, and
+ *  THROWS on a non-empty TypedArray. So the walker does not pretend to freeze them: it REFUSES them,
+ *  before the hold exists and before any human is asked anything. */
+test("execute(): params that cannot be honestly frozen are refused BEFORE the hold exists", async () => {
+  const { guard } = await import("../src/wrapper.js");
+  let createHoldCalls = 0;
+  const spy = {
+    createHold: () => { createHoldCalls++; return Promise.resolve({ status: 201, body: { holdId: "h" } }); },
+    wait: () => Promise.resolve({ status: 200, body: { status: "DENIED" } }),
+    reserve: () => Promise.resolve({ status: 200, body: {} }),
+    report: () => Promise.resolve({ status: 200, body: {} }),
+  };
+  let executed = false;
+
+  const result = await guard({
+    client: spy,
+    action: { canonical: "noa.command.exec", riskClass: "CRITICAL", reversible: false },
+    params: { ...sampleCommandParams(), extra: new Map([["k", "v"]]) },
+    idempotencyKey: "idem-unfreezable",
+    chain: "chain-unfreezable",
+    execute: async () => { executed = true; return { ok: true }; },
+  });
+
+  assert.equal(result.outcome, "ERROR", "an unfreezable snapshot must be refused, not frozen in appearance");
+  assert.equal(result.ran, false);
+  assert.match(String(result.detail), /not freezable/,
+    `the refusal must name the reason, not fail generically (got: ${result.detail})`);
+  assert.equal(createHoldCalls, 0, "the gate posted a hold for params it could not honestly snapshot");
+  assert.equal(executed, false);
+});
+
+test("execute() freeze anti-vacuity: ordinary JSON-shaped params still complete the whole flow", async () => {
+  const { guard, InProcessGateClient } = await import("../src/wrapper.js");
+  const fx = setupGate({ approverRole: "approve-critical" });
+  const client = new InProcessGateClient(fx.engine, fx.agent);
+  const run = guard({
+    client,
+    action: { canonical: "noa.command.exec", riskClass: "CRITICAL", reversible: false },
+    params: sampleCommandParams(),
+    idempotencyKey: "idem-freezable",
+    chain: "chain-freezable",
+    waitMs: 2000,
+    execute: async () => ({ ok: true }),
+  });
+  await approveFirstPending(fx);
+  assert.equal((await run).outcome, "EXECUTED",
+    "the walker refused params the shipped adapter accepts — it is over-broad, not fail-closed");
+});
+
+/** WHY `ExecutionCommand` HAS NO RAW BRANCH — the measurement, pinned.
+ *
+ *  The specification asked for a discriminated union with a RAW variant. Measured instead: RAW cannot
+ *  reach the executor, and it fails TWO barriers earlier than assumed. `engine.ts:287` DERIVES the
+ *  mode from the projection registry (a caller cannot select it), and `:322-328` then returns 422 for
+ *  RAW UNCONDITIONALLY — the B-1 migration clause. Its own comment states the conclusion: *"it is no
+ *  longer a hold-creation path."* The second barrier (`:835`, RAW may never carry a grant) is real
+ *  and never reached, because the hold does not exist.
+ *
+ *  A RAW branch would therefore be UNCONSTRUCTIBLE: no path produces it, no test exercises it, no
+ *  knockout measures it — the exact shape `wrapper.ts` records DELETING two of, with the lesson that
+ *  unreachable code inside the TCB is a comfort blanket, not a control.
+ *
+ *  This test is the anti-vacuity control for that omission. It makes "there is no RAW branch" a
+ *  MEASURED fact rather than an inference.
+ *
+ *  ⚠ IF THIS GOES RED BECAUSE RAW HOLD CREATION WAS RE-OPENED, DO NOT UPDATE THE ASSERTION.
+ *  `ExecutionCommand` needs a `mode` discriminant first. This test is the TRIPWIRE for that design
+ *  decision, not a regression pin on an error string — which is also why it asserts the stable error
+ *  CODE and never the prose around it. */
+test("execute(): RAW cannot reach the executor at all — which is why the command has no RAW branch", async () => {
+  const { guard, InProcessGateClient } = await import("../src/wrapper.js");
+  const fx = setupGate({ approverRole: "approve-critical" });
+  const client = new InProcessGateClient(fx.engine, fx.agent);
+  let executed = false;
+
+  const result = await guard({
+    client,
+    action: { canonical: "some.unregistered.action", riskClass: "HIGH", reversible: false },
+    mode: "RAW",
+    paramsHash: `sha256:${"a".repeat(64)}`,
+    display: { Action: "an unregistered action" },
+    idempotencyKey: "idem-raw-unreachable",
+    chain: "chain-raw-unreachable",
+    waitMs: 1500,
+    execute: async () => { executed = true; return { ok: true }; },
+  });
+
+  assert.equal(result.outcome, "ERROR");
+  assert.match(String(result.detail), /UNREGISTERED_CRITICAL_ACTION/,
+    `RAW is expected to die at createHold under B-1 (got: ${result.detail})`);
+  assert.equal(executed, false,
+    "RAW reached the executor. The ExecutionCommand shape now needs a RAW branch, and the docstring " +
+      "above — which argues the branch would be unconstructible — is false and must be rewritten");
 });
 
 test("execute() anti-vacuity: an honest closure performing the approved action reports success", async () => {

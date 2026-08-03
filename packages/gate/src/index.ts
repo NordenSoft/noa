@@ -34,6 +34,12 @@ export {
   type GuardInput,
   type GuardResult,
   type GuardOutcome,
+  // ADR-0006-A part B. An executor cannot type its own parameter without this name, and a consumer
+  // reconciling `GuardResult.command` against a system of record cannot type what it received.
+  // Exported freely because `noa-gate` is `private: true` and absent from the registry — the R8-08
+  // rule (a new name on a PUBLISHED surface is a permanent compatibility commitment) does not bind
+  // here, and was checked rather than assumed.
+  type ExecutionCommand,
 } from "./wrapper.js";
 export type {
   HoldStatus,

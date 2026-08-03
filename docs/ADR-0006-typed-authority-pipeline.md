@@ -204,6 +204,13 @@ This section is the point of the document. It is stated at full strength because
 
 - `grep -rn "ProviderExecution" src packages` returns nothing. The type does not exist.
 - `packages/gate/src/wrapper.ts:122`: `execute: () => Promise<{ ok: boolean; detail?: string }>` — **no arguments.** The boundary hands control to an opaque caller closure and never learns what ran.
+
+  > **2026-08-03 — this second bullet is now historical.** ADR-0006-A part B landed: `execute` receives
+  > the boundary-constructed `ExecutionCommand` (`{canonical, params, paramsHash, holdId, grantId}`),
+  > and `GuardResult.command` carries the same record so an auditor has something to reconcile
+  > against. **The admissibility gap this section argues from is UNCHANGED:** the boundary still does
+  > not observe what RAN, and an executor may read the command and do something else. Stages 9 and 10
+  > remain without admissible input, and the reason code below is still the honest emission.
 - `wrapper.ts:247-257` reads `r.ok` and `r.detail` and — correctly — treats them as **detail, never as a verdict**. `:216-217`: *"the fact is observable only to the party being judged. So the claims are not authenticated — they are no longer believed."*
 - `docs/INTENT-BINDING-TEST-REQUIREMENTS.md` T-10 is recorded as **OPEN AND UNRESOLVED**, with no known passing implementation for providers whose native mechanism cannot express a single-action grant.
 
