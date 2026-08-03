@@ -50,7 +50,19 @@ import { intrinsics } from "noa-receipt";
 // dispatches through no method at all — there is no `next`, no `map`, no `forEach` to replace — so
 // the class is closed rather than its current members. This is the same move the kernel made when
 // its key walk and code-point walk became index loops.
-const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap, arraySort, arrayPush, objectKeys } = intrinsics;
+// ROUND 4 — A DISPATCH CLASS THE GATES CANNOT NAME.
+// Rounds 1-3 were all builtin READS or CALLS. This one is a property WRITE: `out[k] = v` performs
+// `[[Set]]`, which WALKS THE PROTOTYPE CHAIN, so an accessor installed on Object.prototype swallows
+// the write and the canonical copy silently loses a field. Measured: 4 writes swallowed, a weakening
+// from 4000 to 99,999,999 applied with NO approval and NO step-up — and **not one builtin was
+// replaced**. L2/L8 model dispatch as a call or a read; they have no grammar for a write, so
+// `policy-change-guard.mjs:93` appears in NONE of the 298 budgeted findings. 37 such sites were
+// measured across the two published packages.
+//
+// The fix is structural, not another captured name: a null-prototype object has no chain to walk, so
+// `[[Set]]` cannot be intercepted at all. Same reason the kernel gives arrays an inert prototype.
+const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap, arraySort, arrayPush, objectKeys, objectCreateNull, objectSetPrototypeOf } = intrinsics;
+import { INERT_ARRAY_PROTOTYPE } from "noa-receipt";
 
 /** The FIXED action id every policy-change hold + approval + receipt is minted under (spec §19.3). */
 export const POLICY_UPDATE_ACTION_ID = "noa.policy.update";
@@ -88,7 +100,7 @@ export const POLICY_UPDATE_META_POLICY = Object.freeze({
 function sortKeysDeep(value) {
   if (isArray(value)) return arrayMap(value, sortKeysDeep);
   if (value && typeof value === "object") {
-    const out = {};
+    const out = objectCreateNull();
     const ks = arraySort(objectKeys(value), undefined);
     for (let i = 0; i < ks.length; i += 1) out[ks[i]] = sortKeysDeep(value[ks[i]]);
     return out;
@@ -105,7 +117,10 @@ function sortKeysDeep(value) {
  */
 export function canonicalizeApprovalRules(rules) {
   const arr = isArray(rules) ? rules : [];
+  // The prototype is swapped BEFORE the first write: an index write on a plain array still
+  // reaches Object.prototype through Array.prototype, which is R4-05's paramsHash collision.
   const canon = [];
+  objectSetPrototypeOf(canon, INERT_ARRAY_PROTOTYPE);
   for (let i = 0; i < arr.length; i += 1) arrayPush(canon, sortKeysDeep(arr[i]));
   return arraySort(canon, (a, b) => {
     const sa = jsonStringify(a);
@@ -164,7 +179,10 @@ function matchSemantic(rule) {
 function indexById(rules) {
   const map = new Map();
   if (!isArray(rules)) return map;
-  for (const r of rules) if (r && typeof r === "object" && typeof r.id === "string") map.set(r.id, r);
+  for (let i = 0; i < rules.length; i += 1) {
+    const r = rules[i];
+    if (r && typeof r === "object" && typeof r.id === "string") map.set(r.id, r);
+  }
   return map;
 }
 

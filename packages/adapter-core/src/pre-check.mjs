@@ -24,7 +24,19 @@ import {
 } from "noa-receipt";
 import { matchApprovalRule } from "./approval-rules.mjs";
 import { intrinsics } from "noa-receipt";
-const { isArray, objectKeys, arraySort, arrayPush, arrayJoin, jsonStringify, isFiniteNumber } = intrinsics;
+// ROUND 4. This destructure existed BEFORE round 4 and was applied only to the fallback stringifier
+// 150 lines below the code that decides a verdict. The lines that compute the DECISION kept reading
+// live builtins — `encodeDocument`'s JSON.stringify (R4-01), `Object.keys`/`Number.isFinite`/
+// `Number.isSafeInteger` on the flatten path (R4-04), `String.prototype.includes` on the dotted-key
+// decoy guard (R4-03). Capturing a builtin and then not using it where the verdict is made is worse
+// than not capturing it: the file reads as hardened.
+//
+// The flatten output is also `objectCreateNull()` now. `out[prefix] = args` is a property WRITE, and
+// `[[Set]]` walks the prototype chain, so an accessor on Object.prototype swallowed the write and the
+// policy evaluated inputs that were silently missing a key — an omission bypass with NO builtin
+// replaced at all (R4-02b). A null-prototype object has no chain to walk.
+const { isArray, objectKeys, arraySort, arrayPush, arrayJoin, jsonStringify, isFiniteNumber,
+        isSafeInteger, strIncludes, objectCreateNull, objectAssign } = intrinsics;
 
 /**
  * ── THE DOCUMENT ENCODER (bytes-in) ──────────────────────────────────────────────────────────────
@@ -44,7 +56,12 @@ const { isArray, objectKeys, arraySort, arrayPush, arrayJoin, jsonStringify, isF
  */
 const DOCUMENT_ENCODER = new TextEncoder();
 function encodeDocument(value) {
-  return DOCUMENT_ENCODER.encode(JSON.stringify(value));
+  // ROUND 4 / R4-01. This was a live `JSON.stringify`, and it encodes the document the VERDICT is
+  // computed from — poison it and preCheck returns DENY->ALLOW with a signed, chain-VALID receipt
+  // carrying an honest policyHash, so nothing downstream can tell. `jsonStringify` was destructured
+  // at the top of this file in the same commit that left this line alone: the capture was applied to
+  // the fallback stringifier 150 lines BELOW the code that decides.
+  return DOCUMENT_ENCODER.encode(jsonStringify(value));
 }
 
 /** Cap on how deep `flattenArgsToPolicyInputs` will descend into nested args, and on how many
@@ -98,9 +115,9 @@ function flattenArgsToPolicyInputs(args, prefix, depth, out, state) {
     return out;
   }
   if (t === "number") {
-    if (Number.isSafeInteger(args)) {
+    if (isSafeInteger(args)) {
       out[prefix] = args;
-    } else if (Number.isFinite(args)) {
+    } else if (isFiniteNumber(args)) {
       out[prefix] = canonicalDecimalNumberString(args);
     }
     // else: NaN / +-Infinity — no meaningful decimal-string projection exists; omitted, same as
@@ -117,12 +134,14 @@ function flattenArgsToPolicyInputs(args, prefix, depth, out, state) {
     return out;
   }
   if (t === "object") {
-    for (const k of Object.keys(args)) {
+    const argKeys = objectKeys(args);
+    for (let ki = 0; ki < argKeys.length; ki += 1) {
+      const k = argKeys[ki];
       if (state.count >= MAX_ARGS_FLATTEN_ENTRIES) break;
       // Dotted raw keys are rejected up-front by findAmbiguousDottedArgKey() before this function
       // is ever called (see preCheck()) — reaching here with one would mean a caller bypassed that
       // guard; defensively skip it rather than silently flattening an ambiguous path.
-      if (k.includes(".")) continue;
+      if (strIncludes(k, ".")) continue;
       flattenArgsToPolicyInputs(args[k], `${prefix}.${k}`, depth + 1, out, state);
     }
     return out;
@@ -150,8 +169,10 @@ function findAmbiguousDottedArgKey(args, prefix = "args", depth = 0) {
     }
     return null;
   }
-  for (const k of Object.keys(args)) {
-    if (k.includes(".")) return `${prefix}.${k}`;
+  const dottedKeys = objectKeys(args);
+  for (let ki = 0; ki < dottedKeys.length; ki += 1) {
+    const k = dottedKeys[ki];
+    if (strIncludes(k, ".")) return `${prefix}.${k}`;
     const found = findAmbiguousDottedArgKey(args[k], `${prefix}.${k}`, depth + 1);
     if (found !== null) return found;
   }
@@ -388,7 +409,7 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
     ev = { verdict: "DENY", ruleFired: "args-uncanonicalizable", engine: "args-canonicalization-guard" };
   } else {
     try {
-      Object.assign(inputs, flattenArgsToPolicyInputs(safeArgs, "args", 0, {}, { count: 0 }));
+      objectAssign(inputs, flattenArgsToPolicyInputs(safeArgs, "args", 0, objectCreateNull(), { count: 0 }));
       // BYTES-IN: both documents are serialized ONCE here and parsed by the kernel — see
       // `encodeDocument` above. A policy that cannot be serialized at all is its own fail-closed
       // DENY, not an args error: the receipt's `ruleId` is evidence, and evidence that names the

@@ -271,3 +271,48 @@ test("applyPolicyChange: NO replaceable builtin can make a weakening apply witho
   assert.equal(after.ok, false, "control: every poison was restored — a leaked one makes later tests lie");
   assert.equal(after.changed, true);
 });
+
+
+// ROUND 4 — the WRITE class, which the previous table could not express.
+//
+// Rounds 1-3 were all builtin READS or CALLS, so the POISONS table above replaces methods. Round 4's
+// exploit replaced NOTHING: it defined an accessor on Object.prototype, and because `out[k] = v`
+// performs `[[Set]]` — which walks the prototype chain — the write was swallowed and the canonical
+// copy silently lost a field. A weakening from 4000 to 99,999,999 then applied with no approval.
+//
+// This is also the class the L2/L8 gates cannot name: they model dispatch as a call or a read, so
+// `policy-change-guard.mjs:93` appeared in NONE of the 298 budgeted findings while being exploitable.
+// 37 such sites were measured across the two published packages.
+const PROTOTYPE_WRITE_TARGETS = ["threshold", "match", "id", "value", "path", "op", "0", "1"];
+
+test("applyPolicyChange: a prototype ACCESSOR cannot swallow a write and hide a weakening", () => {
+  const strict = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
+  const weakened = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 99999999 } }];
+  const call = () => applyPolicyChange({ currentRules: strict, proposedRules: weakened });
+
+  assert.equal(call().ok, false, "control: the weakening must be refused unpoisoned");
+
+  for (const key of PROTOTYPE_WRITE_TARGETS) {
+    const had = Object.getOwnPropertyDescriptor(Object.prototype, key);
+    let swallowed = 0;
+    let out;
+    try {
+      Object.defineProperty(Object.prototype, key, {
+        configurable: true,
+        set() { swallowed += 1; },
+        get() { return undefined; },
+      });
+      out = call();
+    } finally {
+      if (had) Object.defineProperty(Object.prototype, key, had);
+      else delete Object.prototype[key];
+    }
+    assert.equal(out.ok, false,
+      `an accessor on Object.prototype.${key} swallowed a write and let a policy weakening apply ` +
+      `with NO approval — and no builtin was replaced, so no call/read gate can see it`);
+    assert.equal(out.changed, true, `Object.prototype.${key} made a changed ruleset report changed:false`);
+    assert.equal(key in Object.prototype, false, `control: Object.prototype.${key} was not restored`);
+  }
+
+  assert.equal(call().ok, false, "control: every accessor was removed");
+});
