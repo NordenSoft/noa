@@ -13,9 +13,63 @@ _Nothing yet._
 > **READ BEFORE UPGRADING.** This is a security release and it is deliberately stricter than 0.5.0.
 > Artifacts that previously verified `VALID` can now verify `REFUSE` or `TAMPERED`. That is the
 > point of the release, not a regression — but it means an upgrade can change the answer your system
-> gets for evidence it already holds. Two of the changes are listed under **BREAKING** below with
-> their migrations; the third is the P0-14 tightening described immediately after this note, whose
-> operational cost is stated at the end of that section.
+> gets for evidence it already holds. The changes are listed under **BREAKING** below with their
+> migrations, plus the P0-14 tightening described after this note, whose operational cost is stated
+> at the end of that section.
+>
+> **If you only read one item, read the first BREAKING entry: the public verifiers no longer accept
+> objects.** Existing `verifyChain(receipts)` and `verifyCheckpoint(cp, keyring)` calls that pass
+> parsed objects will stop working — at compile time in TypeScript, and as a `MALFORMED` verdict at
+> runtime in JavaScript.
+
+### BREAKING — the public verifiers take BYTES, not objects
+
+`verifyChain` and `verifyCheckpoint` changed their INPUT types:
+
+```
+0.5.0   verifyChain(receipts: unknown, opts?: VerifyOptions)
+0.6.0   verifyChain(receipts: Uint8Array | string, opts?: VerifyOptions)
+
+0.5.0   verifyCheckpoint(cp: Checkpoint, keyring?: Keyring)
+0.6.0   verifyCheckpoint(cp: Uint8Array | string, keyring?: Uint8Array | string)
+```
+
+`opts.keyring` moved the same way. A 0.5-style call over a genuine chain now returns:
+
+```
+old object API:              MALFORMED
+  options: option "keyring": expected Uint8Array or string — a security-sensitive
+  document is bytes, never a caller-owned object (ADR §3.1)
+same data encoded as bytes:  VALID
+```
+
+TypeScript consumers get a compile error instead (`Receipt[]` is no longer assignable to
+`string | Uint8Array`), which is the better failure of the two.
+
+*Why:* the verifier's own boundary decides what a document IS. When it accepted a caller-owned
+object, the caller had already done the parsing, and every getter, proxy and poisoned prototype on
+that object ran INSIDE the trust boundary. Taking bytes moves the parse to where the decision is
+made. This is the bytes-in work that closed a class of ingest attacks; it is not a stylistic change.
+
+*Migration:* encode at the call site.
+
+```js
+// before
+verifyChain(receipts, { keyring });
+// after
+verifyChain(encodeDocument(receipts), { keyring: encodeDocument(keyring) });
+```
+
+`encodeDocument` / `decodeDocument` / `parseDocument` are exported for exactly this. Anything you
+already hold as JSON text can be passed straight through — the string overload takes it unchanged.
+
+⚠ **This entry was MISSING from the first draft of this release, and the omission is worth stating.**
+The version bump was justified by an export-surface diff — 18 names added, 0 removed, therefore
+"additive". That measurement counts NAMES and cannot see TYPES, so a full rewrite of the two most
+used entry points registered as zero change. A cross-family review found it. The lesson is the one
+this codebase repeats: a green number from an instrument that cannot observe the property is not
+evidence about the property.
+
 >
 > **Why MINOR and not 1.0.0.** Under SemVer, `0.y.z` is the range where breaking changes belong in
 > the MINOR position, so `0.6.0` is this project's major-equivalent bump. Declaring `1.0.0` would
