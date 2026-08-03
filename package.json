@@ -68,6 +68,7 @@
     "lint:dispatch-surfaces": "node scripts/lint-dispatch-surfaces.mjs",
     "lint:security-gates": "node scripts/lint-security-gates.mjs",
     "lint:workflows": "node scripts/lint-workflows.mjs",
+    "lint:test-extent": "node scripts/lint-test-extent.mjs",
     "lint:resolver-parity": "node scripts/lib/proof-resolve.selftest.mjs && node scripts/lint-resolver-parity.mjs",
     "lint:knockout": "node scripts/lint-control-knockout.selftest.mjs && node scripts/lint-control-knockout.mjs",
     "lint:trusted-roots": "node scripts/lint-trusted-roots.mjs",

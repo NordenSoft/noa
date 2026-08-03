@@ -110,6 +110,10 @@ for (const [name, cmd, args, cwd] of [
   // else in this gate can observe it, and `yaml.safe_load` reported the broken file as valid.
   ["workflow files", "node", ["scripts/lint-workflows.mjs"], ROOT],
   ["kernel build", "npm", ["run", "build"], ROOT],
+  // AFTER the build, so it inspects the artifacts a run would actually execute. Catches a compiled
+  // test with no source — a file that runs locally, counts toward every local green, and that no
+  // reviewer or diff can ever see. Two were sitting in this repo when it was written.
+  ["test extent", "node", ["scripts/lint-test-extent.mjs"], ROOT],
   ["kernel tests", "npm", ["test"], ROOT],
   ["typecheck (all packages)", "npm", ["run", "typecheck:all"], ROOT],
   ["security gates L1-L7", "npm", ["run", "lint:security-gates"], ROOT],
