@@ -110,7 +110,11 @@ jobs:
         #
         # This gate asks the question in the form that can fail: has anything in the kernel's
         # published surface moved since its release tag? It fails closed when it cannot measure.
-        run: node scripts/lint-kernel-release-parity.mjs
+        # Runs the gate's SELFTEST first, then the gate. The selftest rebuilds the six attacks that
+        # defeated the previous version in throwaway repositories and asserts each verdict, plus two
+        # controls — a gate that can only ever fail is as useless as one that can only ever pass.
+        # Without the selftest ahead of it, a gate that had quietly stopped measuring would publish.
+        run: npm run lint:release-parity
 
       - name: adapter-core test gate (never publish broken)
         working-directory: packages/adapter-core
