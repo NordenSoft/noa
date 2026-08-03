@@ -273,7 +273,9 @@ lines.push("");
 lines.push("| Export | Kind | First parameter | Bytes-in | Declared in | Exemption reason |");
 lines.push("|---|---|---|---|---|---|");
 for (const r of rows) {
-  const p = r.firstParam.replace(/\|/g, "\\|").replace(/\n/g, " ");
+  // CodeQL js/incomplete-sanitization, fixed rather than suppressed: escaping `|` for a markdown
+  // table without escaping `\` first lets a trailing backslash swallow the escape.
+  const p = r.firstParam.replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, " ");
   lines.push(`| \`${r.name}\` | ${r.kind} | \`${p}\` | ${r.bytesIn} | \`${r.file}\` | ${r.reason} |`);
 }
 lines.push("");

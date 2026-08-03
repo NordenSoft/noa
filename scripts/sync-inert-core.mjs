@@ -19,7 +19,7 @@
  *   node scripts/sync-inert-core.mjs            # rewrite the vendored copies
  *   node scripts/sync-inert-core.mjs --check    # fail if any copy is stale (CI)
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, rmSync, renameSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -69,7 +69,13 @@ for (const dir of TARGETS) {
     if (check) {
       console.error(`::error::inert-core copy is STALE: ${dest.slice(ROOT.length + 1)} (run: node scripts/sync-inert-core.mjs)`);
     } else {
-      writeFileSync(dest, want);
+      // CodeQL js/file-system-race, fixed rather than suppressed: the previous shape read `dest`,
+      // compared, then wrote it — a window in which another process can change the file between the
+      // check and the write. Writing a sibling temp and renaming makes the replacement ATOMIC, so
+      // there is no interval in which `dest` holds a partial or stale copy.
+      const tmp = `${dest}.tmp-${process.pid}`;
+      writeFileSync(tmp, want);
+      renameSync(tmp, dest);
       console.log(`wrote ${dest.slice(ROOT.length + 1)}`);
     }
   }

@@ -172,7 +172,9 @@ function stripComments(src) {
 
 /** Reads of `name` that execute attacker-controlled code (or throw) — the whole point of the gate. */
 function unsafeReads(body, name) {
-  const n = name.replace(/[$]/g, "\\$&");
+  // CodeQL js/incomplete-sanitization, fixed rather than suppressed: escaping `$` without first
+  // escaping `\` leaves `\$` producing a literal backslash plus an escaped `$`. Backslash first.
+  const n = name.replace(/\\/g, "\\\\").replace(/[$]/g, "\\$&");
   const patterns = [
     [new RegExp(`\\b${n}\\s*\\?\\.`, "g"), "optional property read"],
     [new RegExp(`\\b${n}\\s*\\.`, "g"), "property read"],
