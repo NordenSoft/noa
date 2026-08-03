@@ -64,11 +64,110 @@ function run(cmd, args, cwd) {
   return { code: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
-/** node:test prints `# fail N` / `ℹ fail N`. Parsed rather than inferred from the exit code, because
- *  the count is what the baseline ratchets against — an exit code cannot say "one fewer than before". */
-function failCount(output) {
-  const m = /^[ℹ#]\s*fail\s+(\d+)/m.exec(output);
+/** node:test prints `# fail N` / `ℹ fail N` (and the same for `cancelled`). Parsed rather than
+ *  inferred from the exit code, because the count is what the baseline ratchets against — an exit
+ *  code cannot say "one fewer than before". */
+function summaryCount(output, key) {
+  const m = new RegExp(`^[ℹ#]\\s*${key}\\s+(\\d+)`, "m").exec(output);
   return m ? Number(m[1]) : null;
+}
+
+/**
+ * Classify a baselined suite run. PURE, so `--selftest` can drive it with the exact outputs that
+ * matter instead of hoping a real run happens to produce them.
+ *
+ * ⚠ THIS FUNCTION EXISTS BECAUSE THE FIRST VERSION OF THIS GATE MECHANIZED THE VERY MISREADING THE
+ * GATE WAS BUILT TO PREVENT. It derived its verdict from the FAIL COUNT alone and never looked at the
+ * exit code. Fed the real, recorded output of the run that hid six tenant-isolation tests —
+ *
+ *     # tests 132   # pass 125   # fail 0   # cancelled 7      (exit 1)
+ *
+ * — it computed `actual = 0`, found `0 > 0` false, and recorded **GREEN**. I had written, in the
+ * commit that shipped it, that "detection was never the gap — READING it was", and then shipped a
+ * reader that discards the detection. Found in review, not by me.
+ *
+ * Note the asymmetry that made it invisible: the fast-subset steps above check `r.code !== 0`. The
+ * ONE suite given the weaker treatment was the baselined one — the only place where a non-zero exit
+ * is *expected* (an allowed failure) and therefore the only place where the exit code alone cannot
+ * discriminate. That is exactly why the CANCELLED COUNT is parsed rather than the exit code trusted.
+ *
+ * **Tests not run are not tests passed.**
+ */
+export function classifySuite(run, allowedFailures) {
+  const fails = summaryCount(run.out, "fail");
+  const cancelled = summaryCount(run.out, "cancelled");
+
+  if (fails === null || cancelled === null) {
+    return { verdict: SETUP_FAILED, detail: "could not parse the suite's fail/cancelled summary" };
+  }
+  if (cancelled > 0) {
+    return {
+      verdict: RED,
+      detail: `${cancelled} test(s) CANCELLED — tests not run are not tests passed. ` +
+        `A cancellation takes every sibling after it down as \`cancelledByParent\`, and the summary ` +
+        `still reads \`fail ${fails}\`.`,
+    };
+  }
+  if (fails > allowedFailures) {
+    return { verdict: RED, detail: `${fails} failing, baseline allows ${allowedFailures}` };
+  }
+  // `fails === 0` is load-bearing and I dropped it on the first attempt; the selftest caught it.
+  // With `allowedFailures > 0` a non-zero exit is the EXPECTED state — the allowed failures explain
+  // it — so `code !== 0` alone would refuse every push while the baseline is above zero, which is the
+  // "gate that always blocks" this file spends a paragraph warning about. Only an exit code that
+  // NOTHING in the summary accounts for is a finding.
+  if (run.code !== 0 && fails === 0) {
+    return {
+      verdict: RED,
+      detail: `exit ${run.code} that the summary cannot explain (fail 0, cancelled 0) — ` +
+        `a crashed reporter or a post-suite failure. An unexplained non-zero exit is not a pass.`,
+    };
+  }
+  return {
+    verdict: GREEN,
+    detail: fails < allowedFailures
+      ? bold(yellow(`${fails} failing — BEATS the baseline of ${allowedFailures}. Lower it in this commit.`))
+      : `${fails} failing, 0 cancelled`,
+  };
+}
+
+// ── SELFTEST ─────────────────────────────────────────────────────────────────────────────────────
+// Drives the classifier with the four discriminating shapes, including the REAL recorded output that
+// the first version passed. A gate whose own verdict logic is untested is a gate on trust.
+if (process.argv.includes("--selftest")) {
+  const CASES = [
+    { name: "the run that hid six tenant-isolation tests", allowed: 0,
+      run: { out: "# tests 132\n# pass 125\n# fail 0\n# cancelled 7\n", code: 1 }, want: RED },
+    // ⚠ THE CASE THAT MAKES THE `cancelled` BRANCH LOAD-BEARING. Without it this selftest SURVIVED
+    // its own knockout: disabling the cancelled check still turned the case above RED, because
+    // `fail 0 + exit 1` also trips the unexplained-exit branch. Two controls closing one shape means
+    // neither is individually observable — this repository's own definition of a control that is not
+    // one, and I only found it by running the knockout instead of assuming it.
+    //
+    // Here the allowed failure EXPLAINS the non-zero exit, so the unexplained-exit branch cannot
+    // fire, and the cancelled count is the only thing standing between three unrun tests and GREEN.
+    { name: "cancellations HIDDEN behind an allowed failure", allowed: 1,
+      run: { out: "# tests 20\n# pass 16\n# fail 1\n# cancelled 3\n", code: 1 }, want: RED },
+    { name: "clean run", allowed: 0,
+      run: { out: "# tests 134\n# pass 134\n# fail 0\n# cancelled 0\n", code: 0 }, want: GREEN },
+    { name: "failures over the baseline", allowed: 1,
+      run: { out: "# tests 10\n# pass 7\n# fail 3\n# cancelled 0\n", code: 1 }, want: RED },
+    { name: "allowed failure, exit 1 expected", allowed: 2,
+      run: { out: "# tests 10\n# pass 8\n# fail 2\n# cancelled 0\n", code: 1 }, want: GREEN },
+    { name: "unexplained non-zero exit", allowed: 0,
+      run: { out: "# tests 10\n# pass 10\n# fail 0\n# cancelled 0\n", code: 7 }, want: RED },
+    { name: "unreadable summary", allowed: 0,
+      run: { out: "the reporter crashed\n", code: 1 }, want: SETUP_FAILED },
+  ];
+  let bad = 0;
+  for (const c of CASES) {
+    const got = classifySuite(c.run, c.allowed).verdict;
+    const ok = got === c.want;
+    if (!ok) bad++;
+    console.error(`  ${ok ? green("✔") : red("✖")} ${c.name.padEnd(46)} want ${c.want}, got ${got}`);
+  }
+  console.error(bad === 0 ? green(bold("\n  SELFTEST PASS\n")) : red(bold(`\n  SELFTEST FAIL — ${bad} case(s)\n`)));
+  process.exit(bad === 0 ? 0 : 1);
 }
 
 const steps = [];
@@ -108,6 +207,10 @@ for (const [name, cmd, args, cwd] of [
   // too, so the required checks on an open PR simply stop being produced. Nine CI runs were spent on
   // this exact defect on 2026-08-03 before anyone read the job COUNT instead of the verdict. Nothing
   // else in this gate can observe it, and `yaml.safe_load` reported the broken file as valid.
+  // The gate's OWN verdict logic, first and cheapest. It shipped with a defect that recorded GREEN
+  // for the exact run that hid six tenant-isolation tests, so "the gate is correct" is now something
+  // the gate measures rather than something the reader assumes.
+  ["gate selftest", "node", ["scripts/pre-push-gate.mjs", "--selftest"], ROOT],
   ["workflow files", "node", ["scripts/lint-workflows.mjs"], ROOT],
   ["kernel build", "npm", ["run", "build"], ROOT],
   // AFTER the build, so it inspects the artifacts a run would actually execute. Catches a compiled
@@ -132,23 +235,13 @@ for (const [name, cmd, args, cwd] of [
 const baseline = JSON.parse(readFileSync(join(ROOT, "scripts", "prepush-baseline.json"), "utf8"));
 const gateBase = baseline.suites["packages/gate"];
 const gateRun = run("npm", ["test"], join(ROOT, "packages", "gate"));
-const actual = failCount(gateRun.out);
+const verdict = classifySuite(gateRun, gateBase.allowedFailures);
 
-if (actual === null) {
-  // "No verdict is not a pass" — the suite ran but its own summary line is unreadable, so this gate
-  // cannot say anything about it. That is a SETUP failure of the measurement, not a code failure.
-  record("gate tests", SETUP_FAILED, "could not parse the suite's fail count");
-  finish(SETUP_FAILED, "cd packages/gate && npm test   # read the summary line by hand");
+record("gate tests", verdict.verdict, verdict.detail);
+if (verdict.verdict !== GREEN) {
+  console.error(`\n${gateRun.out.split("\n").filter((l) => /^✖|AssertionError|^not ok|cancelled/.test(l)).slice(0, 20).join("\n")}\n`);
+  finish(verdict.verdict, "cd packages/gate && npm test");
 }
-if (actual > gateBase.allowedFailures) {
-  record("gate tests", RED, `${actual} failing, baseline allows ${gateBase.allowedFailures}`);
-  console.error(`\n${gateRun.out.split("\n").filter((l) => /^✖|AssertionError|^not ok/.test(l)).slice(0, 20).join("\n")}\n`);
-  finish(RED, "cd packages/gate && npm test");
-}
-record("gate tests", GREEN,
-  actual < gateBase.allowedFailures
-    ? bold(yellow(`${actual} failing — BEATS the baseline of ${gateBase.allowedFailures}. Lower it in this commit.`))
-    : `${actual} failing (baseline: ${gateBase.why.slice(0, 60)}…)`);
 
 finish(GREEN, null);
 
