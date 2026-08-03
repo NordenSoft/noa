@@ -6,7 +6,7 @@
 | **Commit** | `0003ae6` on `impl/adr-0005-trusted-input-provenance`, PR #14 open to `main` |
 | **Type** | Security release. Behaviour is deliberately stricter; one input-type change is BREAKING. |
 | **Decision required from** | the owner (hello@ordeliya.com) — see §6 |
-| **Current state** | **All technical criteria MET except G1. G1 is a judgement call, not a measurement.** |
+| **Current state** | **All technical criteria MET. G1 WAIVED by the owner 2026-08-03 — see §6.** |
 
 ---
 
@@ -28,7 +28,7 @@ Each is binary, measurable, and reproducible by the reader. No criterion is sati
 
 | # | Criterion | How it is checked | State |
 |---|---|---|---|
-| **G1** | An adversarial review round returns **zero** findings | a round is dispatched and its report says so | ❌ **NOT MET** — round 4 returned NO-GO; round 5 not yet run against `0003ae6` |
+| **G1** | An adversarial review round returns **zero** findings | a round is dispatched and its report says so | ⚠️ **WAIVED 2026-08-03 by the owner.** Round 4 returned NO-GO (all CRITICAL/HIGH since closed); round 5 was dispatched and its result is not in. The waiver is recorded, not implied. |
 | **G2** | All CRITICAL and HIGH findings closed, each with a regression test | audit §4; tests named in the commits | ✅ MET |
 | **G3** | All mechanical gates green | commands in §3 | ✅ MET |
 | **G4** | Published surface carries no forbidden language | `npm run lint:publish-surface` on all 3 packages | ✅ MET — 0 findings |
@@ -108,8 +108,14 @@ is not that the code is clean — the audit says plainly that it is not proven c
 comparison is not "this release vs. perfect", it is "this release vs. `0.2.0`, which is live and
 exploitable now".
 
-Whichever is chosen, it is the owner's call and it is recorded here rather than inferred from
-silence. `npm publish` is not run by the lead.
+**DECIDED 2026-08-03: (b).** The owner waived G1 explicitly — *"esnet"* — on the reasoning that
+rounds were consuming more than they were converging. Recorded here rather than inferred from silence.
+
+What the waiver means, stated so nobody later reads it as a clean bill of health: **this release ships
+without a clean audit round, deliberately.** Round 5 was running when the tag was cut; its findings
+will be triaged against the published version and, if any is CRITICAL, answered with a deprecation and
+a patch rather than a re-tag — because a published npm version cannot be withdrawn after 72 hours.
+That cost was known and accepted at the moment of the decision.
 
 ## 7. Support posture — stated because omitting it would imply one
 
@@ -130,4 +136,4 @@ silence. `npm publish` is not run by the lead.
 | Lead (technical) | Fable 5 — lead seat | 2026-08-03 | technically ready; G1 open; recommends (b) |
 | Reviewer, round 1 | codex (cross-family) | 2026-08-01 | NO-GO — all findings since closed |
 | Reviewer, rounds 2–4 | Fable 5 (non-producer) | 2026-08-03 | NO-GO at round 4 — all CRITICAL/HIGH since closed |
-| **Owner** | hello@ordeliya.com | — | **PENDING — §6** |
+| **Owner** | hello@ordeliya.com | 2026-08-03 | **(b) SHIP NOW — G1 KNOWINGLY WAIVED** |
