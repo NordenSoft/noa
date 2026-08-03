@@ -550,6 +550,52 @@ test("projection identity: a different implementation must not reproduce the rev
       "implementation artifact, not to its labels");
 });
 
+/** ADR-0006-A PART A — the POSITIVE property, which the test above cannot establish.
+ *
+ *  "Labels alone do not reproduce the hash" is satisfied by a hash over ANY extra bytes — a build
+ *  timestamp, a random nonce, a constant. It would go green while the identity still committed to
+ *  nothing about `run()`. So the test above is necessary and NOT sufficient, and on its own it is
+ *  exactly the shape this repository has been burned by three times: a control that passes for a
+ *  reason other than the one claimed.
+ *
+ *  This test names the formula. The FIRST assertion is the anti-vacuity control: reconstructing the
+ *  identity WITH the real implementation's artifact digest must reproduce the shipped hash exactly.
+ *  If it does not, the reconstruction below is measuring something other than what ships and the
+ *  second assertion proves nothing. */
+test("projection identity: the identity COMMITS to the implementation artifact — a different run() cannot reproduce it", async () => {
+  const projections = await import("../src/projections.js");
+  const honest = projections.getProjection("noa.command.exec");
+  assert.ok(honest, "fixture precondition: the reviewed adapter is registered");
+
+  const { canonicalize, sha256Prefixed } = await import("noa-approval-artifacts") as {
+    canonicalize: (v: unknown) => string; sha256Prefixed: (s: string) => string;
+  };
+  const artifactDigest = (fn: unknown): string => sha256Prefixed(Function.prototype.toString.call(fn));
+  const identity = (kind: string, id: string, version: number, impl: unknown): string =>
+    sha256Prefixed(canonicalize({ id, version, kind, implementation: artifactDigest(impl) }));
+
+  // CONTROL — the shipped hashes must be reproducible from labels + the REAL run()'s artifact digest.
+  // This is what makes the assertions below meaningful rather than accidentally true.
+  assert.equal(identity("displayProjection", honest!.displayProjection.id, honest!.displayProjection.version, honest!.run),
+    honest!.displayProjection.hash,
+    "anti-vacuity: the shipped displayProjection identity is NOT sha256 over {id,version,kind,implementation-digest}. " +
+      "Whatever it does commit to, this test is not measuring it");
+  assert.equal(identity("actionSchema", honest!.actionSchema.id, honest!.actionSchema.version, honest!.run),
+    honest!.actionSchema.hash,
+    "anti-vacuity: the shipped actionSchema identity does not commit to the implementation either. " +
+      "The schema validation lives INSIDE run(), so leaving this one on labels alone would fix a site " +
+      "and not its neighbour — the exact pattern that produced a CRITICAL in three consecutive releases");
+
+  // ATTACK — the same labels, a different implementation. Must NOT reproduce the reviewed identity.
+  const impostor = (): { ok: false; error: string } => ({ ok: false, error: "attacker" });
+  assert.notEqual(identity("displayProjection", honest!.displayProjection.id, honest!.displayProjection.version, impostor),
+    honest!.displayProjection.hash,
+    "an adapter with entirely different behaviour reproduced the reviewed displayProjection identity");
+  assert.notEqual(identity("actionSchema", honest!.actionSchema.id, honest!.actionSchema.version, impostor),
+    honest!.actionSchema.hash,
+    "an adapter with entirely different behaviour reproduced the reviewed actionSchema identity");
+});
+
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
 // execute() — the boundary must not hand authorization to an opaque caller closure.
 //

@@ -10,14 +10,36 @@ import assert from "node:assert/strict";
 import { getProjection } from "../src/projections.js";
 import { sampleCommandParams } from "./helpers.js";
 
+/** ⚠ READ THIS BEFORE "FIXING" A DRIFT HERE — ADR-0006-A part A changed what these vectors MEAN.
+ *
+ *  The identity now commits to the adapter's EMITTED IMPLEMENTATION ARTIFACT, not to `{id, version,
+ *  kind}`. So there are exactly TWO legitimate causes of drift, and they need opposite responses:
+ *
+ *    1. `run()` CHANGED. The vector is doing its job. Re-derive it, and say in the commit what
+ *       behaviour changed — every previously-signed envelope now pins a superseded identity.
+ *    2. THE TOOLCHAIN CHANGED (a tsc upgrade, a tsconfig target/emit change) with no behaviour
+ *       change. The artifact genuinely differs, so the identity genuinely differs. Re-derive it and
+ *       say THAT — otherwise the next reader reads cause 2 as cause 1 and hunts a behaviour change
+ *       that never happened.
+ *
+ *  What is NEVER a legitimate response is deleting the assertion. An unpinned identity catches
+ *  nothing, and "the hash moved" is the only signal that an adapter was swapped.
+ *
+ *  Normalizing the source text before hashing — to make cause 2 stop happening — was considered and
+ *  REFUSED: an equivalence class is an ATTACKER'S CHOICE OF REPRESENTATIVE, and the normalizer is new
+ *  attack surface inside the TCB whose bugs would be identity forgeries. A rare, diagnosable drift is
+ *  the cheaper failure. */
 test("noa.command.exec/1 projection identity is a stable golden vector", () => {
   const p = getProjection("noa.command.exec")!;
   assert.equal(p.actionSchema.id, "noa.command.exec.schema");
   assert.equal(p.actionSchema.version, 1);
-  assert.equal(p.actionSchema.hash, "sha256:03f733429f47d0b9f9360aaeff1bbd95f8c780fa26225da9b34358402f4a460b");
+  assert.equal(p.actionSchema.hash, "sha256:e774e9a13d2ebfb4192292b396f3972f4f41ae50c1e8ca8ee4a88daea06671cc");
   assert.equal(p.displayProjection.id, "noa.command.exec.display");
   assert.equal(p.displayProjection.version, 1);
-  assert.equal(p.displayProjection.hash, "sha256:201de5f04b2ee7d41ad2dcba5c044cf4448ed2497cea3d4cbc4e3dd7fea9158e");
+  assert.equal(p.displayProjection.hash, "sha256:77319a37a87e9fae5450e60f1f0974303b5066427cd4596d512d55b05a7d8004");
+  // The two identities MUST differ: same artifact, different `kind`. If a refactor ever made them
+  // equal, one of the two roles would be unpinned and nothing else here would notice.
+  assert.notEqual(p.actionSchema.hash, p.displayProjection.hash);
 });
 
 test("the projection is deterministic + side-effect-free: same params → same paramsHash + display", () => {

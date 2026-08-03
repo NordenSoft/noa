@@ -5,19 +5,46 @@
  * side-effect-free, deterministic, network-less and versioned, and its identity (`{id,version,hash}`)
  * is bound into the signed Hold Envelope.
  *
- * ⚠ WHAT `hash` DOES NOT DO — CORRECTED 2026-07-30 (ADR-0005 §3.3 ordered this; the previous text was
- * a load-bearing false claim, not a wording slip). It read: "so a verifier can pin *which reviewed
- * adapter ran* without re-running it." IT CANNOT. `hash` is a sha256 over `{id, version, kind}` —
- * THREE SELF-DECLARED STRINGS — and covers nothing about `run()`. An adapter with entirely different
- * behaviour reproduces the shipped identity byte-for-byte, so the envelope pins a NAME, not a renderer.
- * Demonstrated by `test/provenance-regression.test.ts` ("projection identity: a different
- * implementation must not reproduce the reviewed identity"), which is RED and owner-deferred to
- * ADR-0006 — the identity must commit to the implementation artifact, and doing that is a schema and
- * wire-format change, deliberately not made here.
+ * ─── WHAT `hash` COMMITS TO — ADR-0006-A PART A, owner-decided 2026-08-03 ────────────────────────
  *
- * So: `hash` is a stable, test-vectored identifier for a REGISTERED NAME AND VERSION (see
- * test/projection.test.ts). Treating it as evidence of which code ran is exactly the overclaim this
- * project calls a red line, and the gate's signature does not make the claim true.
+ * `hash` is a sha256 over `{id, version, kind, implementation}`, where `implementation` is the
+ * sha256 of the adapter's EMITTED SOURCE TEXT. Change `run()` in any way and the identity changes.
+ *
+ * HISTORY, KEPT BECAUSE THE CORRECTION IS THE POINT. Until this change `hash` covered `{id, version,
+ * kind}` — THREE SELF-DECLARED STRINGS — and nothing about `run()`. An adapter with entirely
+ * different behaviour reproduced the shipped identity byte-for-byte, so the signed envelope pinned a
+ * NAME, not a renderer. Before THAT, this docstring claimed the opposite ("a verifier can pin which
+ * reviewed adapter ran without re-running it") while the code did no such thing — a load-bearing
+ * false claim, corrected 2026-07-30 to say so plainly and deferred to ADR-0006. The owner took that
+ * decision on 2026-08-03 and this is its implementation.
+ *
+ * ⚠ WHAT IT STILL DOES NOT DO, STATED WITH THE SAME FORCE THE OLD CAVEAT HAD:
+ *
+ *   • It is a WITHIN-BUILD commitment. The digest is computed by the same process that runs the
+ *     adapter, so it proves the identity TRACKS the artifact — not that any particular artifact is
+ *     the reviewed one. An off-box verifier can only compare it against a published expected value;
+ *     it cannot recompute it without the build.
+ *   • It commits to the EMITTED artifact, not to the TypeScript source. A toolchain change that
+ *     alters emit without altering behaviour DOES change the identity. That is the correct semantics
+ *     for an artifact commitment and it is the price of the property — `test/projection.test.ts`
+ *     names both legitimate causes of drift so a compiler bump is diagnosed, not investigated.
+ *   • It says nothing about WHO reviewed the artifact. An authenticated, versioned ProjectionBundle
+ *     manifest is still ADR-0006 stage 8 and still not built here.
+ *   • It commits to `run()`'s OWN source text only. Behaviour reached through free variables — the
+ *     allowlist table, `commandView`, the canonicalizer — is outside the commitment: an edit there
+ *     changes behaviour without moving the identity. The identity is a NECESSARY signal for
+ *     substitution, never a SUFFICIENT one for equivalence. Whole-bundle commitment is the stage-8
+ *     manifest.
+ *
+ *     ⚠ This bullet exists because the sentence above ("change `run()` in any way and the identity
+ *     changes") is true but invites a FALSE converse: *identity unchanged ⇒ behaviour unchanged*.
+ *     Concretely — add `"/bin/sh": "LOW"` to `REVIEWED_EXECUTABLES` and the risk floor of every shell
+ *     invocation drops while both identities stay byte-identical. Widening the hash to cover the
+ *     module text was considered and REFUSED: it is stage-8 shape smuggled in, and it would make
+ *     every comment edit an identity event.
+ *
+ * The registry is sealed at module load (B-3, below), so within one process there is exactly one
+ * adapter per canonical and the identity it advertises is the identity of the code that will run.
  *
  * Alpha ships ONE ENFORCED adapter, `noa.command.exec/1` — a shell-command bind (D14: the command
  * string alone is insufficient; the canonical param set is executable real-path + argv + cwd +
@@ -32,7 +59,19 @@ import { canonicalize, sha256Prefixed, parseDocument } from "noa-approval-artifa
 // correctly: a new name on a published surface is a permanent compatibility commitment,
 // and this needs no new name at all.
 import { intrinsics } from "noa-receipt";
-const { hasOwn } = intrinsics;
+const { hasOwn, strIncludes } = intrinsics;
+
+/**
+ * The captured source-text reader for the implementation-artifact digest (ADR-0006-A part A).
+ *
+ * Module-load capture, for the same reason every other builtin on a decision path is captured: this
+ * function's result becomes the ADAPTER'S IDENTITY, so a replaced `Function.prototype.toString`
+ * would let whatever installed it choose what the reviewed adapter is called. `intrinsics` has no
+ * entry for it, and adding one is a permanent commitment on a PUBLISHED surface (R8-08) for a need
+ * that exists only in this unpublished package — so the capture is local, which is the same
+ * discipline at the right scope.
+ */
+const funcToString = Function.prototype.toString;
 import type { ProjectionId, RiskClass } from "./types.js";
 
 export interface ProjectionResult {
@@ -208,21 +247,56 @@ function commandView(canonical: string): CommandView {
   return { ok: true, executable, argv, argsJoined, cwd, targetEnv };
 }
 
-/** The pinned identity of a projection/schema — stable, test-vectored. */
-function projectionId(id: string, version: number, kind: string): ProjectionId {
-  return { id, version, hash: idHash({ id, version, kind }) };
+/**
+ * Digest of the adapter's implementation artifact — the byte string the engine will actually run.
+ *
+ * FAIL CLOSED AT MODULE LOAD, deliberately. If the artifact cannot be measured — a native function,
+ * a `bind` wrapper, a Proxy whose `toString` lies — the honest options are to throw or to ship an
+ * identity that silently commits to nothing. The second is the defect this whole change exists to
+ * remove, so it throws, and it throws at IMPORT time rather than at approval time: a broken
+ * environment fails loudly before a human is ever asked to approve anything.
+ */
+function implementationDigest(implementation: unknown): string {
+  if (typeof implementation !== "function") {
+    throw new TypeError("projection identity: the implementation must be a function");
+  }
+  const source: unknown = funcToString.call(implementation);
+  if (typeof source !== "string" || source.length === 0 || strIncludes(source, "[native code]")) {
+    throw new TypeError(
+      "projection identity: the implementation artifact is not measurable (native, bound or proxied " +
+        "source text). Refusing to construct an identity that would commit to nothing.",
+    );
+  }
+  return sha256Prefixed(source);
+}
+
+/**
+ * The pinned identity of a projection/schema — stable, test-vectored, and bound to the artifact.
+ *
+ * `implementation` is REQUIRED and is the same `run()` for both the schema and the display identity.
+ * That is not a shortcut: in this adapter `run()` IS both the validator and the renderer, so it is
+ * the artifact for both roles. Giving the schema identity a weaker commitment than the display one
+ * would fix a site and leave its neighbour — the pattern that produced a CRITICAL in three
+ * consecutive releases of this project.
+ */
+function projectionId(id: string, version: number, kind: string, implementation: unknown): ProjectionId {
+  return { id, version, hash: idHash({ id, version, kind, implementation: implementationDigest(implementation) }) };
 }
 
 function asString(v: unknown): string | undefined {
   return typeof v === "string" && v.length > 0 ? v : undefined;
 }
 
-/** `noa.command.exec/1` — the alpha ENFORCED shell-command adapter (D14 bind). */
-const commandExec: DisplayProjection = {
-  canonical: "noa.command.exec",
-  actionSchema: projectionId("noa.command.exec.schema", 1, "actionSchema"),
-  displayProjection: projectionId("noa.command.exec.display", 1, "displayProjection"),
-  run(params: unknown) {
+/** `noa.command.exec/1` — the alpha ENFORCED shell-command adapter (D14 bind).
+ *
+ *  ⚠ WRAPPED IN AN IIFE, AND THE REASON IS THE IDENTITY (ADR-0006-A part A). The identity is now
+ *  derived FROM `run`, and inside an object literal `run` does not exist yet when the sibling
+ *  `projectionId(...)` initializers are evaluated. Defining `run` first and the identities second is
+ *  the whole change; the body below is byte-identical and at the same indentation, so a reviewer can
+ *  diff it as the whitespace-free change it is. `this` still resolves to the projection at call time
+ *  — every caller reaches this function as `projection.run(...)`. */
+const commandExec: DisplayProjection = (() => {
+  function run(this: DisplayProjection, params: unknown): ProjectionResult | ProjectionError {
     if (typeof params !== "object" || params === null || Array.isArray(params)) {
       return { ok: false, error: "params must be an object" };
     }
@@ -326,8 +400,14 @@ const commandExec: DisplayProjection = {
       actionSchema: this.actionSchema, displayProjection: this.displayProjection,
       derivedRisk: classifyShellCommand(view.executable, view.argv),
     };
-  },
-};
+  }
+  return {
+    canonical: "noa.command.exec",
+    actionSchema: projectionId("noa.command.exec.schema", 1, "actionSchema", run),
+    displayProjection: projectionId("noa.command.exec.display", 1, "displayProjection", run),
+    run,
+  };
+})();
 
 /**
  * B-3 (owner decision 2026-07-30) — THE TRUSTED PROJECTION REGISTRY IS SEALED AT MODULE LOAD.

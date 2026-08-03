@@ -97,7 +97,16 @@ T-1…T-10 were written against ADR-0004's proposed design. Eleven measurements 
 
 **Additionally required.** This is the only attack in this document where the **claim in the source docstring** is itself the defect. Until `codeDigest` exists, `projections.ts:5-8` must be corrected — an overclaim inside the TCB is worse than a missing feature, because it retires the question.
 
-**Status.** `OPEN` — measured by adr4-fable-qa F-3: two adapters, identical `sha256:201de5f0…9158e`.
+**Status.** `NARROWED 2026-08-03` — the identity now commits to the emitted `run()` artifact
+(within-build), so in-realm and accidental substitution under an unchanged identity is measured and
+refused (two tests, `provenance-regression`). **NOT closed against A-5's stated attacker:** a
+compromised BUILD computes the digest itself and can hardcode the reviewed value. Full closure = the
+stage-8 manifest. The `projections.ts:5-8` overclaim this entry required corrected: done.
+
+*Previously `OPEN` — measured by adr4-fable-qa F-3: two adapters, identical `sha256:201de5f0…9158e`.
+That hash is historical; the current vectors live in `packages/gate/test/projection.test.ts`. It is
+written elided here, which is why a full-string grep for the old value does not find this line — the
+reason this surface was nearly missed when the identity changed.*
 
 ---
 
