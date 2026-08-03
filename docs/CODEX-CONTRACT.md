@@ -149,3 +149,20 @@ possible output here** — worse than saying "I could not check this".
 
 Reply in English. Ignore the `.codex-session-ledger.lock` `EPERM`; it is outside these repositories
 and affects nothing.
+
+## 11. Gates that only run in CI, and why there is no local alias for them
+
+`scripts/lint-publish-tarball-deps.mjs` proves a packed tarball carries no `file:` dependency. It can
+only pass AFTER `publish-mcp.yml` has rewritten those deps to registry ranges, so in a working tree
+it always fails — `noa-mcp-adapter-core` legitimately declares `noa-receipt: file:../..` for local
+dev and test.
+
+There is deliberately **no** `npm run lint:tarball-deps`. A root alias existed and could never pass:
+first because it omitted the required `--dir` (exit 2, usage text), then — after a well-meant "fix" —
+because it ran against the un-rewritten tree (exit 1, every time). Both shapes read as a working gate
+to anyone scanning the script list, which is the failure this repository spends most of its effort
+preventing. CI calls the script directly, at the one point in the sequence where its answer means
+something.
+
+If you need to check it by hand, do what the workflow does: rewrite the `file:` deps, pack, then run
+the script with `--dir`.

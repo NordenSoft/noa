@@ -14,21 +14,21 @@ function ruleErrors(rule, idx) {
   const errors = [];
   const where = `approvalRules[${idx}]`;
   if (!rule || typeof rule !== "object") return [`${where}: must be an object`];
-  if (typeof rule.id !== "string" || rule.id.length === 0) errors.push(`${where}.id: non-empty string`);
+  if (typeof rule.id !== "string" || rule.id.length === 0) arrayPush(errors, `${where}.id: non-empty string`);
   const m = rule.match;
   if (!m || typeof m !== "object" || !MATCH_TYPES.has(m.type)) {
-    errors.push(`${where}.match.type: must be "exact", "prefix", or "suffix"`);
+    arrayPush(errors, `${where}.match.type: must be "exact", "prefix", or "suffix"`);
   } else if (typeof m.action !== "string" || m.action.length === 0) {
-    errors.push(`${where}.match.action: non-empty string`);
+    arrayPush(errors, `${where}.match.action: non-empty string`);
   }
   if (rule.threshold !== undefined) {
     const t = rule.threshold;
     if (!t || typeof t !== "object") {
-      errors.push(`${where}.threshold: must be an object`);
+      arrayPush(errors, `${where}.threshold: must be an object`);
     } else {
-      if (typeof t.path !== "string" || t.path.length === 0) errors.push(`${where}.threshold.path: non-empty string`);
-      if (!THRESHOLD_OPS.has(t.op)) errors.push(`${where}.threshold.op: must be "ge" or "gt"`);
-      if (typeof t.value !== "number" || !isSafeInteger(t.value)) errors.push(`${where}.threshold.value: safe integer`);
+      if (typeof t.path !== "string" || t.path.length === 0) arrayPush(errors, `${where}.threshold.path: non-empty string`);
+      if (!THRESHOLD_OPS.has(t.op)) arrayPush(errors, `${where}.threshold.op: must be "ge" or "gt"`);
+      if (typeof t.value !== "number" || !isSafeInteger(t.value)) arrayPush(errors, `${where}.threshold.value: safe integer`);
     }
   }
   return errors;
@@ -52,20 +52,31 @@ import { intrinsics } from "noa-receipt";
 // type predicate does not mis-evaluate a rule, it makes the rule INVISIBLE, and an empty rule set is
 // indistinguishable from "nothing needs approval here".
 
-const { isArray, hasOwn, strStartsWith, strEndsWith, isSafeInteger } = intrinsics;
+// ROUND 3 — THE THIRD FIX IN THIS FUNCTION, AND THE FIRST ONE AIMED AT THE CLASS.
+// Round 2 hardened the named builtins; round 3 reproduced three MORE bypasses in the same code by
+// poisoning the ones that had not been named: `Object.keys`, `Array.prototype.map`, and the array
+// ITERATOR itself. Naming poisons one at a time is a race against whoever writes the next line.
+//
+// Iteration over caller-owned arrays on a decision path is now an INDEX LOOP. An index loop
+// dispatches through no method at all — there is no `next`, no `map`, no `forEach` to replace — so
+// the class is closed rather than its current members. This is the same move the kernel made when
+// its key walk and code-point walk became index loops.
+const { isArray, hasOwn, strStartsWith, strEndsWith, isSafeInteger, arrayPush } = intrinsics;
 
 export function validateApprovalRules(approvalRules) {
   if (approvalRules === undefined || approvalRules === null) return { ok: true, errors: [] };
   if (!isArray(approvalRules)) return { ok: false, errors: ["approvalRules: must be an array"] };
   const errors = [];
   const seenIds = new Set();
-  approvalRules.forEach((r, i) => {
-    errors.push(...ruleErrors(r, i));
+  for (let i = 0; i < approvalRules.length; i += 1) {
+    const r = approvalRules[i];
+    const errs = ruleErrors(r, i);
+    for (let e = 0; e < errs.length; e += 1) arrayPush(errors, errs[e]);
     if (r && typeof r.id === "string") {
-      if (seenIds.has(r.id)) errors.push(`approvalRules[${i}].id: duplicate rule id "${r.id}"`);
+      if (seenIds.has(r.id)) arrayPush(errors, `approvalRules[${i}].id: duplicate rule id "${r.id}"`);
       seenIds.add(r.id);
     }
-  });
+  }
   return { ok: errors.length === 0, errors };
 }
 
@@ -83,7 +94,8 @@ export function validateApprovalRules(approvalRules) {
  */
 export function matchApprovalRule(approvalRules, actionId, inputs) {
   if (!isArray(approvalRules)) return null;
-  for (const rule of approvalRules) {
+  for (let ri = 0; ri < approvalRules.length; ri += 1) {
+    const rule = approvalRules[ri];
     try {
       if (!rule || typeof rule !== "object") continue;
       const m = rule.match;

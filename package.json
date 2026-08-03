@@ -74,7 +74,6 @@
     "test:r7-exploits": "node scripts/run-r7-exploits.mjs",
     "lint:topology": "node scripts/lint-dependency-topology.mjs",
     "lint:topology:strict": "node scripts/lint-dependency-topology.mjs --strict",
-    "lint:tarball-deps": "node scripts/lint-publish-tarball-deps.mjs",
     "security-gates": "npm run typecheck:all && npm run lint:dispatch-surfaces && npm run lint:security-gates && npm run lint:resolver-parity && npm run test:r7-exploits && npm run lint:knockout && npm run lint:trusted-roots",
     "typecheck:all": "node scripts/typecheck-all.mjs",
     "lint:release-parity": "node scripts/lint-kernel-release-parity.selftest.mjs && node scripts/lint-kernel-release-parity.mjs"

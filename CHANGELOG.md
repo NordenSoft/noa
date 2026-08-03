@@ -82,7 +82,7 @@ the release note was written without running its own example.
 ⚠ **This entry was MISSING from the first draft of this release, and the omission is worth stating.**
 The version bump was justified by an export-surface diff — 18 names added, 0 removed, therefore
 "additive". That measurement counts NAMES and cannot see TYPES, so a full rewrite of the two most
-used entry points registered as zero change. A cross-family review found it. The lesson is the one
+used entry points registered as zero change. A independent review found it. The lesson is the one
 this codebase repeats: a green number from an instrument that cannot observe the property is not
 evidence about the property.
 
@@ -125,7 +125,7 @@ Mechanisms:
     lifecycle rule refused a key, not merely that one did.
 
   ⚠ The withdrawn sentence, verbatim: *"`resolveVerificationKey` is the single resolution point."*
-  It was false when written — a cross-family review checked the call sites and found the kernel does
+  It was false when written — a independent review checked the call sites and found the kernel does
   not route through it. Two paths enforcing the same rule is a defensible design; describing them as
   one is how a reviewer stops looking at the second.
 - `verifyCheckpoint(cp, keyring?)` accepts a parsed verification keyring. It had never been patched
@@ -151,7 +151,7 @@ independent time witness. A *genuine* receipt signed before its key retired is t
 unverifiable after retirement. That is the correct fail-closed consequence of having no trusted
 time, not an oversight — but it is a real operational cost and you should know it before you rotate.
 
-### Security (cross-family review ROUND 6, 2026-07-28) — the classes, not the mechanisms
+### Security (independent review ROUND 6, 2026-07-28) — the classes, not the mechanisms
 
 Round 6 returned 4 CRITICAL + 2 HIGH — the third consecutive round with CRITICALs, and every one of
 them the SAME CLASS as a previous round reached through a DIFFERENT MECHANISM. Freeze the data → the
@@ -203,7 +203,7 @@ Three defects were found by the new mechanisms rather than by a reviewer: a pois
 `Array.prototype.push` in error accumulation (`errors.length === 0` is a verdict), a poisonable
 `Date.parse` in the evidence steps, and the unfrozen `ARTIFACTS` table.
 
-### Security (cross-family review ROUND 4, 2026-07-27) — boundaries, not more patches
+### Security (independent review ROUND 4, 2026-07-27) — boundaries, not more patches
 
 Round 4 returned 0 CRITICAL / 3 HIGH, and all three continued classes earlier rounds had declared
 closed. Severity was converging while the CLASSES were not, so the response is not three more
@@ -383,7 +383,7 @@ fails closed when a future site does not route through it.
   deliberately not a pass: the whole point of this section is that an unrun check must not look like
   a passing one.
 
-### Security (cross-family review, 2026-07-27)
+### Security (independent review, 2026-07-27)
 
 Five findings an independent review reproduced against this branch. Each was re-reproduced here
 before being fixed, and each fix carries a regression fixture proven red when only its own guard
@@ -461,7 +461,7 @@ predicate is neutered.
   (TypeScript, Python, Go, Rust, C#), because a security default only one implementation honours
   is not a default — it is a divergence. Every shipped vector was single-tenant, so flipping
   TypeScript alone would have been invisible to every existing runner while silently breaking the
-  five-language agreement guarantee. Verified: all five return the identical verdict on
+  five-language agreement property. Verified: all five return the identical verdict on
   consistent-tenant, drifting-tenant, and tenant-appears-midway chains.
 
 - **`buildReceipt` / `buildReceiptAsync` reject non-NFC payloads.** The profile requires producers
@@ -588,8 +588,8 @@ predicate is neutered.
 
 - **Published-surface hygiene**: compiled output ships without source comments, and a
   publish-surface guard runs in CI and before publish — it scans the exact npm tarball for
-  internal development shorthand and for absolute security claims (e.g. "tamper-proof",
-  "guarantee") outside an honest-negation context, keeping the published package's language
+  internal development shorthand and for absolute security claims — the ones that promise an
+  attack cannot happen — outside an honest-negation context, keeping the published package's language
   consistent with the honest, tamper-*evident* framing used throughout.
 
 ## [0.3.0] - 2026-07-09

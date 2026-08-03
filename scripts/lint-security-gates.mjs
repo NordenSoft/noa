@@ -988,7 +988,8 @@ const LINTS = [
     run: () => reconcilePublishedPackage({ lint: "mcp-proxy-reconcile", label: "mcp-proxy", dir: "packages/mcp-proxy/src", tcb: MCP_PROXY_TCB, outOfTcb: MCP_PROXY_OUT_OF_TCB }), mode: "block" },
   // MEASURED on first coverage, 2026-08-02: these two published packages contain 355 existing
   // L2/L3/L8 findings. RATCHETED 2026-08-03 after the decision paths were hardened:
-  //   adapter-core L2 38->34, L8 246->200 · mcp-proxy L8 62->49 · total warn 396->330
+  //   round 2: adapter-core L2 38->34, L8 246->200 · mcp-proxy L8 62->49 · total warn 396->330
+  //   round 3: adapter-core L2 34->31, L8 200->171 · total warn 330->298
   // A budget left ABOVE the measured count is not a scoreboard, it is 46 lines of silent regression
   // room. Every reduction is written back here the same day it is measured. Blocking all of them would make this
   // reconciliation unusable before the lead can classify and fix that newly-visible migration.
@@ -996,7 +997,7 @@ const LINTS = [
   // package's cleanup and no layer can trade against another. Reconciliation above stays BLOCKING
   // and unbudgeted; every new/moved file must be classified before any residue number can matter.
   { id: "L2-adapter-core", name: "L2 primitive allowlist on adapter-core decision paths",
-    run: () => publishedL2("L2-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 34 },
+    run: () => publishedL2("L2-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 31 },
   { id: "L2-mcp-proxy", name: "L2 primitive allowlist on mcp-proxy decision paths",
     run: () => publishedL2("L2-mcp-proxy", "mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 3 },
   // Reconciliation BLOCKS and is deliberately not budgeted — see reconcileRelay()'s comment.
@@ -1034,7 +1035,7 @@ const LINTS = [
   { id: "L8-selftest", name: "evasion matrix — every construct bites its positive sample, none fires on the captured form", run: L8SelfTest, mode: "block" },
   { id: "L8", name: "dispatch-surface AST gate (compiler-API walk: node kinds + resolved symbols)", run: L8, mode: "block" },
   { id: "L8-adapter-core", name: "L8 dispatch-surface AST gate on adapter-core decision paths",
-    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 200 },
+    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 171 },
   { id: "L8-mcp-proxy", name: "L8 dispatch-surface AST gate on mcp-proxy decision paths",
     run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 49 },
 ];

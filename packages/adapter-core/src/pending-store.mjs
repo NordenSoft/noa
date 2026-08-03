@@ -35,7 +35,7 @@ import { intrinsics } from "noa-receipt";
 // So the builtins are taken from the kernel's module-load capture here too, whether or not each
 // individual site is reachable today. Reachability is a property of the surrounding code, and the
 // surrounding code changes.
-const { dateParse, isFiniteNumber, jsonParse, jsonStringify } = intrinsics;
+const { dateParse, isFiniteNumber, jsonParse, jsonStringify, arrayPush } = intrinsics;
 
 
 export class PendingStoreError extends Error {
@@ -182,7 +182,7 @@ export function loadPendingIndex(path) {
     // existing test) falls back to keying by `id` alone — identical behavior to before.
     const key = recordKeyOf(ev);
     if (!byId.has(key)) byId.set(key, []);
-    byId.get(key).push(ev);
+    arrayPush(byId.get(key), ev);
   }
   const index = new Map();
   for (const [id, events] of byId) {

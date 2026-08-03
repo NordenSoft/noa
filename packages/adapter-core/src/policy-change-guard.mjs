@@ -41,7 +41,16 @@ import { intrinsics } from "noa-receipt";
 // Changing the policy is the strongest bypass there is: it does not forge one approval, it removes
 // the requirement for all of them. Every builtin this file reaches for on that path is now taken
 // from the kernel's module-load capture.
-const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap } = intrinsics;
+// ROUND 3 — THE THIRD FIX IN THIS FUNCTION, AND THE FIRST ONE AIMED AT THE CLASS.
+// Round 2 hardened the named builtins; round 3 reproduced three MORE bypasses in the same code by
+// poisoning the ones that had not been named: `Object.keys`, `Array.prototype.map`, and the array
+// ITERATOR itself. Naming poisons one at a time is a race against whoever writes the next line.
+//
+// Iteration over caller-owned arrays on a decision path is now an INDEX LOOP. An index loop
+// dispatches through no method at all — there is no `next`, no `map`, no `forEach` to replace — so
+// the class is closed rather than its current members. This is the same move the kernel made when
+// its key walk and code-point walk became index loops.
+const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap, arraySort, arrayPush, objectKeys } = intrinsics;
 
 /** The FIXED action id every policy-change hold + approval + receipt is minted under (spec §19.3). */
 export const POLICY_UPDATE_ACTION_ID = "noa.policy.update";
@@ -80,7 +89,8 @@ function sortKeysDeep(value) {
   if (isArray(value)) return arrayMap(value, sortKeysDeep);
   if (value && typeof value === "object") {
     const out = {};
-    for (const k of Object.keys(value).sort()) out[k] = sortKeysDeep(value[k]);
+    const ks = arraySort(objectKeys(value), undefined);
+    for (let i = 0; i < ks.length; i += 1) out[ks[i]] = sortKeysDeep(value[ks[i]]);
     return out;
   }
   return value;
@@ -95,10 +105,11 @@ function sortKeysDeep(value) {
  */
 export function canonicalizeApprovalRules(rules) {
   const arr = isArray(rules) ? rules : [];
-  const canon = arr.map((r) => sortKeysDeep(r));
-  return canon.sort((a, b) => {
-    const sa = JSON.stringify(a);
-    const sb = JSON.stringify(b);
+  const canon = [];
+  for (let i = 0; i < arr.length; i += 1) arrayPush(canon, sortKeysDeep(arr[i]));
+  return arraySort(canon, (a, b) => {
+    const sa = jsonStringify(a);
+    const sb = jsonStringify(b);
     return sa < sb ? -1 : sa > sb ? 1 : 0;
   });
 }

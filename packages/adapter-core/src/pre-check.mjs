@@ -23,6 +23,8 @@ import {
   sha256Prefixed,
 } from "noa-receipt";
 import { matchApprovalRule } from "./approval-rules.mjs";
+import { intrinsics } from "noa-receipt";
+const { isArray, objectKeys, arraySort, arrayPush, arrayJoin, jsonStringify, isFiniteNumber } = intrinsics;
 
 /**
  * ── THE DOCUMENT ENCODER (bytes-in) ──────────────────────────────────────────────────────────────
@@ -188,29 +190,37 @@ function canonicalDecimalNumberString(n) {
 function stableStringifyFallback(value, seen) {
   if (value === null) return "null";
   const t = typeof value;
-  if (t === "string") return JSON.stringify(value);
+  if (t === "string") return jsonStringify(value);
   if (t === "boolean") return value ? "true" : "false";
-  if (t === "number") return Number.isFinite(value) ? canonicalDecimalNumberString(value) : "null";
-  if (t === "bigint") return JSON.stringify(value.toString());
+  if (t === "number") return isFiniteNumber(value) ? canonicalDecimalNumberString(value) : "null";
+  if (t === "bigint") return jsonStringify(value.toString());
   if (t === "undefined" || t === "function" || t === "symbol") return undefined;
-  if (Array.isArray(value)) {
+  if (isArray(value)) {
     if (seen.has(value)) throw new Error("noa-mcp-adapter-core: circular structure in tool-call args");
     seen.add(value);
-    const items = value.map((v) => stableStringifyFallback(v, seen) ?? "null");
+    const items = [];
+    for (let i = 0; i < value.length; i += 1) arrayPush(items, stableStringifyFallback(value[i], seen) ?? "null");
     seen.delete(value);
-    return `[${items.join(",")}]`;
+    return `[${arrayJoin(items, ",")}]`;
   }
   if (t === "object") {
     if (seen.has(value)) throw new Error("noa-mcp-adapter-core: circular structure in tool-call args");
     seen.add(value);
     const parts = [];
-    for (const k of Object.keys(value).sort()) {
-      const encoded = stableStringifyFallback(value[k], seen);
+    // INDEX LOOP, not `for…of Object.keys(v).sort()`. This fallback runs when the hardened JCS
+    // canonicalizer THROWS — which the surrounding code documents as an expected, legitimate shape
+    // (JCS refuses non-integer numbers, and a float `rate` is ordinary tool-call input). A redteam
+    // review reached it with a plain float and then collapsed `{amountMinor:10, rate:1.5}` and
+    // `{amountMinor:900000, rate:1.5}` to the SAME paramsHash by poisoning `Object.keys` — an
+    // approval minted for one authorising the other.
+    const ks = arraySort(objectKeys(value), undefined);
+    for (let i = 0; i < ks.length; i += 1) {
+      const encoded = stableStringifyFallback(value[ks[i]], seen);
       if (encoded === undefined) continue; // JSON.stringify semantics: undefined-valued keys are omitted
-      parts.push(`${JSON.stringify(k)}:${encoded}`);
+      arrayPush(parts, `${jsonStringify(ks[i])}:${encoded}`);
     }
     seen.delete(value);
-    return `{${parts.join(",")}}`;
+    return `{${arrayJoin(parts, ",")}}`;
   }
   return undefined; // function/symbol nested value: not JSON-representable, dropped
 }

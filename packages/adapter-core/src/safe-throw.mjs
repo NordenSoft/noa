@@ -30,7 +30,7 @@
  * conversion, it is itself undefeatable, and `scripts/lint-thrown-value-handling.mjs` fails the
  * build when any handler in the governed packages touches a caught value any other way.
  *
- * THE RULES THIS MODULE HOLDS ITSELF TO (audit them — they are the whole guarantee):
+ * THE RULES THIS MODULE HOLDS ITSELF TO (audit them — they are the whole contract):
  *   1. Nothing in here reads a property of the untrusted value outside a `try`.
  *   2. No bare `instanceof`; Error-ness is probed inside a `try` and a throw means "not proven".
  *   3. No bare `String()`/interpolation of the untrusted value; every coercion is inside a `try`.
