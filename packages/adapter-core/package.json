@@ -45,7 +45,8 @@
     "src",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public",

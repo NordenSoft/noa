@@ -21,6 +21,12 @@ _Nothing yet._
 > objects.** Existing `verifyChain(receipts)` and `verifyCheckpoint(cp, keyring)` calls that pass
 > parsed objects will stop working — at compile time in TypeScript, and as a `MALFORMED` verdict at
 > runtime in JavaScript.
+>
+> **Why MINOR and not 1.0.0.** Under SemVer, `0.y.z` is the range where breaking changes belong in
+> the MINOR position, so `0.6.0` is this project's major-equivalent bump. Declaring `1.0.0` would
+> assert that the public API is stable, and this changelog documents ongoing breaking security work
+> across consecutive review rounds. Claiming a property the project cannot currently honour is the
+> one thing this codebase refuses to do, in a release number as much as in a comment.
 
 ### BREAKING — the public verifiers take BYTES, not objects
 
@@ -56,12 +62,22 @@ made. This is the bytes-in work that closed a class of ingest attacks; it is not
 ```js
 // before
 verifyChain(receipts, { keyring });
-// after
-verifyChain(encodeDocument(receipts), { keyring: encodeDocument(keyring) });
+// after — a JSON string is accepted directly; no helper needed
+verifyChain(JSON.stringify(receipts), { keyring: JSON.stringify(keyring) });
+// or, if you prefer bytes
+const enc = new TextEncoder();
+verifyChain(enc.encode(JSON.stringify(receipts)), { keyring: enc.encode(JSON.stringify(keyring)) });
 ```
 
-`encodeDocument` / `decodeDocument` / `parseDocument` are exported for exactly this. Anything you
-already hold as JSON text can be passed straight through — the string overload takes it unchanged.
+Measured on a real signed chain: both forms return `VALID`, the old object form returns `MALFORMED`.
+Anything you already hold as JSON TEXT — a file you read, a response body — passes straight through
+unchanged, which is the cheapest migration and avoids a parse-then-reserialize round trip.
+
+⚠ **An earlier draft of this entry told you to call `encodeDocument`, which DOES NOT EXIST on the
+public surface.** It lives in an unpublished internal package; `noa-receipt` exports `decodeDocument`
+and `parseDocument` but no encoder. The one instruction a consumer most needed was the one that threw
+`TypeError: encodeDocument is not a function`. It is recorded rather than silently corrected because
+the release note was written without running its own example.
 
 ⚠ **This entry was MISSING from the first draft of this release, and the omission is worth stating.**
 The version bump was justified by an export-surface diff — 18 names added, 0 removed, therefore
@@ -70,12 +86,6 @@ used entry points registered as zero change. A cross-family review found it. The
 this codebase repeats: a green number from an instrument that cannot observe the property is not
 evidence about the property.
 
->
-> **Why MINOR and not 1.0.0.** Under SemVer, `0.y.z` is the range where breaking changes belong in
-> the MINOR position, so `0.6.0` is this project's major-equivalent bump. Declaring `1.0.0` would
-> assert that the public API is stable, and this changelog documents ongoing breaking security work
-> across consecutive review rounds. Claiming a property the project cannot currently honour is the
-> one thing this codebase refuses to do, in a release number as much as in a comment.
 
 ### Security — a retired signing key could mint new execution evidence (P0-14)
 
@@ -102,8 +112,14 @@ Mechanisms:
 - `src/verification-keyring.ts` — a parsed keyring is a value with lifecycle state attached, so a
   key and its retirement cannot be read apart. There are **two** call shapes over that value, and
   saying so matters because an earlier draft of this entry claimed one:
-  - `resolveVerificationKey(keyring, kid)` refuses a retired or not-yet-active `kid` outright. Used
-    by the published packages (`adapter-core`, `mcp-proxy`).
+  - `resolveVerificationKey(keyring, kid)` refuses a RETIRED `kid` outright. Used by the published
+    packages (`adapter-core`, `mcp-proxy`).
+
+    ⚠ An earlier draft said "retired **or not-yet-active**". The kernel has no activation concept at
+    all: `grep -rn "validFrom\|notBefore" src --include='*.ts'` returns ZERO, and a lifecycle entry
+    carrying `validFrom` is rejected as malformed. Activation windows live in `packages/evidence` and
+    `packages/approval-artifacts`, neither of which is published. The sentence described a property
+    of the repository, not of the package a consumer installs.
   - the kernel's own surfaces (`src/verify.ts`, `src/cose/*`, `src/policy/compliance.ts`) call
     `parseVerificationKeyring` and read `retiredKids` directly, because they must report WHICH
     lifecycle rule refused a key, not merely that one did.
@@ -114,8 +130,10 @@ Mechanisms:
   one is how a reviewer stops looking at the second.
 - `verifyCheckpoint(cp, keyring?)` accepts a parsed verification keyring. It had never been patched
   in the two earlier attempts, which is why "refused on both paths" was false when it was written.
-- Timestamps are parsed with integer epoch arithmetic (Howard Hinnant's `daysFromCivil`) instead of
-  `Date`, so a poisoned `Date` cannot move a bound. RFC 3339 offsets are honoured, and the parser
+- Timestamps in the PACKAGES (`approval-artifacts`, `mcp-proxy`) are parsed with integer epoch
+  arithmetic (Howard Hinnant's `daysFromCivil`) instead of `Date`, so a poisoned `Date` cannot move a
+  bound. The kernel's own lifecycle parse still uses a captured `dateParse` intrinsic — safe against
+  post-load poisoning, but not the same mechanism, and an earlier draft of this line implied it was. RFC 3339 offsets are honoured, and the parser
   accepts every spelling the published `noa-decision-0.1` schema permits — a reject-only check that
   is stricter than the schema refuses validly signed artifacts, which is its own defect.
 - `packages/mcp-proxy` exposes an atomic `verificationLifecycle()` snapshot. The bare `keyring()`
@@ -269,9 +287,12 @@ fails closed when a future site does not route through it.
   that "usually" identifies "do not retry" is not one. New field `causeDescription` (a safe string);
   read it instead of `cause.message`. `cause`, `result` and `toolFailure` are still carried by
   identity. The gate now raises this type when `report(...)` throws after a successful dispatch — a
-  caller that previously saw a raw transport error there now sees the honest one. Targets the next
-  `noa-mcp-adapter-core` / `noa-framework-adapters` release (0.2.0 / 0.2.0); nothing is published
-  from this branch and no version field was bumped.
+  caller that previously saw a raw transport error there now sees the honest one. Shipped in this release as `noa-mcp-adapter-core@0.3.0`.
+  ⚠ This sentence previously read "Targets the next … release (0.2.0 / 0.2.0); nothing is published
+  from this branch and no version field was bumped." It was true while the section sat under
+  `[Unreleased]`, and false the moment the section became `[0.6.0]` — adapter-core is bumped to
+  0.3.0 in this very diff. Folding ~460 lines under a release heading carried its "not yet"
+  language along with it; the top banner was caught, this was not.
 
 - **Behaviour change — `outcome.error` is now always a string on an mcp-proxy ERROR outcome
   receipt.** `throw null` / `throw undefined` previously recorded `null`, i.e. "an error occurred and
@@ -628,6 +649,8 @@ scoped `@noa/receipt`).
   "a keyring-trusted key signed this" to "this agent signed this", closing cross-agent
   impersonation in a multi-key keyring.
 
-[Unreleased]: https://github.com/NordenSoft/noa/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/NordenSoft/noa/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/NordenSoft/noa/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/NordenSoft/noa/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/NordenSoft/noa/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/NordenSoft/noa/releases/tag/v0.3.0

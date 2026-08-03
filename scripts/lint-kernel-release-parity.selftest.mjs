@@ -32,13 +32,17 @@ function sh(cwd, cmd, args) {
 }
 
 /** A minimal but REAL package: git repo, tsconfig, a source file, a build output, a tag. */
-function makeRepo({ files, extraShipped = null, tagOnBranch = false } = {}) {
+function makeRepo({ files, extraShipped = null, tagOnBranch = false, secondModule = false, deleteAfterTag = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "parity-selftest-"));
   mkdirSync(join(dir, "src"), { recursive: true });
   mkdirSync(join(dir, "dist", "src"), { recursive: true });
 
   writeFileSync(join(dir, "src", "a.ts"), "export const a = 1;\n");
   writeFileSync(join(dir, "dist", "src", "a.js"), "export const a = 1;\n");
+  if (secondModule) {
+    writeFileSync(join(dir, "src", "b.ts"), "export const b = 2;\n");
+    writeFileSync(join(dir, "dist", "src", "b.js"), "export const b = 2;\n");
+  }
   writeFileSync(join(dir, "dist", "src", "a.d.ts"), "export declare const a: number;\n");
   writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({ compilerOptions: { outDir: "dist", rootDir: "." } }, null, 2));
   writeFileSync(join(dir, "package.json"), JSON.stringify({
@@ -62,6 +66,15 @@ function makeRepo({ files, extraShipped = null, tagOnBranch = false } = {}) {
     sh(dir, "git", ["checkout", "-q", "-"]);
   } else {
     sh(dir, "git", ["tag", "v1.0.0"]);
+  }
+
+  if (deleteAfterTag) {
+    // A module the TAG shipped and HEAD does not. `watched` is derived from HEAD's pack list, so
+    // without the containing-root diff nothing compares b.ts and the removal passes silently.
+    rmSync(join(dir, "src", "b.ts"), { force: true });
+    rmSync(join(dir, "dist", "src", "b.js"), { force: true });
+    sh(dir, "git", ["add", "-A"]);
+    sh(dir, "git", ["commit", "-qm", "delete a shipped module after the tag, no version bump"]);
   }
 
   if (extraShipped) {
@@ -141,6 +154,14 @@ check("ATTACK 3", "tag on a divergent branch", makeRepo({ tagOnBranch: true }), 
   sh(dir, "git", ["commit", "-qam", "change dependencies without bumping the version"]);
   check("ATTACK 6", "package.json changed after the tag", dir, "FAIL", "tree-parity");
 }
+
+// 7. A shipped module DELETED after the tag. Found by a redteam review of the version that shipped
+//    with 7/7 green: the watched set came from HEAD's pack list, so anything the tag shipped and HEAD
+//    does not was never compared. The control below is the SAME two-module repo left intact, so a
+//    FAIL here is the deletion and not the second module's mere presence.
+check("CONTROL", "two-module tree, nothing deleted", makeRepo({ secondModule: true }), "PASS");
+check("ATTACK 7", "shipped module deleted after the tag",
+  makeRepo({ secondModule: true, deleteAfterTag: true }), "FAIL", "tree-parity");
 
 // ── Report ───────────────────────────────────────────────────────────────────────────────────────
 console.log("KERNEL RELEASE PARITY GATE — SELFTEST\n");

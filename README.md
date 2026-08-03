@@ -172,7 +172,9 @@ const receipt = buildReceipt(
   signer,
 );
 
-const result = verifyChain([receipt], { keyring });
+// Verifier inputs are BYTES or JSON TEXT, never caller-owned objects: an object's getters
+// would run inside the trust boundary. A JSON string is accepted directly.
+const result = verifyChain(JSON.stringify([receipt]), { keyring: JSON.stringify(keyring) });
 console.log(result.status); // -> "VALID"
 EOF
 # -> VALID

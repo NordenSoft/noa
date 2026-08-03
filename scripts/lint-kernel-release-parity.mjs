@@ -241,9 +241,14 @@ if (!tagRef.ok) {
 
   if (watched.length > 0) {
     // Content equality, not commit history: a change plus a revert passes, a rename fails.
-    const diff = tryRun("git", ["diff", "--quiet", tag, "HEAD", "--", ...watched]);
+    // R11: `watched` comes from HEAD's pack list, so a file the TAG shipped and HEAD no longer does
+    // was never compared — a deletion after the tag passed silently. Diff the containing roots too,
+    // which are stable across a deletion, so a removed shipped module shows up as a difference.
+    const roots = [...new Set(watched.map((p) => p.split("/")[0]))];
+    const diff = tryRun("git", ["diff", "--quiet", tag, "HEAD", "--", ...new Set([...watched, ...roots])]);
     if (!diff.ok) {
-      const names = tryRun("git", ["diff", "--name-only", tag, "HEAD", "--", ...watched]);
+      const roots2 = [...new Set(watched.map((p) => p.split("/")[0]))];
+      const names = tryRun("git", ["diff", "--name-only", tag, "HEAD", "--", ...new Set([...watched, ...roots2])]);
       const list = names.ok && names.out ? names.out.split("\n") : [];
       fail.push({
         check: "tree-parity",
@@ -276,20 +281,29 @@ function walk(dir, base = dir, acc = new Map()) {
   return acc;
 }
 
-/** Packs (or downloads) into `cwd` and extracts the single tarball it produced. */
-function packAndExtract(spec, cwd, label) {
-  const r = tryRun("npm", ["pack", ...(spec ? [spec] : []), "--ignore-scripts", "--silent"], { cwd });
+/**
+ * Packs (or downloads) into `dest` and extracts the single tarball it produced.
+ *
+ * `--pack-destination` rather than a cwd change, and this is the whole finding: the first version
+ * passed `{ cwd: dest }`, and `run()` spreads `...opts` LAST, so cwd became the freshly-created EMPTY
+ * temp dir. `npm pack` with no spec there has no package.json and exits 254, silenced by `--silent`.
+ * The local half of the comparison therefore ALWAYS failed, every run, since the tier was written —
+ * so the only tier that can detect a force-moved tag had never measured anything, while the header
+ * comment, the selftest and a commit message all said it did. A redteam review found it; nothing in
+ * the gate could, because the selftest runs exclusively with `--skip-registry` (R7, fixed below).
+ */
+function packAndExtract(spec, dest, label) {
+  const r = tryRun("npm", ["pack", ...(spec ? [spec] : []), "--ignore-scripts", "--silent", "--pack-destination", dest]);
   if (!r.ok) return { ok: false, err: `${label}: ${r.err.split("\n").slice(-3).join(" ")}` };
-  const tgz = readdirSync(cwd).find((f) => f.endsWith(".tgz"));
+  const tgz = readdirSync(dest).find((f) => f.endsWith(".tgz"));
   if (!tgz) return { ok: false, err: `${label}: npm pack produced no tarball` };
-  const dest = join(cwd, "x");
-  const x = tryRun("tar", ["-xzf", join(cwd, tgz), "-C", cwd], { cwd });
+  const x = tryRun("tar", ["-xzf", join(dest, tgz), "-C", dest]);
   if (!x.ok) return { ok: false, err: `${label}: could not extract ${tgz}: ${x.err}` };
   // npm tarballs put everything under `package/`.
   try {
-    return { ok: true, files: walk(join(cwd, "package")) };
+    return { ok: true, files: walk(join(dest, "package")) };
   } catch (e) {
-    return { ok: false, err: `${label}: extracted tree has no package/ root: ${String(e?.message || e)}`, dest };
+    return { ok: false, err: `${label}: extracted tree has no package/ root: ${String(e?.message || e)}` };
   }
 }
 
@@ -363,7 +377,15 @@ if (asJson) {
   console.log(`  shipped paths watched : ${watched.length}`);
   if (fail.length === 0) {
     for (const n of note) console.log(`  ${n}`);
-    console.log(`\nPARITY PASS: the registry copy of ${version} is the kernel this tree builds.`);
+    // R7: this sentence used to print unconditionally, so a --skip-registry run asserted a fact about
+    // the REGISTRY that it had not looked at. And because the selftest runs exclusively in that mode,
+    // every one of its 7 "ok" cases observed the false sentence — which is why a Tier B that had never
+    // measured anything (R5) survived a green selftest.
+    console.log(skipRegistry
+      ? `\nTIER A PASS, REGISTRY NOT MEASURED: git says the shipped sources are unchanged since ${tag}. ` +
+        `Nothing here looked at the registry, so a moved tag or a differing published artifact would ` +
+        `NOT have been seen. This is not a release-grade result.`
+      : `\nPARITY PASS: the registry copy of ${version} is byte-identical to what this tree packs.`);
   } else {
     for (const n of note) console.log(`  ${n}`);
     for (const f of fail) {
