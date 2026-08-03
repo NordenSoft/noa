@@ -21,7 +21,19 @@ The owner accepted the recommendation to **split** what ADR-0004 tried to do in 
 
 **Why the split, in one sentence:** ADR-0003 and ADR-0004 were both rejected because each bundled a reversible internal correction with an irreversible external commitment, so the owner could not approve the correction without also approving the commitment. Everything in this ADR is a **two-way door**, so it can be approved on its own merits and reverted without stranding anything.
 
-**What this buys measurably:** ADR-0005 closes **M1, M2, M3, M4, M5, M6, M7 and R-2** — every defect measured in this workstream except the ones that genuinely require custody or target cooperation. §8 maps each one to the section that closes it and states honestly what it does not close.
+**What this buys measurably:** ADR-0005 closes **M1, M2, M3, M4, M6, M7 and R-2** — every defect measured in this workstream except the ones that genuinely require custody or target cooperation. §8 maps each one to the section that closes it and states honestly what it does not close.
+
+> ⚠ **M5 IS NOT IN THAT LIST, AND THIS LINE USED TO SAY IT WAS.** Corrected 2026-08-03. §8 was fixed
+> on 2026-07-31 (claim finding C12) to record **M5 cross-hold display replay as 🔴 NOT CLOSED**, but
+> this summary sentence and the §5 table row below were left saying the opposite. **Two texts in force
+> in one document, and this is the one a reader trusts first** — a KURAL 28-1 violation, and precisely
+> the failure mode this ADR was written to eliminate.
+>
+> The egress AAD verification the design describes **does not exist in code**. Its knockout, `G5
+> display-aad-egress-check`, is FORMALLY WITHDRAWN rather than quietly skipped —
+> `scripts/lint-control-knockout.mjs:96-108` states the reason: *"A knockout deletes a control; there
+> is nothing here to delete, so writing a G5 entry would have manufactured the appearance of coverage
+> over a control that was never built."* §8's M5 row is authoritative; tracked as P1-3.
 
 ---
 
@@ -178,7 +190,7 @@ Stage 0 closes the temporal and parse defects. It closes none of the 42 authorit
 | `action.reversible` | (A) with silent `false` default `:172` | **(B)** from the action schema | ADR-0004 tier-B leverage |
 | `chain` | (A) caller-chosen `:176` | **(D)** boundary-issued; a caller may supply a *continuation reference* the boundary validates as its own | chain-identity spoofing |
 | `recipients[]` | (A) caller array | **(D)** approver kid **+ the manifest's AUDIT key, always** | caller-deletable audit |
-| the four `encryptedDisplay` AAD fields | never checked | **verified on egress** against this hold's `(tenant, holdId, deferredReceiptHash, expiresAt)` | **M5** |
+| the four `encryptedDisplay` AAD fields | never checked | ⚠ **DESIGN ONLY — NOT BUILT.** The target state is verification on egress against this hold's `(tenant, holdId, deferredReceiptHash, expiresAt)`. **Today it is still "never checked"**: `grep -rn "aad" packages/gate/src` returns one hit, `types.ts`, an unused optional field. This column describes every other row's SHIPPED state, which is why leaving this one undecorated read as done. | **M5 — 🔴 NOT CLOSED, see §8** |
 | relay `action.{canonical,riskClass,paramsHash}` | (A) `relay/engine.ts:315-317` | **(C)** taken from the **deferred receipt** the envelope binds through `deferredReceiptHash`, once `refHash(deferredReceipt) == envelope.deferredReceiptHash`; otherwise the hold is refused. **Not read from the envelope directly** — `noa.hold/0.1` is `additionalProperties:false` over 16 required properties and has **no** `action` field. **Authority caveat:** the relay's keyring is published through an agent-authenticated route and is unrooted, so until the trust-root decision lands this yields structural consistency, **not** authority. | R-1 §4 |
 | relay `custodyTier` | (A) self-asserted `:162` | **(C)** from device attestation, or **the field is deleted** | a trust attribute written by its own subject |
 | `requestHash` pre-image | omits `display`, `encryptedDisplay`, `ttlMs`, RAW params `:217` | covers **everything that changes what the human sees** | idempotency blind to the display |
