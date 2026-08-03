@@ -166,3 +166,60 @@ test("canonicalizeApprovalRules: order- and key-order-independent; buildPolicyCh
 function pick(cls) {
   return { changed: cls.changed, weakens: cls.weakens };
 }
+
+
+// REDTEAM 2026-08-03, reproduced by the lead before the fix.
+//
+// `classifyPolicyChange` decided "did the ruleset change?" with a LIVE `JSON.stringify`, and
+// "not changed" is the branch that applies a proposal WITHOUT an approval. A single assignment
+// collapsed every comparison to equal, and a rule weakened from a 4000 threshold to 99_999_999 —
+// after which nothing ever requires human approval again — applied silently:
+//
+//     CONTROL unpoisoned  { ok:false, changed:true,  code:"approval-required" }
+//     ATTACK  poisoned    { ok:true,  changed:false }   applied threshold 99999999
+//
+// Changing the policy is the strongest bypass in the product: it does not forge one approval, it
+// removes the requirement for all of them. `weakens` had the same shape via Array.prototype.every
+// and .some, so both are asserted here.
+test("applyPolicyChange: poisoned builtins cannot make a weakening look like a no-op change", () => {
+  const strict = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
+  const weakened = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 99999999 } }];
+  const call = () => applyPolicyChange({ currentRules: strict, proposedRules: weakened });
+
+  const clean = call();
+  assert.equal(clean.ok, false, "control: a real weakening must be refused unpoisoned");
+  assert.equal(clean.changed, true);
+  assert.equal(clean.code, "approval-required");
+
+  const realJson = JSON.stringify;
+  let viaJson;
+  try {
+    JSON.stringify = () => "SAME";
+    viaJson = call();
+  } finally {
+    JSON.stringify = realJson;
+  }
+  assert.equal(viaJson.ok, false,
+    "a poisoned JSON.stringify made a weakened ruleset look unchanged, so it applied with NO approval");
+  assert.equal(viaJson.changed, true);
+
+  const realEvery = Array.prototype.every;
+  const realSome = Array.prototype.some;
+  let viaArray;
+  try {
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.every = () => true;
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.some = () => true;
+    viaArray = call();
+  } finally {
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.every = realEvery;
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.some = realSome;
+  }
+  assert.equal(viaArray.ok, false, "a poisoned Array.prototype.every/some must not hide a weakening");
+
+  assert.equal(JSON.stringify, realJson, "control: JSON.stringify was not restored");
+  assert.equal(Array.prototype.every, realEvery, "control: Array.prototype.every was not restored");
+});

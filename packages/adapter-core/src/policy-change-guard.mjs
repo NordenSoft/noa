@@ -28,6 +28,20 @@ import { canonicalParamsHash } from "./pre-check.mjs";
 import { verifyApprovalReceipt } from "./approval-decision.mjs";
 import { validateApprovalRules } from "./approval-rules.mjs";
 import { describeThrown } from "./safe-throw.mjs";
+import { intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-03. `classifyPolicyChange` decided whether the ruleset had changed with a LIVE
+// `JSON.stringify`, and "not changed" is the branch that applies a proposal WITHOUT an approval.
+// One assignment collapsed every comparison to equal, and a rule weakened from a 4000 threshold to
+// 99_999_999 — after which nothing ever needs human approval again — applied silently:
+//
+//     CONTROL unpoisoned  { ok:false, changed:true,  code:"approval-required" }
+//     ATTACK  poisoned    { ok:true,  changed:false }   applied threshold 99999999
+//
+// Changing the policy is the strongest bypass there is: it does not forge one approval, it removes
+// the requirement for all of them. Every builtin this file reaches for on that path is now taken
+// from the kernel's module-load capture.
+const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap } = intrinsics;
 
 /** The FIXED action id every policy-change hold + approval + receipt is minted under (spec §19.3). */
 export const POLICY_UPDATE_ACTION_ID = "noa.policy.update";
@@ -63,7 +77,7 @@ export const POLICY_UPDATE_META_POLICY = Object.freeze({
 /* ---------- canonicalization (deterministic, order-insensitive) ---------- */
 
 function sortKeysDeep(value) {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (isArray(value)) return arrayMap(value, sortKeysDeep);
   if (value && typeof value === "object") {
     const out = {};
     for (const k of Object.keys(value).sort()) out[k] = sortKeysDeep(value[k]);
@@ -80,7 +94,7 @@ function sortKeysDeep(value) {
  * canonicalizes to `[]` (an absent policy).
  */
 export function canonicalizeApprovalRules(rules) {
-  const arr = Array.isArray(rules) ? rules : [];
+  const arr = isArray(rules) ? rules : [];
   const canon = arr.map((r) => sortKeysDeep(r));
   return canon.sort((a, b) => {
     const sa = JSON.stringify(a);
@@ -133,12 +147,12 @@ function ruleCovers(rp, rc) {
 function matchSemantic(rule) {
   const m = rule && typeof rule === "object" ? rule.match : undefined;
   const t = rule && typeof rule === "object" ? rule.threshold : undefined;
-  return JSON.stringify([m ? [m.type, m.action] : null, t ? [t.path, t.op, t.value] : null]);
+  return jsonStringify([m ? [m.type, m.action] : null, t ? [t.path, t.op, t.value] : null]);
 }
 
 function indexById(rules) {
   const map = new Map();
-  if (!Array.isArray(rules)) return map;
+  if (!isArray(rules)) return map;
   for (const r of rules) if (r && typeof r === "object" && typeof r.id === "string") map.set(r.id, r);
   return map;
 }
@@ -154,16 +168,16 @@ function indexById(rules) {
  * Pure; never throws.
  */
 export function classifyPolicyChange(currentRules, proposedRules) {
-  const cur = Array.isArray(currentRules) ? currentRules : [];
-  const prop = Array.isArray(proposedRules) ? proposedRules : [];
-  const changed = JSON.stringify(canonicalizeApprovalRules(cur)) !== JSON.stringify(canonicalizeApprovalRules(prop));
+  const cur = isArray(currentRules) ? currentRules : [];
+  const prop = isArray(proposedRules) ? proposedRules : [];
+  const changed = jsonStringify(canonicalizeApprovalRules(cur)) !== jsonStringify(canonicalizeApprovalRules(prop));
   const curById = indexById(cur);
   const propById = indexById(prop);
-  const removed = [...curById.keys()].filter((id) => !propById.has(id));
-  const added = [...propById.keys()].filter((id) => !curById.has(id));
-  const modified = [...curById.keys()].filter((id) => propById.has(id) && matchSemantic(curById.get(id)) !== matchSemantic(propById.get(id)));
+  const removed = arrayFilter([...curById.keys()], (id) => !propById.has(id));
+  const added = arrayFilter([...propById.keys()], (id) => !curById.has(id));
+  const modified = arrayFilter([...curById.keys()], (id) => propById.has(id) && matchSemantic(curById.get(id)) !== matchSemantic(propById.get(id)));
   // Weakening iff SOME current rule's coverage is not preserved by ANY proposed rule.
-  const weakens = !cur.every((rc) => prop.some((rp) => ruleCovers(rp, rc)));
+  const weakens = !arrayEvery(cur, (rc) => arraySome(prop, (rp) => ruleCovers(rp, rc)));
   return { changed, weakens, added, removed, modified };
 }
 
@@ -222,7 +236,7 @@ export function applyPolicyChange({ currentRules, proposedRules, approval = null
 
     if (!request.changed) {
       // Re-applying an identical policy is not a mutation; nothing to approve.
-      return { ok: true, changed: false, weakens: false, activeRules: Array.isArray(proposedRules) ? proposedRules : [], request };
+      return { ok: true, changed: false, weakens: false, activeRules: isArray(proposedRules) ? proposedRules : [], request };
     }
 
     // FAIL-CLOSED: a real change requires a verified human approval bound to THIS exact diff.
