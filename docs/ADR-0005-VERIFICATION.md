@@ -28,6 +28,21 @@ $ node scripts/lint-security-gates.mjs     → exit 0
 Baseline before this work: **173 gate tests passing.** Now **184**, with the only two failures being
 the owner-deferred ADR-0006 items. Root suite never regressed.
 
+> **2026-08-03 addendum — the `fail 2` above is HISTORICAL.** The owner took the ADR-0006 decision and
+> **0006-A closed both failures** (commits `01dc642`, `0e0d6a8`): the projection identity now commits
+> to the emitted `run()` artifact, and the boundary constructs the `ExecutionCommand` it hands the
+> executor. Gate suite is **223/223**. The console block is left unedited on purpose — it is the
+> measurement of its own date, and rewriting a recorded measurement to match a later state is how a
+> verification document stops being evidence.
+>
+> The `L9: 1 finding, BLOCKING` line above referred to `wrapper.ts`'s zero-argument `execute`.
+> Re-measured rather than assumed: `node scripts/lint-trusted-roots.mjs` → **L9: 0 findings, exit 0**,
+> every `packages/*/src` GATED except the inventoried `e2e-demo`.
+>
+> What 0006-A did NOT close, so this addendum is not read as more than it is: the boundary still does
+> not observe what the executor DID (ADR-0006 §9.1, stages 9-10, no admissible input). A green L9 says
+> the trusted-root gate has no finding, not that the execution binding exists.
+
 ## 2. Eight of ten measured defects closed, each with a passing knockout
 
 | Defect | Test | Fix | Knockout |

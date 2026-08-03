@@ -84,8 +84,31 @@ async function holdAndRun(args: string[]): Promise<number> {
     action: { canonical, riskClass: risk, reversible: false },
     params: { executable, argv, cwd, targetEnv, allowedEnvHash: null, stdinHash: null },
     idempotencyKey: randomBytes(12).toString("hex"),
-    execute: async () => {
-      const r = spawnSync(executable!, argv, { stdio: "inherit", cwd });
+    // ADR-0006-A part B — DISPATCH FROM WHAT WAS GRANTED, not from this closure's own locals.
+    //
+    // This executor used to run `executable`/`argv`/`cwd` captured from the enclosing scope: the same
+    // values it PROPOSED, never the ones the gate derived, hashed, showed a human and bound into the
+    // grant. Nothing forced the two to agree, and this is the flagship `noa hold-and-run` — the only
+    // executor this project ships. An API whose sole shipped consumer ignores it is a display-only
+    // surface (KURAL 16), and it would have made the new command argument decorative on the very path
+    // most likely to be copied by an integrator.
+    //
+    // The shape is CHECKED, not cast: `command.params` is typed `unknown` precisely so that a consumer
+    // must look before it leaps. The values are deep-frozen by the wrapper, so reading them here is a
+    // read of an immutable value rather than a second live read of a caller-owned object.
+    execute: async (command) => {
+      const p = command.params as { executable?: unknown; argv?: unknown; cwd?: unknown } | null;
+      if (
+        typeof p !== "object" || p === null ||
+        typeof p.executable !== "string" || !Array.isArray(p.argv) || typeof p.cwd !== "string"
+      ) {
+        // `ok: false` is an UNVERIFIABLE self-report and the gate treats it as such — the outcome is
+        // UNKNOWN_AFTER_DISPATCH, not a clean refusal. That is the documented cost of the executor
+        // having no channel that says "I provably did nothing" (wrapper.ts, the dispatch invariant),
+        // and it is correct: nobody but this closure observed that it refused.
+        return { ok: false, detail: "granted command is not a shell-exec params object" };
+      }
+      const r = spawnSync(p.executable, p.argv as string[], { stdio: "inherit", cwd: p.cwd });
       return { ok: r.status === 0, detail: `exit ${r.status}` };
     },
   });
