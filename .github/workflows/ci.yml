@@ -122,7 +122,6 @@ jobs:
         # package's verifier is held to a different rule than the others, which is exactly how "a
         # rule enforced in some implementations" stops being an invariant.
         run: npm run check:inert-core
-      - name: approval-artifacts tests
       - name: Install adapter-core FIRST — several suites below import noa-receipt through it
         # MOVED 2026-08-03. This sat AFTER the gate/approval-artifacts suites, so every one of them
         # died on `ERR_MODULE_NOT_FOUND: Cannot find package 'noa-receipt' imported from
@@ -134,7 +133,7 @@ jobs:
         # this import error, and `lint:knockout` reported 63 findings / 3-of-66 load-bearing where a
         # correctly-ordered run gives 66/66.
         run: cd packages/adapter-core && npm ci
-
+      - name: approval-artifacts tests
         run: cd packages/approval-artifacts && npm ci && npm test
       - name: evidence tests
         run: cd packages/evidence && npm ci && npm test

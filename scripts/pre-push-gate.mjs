@@ -103,6 +103,12 @@ record("worktree", GREEN, dirty ? yellow("DIRTY — this verdict describes the t
 
 // ── 3. the fast subset, in CI's own order ────────────────────────────────────────────────────────
 for (const [name, cmd, args, cwd] of [
+  // FIRST, and cheapest. A structurally invalid workflow file makes GitHub refuse the ENTIRE
+  // workflow — `startup_failure`, 0 jobs, on every push — and it suppresses the pull_request runs
+  // too, so the required checks on an open PR simply stop being produced. Nine CI runs were spent on
+  // this exact defect on 2026-08-03 before anyone read the job COUNT instead of the verdict. Nothing
+  // else in this gate can observe it, and `yaml.safe_load` reported the broken file as valid.
+  ["workflow files", "node", ["scripts/lint-workflows.mjs"], ROOT],
   ["kernel build", "npm", ["run", "build"], ROOT],
   ["kernel tests", "npm", ["test"], ROOT],
   ["typecheck (all packages)", "npm", ["run", "typecheck:all"], ROOT],

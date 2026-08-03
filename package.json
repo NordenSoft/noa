@@ -1,7 +1,7 @@
 {
   "name": "noa-receipt",
   "version": "0.6.0",
-  "description": "NOA Agent Action Receipt \u2014 open, offline-verifiable provenance for AI-agent actions. The governance/receipt organ only; the NOA brain is separate and proprietary.",
+  "description": "NOA Agent Action Receipt — open, offline-verifiable provenance for AI-agent actions. The governance/receipt organ only; the NOA brain is separate and proprietary.",
   "license": "Apache-2.0",
   "type": "module",
   "homepage": "https://noatrust.com",
@@ -67,6 +67,7 @@
     "check:entry-points": "node scripts/gen-entry-point-registry.mjs --write && git diff --exit-code conformance/ENTRY-POINTS.md",
     "lint:dispatch-surfaces": "node scripts/lint-dispatch-surfaces.mjs",
     "lint:security-gates": "node scripts/lint-security-gates.mjs",
+    "lint:workflows": "node scripts/lint-workflows.mjs",
     "lint:resolver-parity": "node scripts/lib/proof-resolve.selftest.mjs && node scripts/lint-resolver-parity.mjs",
     "lint:knockout": "node scripts/lint-control-knockout.selftest.mjs && node scripts/lint-control-knockout.mjs",
     "lint:trusted-roots": "node scripts/lint-trusted-roots.mjs",
