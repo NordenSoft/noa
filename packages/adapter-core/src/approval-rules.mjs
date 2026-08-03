@@ -28,7 +28,7 @@ function ruleErrors(rule, idx) {
     } else {
       if (typeof t.path !== "string" || t.path.length === 0) errors.push(`${where}.threshold.path: non-empty string`);
       if (!THRESHOLD_OPS.has(t.op)) errors.push(`${where}.threshold.op: must be "ge" or "gt"`);
-      if (typeof t.value !== "number" || !Number.isSafeInteger(t.value)) errors.push(`${where}.threshold.value: safe integer`);
+      if (typeof t.value !== "number" || !isSafeInteger(t.value)) errors.push(`${where}.threshold.value: safe integer`);
     }
   }
   return errors;
@@ -36,9 +36,27 @@ function ruleErrors(rule, idx) {
 
 /** Validates an entire approvalRules array. Run ONCE at policy-load time (mirrors trusting
  *  `policy`); matchApprovalRule below does NOT re-validate per call, but never throws either way. */
+import { intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-03. `matchApprovalRule` decides whether an action NEEDS a human approval, and
+// every failure mode in it lands on "no rule matched" — which the caller reads as "no approval
+// required". Two live-global reads reached that outcome directly, MEASURED against a rule with a
+// 4,000 threshold and a 900,000-cent refund:
+//
+//     Array.isArray  -> false  =>  returns null immediately                     APPROVAL BYPASSED
+//     hasOwnProperty -> false  =>  the threshold value reads as undefined and
+//                                  the rule is skipped                          APPROVAL BYPASSED
+//
+// The DIRECTION of the failure is what makes this severe. Every deliberate branch in this file fails
+// CLOSED — an ambiguous value returns the rule, a throw continues to the next one. But a poisoned
+// type predicate does not mis-evaluate a rule, it makes the rule INVISIBLE, and an empty rule set is
+// indistinguishable from "nothing needs approval here".
+
+const { isArray, hasOwn, strStartsWith, strEndsWith, isSafeInteger } = intrinsics;
+
 export function validateApprovalRules(approvalRules) {
   if (approvalRules === undefined || approvalRules === null) return { ok: true, errors: [] };
-  if (!Array.isArray(approvalRules)) return { ok: false, errors: ["approvalRules: must be an array"] };
+  if (!isArray(approvalRules)) return { ok: false, errors: ["approvalRules: must be an array"] };
   const errors = [];
   const seenIds = new Set();
   approvalRules.forEach((r, i) => {
@@ -64,7 +82,7 @@ export function validateApprovalRules(approvalRules) {
  * Never throws: a malformed rule mid-array is treated as "does not match" for THAT rule only.
  */
 export function matchApprovalRule(approvalRules, actionId, inputs) {
-  if (!Array.isArray(approvalRules)) return null;
+  if (!isArray(approvalRules)) return null;
   for (const rule of approvalRules) {
     try {
       if (!rule || typeof rule !== "object") continue;
@@ -72,21 +90,21 @@ export function matchApprovalRule(approvalRules, actionId, inputs) {
       if (!m || typeof m !== "object") continue;
       let actionMatches = false;
       if (m.type === "exact") actionMatches = actionId === m.action;
-      else if (m.type === "prefix") actionMatches = typeof actionId === "string" && actionId.startsWith(m.action);
+      else if (m.type === "prefix") actionMatches = typeof actionId === "string" && strStartsWith(actionId, m.action);
       // "suffix" gates by the trailing segment of an action id (e.g. ".delete" catches "db.delete",
       // "s3.deleteObject" would NOT — endsWith is literal). Added for §19.1 risk-ladder defaults, which
       // must gate destructive verbs that are named as suffixes across integrations. Backward-compatible:
       // no pre-existing rule uses this type, so exact/prefix behavior is byte-identical.
-      else if (m.type === "suffix") actionMatches = typeof actionId === "string" && actionId.endsWith(m.action);
+      else if (m.type === "suffix") actionMatches = typeof actionId === "string" && strEndsWith(actionId, m.action);
       if (!actionMatches) continue;
 
       if (rule.threshold === undefined) return rule;
 
       const t = rule.threshold;
-      const v = Object.prototype.hasOwnProperty.call(inputs, t.path) ? inputs[t.path] : undefined;
+      const v = hasOwn(inputs, t.path) ? inputs[t.path] : undefined;
       if (v === undefined) continue;
 
-      if (typeof v === "number" && Number.isSafeInteger(v)) {
+      if (typeof v === "number" && isSafeInteger(v)) {
         const hit = t.op === "ge" ? v >= t.value : v > t.value;
         if (hit) return rule;
         continue;

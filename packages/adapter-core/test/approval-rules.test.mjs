@@ -65,3 +65,45 @@ test("tryIdentifyToolCallForTicketLookup: resolves actionId+paramsHash identical
   assert.doesNotThrow(() => tryIdentifyToolCallForTicketLookup(evil, canonicalParamsHash));
   assert.equal(tryIdentifyToolCallForTicketLookup(evil, canonicalParamsHash), null);
 });
+
+
+// REDTEAM 2026-08-03, reproduced by the lead before the fix.
+//
+// Every failure mode in `matchApprovalRule` lands on "no rule matched", and the caller reads that as
+// "no human approval required". Two poisoned type predicates reached it directly — not by
+// mis-evaluating a rule, but by making the rule INVISIBLE, which is indistinguishable from an empty
+// policy. Measured: a 900,000-cent refund against a rule with a 4,000 threshold went straight through.
+test("matchApprovalRule: poisoned type predicates cannot make a matching approval rule invisible", () => {
+  const rules = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
+  const call = () => matchApprovalRule(rules, "payment.refund", { amountMinor: 900000 });
+
+  assert.equal(call()?.id, "big-refund", "control: the rule must match unpoisoned, or nothing below means anything");
+
+  const realIsArray = Array.isArray;
+  let viaIsArray;
+  try {
+    Array.isArray = () => false;
+    viaIsArray = call();
+  } finally {
+    Array.isArray = realIsArray;
+  }
+  assert.equal(viaIsArray?.id, "big-refund",
+    "a poisoned Array.isArray made the whole rule set vanish, so an action needing human approval " +
+    "was treated as needing none");
+
+  const realHasOwn = Object.prototype.hasOwnProperty;
+  let viaHasOwn;
+  try {
+    // eslint-disable-next-line no-extend-native
+    Object.prototype.hasOwnProperty = () => false;
+    viaHasOwn = call();
+  } finally {
+    // eslint-disable-next-line no-extend-native
+    Object.prototype.hasOwnProperty = realHasOwn;
+  }
+  assert.equal(viaHasOwn?.id, "big-refund",
+    "a poisoned hasOwnProperty made the threshold value read as absent, so the rule was skipped");
+
+  assert.equal(Array.isArray, realIsArray, "control: Array.isArray was not restored");
+  assert.equal(Object.prototype.hasOwnProperty, realHasOwn, "control: hasOwnProperty was not restored");
+});
