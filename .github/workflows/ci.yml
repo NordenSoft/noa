@@ -352,6 +352,18 @@ jobs:
         # against a violation BUDGET that fails on regression — the count may only fall, and each
         # flips to blocking when it reaches zero. The rule is never weakened to fit the code.
         run: npm run lint:security-gates
+      - name: Verdict-differential poison sweep (does a poison move a verdict toward permissive?)
+        # Indexed by POISON x ORACLE, never by site. The site-indexed gates above find LINES that read
+        # or call a replaceable builtin; four adversarial rounds proved they cannot tell inert from
+        # exploitable among those lines, and cannot express a property WRITE at all — round 4's
+        # exploit replaced nothing and appeared in none of their findings. This one measures the only
+        # property that survives a class the instrument cannot name: did the verdict move?
+        #
+        # Validated against history rather than asserted: reverting the adapter-core sources to
+        # 17a2be2 makes it report 7 EXPLOITABLE (the round-3 policy-weakening and fail-open findings);
+        # at HEAD it reports 0 with no false positives.
+        run: npm run lint:verdict-differential
+
       - name: L9 trusted-root inventory + forbidden trust-input patterns
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # BLOCKING. L1-L7 above walk `src/` ONLY and contain zero `packages/` paths, so they were
