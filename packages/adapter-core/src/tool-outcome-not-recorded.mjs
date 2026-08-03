@@ -48,7 +48,7 @@ export class ToolOutcomeNotRecorded extends Error {
    */
   constructor(toolName, { outcome, result, toolFailure, receipt, cause, component = "noa" } = {}) {
     // `describeThrown` is total: it returns a non-empty string for EVERY input, including a revoked
-    // proxy, and it never throws. That property is what makes this constructor safe to call from
+    // proxy, and it does not throw for any input shape reached in practice. That property is what makes this constructor safe to call from
     // inside a catch block that has no idea what it caught.
     const causeDescription = describeThrown(cause);
     const safeName = typeof toolName === "string" && toolName.length > 0 ? toolName : "<unnamed tool>";

@@ -119,7 +119,7 @@ export function buildDenialReceipt({ deferredReceipt, by, ts, signer, agentId = 
  *       low-privilege approver may sign) could be adopted to authorize a DIFFERENT held action Y (a
  *       large refund) on the same chain: signature + chain verify, but the human never approved Y.
  *
- * Returns `{ ok: true }` or `{ ok: false, reason }` — never throws (any unexpected throw is caught
+ * Returns `{ ok: true }` or `{ ok: false, reason }` — returns rather than throwing (any unexpected throw is caught
  * and reported as a failure, i.e. fail-closed). See the RECEIPT_SIG_DOMAIN note above for why this
  * verifies a single receipt directly rather than calling verifyChain.
  *

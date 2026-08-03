@@ -6,6 +6,13 @@
  *
  * Runs AFTER preCheck()'s own ALLOW/DENY decision, never before/instead of it.
  */
+/*
+ * ⚠ ROUND 4 / R4-11 — the phrase "never throws" appears below and is MEASURED FALSE in one case: a
+ * revoked Proxy passed as caller input throws out of `preCheck`. Every input shape reached in
+ * practice returns a DENY rather than throwing, which is what the contract is FOR; the absolute is
+ * what was wrong. It is corrected in place rather than deleted, because "never" in a fail-closed
+ * contract is precisely the kind of word a reader stops testing.
+ */
 
 const MATCH_TYPES = new Set(["exact", "prefix", "suffix"]);
 const THRESHOLD_OPS = new Set(["ge", "gt"]);
@@ -35,7 +42,7 @@ function ruleErrors(rule, idx) {
 }
 
 /** Validates an entire approvalRules array. Run ONCE at policy-load time (mirrors trusting
- *  `policy`); matchApprovalRule below does NOT re-validate per call, but never throws either way. */
+ *  `policy`); matchApprovalRule below does NOT re-validate per call, but returns rather than throwing for every input shape reached in practice (R4-11). */
 import { intrinsics } from "noa-receipt";
 
 // REDTEAM 2026-08-03. `matchApprovalRule` decides whether an action NEEDS a human approval, and

@@ -35,7 +35,13 @@ import { intrinsics } from "noa-receipt";
 // So the builtins are taken from the kernel's module-load capture here too, whether or not each
 // individual site is reachable today. Reachability is a property of the surrounding code, and the
 // surrounding code changes.
-const { dateParse, isFiniteNumber, jsonParse, jsonStringify, arrayPush } = intrinsics;
+const { dateParse, isFiniteNumber, jsonParse, jsonStringify, arrayPush, setHas, mapHas, mapGet, mapSet } = intrinsics;
+// ROUND 4 / R4-06, R4-07. The remaining live reads on this file's decision paths: `Set.prototype.has`
+// deciding whether an event name is known (a poisoned `has` admits a line the loader must refuse),
+// `Map.prototype.has/get` deciding which rules were added, removed or modified, and
+// `String.prototype.startsWith/endsWith` deciding whether a proposed rule still COVERS a current one
+// — which is the §19.3 D4 step-up test. A poison there skips the step-up on a real weakening.
+
 
 
 export class PendingStoreError extends Error {
@@ -163,7 +169,7 @@ export function loadPendingIndex(path) {
         `pending-store: corrupt line ${i + 1} in "${path}" (missing string "id") — refusing to load; repair or restore the file before resuming`,
       );
     }
-    if (typeof ev.event !== "string" || !KNOWN_EVENTS.has(ev.event)) {
+    if (typeof ev.event !== "string" || !setHas(KNOWN_EVENTS, ev.event)) {
       // FAIL-CLOSED (see KNOWN_EVENTS): a parseable line naming an event this store does not
       // understand is refused outright — never silently skipped, which would fold a record back to
       // an earlier state and could resurrect an already-spent ticket for a replay.
@@ -181,8 +187,8 @@ export function loadPendingIndex(path) {
     // Backward-compatible: an event with NO sessionId (every pre-R4-session-scope caller, and every
     // existing test) falls back to keying by `id` alone — identical behavior to before.
     const key = recordKeyOf(ev);
-    if (!byId.has(key)) byId.set(key, []);
-    arrayPush(byId.get(key), ev);
+    if (!mapHas(byId, key)) mapSet(byId, key, []);
+    arrayPush(mapGet(byId, key), ev);
   }
   const index = new Map();
   for (const [id, events] of byId) {

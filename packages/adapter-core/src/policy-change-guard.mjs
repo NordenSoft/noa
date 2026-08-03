@@ -61,7 +61,13 @@ import { intrinsics } from "noa-receipt";
 //
 // The fix is structural, not another captured name: a null-prototype object has no chain to walk, so
 // `[[Set]]` cannot be intercepted at all. Same reason the kernel gives arrays an inert prototype.
-const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap, arraySort, arrayPush, objectKeys, objectCreateNull, objectSetPrototypeOf } = intrinsics;
+const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap, arraySort, arrayPush, objectKeys, objectCreateNull, objectSetPrototypeOf, strStartsWith, strEndsWith, mapHas, mapGet } = intrinsics;
+// ROUND 4 / R4-06, R4-07. The remaining live reads on this file's decision paths: `Set.prototype.has`
+// deciding whether an event name is known (a poisoned `has` admits a line the loader must refuse),
+// `Map.prototype.has/get` deciding which rules were added, removed or modified, and
+// `String.prototype.startsWith/endsWith` deciding whether a proposed rule still COVERS a current one
+// — which is the §19.3 D4 step-up test. A poison there skips the step-up on a real weakening.
+
 import { INERT_ARRAY_PROTOTYPE } from "noa-receipt";
 
 /** The FIXED action id every policy-change hold + approval + receipt is minted under (spec §19.3). */
@@ -148,8 +154,8 @@ function matchCovers(rp, rc) {
   const mc = rc && rc.match;
   if (!mp || !mc || typeof mp.action !== "string" || typeof mc.action !== "string") return false;
   if (mp.type === "exact") return mc.type === "exact" && mc.action === mp.action;
-  if (mp.type === "prefix") return (mc.type === "exact" || mc.type === "prefix") && mc.action.startsWith(mp.action);
-  if (mp.type === "suffix") return (mc.type === "exact" || mc.type === "suffix") && mc.action.endsWith(mp.action);
+  if (mp.type === "prefix") return (mc.type === "exact" || mc.type === "prefix") && strStartsWith(mc.action, mp.action);
+  if (mp.type === "suffix") return (mc.type === "exact" || mc.type === "suffix") && strEndsWith(mc.action, mp.action);
   return false;
 }
 
@@ -194,7 +200,7 @@ function indexById(rules) {
  *                  change it cannot PROVE is non-weakening (removed rule, raised threshold, narrowed
  *                  match, different threshold path, malformed rule) is reported as a weakening.
  *   - added/removed/modified: informational rule-id sets for the approval card.
- * Pure; never throws.
+ * Pure; returns rather than throwing for every input shape reached in practice (R4-11: a revoked Proxy is the measured exception in `preCheck`; these siblings were not separately probed).
  */
 export function classifyPolicyChange(currentRules, proposedRules) {
   const cur = isArray(currentRules) ? currentRules : [];
@@ -202,9 +208,9 @@ export function classifyPolicyChange(currentRules, proposedRules) {
   const changed = jsonStringify(canonicalizeApprovalRules(cur)) !== jsonStringify(canonicalizeApprovalRules(prop));
   const curById = indexById(cur);
   const propById = indexById(prop);
-  const removed = arrayFilter([...curById.keys()], (id) => !propById.has(id));
-  const added = arrayFilter([...propById.keys()], (id) => !curById.has(id));
-  const modified = arrayFilter([...curById.keys()], (id) => propById.has(id) && matchSemantic(curById.get(id)) !== matchSemantic(propById.get(id)));
+  const removed = arrayFilter([...curById.keys()], (id) => !mapHas(propById, id));
+  const added = arrayFilter([...propById.keys()], (id) => !mapHas(curById, id));
+  const modified = arrayFilter([...curById.keys()], (id) => mapHas(propById, id) && matchSemantic(mapGet(curById, id)) !== matchSemantic(mapGet(propById, id)));
   // Weakening iff SOME current rule's coverage is not preserved by ANY proposed rule.
   const weakens = !arrayEvery(cur, (rc) => arraySome(prop, (rp) => ruleCovers(rp, rc)));
   return { changed, weakens, added, removed, modified };
@@ -215,7 +221,7 @@ export function classifyPolicyChange(currentRules, proposedRules) {
  * the target (`to`) so an approval minted against a different baseline can never be replayed onto a
  * shifted one. `paramsHash` = canonicalParamsHash(diff) — byte-identical to the paramsHash preCheck
  * computes for `toolCall`, so the returned `toolCall` routes through the standard hold pipeline and its
- * DEFERRED receipt's action.paramsHash equals this hash. Pure; never throws.
+ * DEFERRED receipt's action.paramsHash equals this hash. Pure; returns rather than throwing for every input shape reached in practice (R4-11: a revoked Proxy is the measured exception in `preCheck`; these siblings were not separately probed).
  */
 export function buildPolicyChangeRequest(currentRules, proposedRules) {
   const cls = classifyPolicyChange(currentRules, proposedRules);
@@ -238,7 +244,7 @@ export function buildPolicyChangeRequest(currentRules, proposedRules) {
 /**
  * FAIL-CLOSED applicator — the ONLY function that yields a new active ruleset (spec §19.3 red line).
  *
- * Returns `{ ok, ... }`, never throws:
+ * Returns `{ ok, ... }` rather than throwing (see R4-11 on the word "never"):
  *   - proposed policy invalid            -> { ok:false, code:"invalid-policy" }         (never apply garbage)
  *   - no semantic change                 -> { ok:true,  changed:false, activeRules }     (idempotent no-op)
  *   - changed, approval not verified      -> { ok:false, code:"approval-required" }       (SILENT change refused)

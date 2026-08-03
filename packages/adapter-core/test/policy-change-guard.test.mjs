@@ -246,7 +246,12 @@ const POISONS = [
   ["JSON.stringify", () => { const r = JSON.stringify; JSON.stringify = () => "SAME"; return () => { JSON.stringify = r; }; }],
 ];
 
-test("applyPolicyChange: NO replaceable builtin can make a weakening apply without approval", () => {
+// NAME CORRECTED after round 4. This read "NO replaceable builtin can make a weakening apply without
+// approval" — a CLASS claim asserted by an eight-row list. Round 4 defeated the claim in its own
+// title without replacing a builtin at all, by installing a prototype ACCESSOR (see the write-class
+// test below). A table certifies its rows; naming it after the class is how the next reader stops
+// looking for row nine.
+test("applyPolicyChange: these eight replaceable builtins cannot make a weakening apply without approval", () => {
   const strict = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
   const weakened = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 99999999 } }];
   const call = () => applyPolicyChange({ currentRules: strict, proposedRules: weakened });

@@ -5,12 +5,19 @@
  * Sits between an MCP host and its tool servers. For EVERY tool call it runs the
  * DETERMINISTIC policy evaluator `evaluate(policy, inputs)` (noa-receipt's offline-replayable
  * policy engine, imported from the noa-receipt package) and returns a SIGNED receipt of the
- * ALLOW/DENY decision. FAIL-CLOSED: any policy/input error resolves to DENY, never a throw,
+ * ALLOW/DENY decision. FAIL-CLOSED: any policy/input error resolves to DENY, not a throw for any input shape reached in practice (a revoked Proxy is the measured exception, R4-11),
  * never a silent allow.
  *
  * Dependency note: this module consumes noa-receipt as a published registry dependency
  * (`^0.4.0`, see package.json), imported by its package name. The receipt builder, policy
  * evaluator, and hash helpers below all resolve from that package's public entry point.
+ */
+/*
+ * ⚠ ROUND 4 / R4-11 — the phrase "never throws" appears below and is MEASURED FALSE in one case: a
+ * revoked Proxy passed as caller input throws out of `preCheck`. Every input shape reached in
+ * practice returns a DENY rather than throwing, which is what the contract is FOR; the absolute is
+ * what was wrong. It is corrected in place rather than deleted, because "never" in a fail-closed
+ * contract is precisely the kind of word a reader stops testing.
  */
 import {
   buildReceipt,
@@ -281,7 +288,7 @@ function canonicalParamsHash(args) {
     } catch {
       // Neither JCS nor the stable-stringify fallback could represent this content at all (e.g. a
       // circular reference) — fall back to the fixed sentinel rather than letting the exception
-      // escape `preCheck`'s "never throws" public contract.
+      // escape `preCheck`'s "returns a DENY rather than throwing" contract (R4-11: a revoked Proxy is the measured exception).
       return UNCANONICALIZABLE_ARGS_SENTINEL_HASH;
     }
   }
@@ -309,7 +316,7 @@ const UNCANONICALIZABLE_POLICY_SENTINEL_HASH = sha256Prefixed("noa-mcp-adapter-c
  * MAX_DEPTH, or a `NaN`/`Infinity` tucked into an unrelated/unknown field), an UNGUARDED
  * `policyHash(policy)` call independently throws a `JcsError` on it — this used to escape
  * `preCheck()` uncaught, a crash on what is fundamentally an operator/policy-config mistake, not a
- * caller-input attack, but `preCheck()`'s own "never throws" contract must hold for it too. Falls
+ * caller-input attack, but `preCheck()`'s own "returns a DENY rather than throwing" contract must hold for it too. Falls
  * back to the fixed `UNCANONICALIZABLE_POLICY_SENTINEL_HASH` sentinel rather than raising — the
  * decision itself is already DENY by the time this runs (via `evaluate()`'s own policy-invalid
  * fail-close), so this wrapper only needs to keep `preCheck()` from crashing while computing
@@ -357,7 +364,7 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
   // can contain one) on ANY of these fields — e.g. an `args` object whose `amountMinor` property is
   // `{ get amountMinor() { throw ... } }`, or a `toolCall` whose `agentId` getter throws. Reading
   // any of them unguarded would throw straight out of `preCheck()`, before reaching ANY fail-closed
-  // guard — violating this module's own "never throws, only DENY" contract. `safeName`/`safeArgs`/
+  // guard — violating this module's own "returns a DENY rather than throwing" contract. `safeName`/`safeArgs`/
   // `safeAmountMinor`/`safeAgentId` are captured ONCE, inside this ONE try/catch, and reused
   // EVERYWHERE below (the receipt's `action.id`/`canonical`/`agent.id` included, and every later
   // `toolCall.args` read) instead of re-reading `toolCall.name`/`toolCall.args`/`toolCall.agentId` a
