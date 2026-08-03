@@ -38,7 +38,16 @@ const WARN_ONLY = process.argv.includes("--warn");
  * match half the repository and train everyone to ignore this gate.
  */
 const DISPATCH_PATTERNS = [
-  { id: "gate-wrapper-execute", re: /await\s+input\.execute\(\)/ },
+  // ADR-0006-A rotted the previous literal (`await input.execute()`) when the boundary stopped
+  // reading the executor live at dispatch and started (a) capturing it at entry and (b) handing it a
+  // typed `ExecutionCommand` it constructs itself. The gate CAUGHT it as a STALE REGISTRY ENTRY, in
+  // CI, on the commit that made the change — which is exactly the behaviour this layer exists for.
+  //
+  // Re-pinned to the new call, NOT broadened to `/await\s+executor\(/`. The argument is the whole
+  // point of the change: a pattern that ignored it would keep matching if someone reverted to a
+  // zero-argument dispatch, and the registry would go on claiming it measures a surface that had
+  // silently changed shape. Narrow and literal, like its neighbours.
+  { id: "gate-wrapper-execute", re: /await\s+executor\(command\)/ },
   { id: "framework-adapter-fn", re: /result\s*=\s*await\s+fn\(args\)/ },
   { id: "mcp-proxy-calltool", re: /await\s+downstream\.callTool\(/ },
   // ADR-0005 Slice 1 rotted the previous literal (`report(grantId: string, input: unknown`) when the
@@ -66,7 +75,10 @@ const REGISTRY = [
     mechanism:
       "the tool's entire self-report is read BEFORE any reducer transition, so the catch block is " +
       "reachable only from DISPATCHED; plus a belt that converts any residual throw into " +
-      "ToolOutcomeNotRecorded (executionHappened: true).",
+      "ToolOutcomeNotRecorded (executionHappened: true). ADR-0006-A adds two bindings AT the " +
+      "surface: the executor is captured at entry (it cannot be swapped after the human approves) " +
+      "and it is invoked with an ExecutionCommand the boundary constructed from what was granted. " +
+      "Neither binds what RAN to what was granted — that is stage 9 and has no admissible input.",
     evidence: "packages/gate/test/no-tool-claim-is-retry-safe.test.ts",
   },
   {

@@ -220,6 +220,20 @@ for (const [name, cmd, args, cwd] of [
   ["kernel tests", "npm", ["test"], ROOT],
   ["typecheck (all packages)", "npm", ["run", "typecheck:all"], ROOT],
   ["security gates L1-L7", "npm", ["run", "lint:security-gates"], ROOT],
+  // ── ADDED AFTER CI CAUGHT WHAT THIS GATE DID NOT ────────────────────────────────────────────────
+  // `test (20)` went red on `lint:dispatch-surfaces` and this gate had said GREEN, because it ran a
+  // "fast subset" chosen by what I happened to think of rather than by what CI actually runs. These
+  // four are all sub-second, they are in CI's `test` job, and their absence here reproduced the very
+  // local-vs-CI divergence the gate exists to prevent.
+  //
+  // `lint:knockout` stays OUT and that is deliberate, not an oversight: it mutates source and re-runs
+  // the suites 66 times. It belongs in the daemon layer (KURAL 29's second layer), which is still not
+  // built — recorded rather than quietly dropped.
+  ["dispatch surfaces", "npm", ["run", "lint:dispatch-surfaces"], ROOT],
+  ["entry points", "npm", ["run", "check:entry-points"], ROOT],
+  ["thrown-value boundary", "npm", ["run", "lint:thrown"], ROOT],
+  ["trusted roots L9", "node", ["scripts/lint-trusted-roots.mjs"], ROOT],
+  ["trusted roots L9 selftest", "node", ["scripts/lint-trusted-roots.mjs", "--selftest"], ROOT],
   ["gate build", "npm", ["run", "build"], join(ROOT, "packages", "gate")],
 ]) {
   const r = run(cmd, args, cwd);
