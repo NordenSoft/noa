@@ -102,6 +102,15 @@ import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadO
 import { createProxyServer } from "./create-proxy-server.mjs";
 import { TRANSFER_GUARD_POLICY } from "./policy.mjs";
 
+import { intrinsics } from "noa-mcp-adapter-core";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths, same rationale as
+// adapter-core: four CRITICALs in two days, every one a LIVE builtin an attacker replaces after
+// module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
+// who adds one, so the builtins come from the kernel's module-load capture whether or not each site
+// is reachable today. Reachability is a property of the surrounding code, and that changes.
+const { isFiniteNumber, jsonParse, jsonStringify } = intrinsics;
+
 function parseArgs(argv) {
   const sepIndex = argv.indexOf("--");
   if (sepIndex === -1) {
@@ -250,11 +259,11 @@ async function main() {
     signer = { kid: kp.kid, privateKey: kp.privateKey };
     signerPublicKey = kp.publicKey;
   }
-  if (opts.keyringFile) writeFileSync(opts.keyringFile, JSON.stringify({ [signer.kid]: signerPublicKey }), "utf8");
+  if (opts.keyringFile) writeFileSync(opts.keyringFile, jsonStringify({ [signer.kid]: signerPublicKey }), "utf8");
 
   const sessionStoreOptions = {
-    ...(opts.sessionIdleTtlMs != null && Number.isFinite(opts.sessionIdleTtlMs) ? { idleTtlMs: opts.sessionIdleTtlMs } : {}),
-    ...(opts.maxSessions != null && Number.isFinite(opts.maxSessions) ? { maxSessions: opts.maxSessions } : {}),
+    ...(opts.sessionIdleTtlMs != null && isFiniteNumber(opts.sessionIdleTtlMs) ? { idleTtlMs: opts.sessionIdleTtlMs } : {}),
+    ...(opts.maxSessions != null && isFiniteNumber(opts.maxSessions) ? { maxSessions: opts.maxSessions } : {}),
   };
   const store = opts.sessionDir
     ? createFileSessionStore(opts.sessionDir, sessionStoreOptions)
@@ -262,13 +271,13 @@ async function main() {
 
   const appendReceiptLine = opts.receiptLog ? createSequentialFileAppender(opts.receiptLog) : null;
   const onReceipt = appendReceiptLine
-    ? (_sessionId, receipt) => appendReceiptLine(JSON.stringify(receipt) + "\n")
+    ? (_sessionId, receipt) => appendReceiptLine(jsonStringify(receipt) + "\n")
     : undefined;
 
   // R2 — outcome-receipt JSONL, same non-blocking serialized appender as --receipt-log.
   const appendOutcomeLine = opts.outcomeLog ? createSequentialFileAppender(opts.outcomeLog) : null;
   const onOutcome = appendOutcomeLine
-    ? (_sessionId, outcomeReceipt) => appendOutcomeLine(JSON.stringify(outcomeReceipt) + "\n")
+    ? (_sessionId, outcomeReceipt) => appendOutcomeLine(jsonStringify(outcomeReceipt) + "\n")
     : undefined;
 
   // A FRESH downstream transport per call — a transport can only be connected once. Stdio serves a
@@ -276,7 +285,7 @@ async function main() {
   const makeDownstreamTransport = () => new StdioClientTransport({ command: downstreamCommand, args: downstreamArgs });
 
   let approvalRules;
-  if (opts.approvalRulesFile) approvalRules = JSON.parse(readFileSync(opts.approvalRulesFile, "utf8"));
+  if (opts.approvalRulesFile) approvalRules = jsonParse(readFileSync(opts.approvalRulesFile, "utf8"));
 
   // FAIL-CLOSED at startup: the human-approval gate (--approval-rules and/or --pending-store) can
   // adopt an approver's ALLOWED receipt onto the live chain and forward the held action. Adopting
@@ -289,9 +298,9 @@ async function main() {
     );
   }
   let approverKeyring;
-  if (opts.approverKeyringFile) approverKeyring = JSON.parse(readFileSync(opts.approverKeyringFile, "utf8"));
+  if (opts.approverKeyringFile) approverKeyring = jsonParse(readFileSync(opts.approverKeyringFile, "utf8"));
   let approverIdentityManifest;
-  if (opts.approverIdentityFile) approverIdentityManifest = JSON.parse(readFileSync(opts.approverIdentityFile, "utf8"));
+  if (opts.approverIdentityFile) approverIdentityManifest = jsonParse(readFileSync(opts.approverIdentityFile, "utf8"));
 
   // Everything except the transport wiring is identical for stdio and HTTP — the gate is NOT forked
   // per transport. This one config object feeds both paths.
@@ -312,7 +321,7 @@ async function main() {
   // R2 — HTTP+SSE transport (opt-in via --http-port). Stdio stays the default. startHttpProxy is
   // imported LAZILY so the default stdio path never loads the HTTP server module (nor its transitive
   // @hono/node-server chain).
-  if (opts.httpPort != null && Number.isFinite(opts.httpPort)) {
+  if (opts.httpPort != null && isFiniteNumber(opts.httpPort)) {
     const { startHttpProxy } = await import("./http-server.mjs");
     const http = await startHttpProxy({
       host: opts.httpHost,

@@ -1,6 +1,21 @@
 import { readFileSync, writeFileSync, openSync, fstatSync, fchmodSync, fsyncSync, closeSync, constants as fsConstants } from "node:fs";
 import { describeThrown, thrownCode } from "./safe-throw.mjs";
 
+import { intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths. Four CRITICALs came out of
+// this package in two days, every one of them a LIVE builtin read that an attacker could replace
+// after module load: an approval seat bound by `Array.prototype.includes`, a signature verified over
+// bytes from `Buffer.concat`, a policy weakening hidden by `JSON.stringify`, an approval rule made
+// invisible by `Array.isArray`. Auditing the remaining ~300 flagged reads one at a time is not a
+// control — it is a race against the next person who adds one.
+//
+// So the builtins are taken from the kernel's module-load capture here too, whether or not each
+// individual site is reachable today. Reachability is a property of the surrounding code, and the
+// surrounding code changes.
+const { jsonParse, jsonStringify } = intrinsics;
+
+
 function createPrivateKeyFile(keyFile, record) {
   const flags =
     fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | (fsConstants.O_NOFOLLOW ?? 0);
@@ -11,7 +26,7 @@ function createPrivateKeyFile(keyFile, record) {
     // All permission and write operations use this same descriptor, never the checked path.
     fd = openSync(keyFile, flags, 0o600);
     fchmodSync(fd, 0o600);
-    writeFileSync(fd, JSON.stringify(record, null, 2), "utf8");
+    writeFileSync(fd, jsonStringify(record, null, 2), "utf8");
     fsyncSync(fd);
   } finally {
     if (fd !== undefined) closeSync(fd);
@@ -92,7 +107,7 @@ export function loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel = "loadO
       }
       let raw;
       try {
-        raw = JSON.parse(readFileSync(fd, "utf8"));
+        raw = jsonParse(readFileSync(fd, "utf8"));
       } catch (err) {
         throw new Error(`${callerLabel}: --key-file "${keyFile}" is not valid JSON (${describeThrown(err)})`);
       }

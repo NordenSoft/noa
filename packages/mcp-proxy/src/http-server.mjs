@@ -31,6 +31,15 @@ import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createProxyServer } from "./create-proxy-server.mjs";
 import { describeThrown } from "noa-mcp-adapter-core";
 
+import { intrinsics } from "noa-mcp-adapter-core";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths, same rationale as
+// adapter-core: four CRITICALs in two days, every one a LIVE builtin an attacker replaces after
+// module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
+// who adds one, so the builtins come from the kernel's module-load capture whether or not each site
+// is reachable today. Reachability is a property of the surrounding code, and that changes.
+const { jsonParse, jsonStringify } = intrinsics;
+
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — fail closed on anything larger, never buffer unbounded
 
 function readJsonBody(req) {
@@ -53,7 +62,7 @@ function readJsonBody(req) {
         return;
       }
       try {
-        resolve(JSON.parse(raw));
+        resolve(jsonParse(raw));
       } catch (err) {
         reject(new Error(`invalid JSON body: ${describeThrown(err)}`));
       }
@@ -65,7 +74,7 @@ function readJsonBody(req) {
 function writeJsonError(res, status, message, id = null) {
   if (res.headersSent) return;
   res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: status === 400 ? -32000 : -32603, message }, id }));
+  res.end(jsonStringify({ jsonrpc: "2.0", error: { code: status === 400 ? -32000 : -32603, message }, id }));
 }
 
 /**

@@ -1,6 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { preCheck, preCheckAsync } from "./pre-check.mjs";
 
+import { intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths. Four CRITICALs came out of
+// this package in two days, every one of them a LIVE builtin read that an attacker could replace
+// after module load: an approval seat bound by `Array.prototype.includes`, a signature verified over
+// bytes from `Buffer.concat`, a policy weakening hidden by `JSON.stringify`, an approval rule made
+// invisible by `Array.isArray`. Auditing the remaining ~300 flagged reads one at a time is not a
+// control — it is a race against the next person who adds one.
+//
+// So the builtins are taken from the kernel's module-load capture here too, whether or not each
+// individual site is reachable today. Reachability is a property of the surrounding code, and the
+// surrounding code changes.
+const { isInteger } = intrinsics;
+
+
 /** 1 hour: a session that has issued no call in this long is considered abandoned. */
 const DEFAULT_IDLE_TTL_MS = 60 * 60 * 1000;
 /** A single proxy process is not expected to hold more than this many concurrent sessions;
@@ -202,7 +217,7 @@ export function createChainSessionStore({
    *  from (see `prepareSessionReceipt` below) — never a sessionId-keyed epoch, never sessionId text
    *  parsing. Starts at 0 so the first-ever segment is `segmentId = 1` — UNLESS `segmentCounterFloor`
    *  was given (see below), in which case it starts there instead. */
-  let segmentCounter = Number.isInteger(segmentCounterFloor) && segmentCounterFloor > 0 ? segmentCounterFloor : 0;
+  let segmentCounter = isInteger(segmentCounterFloor) && segmentCounterFloor > 0 ? segmentCounterFloor : 0;
 
   /** This store instance's unique identity, minted ONCE via `randomUUID()` at construction — see
    *  the module docstring's "CROSS-PROCESS-RESTART SEGMENT IDENTITY" section. Folded into every
@@ -278,7 +293,7 @@ export function createChainSessionStore({
     if (!seed || typeof seed.sessionId !== "string" || seed.sessionId.length === 0) {
       throw new Error("createChainSessionStore: seedSessions entries must have a non-empty sessionId");
     }
-    if (!Number.isInteger(seed.segmentId) || seed.segmentId < 1) {
+    if (!isInteger(seed.segmentId) || seed.segmentId < 1) {
       throw new Error(`createChainSessionStore: seedSessions entry for "${seed.sessionId}" has an invalid segmentId`);
     }
     // Fast-forward past EVERY seed's segmentId — even one the cap below ends up dropping — so a
@@ -301,7 +316,7 @@ export function createChainSessionStore({
     const seedBucket = bucketFor(seedTenant);
     seedBucket.set(seed.sessionId, {
       prev: seed.prev ?? null,
-      seq: Number.isInteger(seed.seq) ? seed.seq : 0,
+      seq: isInteger(seed.seq) ? seed.seq : 0,
       lastAccessedAt: now(),
       segmentId: seed.segmentId,
     });

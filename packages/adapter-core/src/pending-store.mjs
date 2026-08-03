@@ -23,6 +23,21 @@
 import { appendFileSync, readFileSync, existsSync } from "node:fs";
 import { describeThrown } from "./safe-throw.mjs";
 
+import { intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths. Four CRITICALs came out of
+// this package in two days, every one of them a LIVE builtin read that an attacker could replace
+// after module load: an approval seat bound by `Array.prototype.includes`, a signature verified over
+// bytes from `Buffer.concat`, a policy weakening hidden by `JSON.stringify`, an approval rule made
+// invisible by `Array.isArray`. Auditing the remaining ~300 flagged reads one at a time is not a
+// control — it is a race against the next person who adds one.
+//
+// So the builtins are taken from the kernel's module-load capture here too, whether or not each
+// individual site is reachable today. Reachability is a property of the surrounding code, and the
+// surrounding code changes.
+const { dateParse, isFiniteNumber, jsonParse, jsonStringify } = intrinsics;
+
+
 export class PendingStoreError extends Error {
   constructor(message) {
     super(message);
@@ -51,12 +66,12 @@ const KNOWN_EVENTS = new Set(["created", "approved", "denied", "consumed"]);
  *  record minted WITH a sessionId and one minted WITHOUT are intentionally distinct keys even for the
  *  same receipt id — a given file is, in practice, either all-legacy or all-session-scoped. */
 function recordKeyOf(ev) {
-  return ev.sessionId == null ? ev.id : `noa-pending ${JSON.stringify([ev.tenant ?? null, ev.sessionId, ev.id])}`;
+  return ev.sessionId == null ? ev.id : `noa-pending ${jsonStringify([ev.tenant ?? null, ev.sessionId, ev.id])}`;
 }
 
 function appendEvent(path, event) {
   try {
-    appendFileSync(path, JSON.stringify(event) + "\n", "utf8");
+    appendFileSync(path, jsonStringify(event) + "\n", "utf8");
   } catch (err) {
     // FAIL-CLOSED (R4 rule): never let a write failure escape as a raw fs error — always a typed,
     // greppable PendingStoreError the caller can catch and turn into a DENY.
@@ -137,7 +152,7 @@ export function loadPendingIndex(path) {
     if (line.trim().length === 0) continue;
     let ev;
     try {
-      ev = JSON.parse(line);
+      ev = jsonParse(line);
     } catch {
       throw new PendingStoreError(
         `pending-store: corrupt line ${i + 1} in "${path}" (not valid JSON) — refusing to load; repair or restore the file before resuming (fail-closed: a skipped torn line could resurrect a spent ticket)`,
@@ -153,7 +168,7 @@ export function loadPendingIndex(path) {
       // understand is refused outright — never silently skipped, which would fold a record back to
       // an earlier state and could resurrect an already-spent ticket for a replay.
       throw new PendingStoreError(
-        `pending-store: corrupt line ${i + 1} in "${path}" (unrecognized event ${JSON.stringify(ev.event)}) — refusing to load; repair or restore the file before resuming`,
+        `pending-store: corrupt line ${i + 1} in "${path}" (unrecognized event ${jsonStringify(ev.event)}) — refusing to load; repair or restore the file before resuming`,
       );
     }
     // Record IDENTITY is (tenant, sessionId, id): a single receipt id (e.g. preCheck's seq-derived
@@ -224,9 +239,9 @@ export function consumeApprovalTicket(path, id, now = Date.now(), { sessionId, t
   // return NaN, and `NaN <= now` is always false — which would let a ticket with no valid expiry be
   // consumed FOREVER. A non-finite expiry is treated as already-expired: the safe direction is
   // "no valid expiry -> not consumable", never "no valid expiry -> never expires".
-  const expiresAt = Date.parse(record.ticketExpiresAt);
-  if (!Number.isFinite(expiresAt) || expiresAt <= now) {
-    throw new PendingStoreError(`consumeApprovalTicket: id "${id}"'s ticket is expired or has no valid expiry (ticketExpiresAt=${JSON.stringify(record.ticketExpiresAt)})`);
+  const expiresAt = dateParse(record.ticketExpiresAt);
+  if (!isFiniteNumber(expiresAt) || expiresAt <= now) {
+    throw new PendingStoreError(`consumeApprovalTicket: id "${id}"'s ticket is expired or has no valid expiry (ticketExpiresAt=${jsonStringify(record.ticketExpiresAt)})`);
   }
   appendEvent(path, { event: "consumed", id, tenant, sessionId, ts: new Date(now).toISOString() });
   return record;

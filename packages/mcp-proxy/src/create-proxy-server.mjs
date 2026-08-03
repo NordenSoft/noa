@@ -52,6 +52,7 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import {
+
   ListToolsRequestSchema,
   CallToolRequestSchema,
   CallToolResultSchema,
@@ -77,6 +78,15 @@ import {
   EVIDENCE_OUTCOME_FOR,
   isSafeToRetry,
 } from "noa-mcp-adapter-core";
+import { intrinsics } from "noa-mcp-adapter-core";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths, same rationale as
+// adapter-core: four CRITICALs in two days, every one a LIVE builtin an attacker replaces after
+// module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
+// who adds one, so the builtins come from the kernel's module-load capture whether or not each site
+// is reachable today. Reachability is a property of the surrounding code, and that changes.
+const { isArray, objectKeys } = intrinsics;
+
 import { buildOutcomeReceipt, buildOutcomeReceiptAsync } from "./outcome-receipt.mjs";
 
 /**
@@ -129,7 +139,7 @@ export async function createProxyServer({
   // held action. That adoption MUST verify the approver's signature (see `verifyApprovalReceipt`),
   // which requires a trusted approver keyring. Refusing to start without one makes it structurally
   // impossible to run a gate that would adopt approvals it cannot authenticate — never fail-open.
-  if ((pendingStorePath || approvalRules) && (!approverKeyring || typeof approverKeyring !== "object" || Array.isArray(approverKeyring) || Object.keys(approverKeyring).length === 0)) {
+  if ((pendingStorePath || approvalRules) && (!approverKeyring || typeof approverKeyring !== "object" || isArray(approverKeyring) || objectKeys(approverKeyring).length === 0)) {
     throw new Error(
       "createProxyServer: the human-approval gate (`approvalRules`/`pendingStorePath`) requires a non-empty `approverKeyring` of trusted approver public keys — refusing to start a gate that would adopt approvals without verifying their signatures",
     );

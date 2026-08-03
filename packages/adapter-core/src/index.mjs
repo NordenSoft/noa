@@ -64,3 +64,9 @@ export {
   isSafeToRetry,
   isTerminal as isTerminalSideEffectState,
 } from "./side-effect-state.mjs";
+
+// Re-exported so the sibling packages that depend on adapter-core (mcp-proxy) can take their
+// builtins from the SAME module-load capture without declaring a second path to the kernel.
+// mcp-proxy does not depend on `noa-receipt` directly — importing it there resolved at dev time
+// through the workspace and would have failed for every consumer of the published tarball.
+export { intrinsics } from "noa-receipt";

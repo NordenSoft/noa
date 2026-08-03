@@ -49,7 +49,7 @@
  */
 function deepFreeze(o) {
   if (o === null || typeof o !== "object") return o;
-  for (const k of Object.keys(o)) deepFreeze(o[k]);
+  for (const k of objectKeys(o)) deepFreeze(o[k]);
   return Object.freeze(o);
 }
 
@@ -62,6 +62,20 @@ function deepFreeze(o) {
  * computed from the table below, so a future transition that re-opens the door fails the suite
  * without anyone having to notice it in review.
  */
+import { intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths. Four CRITICALs came out of
+// this package in two days, every one of them a LIVE builtin read that an attacker could replace
+// after module load: an approval seat bound by `Array.prototype.includes`, a signature verified over
+// bytes from `Buffer.concat`, a policy weakening hidden by `JSON.stringify`, an approval rule made
+// invisible by `Array.isArray`. Auditing the remaining ~300 flagged reads one at a time is not a
+// control — it is a race against the next person who adds one.
+//
+// So the builtins are taken from the kernel's module-load capture here too, whether or not each
+// individual site is reachable today. Reachability is a property of the surrounding code, and the
+// surrounding code changes.
+const { objectKeys } = intrinsics;
+
 export const SIDE_EFFECT_STATES = deepFreeze({
   /** Nothing has been dispatched. The gate may still deny; no side effect is possible. */
   NOT_DISPATCHED: { terminal: false, safeToRetry: true },
