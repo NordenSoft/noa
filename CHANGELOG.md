@@ -100,8 +100,18 @@ is refused regardless of whose clock you believe.
 Mechanisms:
 
 - `src/verification-keyring.ts` — a parsed keyring is a value with lifecycle state attached, so a
-  key and its retirement cannot be read apart. `resolveVerificationKey` is the single resolution
-  point and refuses a retired or not-yet-active `kid` outright.
+  key and its retirement cannot be read apart. There are **two** call shapes over that value, and
+  saying so matters because an earlier draft of this entry claimed one:
+  - `resolveVerificationKey(keyring, kid)` refuses a retired or not-yet-active `kid` outright. Used
+    by the published packages (`adapter-core`, `mcp-proxy`).
+  - the kernel's own surfaces (`src/verify.ts`, `src/cose/*`, `src/policy/compliance.ts`) call
+    `parseVerificationKeyring` and read `retiredKids` directly, because they must report WHICH
+    lifecycle rule refused a key, not merely that one did.
+
+  ⚠ The withdrawn sentence, verbatim: *"`resolveVerificationKey` is the single resolution point."*
+  It was false when written — a cross-family review checked the call sites and found the kernel does
+  not route through it. Two paths enforcing the same rule is a defensible design; describing them as
+  one is how a reviewer stops looking at the second.
 - `verifyCheckpoint(cp, keyring?)` accepts a parsed verification keyring. It had never been patched
   in the two earlier attempts, which is why "refused on both paths" was false when it was written.
 - Timestamps are parsed with integer epoch arithmetic (Howard Hinnant's `daysFromCivil`) instead of

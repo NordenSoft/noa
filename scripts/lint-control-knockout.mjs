@@ -603,21 +603,30 @@ const KNOCKOUTS = [
     // proved nothing, because nothing was mutating the line it was supposed to watch. A knockout whose
     // anchor rots is worse than no knockout: it keeps printing a row in a table people read as coverage.
     //
-    // WHY THE WHOLE FUNCTION AND NOT ONE LINE, measured rather than chosen. Two narrower mutations were
-    // tried first and BOTH failed to kill the control, which is itself the finding:
-    //   structural guard -> Date.parse fallback   => DETECTOR_DID_NOT_TRIGGER (schema refuses first)
-    //   schema check removed                      => still refused, by the structural guard
-    // The strictness is defended by TWO independent layers, so no single line carries it. Wrapping the
-    // function — strict parse first, `Date.parse` only where the strict parse REFUSES — reproduces the
-    // original defect exactly (refusals become plausible instants, acceptances are untouched) and is
-    // the only shape that removes the control without also changing what the parser accepts.
+    // NARROWED 2026-08-03 after a redteam review REFUTED the previous justification. That comment
+    // claimed the whole-function wrapper was "the only shape that removes the control without also
+    // changing what the parser accepts". It is not. The reviewer built this one and measured it
+    // breaking ONLY the named proof, where the wrapper broke three tests:
+    //     wrapper (withdrawn)  DETECTOR_TRIGGERED, 3 new failures: Batch N; P0-6 proof; P0-9
+    //     this one            DETECTOR_TRIGGERED, 1 new failure:  P0-6 proof
+    //
+    // The claim was wrong in a specific and instructive way: two narrower mutations HAD failed to
+    // kill the control (structural guard alone => the schema refuses first; schema check alone =>
+    // the structural guard refuses), and from "these two did not work" I concluded "nothing narrower
+    // can". That is an argument, not a measurement, and it is exactly the move this file exists to
+    // catch — the strictness IS layered, but a mutation aimed at one INPUT CLASS slips between the
+    // layers, which neither of my two attempts did.
+    //
+    // A knockout that kills three tests still passes anti-vacuity (the runner requires the named
+    // proof among the new failures, not that it be alone), so nothing would have flagged this. It
+    // would simply have made the next person read a wider blast radius as evidence of a wider control.
     //
     // Its `marker` in resolver-inventory.json was the FULL TEXT OF THE TEST NAME, so tagging the test
     // with [PROOF:RES-PAR-AA-STRICT] unbound it instantly. Changed to the tag form that
     // RES-PAR-ROOT-ENFORCED already used: a marker that is a sentence is one rewording away from
     // silently certifying nothing.
     find: 'function parseTime(v: unknown, timeSchema: Record<string, unknown> | null): bigint | null {',
-    replace: 'function parseTime(v: unknown, timeSchema: Record<string, unknown> | null): bigint | null {\n  const strict = parseTimeStrict(v, timeSchema);\n  if (strict !== null) return strict;\n  const ms = typeof v === "string" ? Date.parse(v) : NaN;\n  return ms === ms ? toBigInt(ms) * 1_000_000n : null;\n}\nfunction parseTimeStrict(v: unknown, timeSchema: Record<string, unknown> | null): bigint | null {',
+    replace: 'function parseTime(v: unknown, timeSchema: Record<string, unknown> | null): bigint | null {\n  if (typeof v === "string" && v.length === 1) {\n    const ms = Date.parse(v);\n    if (ms === ms) return toBigInt(ms) * 1_000_000n;\n  }',
     kind: "tests",
     suite: ["packages/approval-artifacts", "npm", ["test"]],
   },
