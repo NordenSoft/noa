@@ -654,6 +654,153 @@ const L10_EXTRA = [
   { re: /\bstructuredClone\s*\(/, what: "structuredClone(", why: "a WRITABLE GLOBAL on a decision path — the C-01 class; measured to move signed bytes" },
 ];
 
+// ── THE TWO PUBLISHED PACKAGE TCBs ──────────────────────────────────────────────────────────────
+// `noa-mcp-adapter-core` and `noa-mcp-proxy` are published artifacts, not repository-local helpers.
+// L2/L3/L8 used to stop at the root `src/`, so moving an exploitable decision into either package
+// removed it from all three layers without changing the public package at all. These inventories
+// are reconciled below exactly like the relay: every .mjs/.ts file is classified in exactly one
+// side, and an exclusion is evidence only when its reason is non-empty.
+const ADAPTER_CORE_TCB = [
+  "packages/adapter-core/src/approval-decision.mjs",     // authenticates and mints signed human decisions
+  "packages/adapter-core/src/approval-defaults.mjs",     // shipped approval policy defaults
+  "packages/adapter-core/src/approval-rules.mjs",        // validates and evaluates approval policy
+  "packages/adapter-core/src/approve-cli.mjs",           // loads the approver key and mints the signed decision
+  "packages/adapter-core/src/file-session-store.mjs",    // durable receipt-chain state and recovery
+  "packages/adapter-core/src/key-file.mjs",              // private signing-key creation and loading
+  "packages/adapter-core/src/opaque-id.mjs",             // approval-identity normalization and hashing
+  "packages/adapter-core/src/pending-store.mjs",         // approval/ticket state and single-use consumption
+  "packages/adapter-core/src/policy-change-guard.mjs",   // authorizes policy changes
+  "packages/adapter-core/src/policy.mjs",                // shipped governance policy
+  "packages/adapter-core/src/pre-check.mjs",             // policy verdict and decision-receipt construction
+  "packages/adapter-core/src/safe-throw.mjs",            // classifies hostile thrown values for security-sensitive callers
+  "packages/adapter-core/src/session-store.mjs",         // receipt-chain sequencing and commit authority
+  "packages/adapter-core/src/side-effect-state.mjs",     // retry-safety and evidence-outcome state machine
+  "packages/adapter-core/src/tool-outcome-not-recorded.mjs", // security discriminator for already-run tools
+];
+const ADAPTER_CORE_OUT_OF_TCB = {
+  "packages/adapter-core/src/index.mjs":
+    "re-export surface only; declares no rule and makes no runtime decision",
+  "packages/adapter-core/src/safe-throw.d.ts":
+    "type declarations only; erased at runtime and contains no decision path",
+  "packages/adapter-core/src/side-effect-state.d.ts":
+    "type declarations only; the runtime state-machine decisions are classified in side-effect-state.mjs",
+  "packages/adapter-core/src/tool-outcome-not-recorded.d.ts":
+    "type declarations only; the runtime security discriminator is classified in tool-outcome-not-recorded.mjs",
+};
+
+const MCP_PROXY_TCB = [
+  "packages/mcp-proxy/src/create-proxy-server.mjs", // authorization, approval adoption and forwarding verdicts
+  "packages/mcp-proxy/src/http-server.mjs",        // caller session ID selects the isolated proxy/session authority
+  "packages/mcp-proxy/src/outcome-receipt.mjs",     // signed outcome construction and verification
+  "packages/mcp-proxy/src/policy.mjs",              // shipped proxy governance and approval policy
+  "packages/mcp-proxy/src/proxy.mjs",               // key handling and fail-closed authorization configuration
+  "packages/mcp-proxy/src/rotatable-signer.mjs",    // signing-key lifecycle and retirement authority
+];
+const MCP_PROXY_OUT_OF_TCB = {
+  "packages/mcp-proxy/src/demo-downstream.mjs":
+    "demo/test-support MCP server; it is the governed downstream and makes no proxy verdict",
+};
+
+const PUBLISHED_MODULE = /\.(?:mjs|ts)$/;
+
+function reconcilePublishedPackage({ lint, label, dir, tcb, outOfTcb }) {
+  // Declarations are included deliberately: the task's boundary is every .mjs/.ts file, not only
+  // executable modules. They may be OUT, but they may not disappear from the inventory.
+  const seen = fileSetUnder(ROOT, dir, { match: PUBLISHED_MODULE, includeDeclarations: true });
+  let n = 0;
+
+  for (const [f, why] of Object.entries(outOfTcb)) {
+    if (typeof why !== "string" || why.trim().length === 0) {
+      add(lint, f, 0,
+        `exempted from the ${label} TCB with an EMPTY reason — an unjustified exemption is ` +
+        "indistinguishable from an unnoticed gap. Classify the file as a decision path or state " +
+        "what it does and why it is outside the TCB.");
+      n++;
+    }
+  }
+
+  for (const f of seen) {
+    const inTcb = tcb.includes(f);
+    const out = f in outOfTcb;
+    if (inTcb === out) {
+      add(lint, f, 0, inTcb
+        ? `file under ${dir} is in BOTH the ${label} TCB and OUT_OF_TCB — every module must be classified in exactly one side.`
+        : `file under ${dir} is in neither the ${label} TCB nor OUT_OF_TCB — an unclassified published module is a decision path L2/L3/L8 cannot see. Classify it in scripts/lint-security-gates.mjs.`);
+      n++;
+    }
+  }
+
+  for (const f of [...tcb, ...Object.keys(outOfTcb)]) {
+    if (!seen.has(f)) {
+      add(lint, f, 0,
+        `a file classified for ${label} no longer exists — the inventory is stale, so its L2/L3/L8 counts are not evidence about the published package.`);
+      n++;
+    }
+  }
+  return n;
+}
+
+function publishedL2(lint, label, tcb) {
+  let n = 0;
+  for (const f of tcb) {
+    if (!fs.existsSync(path.join(ROOT, f))) continue; // reconciliation reports the missing subject
+    strip(read(f)).split("\n").forEach((line, i) => {
+      for (const c of L2_CONSTRUCTS) {
+        if (c.re.test(line)) {
+          add(lint, f, i + 1, `${c.what} on a ${label} decision path — ${c.why}`);
+          n++;
+        }
+      }
+    });
+  }
+  return n;
+}
+
+function publishedL3(lint, label, tcb) {
+  let n = 0;
+  for (const f of tcb) {
+    if (!fs.existsSync(path.join(ROOT, f))) continue; // reconciliation reports the missing subject
+    const src = strip(read(f));
+    const sourceLines = src.split("\n");
+    sourceLines.forEach((line, i) => {
+      const decl = /^\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(\{|\[|new\s+(?:Set|Map)\b)/.exec(line);
+      if (!decl || /^\s/.test(line)) return;
+      const name = decl[1];
+      const window = sourceLines.slice(i, i + 30).join("\n");
+      const frozen = /Object\.freeze|deepFreeze|frozenSet|frozenTable|Object\.create\(null\)/.test(window);
+      if (!frozen) {
+        add(lint, f, i + 1,
+          `module-level table \`${name}\` on a ${label} decision path is not built frozen and null-prototype at construction (ADR §5.6)`);
+        n++;
+      }
+    });
+  }
+  return n;
+}
+
+function publishedL8(lint, tcb) {
+  const sources = tcb
+    .filter((f) => fs.existsSync(path.join(ROOT, f)))
+    // dispatch-ast intentionally compiles TypeScript (`allowJs:false`). Passing a real `.mjs`
+    // filename therefore creates NO SourceFile and returns zero findings: the exact vacuity this
+    // reconciliation exists to close. Give the unchanged text a virtual TypeScript filename for
+    // analysis, then map every result back to the real published path below.
+    .map((f, i) => ({ fileName: path.join(ROOT, `${f}.published-security-gate-${i}.ts`), text: read(f), rel: f }));
+  const relOf = new Map(sources.map((s) => [s.fileName, s.rel]));
+  const found = dedupe(analyzeDispatchSurfaces(sources, {
+    exempt: new Set(),
+    // Only namespace imports from the root kernel's capture module earn wrapper treatment. A
+    // package-local namespace is not an intrinsic merely because it is authored in this repo.
+    srcRoot: path.join(ROOT, "src"),
+    loadTimeExemption: true,
+  }));
+  for (const f of found) {
+    add(lint, relOf.get(f.file) ?? f.file, f.line,
+      `${f.what} on a published-package decision path — ${f.why}  [${f.rule}: \`${f.text}\`]`);
+  }
+  return found.length;
+}
+
 /**
  * RELAY RECONCILIATION — every file under `packages/relay/src` is either declared a decision path
  * (and linted) or explicitly exempted (with a reason).
@@ -835,6 +982,20 @@ const LINTS = [
   // silenced by the intrinsic class it exists to hunt (measured: `has -> true` made inertViolations
   // return `[]`). Budgets move DOWNWARD only; locking this at 0 means a later change cannot spend it.
   { id: "L2", name: "primitive allowlist on TCB decision paths", run: L2, mode: "block" },
+  { id: "adapter-core-reconcile", name: "adapter-core TCB coverage (every published src .mjs/.ts file is classified)",
+    run: () => reconcilePublishedPackage({ lint: "adapter-core-reconcile", label: "adapter-core", dir: "packages/adapter-core/src", tcb: ADAPTER_CORE_TCB, outOfTcb: ADAPTER_CORE_OUT_OF_TCB }), mode: "block" },
+  { id: "mcp-proxy-reconcile", name: "mcp-proxy TCB coverage (every published src .mjs/.ts file is classified)",
+    run: () => reconcilePublishedPackage({ lint: "mcp-proxy-reconcile", label: "mcp-proxy", dir: "packages/mcp-proxy/src", tcb: MCP_PROXY_TCB, outOfTcb: MCP_PROXY_OUT_OF_TCB }), mode: "block" },
+  // MEASURED on first coverage, 2026-08-02: these two published packages contain 355 existing
+  // L2/L3/L8 findings (adapter-core 38/4/246; mcp-proxy 3/2/62). Blocking all 355 would make this
+  // reconciliation unusable before the lead can classify and fix that newly-visible migration.
+  // Each package/layer therefore gets its OWN exact measured budget: no package can spend another
+  // package's cleanup and no layer can trade against another. Reconciliation above stays BLOCKING
+  // and unbudgeted; every new/moved file must be classified before any residue number can matter.
+  { id: "L2-adapter-core", name: "L2 primitive allowlist on adapter-core decision paths",
+    run: () => publishedL2("L2-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 38 },
+  { id: "L2-mcp-proxy", name: "L2 primitive allowlist on mcp-proxy decision paths",
+    run: () => publishedL2("L2-mcp-proxy", "mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 3 },
   // Reconciliation BLOCKS and is deliberately not budgeted — see reconcileRelay()'s comment.
   { id: "L10-reconcile", name: "relay TCB coverage (every packages/relay/src file is classified)", run: reconcileRelay, mode: "block" },
   // 39 -> 38 on 2026-07-30. The CRITICAL-1 device-authorization fix rewrote `listPending` from an
@@ -848,6 +1009,10 @@ const LINTS = [
   // (verify.ts), MUTATORS (inert.ts) and INVALID_HEAD (verify-witnessed.ts) — a shared sentinel any
   // caller could have rewritten for every other caller.
   { id: "L3", name: "no mutable policy state (module-level tables)", run: L3, mode: "block" },
+  { id: "L3-adapter-core", name: "L3 no mutable policy state on adapter-core decision paths",
+    run: () => publishedL3("L3-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 4 },
+  { id: "L3-mcp-proxy", name: "L3 no mutable policy state on mcp-proxy decision paths",
+    run: () => publishedL3("L3-mcp-proxy", "mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 2 },
   { id: "L4", name: "mutation-observable (control knockout)", run: () => 0, mode: "external",
     ratchet: "run by `npm run lint:knockout` — a separate process because each control must be knocked out and the suite re-run." },
   { id: "L5", name: "verdicts pinned by exact value", run: L5, mode: "block" },
@@ -865,6 +1030,10 @@ const LINTS = [
   // Runs BEFORE L8 in the table so a defanged rule is reported before its count of 0 is printed.
   { id: "L8-selftest", name: "evasion matrix — every construct bites its positive sample, none fires on the captured form", run: L8SelfTest, mode: "block" },
   { id: "L8", name: "dispatch-surface AST gate (compiler-API walk: node kinds + resolved symbols)", run: L8, mode: "block" },
+  { id: "L8-adapter-core", name: "L8 dispatch-surface AST gate on adapter-core decision paths",
+    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 246 },
+  { id: "L8-mcp-proxy", name: "L8 dispatch-surface AST gate on mcp-proxy decision paths",
+    run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 62 },
 ];
 
 // The legacy regex self-test that stood here was DELETED with the regexes it tested (round-4, A5).
