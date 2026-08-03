@@ -931,7 +931,22 @@ export class GateEngine {
         if (cur) this.lazyExpire(cur);
         resolve({ status: 200, body: cur ? this.holdView(cur) : err(404, "UNKNOWN_HOLD").body });
       }, Math.max(0, timeoutMs));
-      if (typeof timer.unref === "function") timer.unref();
+      // ⚠ NOT `unref()`ed. Found by sweeping for the NEIGHBOUR of the identical defect in
+      // `packages/relay/src/engine.ts` — same long-poll shape, same copied-from-the-sweeper unref.
+      // This timer is the ONLY thing that can settle the promise above, so unref'ing it lets Node
+      // decide the event loop has drained while a caller is still awaiting:
+      // `'Promise resolution is still pending but the event loop has already resolved'`.
+      //
+      // In relay, that cancelled the hanging test AND six siblings via `cancelledByParent` — the
+      // tenant-isolation suite — and `cancelled` is not `failed`, so CI stayed quiet about tests that
+      // were not running at all. This route hands back the EXECUTION GRANT, so a dropped long-poll
+      // here is a human's phone waiting on an approval that can never arrive.
+      //
+      // The sweeper `unref()` in `server.ts` IS correct and stays: a periodic background task has no
+      // caller. The distinction is CALLER-AWAITED vs BACKGROUND, not "timer".
+      //
+      // Safe on the early path: `wake()` clears this timer when a decision arrives, so only a
+      // genuinely-waiting long-poll holds the loop open.
       const waiter: Waiter = { timer, resolve: (r) => resolve(r) };
       this.addWaiter(id, waiter);
     });

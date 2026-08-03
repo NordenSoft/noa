@@ -678,7 +678,24 @@ export class RelayEngine {
         this.lazyExpire(cur);
         resolve({ status: 200, body: this.holdView(cur) });
       }, Math.max(0, timeoutMs));
-      if (typeof timer.unref === "function") timer.unref();
+      // ⚠ NOT `unref()`ed, and that is the point. THIS TIMER IS THE ONLY THING THAT CAN SETTLE THE
+      // PROMISE ABOVE, so unref'ing it lets Node conclude the event loop has drained while a caller
+      // is still awaiting — `'Promise resolution is still pending but the event loop has already
+      // resolved'`. It WAS unref'd, copied from the background sweeper, from this package's first
+      // commit.
+      //
+      // Measured cost: inside a suite something else always keeps the loop busy, so every local run
+      // was green. On CI the loop drained, `cross-agent-authz` hung, and SIX siblings died as
+      // `cancelledByParent` — the tenant-isolation tests (a foreign customer cannot ENUMERATE, cannot
+      // DECIDE, an unclaimed device can do nothing). They were not failing. They were NOT RUNNING,
+      // and `cancelled` is not `failed`, so nothing shouted for nine CI runs.
+      //
+      // The sweeper's `unref()` in `server.ts` IS correct and must stay: a periodic background task
+      // has no caller and must not keep the process alive. The distinction is CALLER-AWAITED vs
+      // BACKGROUND, not "timer". Getting them the same way is how this happened.
+      //
+      // This does not leak a live handle on the early path: `wake()` clears the timer when a decision
+      // arrives, so only a genuinely-waiting long-poll holds the loop — which is exactly right.
       const waiter: Waiter = {
         timer,
         resolve: (r) => resolve(r),
