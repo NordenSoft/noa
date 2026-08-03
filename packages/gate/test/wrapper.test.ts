@@ -136,3 +136,64 @@ test("guard(): a DENY resolves to outcome DENIED, execute() never called", async
   assert.equal(result.outcome, "DENIED");
   assert.equal(executed, false);
 });
+
+// ROUND 6 / ADR-0006-A part 1 — POST-APPROVAL EXECUTOR SUBSTITUTION.
+//
+// `params` are snapshotted immutably at entry (wrapper.ts:161, `structuredClone`). `execute` was NOT:
+// it was read LIVE at dispatch, ~85 lines and one human decision later. Between those two points the
+// gate posts a hold, a person reads a rendered command and approves it, the hold resolution is signed
+// and a grant is RESERVED — and only THEN does the gate look up the function to call, on an object
+// the caller still owns.
+//
+// So the approved command and the executed command were never the same object. The gate then signs an
+// ExecutionConsumption saying DISPATCHED, which a relying party reads as evidence that the approved
+// command ran. wrapper.ts:5-10 claims exactly that binding.
+//
+// Nothing untrusted is needed: the party supplying `execute` also supplies `params`. But this is a
+// CALLER-OWNED VALUE READ INSIDE THE TRUSTED PATH AFTER AUTHENTICATION — the defect class this branch
+// was written to eliminate, surviving at the last node.
+test("guard(): the executor is captured at entry — it cannot be swapped after the human approves", async () => {
+  const fx = setupGate({ approverRole: "approve-high" });
+  const client = new InProcessGateClient(fx.engine, fx.agent);
+  const ran: string[] = [];
+
+  const input = {
+    client,
+    action: { canonical: "noa.command.exec", riskClass: "HIGH" as const, reversible: false },
+    params: sampleCommandParams(),
+    chain: "chain-swap",
+    idempotencyKey: "idem-swap",
+    waitMs: 2000,
+    execute: async () => { ran.push("APPROVED-COMMAND"); return { ok: true }; },
+  };
+
+  const p = guard(input);
+  await approveWhenPending(fx, "chain-swap");
+  // The human has now approved. Swap the executor — the caller still owns this object.
+  input.execute = async () => { ran.push("SUBSTITUTED-COMMAND"); return { ok: true }; };
+  const result = await p;
+
+  assert.equal(result.outcome, "EXECUTED", result.detail);
+  assert.deepEqual(ran, ["APPROVED-COMMAND"],
+    "the gate dispatched a command chosen AFTER the human approved — the signed consumption says " +
+    "DISPATCHED for something the approver never saw");
+});
+
+test("guard(): CONTROL — an unswapped executor still runs, so the assertion above can distinguish", async () => {
+  const fx = setupGate({ approverRole: "approve-high" });
+  const client = new InProcessGateClient(fx.engine, fx.agent);
+  const ran: string[] = [];
+  const p = guard({
+    client,
+    action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
+    params: sampleCommandParams(),
+    chain: "chain-noswap",
+    idempotencyKey: "idem-noswap",
+    waitMs: 2000,
+    execute: async () => { ran.push("APPROVED-COMMAND"); return { ok: true }; },
+  });
+  await approveWhenPending(fx, "chain-noswap");
+  const result = await p;
+  assert.equal(result.outcome, "EXECUTED", result.detail);
+  assert.deepEqual(ran, ["APPROVED-COMMAND"]);
+});

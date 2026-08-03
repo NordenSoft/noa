@@ -123,6 +123,18 @@ jobs:
         # rule enforced in some implementations" stops being an invariant.
         run: npm run check:inert-core
       - name: approval-artifacts tests
+      - name: Install adapter-core FIRST — several suites below import noa-receipt through it
+        # MOVED 2026-08-03. This sat AFTER the gate/approval-artifacts suites, so every one of them
+        # died on `ERR_MODULE_NOT_FOUND: Cannot find package 'noa-receipt' imported from
+        # packages/adapter-core/src/...`. It passes on a developer machine because the workspace is
+        # already installed — the same shape as the verdict-differential step fixed earlier the same
+        # day, and the reason that fix's comment says to look for siblings.
+        #
+        # Measured cost of leaving it: `extended-package-tests` reported 7 failures of which 6 were
+        # this import error, and `lint:knockout` reported 63 findings / 3-of-66 load-bearing where a
+        # correctly-ordered run gives 66/66.
+        run: cd packages/adapter-core && npm ci
+
         run: cd packages/approval-artifacts && npm ci && npm test
       - name: evidence tests
         run: cd packages/evidence && npm ci && npm test
@@ -140,8 +152,6 @@ jobs:
         run: cd packages/signer-core && npm test
       - name: tsa-anchor tests
         run: cd packages/tsa-anchor && npm ci && npm test
-      - name: Install adapter-core for framework-adapters' local package dependency
-        run: cd packages/adapter-core && npm ci
       - name: framework-adapters tests
         run: cd packages/framework-adapters && npm ci && npm test
 
@@ -393,6 +403,13 @@ jobs:
           npm --prefix packages/approval-artifacts ci && npm --prefix packages/approval-artifacts run build
           npm --prefix packages/gate ci && npm --prefix packages/gate run build
           npm run test:r7-exploits
+      - name: Install adapter-core before the knockout sweep — it mutates sources these suites import
+        # MOVED 2026-08-03, same defect as above: the knockout ran before adapter-core was installed,
+        # so 63 of its 66 controls could not even load the code they mutate. It reported findings that
+        # were import errors, not measurements — a red gate for a reason that had nothing to do with
+        # the controls it exists to prove.
+        run: cd packages/adapter-core && npm ci
+
       - name: L4 control knockout (every control has a test that dies without it)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Slow by construction: each control is removed and its suite re-run. It runs here rather

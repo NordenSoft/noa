@@ -158,6 +158,24 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
   const mode = input.mode ?? "ENFORCED";
   // D14 — snapshot the params IMMUTABLY up front. Never re-read the caller's mutable object after
   // this line; every subsequent hash is derived from this frozen snapshot.
+  // ADR-0006-A part 1. `params` were already snapshotted here; `execute` was NOT — it was read live
+  // at dispatch, ~85 lines and one HUMAN DECISION later. Between those points the gate posts a hold,
+  // a person reads a rendered command and approves it, the resolution is signed and a grant is
+  // RESERVED — and only then did the gate look up the function to call, on an object the caller still
+  // owns. So the approved command and the executed command were never the same thing, while the gate
+  // signed an ExecutionConsumption saying DISPATCHED and :5-10 claimed an exact-execution binding.
+  //
+  // Reproduced end to end before this line existed: a human approved a deploy and `/bin/rm -rf /`
+  // ran, with the gate reporting EXECUTED. See the two tests named 'captured at entry'.
+  //
+  // This closes the SUBSTITUTION window. It does NOT bind what ran to what was granted — an executor
+  // that was hostile from the start is still unconstrained. That is ADR-0006-A part 2 (the typed
+  // ExecutionCommand) and it is deliberately not smuggled in here.
+  const executor = input.execute;
+  if (typeof executor !== "function") {
+    return { outcome: "ERROR", ran: false, detail: "guard: `execute` must be a function" };
+  }
+
   let snapshot: unknown;
   try {
     snapshot = structuredClone(input.params);
@@ -243,7 +261,7 @@ export async function guard(input: GuardInput): Promise<GuardResult> {
   let reportResult: "DISPATCHED" | "UNKNOWN";
   let execDetail: string | undefined;
   try {
-    const r = await input.execute();
+    const r = await executor();
     // ── READ THE ENTIRE SELF-REPORT BEFORE TAKING ANY TRANSITION (H-02c) ─────────────────────────
     // `r` is a TOOL-OWNED object, so `r.ok` and `r.detail` are attacker-reachable reads: either can
     // be an accessor or a Proxy trap that runs the tool's code and throws.
