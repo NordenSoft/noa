@@ -389,7 +389,18 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
   const safeActionId = toolCallReadThrew || nameInvalid ? "unknown-action" : safeName;
   const safeAgentIdForReceipt = typeof safeAgentId === "string" && safeAgentId.length > 0 ? safeAgentId : "mcp-agent";
 
-  const inputs = toolCallReadThrew ? {} : { action: safeName, amountMinor: safeAmountMinor };
+  // ROUND 5 / R5-01. This was a plain object literal, and `objectAssign` below merges the
+  // null-prototype flatten output INTO it — `Object.assign` performs [[Set]], which walks the
+  // prototype chain. Round 4 hardened the flatten TARGET and left the MERGE target, so an inherited
+  // accessor on `Object.prototype["args.<key>"]` swallowed the write and the policy evaluated inputs
+  // that were silently missing a key. Measured DENY -> ALLOW on a rule keyed on `args.transfer.amount`,
+  // with a signed, chain-valid receipt and an honest policyHash.
+  //
+  // Scope, measured rather than assumed: a policy that lists the path in `requiredPaths` fails CLOSED
+  // (the absent path is caught). The exploit bites policies that gate on `args.*` WITHOUT declaring it
+  // required — and `packages/adapter-core/README.md` teaches `args.*` gating as the headline feature.
+  const inputs = objectCreateNull();
+  if (!toolCallReadThrew) { inputs.action = safeName; inputs.amountMinor = safeAmountMinor; }
   if (inputs.amountMinor === undefined) delete inputs.amountMinor;
 
   const paramsHash = canonicalParamsHash(safeArgs);

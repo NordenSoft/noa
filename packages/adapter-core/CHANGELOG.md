@@ -4,6 +4,34 @@ The root `CHANGELOG.md` scopes itself to `noa-receipt` in its first line, so sec
 package had nowhere to be written. `0.2.0` is live on npm and exploitable; without this file a
 consumer upgrading to `0.3.0` would see a silent version bump and no reason to hurry.
 
+## [0.3.1] - 2026-08-03
+
+> **SECURITY PATCH. Upgrade from 0.3.0 immediately if any of your policy rules gate on `args.*`.**
+
+`preCheck` built its policy-input map as a plain object and merged the flattened `args.*` values into
+it with `Object.assign`, which performs `[[Set]]` — and `[[Set]]` walks the prototype chain. An
+inherited accessor on `Object.prototype["args.<key>"]` swallowed the write, so the policy evaluated
+inputs that were silently missing a key:
+
+    CONTROL small transfer          ALLOW
+    CONTROL large transfer          DENY
+    ATTACK  inherited accessor      ALLOW      <- DENY became ALLOW, 1 write swallowed
+
+The receipt is signed, chain-valid and carries an honest `policyHash`, so nothing downstream can tell.
+**No builtin is replaced** — one `Object.defineProperty` on a prototype is the whole attack, which is
+why the call/read security gates report nothing.
+
+**Who is affected, measured rather than assumed.** A policy that lists the path in `requiredPaths`
+fails CLOSED — the absent path is caught. The exploit bites policies that gate on `args.*` WITHOUT
+declaring it required, which is exactly the pattern this package's own README teaches as its headline
+feature. The shipped reference policy and `DEFAULT_APPROVAL_RULES` gate only on `action` and the
+top-level `amountMinor` and are NOT affected.
+
+**Why it survived 0.3.0.** The previous release hardened the flatten TARGET to a null-prototype object
+and left the MERGE target a plain literal, four lines apart. The same shape as the release before it,
+where a captured `jsonStringify` was applied to a fallback and not to the encoder that fed the verdict.
+Pre-existing: `0.2.0` and `0.1.0` contain the identical code and are equally affected.
+
 ## [0.3.0] - 2026-08-03
 
 > **SECURITY RELEASE. Upgrade from 0.2.0.** Three ways to forge a human approval were closed. All

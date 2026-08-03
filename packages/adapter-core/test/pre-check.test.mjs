@@ -946,3 +946,49 @@ test("index.mjs: R4 public surface is exported from the package root", async () 
   }
   assert.equal(typeof pkg.PendingStoreError, "function", "PendingStoreError (a class) must also be exported");
 });
+
+// ROUND 5 / R5-01, reproduced by the lead before the fix.
+//
+// Round 4 made the FLATTEN target a null-prototype object and left the MERGE target a plain literal.
+// `objectAssign(inputs, …)` performs [[Set]], which walks the prototype chain, so an inherited
+// accessor on `Object.prototype["args.<key>"]` swallowed the write and the policy evaluated inputs
+// silently missing a key. Measured DENY -> ALLOW with a signed, chain-valid receipt.
+//
+// Scope, measured not assumed: a policy listing the path in `requiredPaths` fails CLOSED. The exploit
+// bites policies that gate on `args.*` WITHOUT declaring it required — which is the pattern
+// adapter-core's own README teaches as the headline feature.
+test("preCheck: an inherited accessor cannot swallow a policy input and turn DENY into ALLOW", () => {
+  const kp = generateKeyPair("r501-regression");
+  const policy = {
+    spec: "noa.policy/0.2", id: "nested-gate", requiredPaths: ["action"],
+    rules: [
+      { id: "block-big", when: { op: "ge", path: "args.transfer.amount", value: 1000 }, then: "DENY" },
+      { id: "allow", when: { op: "eq", path: "action", value: "payment.transfer" }, then: "ALLOW" },
+    ],
+  };
+  const run = (amount) => preCheck(
+    { name: "payment.transfer", args: { transfer: { amount } } },
+    { signer: { kid: kp.kid, privateKey: kp.privateKey }, policy },
+  ).decision;
+
+  assert.equal(run(10), "ALLOW", "control: a small transfer must be allowed, or the fixture proves nothing");
+  assert.equal(run(999999), "DENY", "control: a large transfer must be denied unpoisoned");
+
+  for (const key of ["args.transfer.amount", "args.amountMinor", "action", "amountMinor"]) {
+    const had = Object.getOwnPropertyDescriptor(Object.prototype, key);
+    let out;
+    try {
+      Object.defineProperty(Object.prototype, key, { configurable: true, set() {}, get() { return undefined; } });
+      out = run(999999);
+    } finally {
+      if (had) Object.defineProperty(Object.prototype, key, had);
+      else delete Object.prototype[key];
+    }
+    assert.equal(out, "DENY",
+      `an inherited accessor on Object.prototype.${key} swallowed a policy input and turned DENY into ` +
+      `ALLOW — no builtin was replaced, so no call/read gate can see it`);
+    assert.equal(key in Object.prototype, false, `control: Object.prototype.${key} was not restored`);
+  }
+
+  assert.equal(run(999999), "DENY", "control: every accessor was removed");
+});
