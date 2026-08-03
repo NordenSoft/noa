@@ -27,7 +27,7 @@ import { randomUUID } from "node:crypto";
 import { assertOpaqueApproverBy } from "./opaque-id.mjs";
 import { describeThrown } from "./safe-throw.mjs";
 
-const { arrayIncludes, isArray, jsonStringify } = intrinsics;
+const { arrayIncludes, isArray, jsonStringify, bufferConcat, bufferFrom, hasOwn } = intrinsics;
 
 /**
  * The domain-separation tag noa-receipt's own builder binds every receipt signature to (its
@@ -177,7 +177,7 @@ export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identit
       return { ok: false, reason: resolved.reason };
     }
     const pub = resolved.publicKey;
-    const message = Buffer.concat([Buffer.from(RECEIPT_SIG_DOMAIN + ":", "utf8"), sha256Digest(hashInput)]);
+    const message = bufferConcat([bufferFrom(RECEIPT_SIG_DOMAIN + ":", "utf8"), sha256Digest(hashInput)]);
     let sigOk = false;
     try {
       sigOk = verifyEd25519(pub, message, sig.value);
@@ -190,7 +190,10 @@ export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identit
       if (typeof identityManifest !== "object" || identityManifest === null || isArray(identityManifest)) {
         return { ok: false, reason: "identityManifest must be an object (agent.id -> kid[])" };
       }
-      const authorizedKids = identityManifest[r.agent.id];
+      // OWN property only. A plain read walks the prototype chain, and `r.agent.id` is chosen by
+      // whoever signed the receipt — so an attacker names a seat, pollutes that one key on
+      // Object.prototype, and the manifest answers for a seat it never listed.
+      const authorizedKids = hasOwn(identityManifest, r.agent.id) ? identityManifest[r.agent.id] : undefined;
       if (!isArray(authorizedKids) || !arrayIncludes(authorizedKids, sig.kid)) {
         return { ok: false, reason: `agent ${jsonStringify(r.agent.id)} is not authorized for signing key ${jsonStringify(sig.kid)} (identity manifest)` };
       }

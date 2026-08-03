@@ -1,6 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPair, verifyChain, buildReceipt } from "noa-receipt";
+import { generateKeyPair, verifyChain, buildReceipt, receiptHashInput, sha256Digest, sha256Prefixed } from "noa-receipt";
+
+// approval-decision.mjs keeps this module-private; the redteam Buffer probe below must rebuild
+// the exact signed message, so the value is mirrored here. If they ever diverge the probe stops
+// reproducing and its control fails loudly rather than passing vacuously.
+const RECEIPT_SIG_DOMAIN_FOR_TEST = "NOA-Receipt-v0.1-sig";
 import { b } from "./helpers/bytes.mjs";
 import { preCheck } from "../src/pre-check.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
@@ -259,6 +264,91 @@ test("verifyApprovalReceipt: a poisoned Array.prototype.includes cannot authoriz
 
   // CONTROL 3 — the poison really was removed; a leaked poison would make every later test lie.
   assert.equal(Array.prototype.includes, realIncludes, "control: Array.prototype.includes was not restored");
+});
+
+// REDTEAM round 2. The commit above hardened the two METHODS on this decision and left the PROPERTY
+// READ: `identityManifest[r.agent.id]` walks the prototype chain. `agent.id` is attacker-chosen — it
+// sits inside the attacker's OWN signed content — so the attacker names a seat, pollutes that one key
+// on Object.prototype, and the manifest answers for a seat it never listed. The manifest here is
+// COMPLETE for every real seat; nothing about it is misconfigured.
+//
+// Fixing the methods and leaving the lookup is the shape of an incomplete fix: the reachable
+// capability is identical and the previous test still passes, so the suite reads as covered.
+test("verifyApprovalReceipt: a polluted Object.prototype cannot invent an identity-manifest entry for an attacker-named seat", () => {
+  const { deferred, approverKp } = makeApprovedFixture("v-proto");
+  const robotKp = generateKeyPair("v-proto-robot");
+  const seat = "attacker-named-seat";
+  // The attacker holds a CO-TRUSTED key and signs its own approval naming a seat of its choosing.
+  const { receipt: forged } = buildApprovalReceipt({
+    deferredReceipt: deferred, by: OPAQUE_BY, ts: "2026-07-11T10:05:00.000Z",
+    signer: { kid: robotKp.kid, privateKey: robotKp.privateKey }, agentId: seat,
+  });
+  const approverKeyring = { [approverKp.kid]: approverKp.publicKey, [robotKp.kid]: robotKp.publicKey };
+  const manifest = { "human-approval-cli": [approverKp.kid] };   // complete for every REAL seat
+
+  const clean = verifyApprovalReceipt(forged, { approverKeyring, identityManifest: manifest });
+  assert.equal(clean.ok, false, "control: the attacker-named seat must be refused unpoisoned");
+  assert.match(clean.reason, /identity manifest/);
+
+  const realProto = Object.getOwnPropertyDescriptor(Object.prototype, seat);
+  let poisoned;
+  try {
+    // eslint-disable-next-line no-extend-native
+    Object.prototype[seat] = [robotKp.kid];
+    poisoned = verifyApprovalReceipt(forged, { approverKeyring, identityManifest: manifest });
+  } finally {
+    if (realProto) Object.defineProperty(Object.prototype, seat, realProto);
+    else delete Object.prototype[seat];
+  }
+  assert.equal(poisoned.ok, false,
+    "a polluted Object.prototype supplied an authorization list the manifest never contained — the " +
+    "seat binding is decided by a lookup that reads inherited properties");
+  assert.match(poisoned.reason, /identity manifest/);
+  assert.equal(seat in Object.prototype, false, "control: Object.prototype was not restored");
+});
+
+// REDTEAM round 2. `Buffer` was a LIVE GLOBAL on the signature-verification path — the one line the
+// method-level fix above did not touch, in the same function. Replace `Buffer.concat` and every
+// receipt is verified against a message of the attacker's choosing, so ONE genuine human signature
+// authorizes any action.
+//
+// This is the finding the repo's own L8 gate had ALREADY reported at this exact line, and which was
+// accepted into the `L8-adapter-core` budget of 246. The budget was set by counting, not by triage,
+// and it contained a forgery vector.
+test("verifyApprovalReceipt: a poisoned Buffer.concat cannot replay one genuine signature onto another action", () => {
+  const a = makeApprovedFixture("v-buf-a");
+  const b2 = makeApprovedFixture("v-buf-b");
+  const approverKeyring = { [a.approverKp.kid]: a.approverKp.publicKey, [b2.approverKp.kid]: b2.approverKp.publicKey };
+
+  assert.equal(verifyApprovalReceipt(a.allowed, { approverKeyring }).ok, true,
+    "control: the honest approval verifies against its OWN action");
+
+  // b's content carrying a's signature, with chain.hash RECOMPUTED so the receipt is self-consistent.
+  // Without the recompute the hash check refuses it first and the signature check is never reached —
+  // the lead's first version of this probe did exactly that and passed for the wrong reason.
+  let forged = { ...b2.allowed, sig: { ...b2.allowed.sig, kid: a.allowed.sig.kid, value: a.allowed.sig.value } };
+  forged = { ...forged, chain: { ...forged.chain, hash: sha256Prefixed(receiptHashInput(forged)) } };
+  forged.chain.hash = sha256Prefixed(receiptHashInput(forged));
+
+  const clean = verifyApprovalReceipt(forged, { approverKeyring });
+  assert.equal(clean.ok, false, "control: the replayed signature must be refused unpoisoned");
+  assert.match(clean.reason, /invalid approver signature/,
+    "control: the refusal must come from the SIGNATURE check — any other reason means this probe " +
+    "never reached the code under test");
+
+  const realConcat = Buffer.concat;
+  let poisoned;
+  try {
+    const genuineMessage = realConcat.call(Buffer, [Buffer.from(RECEIPT_SIG_DOMAIN_FOR_TEST + ":", "utf8"), sha256Digest(receiptHashInput(a.allowed))]);
+    Buffer.concat = () => genuineMessage;
+    poisoned = verifyApprovalReceipt(forged, { approverKeyring });
+  } finally {
+    Buffer.concat = realConcat;
+  }
+  assert.equal(poisoned.ok, false,
+    "a poisoned Buffer.concat let one genuine human signature authorize a DIFFERENT action — the " +
+    "signature is verified over bytes the attacker controls, so consent is no longer bound to content");
+  assert.equal(Buffer.concat, realConcat, "control: Buffer.concat was not restored");
 });
 
 test("verifyApprovalReceipt (G1): expectedAction binds the approval to the EXACT held action — a genuine signed approval for a DIFFERENT action.paramsHash (or a different action.id) is refused, the matching one passes", () => {
