@@ -44,7 +44,9 @@
 ### Open, and named rather than implied
 
 - **P1-12** — with no identity manifest, any keyring-trusted key can mint a checkpoint over any
-  head. Owner-authorised 2026-08-04; design in progress.
+  head. Owner-authorised 2026-08-04; design in progress. **Decision landed later the same day:
+  v1.0 does not claim external anchoring — ratified as NC-4.5; the anchor is a roadmap epic,
+  re-examined at launch planning (see the plan's P1-12 row).**
 - **`lint:release-parity` red** — 0.6.1 has no tag and is not on the registry. Publishing is
   owner-authorised; no tag was created, because a tag with nothing published asserts a release
   that has not happened.

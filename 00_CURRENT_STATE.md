@@ -9,6 +9,9 @@ Last updated: 2026-08-04 (measured; every claim below was re-run or read from th
 Active branch: `impl/adr-0005-trusted-input-provenance`, merged to `main` twice this day
 (`7864eba`, `0c4cdb7`) with CI green on both — 16/16 checks, `e2e-demo-golden-path` honestly
 `skipped` because the private phone core is unreachable without `NOA_MOBILE_TOKEN`.
+**Superseded the same evening (PR #29, `bfefe44`):** the credential is now a read-only deploy
+key (`NOA_MOBILE_SSH_KEY`), `REQUIRE_PHONE_CORE=true` is set, and `e2e-demo-golden-path` RUNS —
+run 30941097568: six scenarios `pass 15`, ten phone-core knockouts `proven load-bearing 10/10`.
 
 Production status: `PROTOTYPE` with active `SPECIFICATION` work. The npm registry has
 `noa-receipt@0.6.0`; this checkout is **`0.6.1`, bumped and NOT published** — the published 0.6.0
