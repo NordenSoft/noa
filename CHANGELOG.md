@@ -8,6 +8,18 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 _Nothing yet._
 
+## [0.6.2] - 2026-08-04
+
+**No behaviour change. Documentation only — the published 0.6.1 tarball ships two documents this
+tree has since corrected, and a version must not mean two different contents.**
+
+### Changed
+- `SECURITY.md` — the post-release correction of 2026-08-04 (the 0.6.1 tarball still tells
+  reporters a pre-release story).
+- `NON-CLAIMS.md` — adds **NC-4.5**: a checkpoint endorsement is not an external anchor; v1.0
+  does not claim external anchoring (P1-12, ratified 2026-08-04). Strangers installing the kernel
+  read NON-CLAIMS from the tarball, so the ratified boundary must actually ship.
+
 ## [0.6.1] - 2026-08-04
 
 **No behaviour change. Documentation only — and the version exists because 0.6.0 had to stop
