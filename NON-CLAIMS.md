@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Version** | `noa.non-claims/1` |
-| **Status** | NORMATIVE. Referenced by `THREAT-MODEL.md`, `SECURITY.md`, and every package README. |
+| **Status** | NORMATIVE. Referenced by `THREAT-MODEL.md`, `SECURITY.md`, the root `README.md`, and 17 further in-repo documents. **Not** by any of the eleven package READMEs — the claim that it was said so for months and was never true (measured 2026-08-04: 0 of 11). A stranger who installs `noa-mcp-proxy` and reads only its README cannot currently reach this document; carrying a link in the six published package READMEs is owed work, not a shipped fact. |
 | **Last reviewed** | 2026-07-28 |
 | **Change rule** | **Adding** a non-claim is an ordinary commit. **Weakening or removing** one is a reviewed event — see [§7](#7-changing-this-document). |
 
