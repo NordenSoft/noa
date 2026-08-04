@@ -29,6 +29,7 @@ import {
   coAttestationHashInput,
   type ReceiverKeyring,
 } from "./co-attestation.js";
+import { b } from "../helpers/bytes.js";
 
 /** Mint a fresh counterparty (receiver) key pair + its keyring — a trust root separate from the receipt's. */
 function newReceiver(kid: string): { kid: string; privateKey: string; keyring: ReceiverKeyring } {
@@ -59,7 +60,7 @@ describe("dogfood co-attestation (Track A2): a counterparty signs ONE input fiel
     // The co-att binds to the EXACT receipt (its chain.hash)…
     expect(coAtt.receiptHash).toBe(receipt.chain.hash);
     // …and the carrier is a VALID signed chain against the operator's trust root.
-    expect(verifyChain([receipt], { keyring: signer.keyring }).status).toBe("VALID");
+    expect(verifyChain(b([receipt]), { keyring: b(signer.keyring) }).status).toBe("VALID");
 
     // Counterparty attestation verifies: carrier authenticated via receiptKeyring, receiver pubkey trusted.
     const r = verifyCoAttestation(coAtt, {
@@ -85,7 +86,7 @@ describe("dogfood co-attestation (Track A2): a counterparty signs ONE input fiel
       null,
     );
     // The caller authenticates the carrier itself, then verifies the co-att WITHOUT receiptKeyring.
-    expect(verifyChain([receipt], { keyring: signer.keyring }).status).toBe("VALID");
+    expect(verifyChain(b([receipt]), { keyring: b(signer.keyring) }).status).toBe("VALID");
     const coAtt = createCoAttestation(
       { receipt, field: "amountMinor", value: REFUND_AMOUNT_MINOR, currency: CURRENCY, ts: TS },
       { kid: receiver.kid, privateKey: receiver.privateKey },

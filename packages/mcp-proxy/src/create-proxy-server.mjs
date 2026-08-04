@@ -70,7 +70,22 @@ import {
   findOutstanding,
   consumeApprovalTicket,
   verifyApprovalReceipt,
+  // BOUNDARY 2 — the ONE conversion from an arbitrary thrown value to a safe descriptor.
+  describeThrown,
+  // H-02b — the post-dispatch outcome is the reducer's to decide, never this file's.
+  nextSideEffectState,
+  EVIDENCE_OUTCOME_FOR,
+  isSafeToRetry,
 } from "noa-mcp-adapter-core";
+import { intrinsics } from "noa-mcp-adapter-core";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths, same rationale as
+// adapter-core: four CRITICALs in two days, every one a LIVE builtin an attacker replaces after
+// module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
+// who adds one, so the builtins come from the kernel's module-load capture whether or not each site
+// is reachable today. Reachability is a property of the surrounding code, and that changes.
+const { isArray, objectKeys } = intrinsics;
+
 import { buildOutcomeReceipt, buildOutcomeReceiptAsync } from "./outcome-receipt.mjs";
 
 /**
@@ -123,7 +138,7 @@ export async function createProxyServer({
   // held action. That adoption MUST verify the approver's signature (see `verifyApprovalReceipt`),
   // which requires a trusted approver keyring. Refusing to start without one makes it structurally
   // impossible to run a gate that would adopt approvals it cannot authenticate — never fail-open.
-  if ((pendingStorePath || approvalRules) && (!approverKeyring || typeof approverKeyring !== "object" || Array.isArray(approverKeyring) || Object.keys(approverKeyring).length === 0)) {
+  if ((pendingStorePath || approvalRules) && (!approverKeyring || typeof approverKeyring !== "object" || isArray(approverKeyring) || objectKeys(approverKeyring).length === 0)) {
     throw new Error(
       "createProxyServer: the human-approval gate (`approvalRules`/`pendingStorePath`) requires a non-empty `approverKeyring` of trusted approver public keys — refusing to start a gate that would adopt approvals without verifying their signatures",
     );
@@ -159,7 +174,7 @@ export async function createProxyServer({
       try {
         await server.sendToolListChanged();
       } catch (err) {
-        console.error(`noa-mcp-proxy: session "${sessionId}" — failed to forward downstream tools/list_changed to host (${err.message})`);
+        console.error(`noa-mcp-proxy: session "${sessionId}" — failed to forward downstream tools/list_changed to host (${describeThrown(err)})`);
       }
     });
   }
@@ -222,7 +237,7 @@ export async function createProxyServer({
       // docstring).
       store.end(sessionId, tenant);
     }).catch((err) => {
-      console.error(`noa-mcp-proxy: session "${sessionId}" (tenant "${tenant}") end() failed to persist on disconnect (${err.message})`);
+      console.error(`noa-mcp-proxy: session "${sessionId}" (tenant "${tenant}") end() failed to persist on disconnect (${describeThrown(err)})`);
     });
   };
 
@@ -251,7 +266,7 @@ export async function createProxyServer({
       if (persisted && typeof persisted.then === "function") await persisted;
     } catch (err) {
       console.error(
-        `noa-mcp-proxy: session "${sessionId}" — outcome receipt for tool "${tool}" (${outcome}) could not be built/recorded (${err.message}); the decision receipt still stands as the authoritative governance record`,
+        `noa-mcp-proxy: session "${sessionId}" — outcome receipt for tool "${tool}" (${outcome}) could not be built/recorded (${describeThrown(err)}); the decision receipt still stands as the authoritative governance record`,
       );
     }
   }
@@ -262,7 +277,7 @@ export async function createProxyServer({
     try {
       return await downstream.listTools(request.params);
     } catch (err) {
-      throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: downstream tools/list failed (${err.message})`);
+      throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: downstream tools/list failed (${describeThrown(err)})`);
     }
   });
 
@@ -301,7 +316,7 @@ export async function createProxyServer({
           // FAIL-CLOSED: an unreadable/corrupt pending store (loadPendingIndex refuses on a torn
           // line — see pending-store.mjs) must reject the call, never silently proceed as if no
           // approval were outstanding.
-          throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: pending store unreadable (${err.message}) — call rejected closed`);
+          throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: pending store unreadable (${describeThrown(err)}) — call rejected closed`);
         }
         if (outstanding) {
           const identified = tryIdentifyToolCallForTicketLookup(toolCall, canonicalParamsHash);
@@ -317,7 +332,7 @@ export async function createProxyServer({
           try {
             consumedRecord = consumeApprovalTicket(pendingStorePath, outstanding.id, Date.now(), { sessionId, tenant });
           } catch (err) {
-            throw new McpError(ErrorCode.InvalidRequest, `noa-mcp-proxy: DENY — approval ticket for "${request.params.name}" could not be consumed (${err.message})`, { receiptId: outstanding.id });
+            throw new McpError(ErrorCode.InvalidRequest, `noa-mcp-proxy: DENY — approval ticket for "${request.params.name}" could not be consumed (${describeThrown(err)})`, { receiptId: outstanding.id });
           }
           // CRITICAL — cryptographically verify the approver's ALLOWED receipt BEFORE it touches the
           // live chain. adoptApprovedReceipt only checks structural seq/prevHash continuity; without
@@ -362,7 +377,7 @@ export async function createProxyServer({
             const persistedAllowed = onReceipt?.(sessionId, consumedRecord.allowedReceipt);
             if (persistedAllowed && typeof persistedAllowed.then === "function") await persistedAllowed;
           } catch (err) {
-            throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: adopted approval receipt could not be persisted (${err.message}) — call rejected closed`);
+            throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: adopted approval receipt could not be persisted (${describeThrown(err)}) — call rejected closed`);
           }
           // Reuses `headBeforeAdopt` (peeked just above for the chain check): the onReceipt persist
           // between here and there touches no session-chain state, so the segment id is still current.
@@ -397,7 +412,7 @@ export async function createProxyServer({
         // Defense in depth: preCheck/evaluate are documented to never throw, but a component
         // sitting at the credential boundary must fail-closed on ANY unexpected exception, not
         // only the ones the policy engine itself anticipated.
-        throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: pre-check failed closed (${err.message})`);
+        throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: pre-check failed closed (${describeThrown(err)})`);
       }
 
       try {
@@ -412,7 +427,7 @@ export async function createProxyServer({
         // Fail-closed: a receipt that couldn't be durably recorded must not spend a chain seq
         // slot — the session's position stays put, so the next call for this session re-issues
         // this exact seq (see prepareSessionReceipt/commitSessionReceipt in noa-mcp-adapter-core).
-        throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: receipt persist failed, call rejected before forwarding (${err.message})`);
+        throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: receipt persist failed, call rejected before forwarding (${describeThrown(err)})`);
       }
       // `prepared.segmentId` (the segment this receipt was PREPARED against) lets the store detect
       // a stale commit — the session was torn down or moved to a newer segment while this call's
@@ -436,7 +451,7 @@ export async function createProxyServer({
         // --session-dir (see createFileSessionStore's own "FAIL-CLOSED POISON" docstring). The
         // in-memory-only store (createChainSessionStore, the default) never throws here, so this
         // branch is unreachable with the default store.
-        throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: receipt commit failed, call rejected (${err.message})`);
+        throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: receipt commit failed, call rejected (${describeThrown(err)})`);
       }
       if (!committed) {
         // Observable, never silent: the receipt was ALREADY durably persisted above (onReceipt
@@ -465,7 +480,7 @@ export async function createProxyServer({
         try {
           recordDeferred(pendingStorePath, { deferredReceipt: receipt, tenant, agentId: effectiveAgentId, sessionId, actionId: receipt.action.id, paramsHash: receipt.action.paramsHash });
         } catch (err) {
-          throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: DEFERRED receipt "${receipt.id}" could not be recorded to the pending store (${err.message}) — call rejected closed`);
+          throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: DEFERRED receipt "${receipt.id}" could not be recorded to the pending store (${describeThrown(err)}) — call rejected closed`);
         }
       }
       throw new McpError(ErrorCode.InvalidRequest, `noa-mcp-proxy: held for human approval, receipt ${receipt.id}`, { receiptId: receipt.id, ruleId: receipt.governance.ruleId });
@@ -507,7 +522,7 @@ export async function createProxyServer({
               pendingProgressRelays.push(
                 server
                   .notification({ method: "notifications/progress", params: { ...progress, progressToken: hostProgressToken } })
-                  .catch((err) => console.error(`noa-mcp-proxy: session "${sessionId}" — failed to relay downstream progress to host (${err.message})`)),
+                  .catch((err) => console.error(`noa-mcp-proxy: session "${sessionId}" — failed to relay downstream progress to host (${describeThrown(err)})`)),
               );
             },
           }
@@ -525,8 +540,38 @@ export async function createProxyServer({
       // downstream failure after ALLOW must still reach the host as a failure, never a silent
       // success. R2 (#4): emit the ERROR outcome receipt (best-effort) BEFORE surfacing the failure,
       // so the audit trail binds this decision to its real terminal outcome.
+      //
+      // ── H-02b: WHAT "error" DOES AND DOES NOT MEAN ───────────────────────────────────────────
+      // The call was FORWARDED before this throw, so the downstream tool may have run to completion
+      // and lost only its response. Routed through the reducer, that is
+      // `DISPATCHED --TOOL_THREW_AFTER_DISPATCH--> SIDE_EFFECT_UNCONFIRMED`, whose §13 evidence
+      // outcome is `UNKNOWN_AFTER_DISPATCH` — NOT a determinate failure.
+      //
+      // `outcome:"error"` stays, and stays honest, because of what it is a record OF: the PROXY's
+      // own observation that the forwarded call raised. It is not the downstream tool's self-report
+      // and it never claimed to be a statement about the side effect. `noa.mcp.outcome/0.1` is a
+      // published wire artifact, so its enum is NOT widened to add an "unconfirmed" member — that
+      // would be inventing a new wire outcome to say what the reducer already says.
+      //
+      // What WAS missing is the anti-retry discriminator on the path the host actually reads. A
+      // host seeing a bare InternalError retries, and a retry here duplicates a side effect that
+      // may already have happened. The reducer state travels with the error, in `data`, which is
+      // additive and breaks no consumer.
+      const dispatchState = nextSideEffectState(
+        nextSideEffectState("NOT_DISPATCHED", "DISPATCH_STARTED"), // → DISPATCHED
+        "TOOL_THREW_AFTER_DISPATCH",
+      ); // → SIDE_EFFECT_UNCONFIRMED
       await emitOutcome(receipt, request.params.name, "error", err);
-      throw new McpError(ErrorCode.InternalError, `noa-mcp-proxy: downstream call failed after ALLOW (${err.message})`);
+      throw new McpError(
+        ErrorCode.InternalError,
+        `noa-mcp-proxy: downstream call failed after ALLOW and MAY ALREADY HAVE TAKEN EFFECT — do not blindly retry (${describeThrown(err)})`,
+        {
+          executionHappened: true,
+          sideEffectState: dispatchState,
+          evidenceOutcome: EVIDENCE_OUTCOME_FOR[dispatchState],
+          safeToRetry: isSafeToRetry(dispatchState),
+        },
+      );
     }
     // Flush all relayed progress notifications to the host BEFORE the result is sent (see the
     // pendingProgressRelays comment above) — prevents the result from overtaking queued progress.

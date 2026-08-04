@@ -18,6 +18,8 @@
 
 import { generateKeyPairSync, randomUUID } from "node:crypto";
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from "noa-approval-artifacts";
+import { SIGNING_KEY_LIFECYCLE_SPEC, type SigningKeyLifecycle } from "noa-receipt";
+import { encodeDocument } from "./bytes.js";
 
 export interface GateKeyPair {
   kid: string;
@@ -35,8 +37,15 @@ function generateX25519Public(): string {
 
 export interface CreateTrustInput {
   tenant: string;
-  /** riskClass tier the single alpha approver is authorized for (F15): HIGH → approve-high,
-   *  CRITICAL/IRREVERSIBLE → approve-critical. Default approve-critical (covers all tiers). */
+  /**
+   * riskClass tier the single alpha approver is authorized for (F15). The tiers are ORDERED, not
+   * disjoint: `approve-critical` strictly dominates `approve-high`, so a CRITICAL-authorized
+   * approver also clears HIGH actions. Default `approve-critical` therefore does cover all tiers —
+   * a claim that was FALSE until the lattice was unified, because approval-artifacts required
+   * exactly `approve-high` for HIGH and rejected this very default with a 422.
+   * AUTHORITY: `requiredApproverRole()` in packages/approval-artifacts/src/verify.ts; on any drift
+   * that function wins. Cross-package test: packages/approval-artifacts/test/f15-lattice.test.mjs.
+   */
   approverRole?: "approve-high" | "approve-critical";
   now?: () => number;
   /** Deterministic id source for tests (defaults to node:crypto randomUUID). */
@@ -55,6 +64,11 @@ export interface GateTrust {
    *  the phone (see test/helpers.ts). */
   approver: GateKeyPair;
   approverHpkePublicKey: string;
+  /** The AUDIT recipient's kid + HPKE public half (`roles: ["audit-decrypt"]` in the key manifest).
+   *  The kid is exposed because the engine must be able to NAME this recipient when it seals a display;
+   *  before ADR-0005 Slice 4 the key was provisioned and never used, so no auditor could decrypt
+   *  anything the gate sealed. */
+  auditKid: string;
   auditHpkePublicKey: string;
 
   keyManifestVersion: number;
@@ -64,8 +78,8 @@ export interface GateTrust {
 
   /** kid → KeyEntry for `verifyArtifact` (structural + role checks on the phone Decision Artifact). */
   keyring: Record<string, KeyEntry>;
-  /** kid → base64(DER SPKI) for `verifyChain` (receipt-signature authentication). */
-  receiptKeyring: Record<string, string>;
+  /** Atomic public-key plus retirement state for `verifyChain`. */
+  receiptKeyring: SigningKeyLifecycle;
 
   /** REQUIRED gate liveness (G3), stable for this process, re-derived on restart. */
   bootId: string;
@@ -89,6 +103,10 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
   const approver = generateKeyPair("approver-1-device-1");
   const approverHpke = generateX25519Public();
   const auditHpke = generateX25519Public();
+  // The audit kid was a bare string literal inside the key-manifest entry below and existed NOWHERE
+  // else, so nothing could name the audit recipient (ADR-0005 Slice 4). Bound once here and used by
+  // both the manifest and `auditKid`, so the manifest entry and the recipient list cannot drift.
+  const auditKidValue = "audit-1";
 
   const iso = (ms: number) => new Date(ms).toISOString();
   const t0 = now();
@@ -97,7 +115,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
 
   // root-signed delegation (root → tenant-authority as the manifest signer), F11/F21.
   const keyDelegation = signArtifact(
-    {
+    encodeDocument({
       spec: "noa.key-delegation/0.1",
       tenant,
       delegatedKid: authority.kid,
@@ -105,14 +123,14 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
       permissions: ["key-manifest-sign"],
       validFrom,
       expiresAt,
-    },
+    }),
     "NOA-KeyDelegation-v0.1-sig",
     { kid: root.kid, privateKey: root.privateKey },
   );
 
   // tenant-authority-signed manifest (F21 direct signature; the GATE never signs it — Red Line 16).
   const keyManifest = signArtifact(
-    {
+    encodeDocument({
       spec: "noa.key-manifest/0.1",
       tenant,
       version: 1,
@@ -138,7 +156,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
           revokedAt: null,
         },
         {
-          kid: "audit-1",
+          kid: auditKidValue,
           type: "AUDIT",
           roles: ["audit-decrypt"],
           hpkePublicKey: auditHpke,
@@ -146,22 +164,65 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
           revokedAt: null,
         },
       ],
-    },
+    }),
     "NOA-KeyManifest-v0.1-sig",
     { kid: authority.kid, privateKey: authority.privateKey },
   );
 
   const keyManifestHash = refHash(keyManifest);
 
+  // ── P0-5 (2026-07-31): THIS RESOLVER WAS THE THIRD ONE, AND IT DROPPED `validFrom` ───────────
+  // The key manifest built 30 lines above declares `validFrom` on every key (:145, :154, …). This
+  // keyring — the one `engine.ts:711` hands to `verifyArtifact` for LIVE Decision verification —
+  // was rebuilt from the same inputs WITHOUT it, so `verifyArtifact` saw `undefined` and skipped
+  // the activation check entirely. A future-activated approver could sign before activation and
+  // pass. Current alpha constructors choose a past `validFrom`, which bounds the exposure, but
+  // `createGate` accepts an injected `GateTrust`.
+  //
+  // I fixed the EVIDENCE resolver for this same class one batch earlier and wrote a test asserting
+  // "the ROOT path and the MANIFEST path carry activation the SAME way" — without asking whether a
+  // THIRD resolver existed. It did, and it is this one. That is the "fix landed on one sibling"
+  // pattern for the third time in this file family.
+  //
+  // ── P0-7 (2026-07-31): THE SENTENCE THAT USED TO END THE PARAGRAPH ABOVE WAS FALSE ───────────
+  // It read, verbatim: "the parity test added with this change is what makes a fourth one fail
+  // loudly instead of silently." NO SUCH TEST EXISTED when that was written — `grep -rn "parity"
+  // packages/gate/test/` returned nothing, and deleting all four `validFrom` properties below left
+  // every then-existing test GREEN (re-measured 2026-07-31 before this correction). The claim is
+  // WITHDRAWN and recorded here rather than deleted: a source comment asserting a control that is
+  // not there is exactly the defect class the same batch was adjudicating. The control now exists,
+  // is measured, and is registered so it cannot silently disappear:
+  //   [proof: RES-PAR-GATE-KEYRING] test/keyring-resolver-parity.test.ts — goes RED (3 tests,
+  //     214 pass/2 fail -> 211 pass/5 fail) under that exact four-deletion mutation; restoration
+  //     hash-verified.
+  //   [proof: RES-PAR-XRES-EQUIV] packages/e2e-demo/test/keyring-resolver-parity.test.ts —
+  //     cross-resolver equivalence proven at the real verifier.
+  //   scripts/lint-resolver-parity.mjs + scripts/resolver-inventory.json — a BLOCKING census gate:
+  //     a resolver that appears or disappears, and a registered proof that stops resolving, each
+  //     fail the gate for its own named reason.
+  //
+  // ── CORRECTED 2026-07-31 (batch-A QA, finding F-4) ────────────────────────────────────────────
+  // The line above previously also claimed the census gate fails when a resolver "drops
+  // validFrom/revokedAt". That is TRUE only for a STRUCTURAL drop (the property is deleted from the
+  // literal, which changes the recorded carriage from `explicit` to `absent`). It is FALSE for a
+  // VALUE substitution: writing `validFrom: null` keeps the property present, so the gate still
+  // reads `explicit` and stays exit 0. MEASURED. The defect is not undetected — the e2e parity test
+  // catches it (12 pass -> 11) — but the sentence overstated WHICH control catches it, and this
+  // file's whole history is claims that named the wrong control. Value-provenance checking is
+  // deliberately NOT built: the test layer already covers it, and a second mechanism would be
+  // theatre. Tracked as P1 (F-4).
   const keyring: Record<string, KeyEntry> = {
-    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], revokedAt: null },
-    [approver.kid]: { publicKey: approver.publicKey, type: "APPROVER", roles: [approverRole], revokedAt: null },
-    [authority.kid]: { publicKey: authority.publicKey, type: "DELEGATED", roles: ["key-manifest-sign"], revokedAt: null },
-    [root.kid]: { publicKey: root.publicKey, type: "ROOT", roles: [], revokedAt: null },
+    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], validFrom, revokedAt: null },
+    [approver.kid]: { publicKey: approver.publicKey, type: "APPROVER", roles: [approverRole], validFrom, revokedAt: null },
+    [authority.kid]: { publicKey: authority.publicKey, type: "DELEGATED", roles: ["key-manifest-sign"], validFrom, revokedAt: null },
+    [root.kid]: { publicKey: root.publicKey, type: "ROOT", roles: [], validFrom, revokedAt: null },
   };
-  const receiptKeyring: Record<string, string> = {
-    [gate.kid]: gate.publicKey,
-    [approver.kid]: approver.publicKey,
+  const receiptKeyring: SigningKeyLifecycle = {
+    spec: SIGNING_KEY_LIFECYCLE_SPEC,
+    keys: {
+      [gate.kid]: { publicKey: gate.publicKey, retiredAt: null },
+      [approver.kid]: { publicKey: approver.publicKey, retiredAt: null },
+    },
   };
 
   return {
@@ -171,6 +232,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
     gate,
     approver,
     approverHpkePublicKey: approverHpke,
+    auditKid: auditKidValue,
     auditHpkePublicKey: auditHpke,
     keyManifestVersion: keyManifest.version as number,
     keyManifestHash,

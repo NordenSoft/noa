@@ -8,16 +8,19 @@
  * the external non-equivocation anchor NOA's self-signed chain lacks.
  */
 
-import { coseSign1, coseSign1Verify, type CoseSigner } from "./cose-sign1.js";
+import { coseSign1, coseSign1VerifyParsed, type CoseSigner } from "./cose-sign1.js";
 import { canonicalize } from "../jcs.js";
 import { safeParse } from "../safe-json.js";
-import { validateReceiptShape } from "../schema.js";
+import { validateReceiptShapeParsed } from "../schema.js";
+import { parseDocument } from "../bytes.js";
+import { parseVerificationKeyring } from "../verification-keyring.js";
 import type { Receipt } from "../types.js";
 import type { Keyring, IdentityManifest } from "../keys.js";
+import { arrayIncludes, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray, bufferFrom, bufToString, bufEquals, jsonStringify } from "../intrinsics.js";
 
 /** Wrap a receipt as a COSE_Sign1 (CBOR bytes). Payload = JCS-canonical receipt. */
 export function receiptToCose(receipt: Receipt, signer: CoseSigner): Buffer {
-  return coseSign1(Buffer.from(canonicalize(receipt), "utf8"), signer);
+  return coseSign1(bufferFrom(canonicalize(receipt), "utf8"), signer);
 }
 
 export interface ReceiptCoseResult {
@@ -39,13 +42,25 @@ export interface ReceiptCoseResult {
  * consumer that trusts `ok:true` + reads `receipt.agent.id`). With a manifest, an unauthorized
  * (agent.id, kid) pairing fails (ok:false) — mirroring the `UNTRUSTED` verdict.
  */
-export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityManifest?: IdentityManifest): ReceiptCoseResult {
-  // Fail-closed on a non-object keyring: mirror verifyChain's non-object-keyring guard at the COSE
-  // entry too, BEFORE any manifest work, so a null/array/non-object keyring is a clean ok:false here (not a
-  // raw throw on a later `keyring[kid]`). coseSign1Verify guards as well; this keeps THIS entry point's own
-  // contract fail-closed with a consistent reason.
-  if (keyring === null || typeof keyring !== "object" || Array.isArray(keyring)) {
-    return { ok: false, kid: null, receipt: null, reason: "keyring must be an object (kid -> base64 SPKI)", warnings: [] };
+export function receiptFromCose(
+  coseBytes: Uint8Array,
+  keyringBytes: Uint8Array | string,
+  identityManifestBytes?: Uint8Array | string,
+): ReceiptCoseResult {
+  // THREE DOCUMENTS, THREE PARSES, ZERO CALLER OBJECTS. The manifest used to carry a hand-rolled
+  // read-once snapshot (a Map built with `Array.prototype.slice`) while the KEYRING carried none — a
+  // hand-rolled boundary protects the field its author was thinking about and nothing else, and
+  // `slice` itself dispatches through a poisonable prototype slot. The shape-validation pass below
+  // is kept for its error messages; what it walks is now parser output.
+  const kParsed = parseVerificationKeyring(keyringBytes, "keyring");
+  if (!kParsed.ok) return { ok: false, kid: null, receipt: null, reason: kParsed.reason, warnings: [] };
+  const verification = kParsed.value;
+  const keyring = verification.keyring;
+  let identityManifest: IdentityManifest | undefined;
+  if (identityManifestBytes !== undefined) {
+    const mParsed = parseDocument(identityManifestBytes, "identityManifest");
+    if (!mParsed.ok) return { ok: false, kid: null, receipt: null, reason: mParsed.reason, warnings: [] };
+    identityManifest = mParsed.value as IdentityManifest;
   }
   // Validate the optional manifest AND SNAPSHOT it (fail-closed; matches verifyChain). TOCTOU hardening:
   // read each entry EXACTLY ONCE into a plain Map, copying the array by value (slice captures element
@@ -54,9 +69,9 @@ export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityMan
   // enforcement reads from the snapshot, never the live object. (CLI/Python consume JSON.parse output —
   // no accessors — so are immune; this defends the JS in-process API.)
   const haveManifest = identityManifest !== undefined;
-  const manifest = new Map<string, string[]>();
+  const manifest = newMap<string, string[]>();
   if (haveManifest) {
-    if (typeof identityManifest !== "object" || identityManifest === null || Array.isArray(identityManifest)) {
+    if (typeof identityManifest !== "object" || identityManifest === null || isArray(identityManifest)) {
       return { ok: false, kid: null, receipt: null, reason: "identityManifest must be an object (agent.id -> kid[])", warnings: [] };
     }
     // GUARD the manifest read in try/catch: the entries / array elements are caller-supplied LIVE
@@ -64,37 +79,84 @@ export function receiptFromCose(coseBytes: Buffer, keyring: Keyring, identityMan
     // ok:false here, never escape as a RAW throw — mirroring verify.ts's manifest-validation guard. (verifyChain
     // wraps this in its own try; this COSE entry point needs its own, since it has no outer guard.)
     try {
-      for (const aid of Object.getOwnPropertyNames(identityManifest)) {
+      // INDEX WALK (round-4, A2). Measured before the fix at THIS entry point specifically — an
+      // earlier attempt reported `hits: 0` because it passed the manifest as an options object to a
+      // POSITIONAL third parameter, so the manifest never reached this walk. With the right harness:
+      // a skipping iterator hid an entry whose value was invalid and `ok:false` became `ok:true`
+      // (1 poison hit).
+      const aids = objectGetOwnPropertyNames(identityManifest);
+      for (let ai = 0; ai < aids.length; ai++) {
+        const aid = aids[ai] as string;
         const kidsLive = (identityManifest as Record<string, unknown>)[aid]; // ONE read of the entry
-        if (!Array.isArray(kidsLive)) {
+        if (!isArray(kidsLive)) {
           return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
         }
-        const kids = Array.prototype.slice.call(kidsLive) as unknown[]; // copy by value
-        if (!kids.every((k) => typeof k === "string")) {
+        const kids = arraySlice(kidsLive) as unknown[]; // copy by value
+        if (!arrayEvery(kids, (k) => typeof k === "string")) {
           return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
         }
-        manifest.set(aid, kids as string[]);
+        mapSet(manifest, aid, kids as string[]);
       }
     } catch {
       return { ok: false, kid: null, receipt: null, reason: "identityManifest threw during validation (hostile accessor)", warnings: [] };
     }
   }
-  const r = coseSign1Verify(coseBytes, keyring);
+  const r = coseSign1VerifyParsed(coseBytes, keyring);
+  if (r.kid !== null && verification.retiredKids[r.kid] === true) {
+    return {
+      ok: false,
+      kid: r.kid,
+      receipt: null,
+      reason: `signing key ${jsonStringify(r.kid)} is retired; signer-chosen artifact time is not an independent witness`,
+      warnings: [],
+    };
+  }
   if (!r.ok || !r.payload) return { ok: false, kid: r.kid, receipt: null, reason: r.reason, warnings: [] };
   let parsed: unknown;
   try {
-    parsed = safeParse(r.payload.toString("utf8"));
+    parsed = safeParse(bufToString(r.payload, "utf8"));
   } catch (e) {
     return { ok: false, kid: r.kid, receipt: null, reason: `payload parse: ${(e as Error).message}`, warnings: [] };
   }
-  const v = validateReceiptShape(parsed);
+  // H5 — the receipt returned MUST re-canonicalize to EXACTLY the signed payload bytes. safeParse
+  // rejects duplicate/prototype keys and unpaired surrogates, but a signed payload can still be
+  // NON-CANONICAL JCS, or carry INVALID UTF-8 that `toString("utf8")` silently repaired to U+FFFD
+  // (e.g. a raw 0x80 byte -> "�"). Returning `parsed` then hands the caller a receipt whose fields
+  // (agentId, ...) are NOT the bytes the signature covers — the verifier would be inventing semantics
+  // the signer never attested. Re-canonicalize and require byte-equality with the signed payload; a
+  // payload that does not re-canonicalize to itself is rejected (fail-closed).
+  // CAPTURED (2026-07-29, round-2, R3-07). BOTH sides of this canonical-payload equality gate were live:
+  // `Buffer.from(...)` (the re-canonicalized bytes) and `recanon.equals(...)` (the compare). A rewriting
+  // `Buffer.from` or an `equals -> true` poison made a validly-signed but NONCANONICAL payload pass the
+  // byte-equality check as `ok:true`, handing the caller a receipt whose fields are not the signed bytes.
+  // Both routed through captures taken at load.
+  let recanon: Buffer;
+  try {
+    recanon = bufferFrom(canonicalize(parsed), "utf8");
+  } catch (e) {
+    return { ok: false, kid: r.kid, receipt: null, reason: `payload is not canonicalizable: ${(e as Error).message}`, warnings: [] };
+  }
+  if (!bufEquals(recanon, r.payload)) {
+    return { ok: false, kid: r.kid, receipt: null, reason: "COSE payload is not canonical JCS: it does not re-canonicalize to the signed bytes (non-canonical encoding, or invalid/lossy UTF-8) — the returned receipt would not match the bytes the signature covers", warnings: [] };
+  }
+  const v = validateReceiptShapeParsed(parsed);
   if (!v.ok) return { ok: false, kid: r.kid, receipt: null, reason: `payload is not a NOA receipt: ${v.errors[0]}`, warnings: [] };
   const receipt = parsed as Receipt;
   // Identity binding (mirrors verifyChain 4c-bis). The COSE signature is authenticated (r.ok), so an
   // unauthorized (agent.id, kid) pairing is cross-agent impersonation → reject.
   if (haveManifest) {
-    const allowed = manifest.get(receipt.agent.id); // snapshot read — immune to live-object TOCTOU
-    if (allowed === undefined || r.kid === null || !allowed.includes(r.kid)) {
+    // H4 — the identity manifest binds an agent to the SIGNER kid, so the kid MUST be authenticated:
+    // covered by the signature (from the PROTECTED header). A kid present only in the UNPROTECTED header
+    // verifies the signature but is SWAPPABLE to a victim kid with the signature still valid — binding
+    // an agent to it is exactly the impersonation this manifest check exists to stop. Refuse to bind an
+    // unauthenticated kid rather than attributing the receipt to whatever kid the unsigned bytes claim.
+    if (!r.kidAuthenticated) {
+      return { ok: false, kid: r.kid, receipt: null, reason: `the COSE kid is not in the signed (protected) header — attribution cannot be bound to an agent from an unauthenticated, swappable kid (H4)`, warnings: [] };
+    }
+    // C-02(c) SINK, CLOSED: `allowed.includes(kid)` dispatched through the writable
+    // `Array.prototype.includes`, and `c02_cose_includes.mjs` used it to bind bob's key to alice.
+    const allowed = mapGet(manifest, receipt.agent.id);
+    if (allowed === undefined || r.kid === null || !arrayIncludes(allowed, r.kid)) {
       return { ok: false, kid: r.kid, receipt: null, reason: `agent "${receipt.agent.id}" is not authorized for signing key "${r.kid}" (identity manifest)`, warnings: [] };
     }
     return { ok: true, kid: r.kid, receipt, warnings: [] };

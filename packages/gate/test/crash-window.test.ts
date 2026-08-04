@@ -9,22 +9,23 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { verifyArtifact, refHash } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
-import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
+import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
 
 function reservedGrant(fx: ReturnType<typeof setupGate>, chain: string): string {
-  const created = fx.engine.createHold(fx.agent, `idem-${chain}`, {
+  const created = fx.engine.createHold(fx.agent, `idem-${chain}`, body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain,
-  });
+  }));
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
   const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "APPROVE" });
-  const grantId = (fx.engine.decide(holdId, { receipt, decisionArtifact }).body as { grantId: string }).grantId;
-  assert.equal(fx.engine.reserve(grantId).status, 200);
+  const grantId = (fx.engine.decide(holdId, body({ receipt, decisionArtifact })).body as { grantId: string }).grantId;
+  assert.equal(fx.engine.reserve(grantId, fx.agent).status, 200);
   return grantId;
 }
 
@@ -32,13 +33,13 @@ test("UNKNOWN hint returns 202 and signs NOTHING synchronously (before the sweep
   const fx = setupGate({ approverRole: "approve-high", config: { uncertaintySweepWindowMs: 5 * 60_000 } });
   const grantId = reservedGrant(fx, "chain-unknown");
 
-  const hint = fx.engine.report(grantId, { result: "UNKNOWN" });
+  const hint = fx.engine.report(grantId, body({ result: "UNKNOWN" }), fx.agent);
   assert.equal(hint.status, 202);
   assert.equal((hint.body as { status: string }).status, "UNCERTAINTY_PENDING_GATE_CORROBORATION");
   // No signature yet — the window has not elapsed.
   assert.equal(fx.engine.getGrant(grantId)!.uncertainty, null);
   // The UNKNOWN hint is NOT terminal: a genuine later DISPATCHED still lands before the window.
-  const dispatched = fx.engine.report(grantId, { result: "DISPATCHED" });
+  const dispatched = fx.engine.report(grantId, body({ result: "DISPATCHED" }), fx.agent);
   assert.equal(dispatched.status, 200);
 });
 
@@ -59,12 +60,12 @@ test("stuck-RESERVED grant past the sweep window → gate-signed Uncertainty wit
   assert.equal(unc.uptimeResetAt, fx.trust.uptimeResetAt, "uptimeResetAt REQUIRED (G3)");
   assert.equal(unc.grantHash, refHash(rec.grant));
 
-  const check = verifyArtifact(unc as unknown as Record<string, unknown>, {
+  const check = verifyArtifact(b(unc as unknown as Record<string, unknown>), b({
     schemas,
     keyring: fx.trust.keyring,
     now: new Date(fx.trust.now()).toISOString(),
     refHashChecks: [{ path: "grantHash", rule: "side", artifact: rec.grant }],
-  });
+  }));
   assert.ok(check.ok, `uncertainty: ${check.reason}`);
 
   // idempotent — a second sweep signs nothing new.
@@ -74,7 +75,7 @@ test("stuck-RESERVED grant past the sweep window → gate-signed Uncertainty wit
 test("a genuine DISPATCHED before the window is NEVER displaced into an uncertainty", () => {
   const fx = setupGate({ approverRole: "approve-high", config: { uncertaintySweepWindowMs: 5 * 60_000 } });
   const grantId = reservedGrant(fx, "chain-genuine");
-  assert.equal(fx.engine.report(grantId, { result: "DISPATCHED" }).status, 200);
+  assert.equal(fx.engine.report(grantId, body({ result: "DISPATCHED" }), fx.agent).status, 200);
   fx.clock.advance(5 * 60_000 + 1);
   assert.equal(fx.engine.sweepUncertainty(), 0);
   assert.equal(fx.engine.getGrant(grantId)!.uncertainty, null);
@@ -82,16 +83,16 @@ test("a genuine DISPATCHED before the window is NEVER displaced into an uncertai
 
 test("F9: a wrapper crash mid-hold → CANCELLED_LOCAL_STATE_LOST + Hold Resolution; later approval does NOT execute", () => {
   const fx = setupGate({ approverRole: "approve-high" });
-  const created = fx.engine.createHold(fx.agent, "idem-cancel", {
+  const created = fx.engine.createHold(fx.agent, "idem-cancel", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-cancel",
-  });
+  }));
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
 
-  const cancelled = fx.engine.cancelLocalStateLost(holdId);
+  const cancelled = fx.engine.cancelLocalStateLost(holdId, fx.agent);
   assert.equal(cancelled.status, 200);
   assert.equal((cancelled.body as { status: string }).status, "CANCELLED_LOCAL_STATE_LOST");
   const res = fx.store.getHold(holdId)!.holdResolution!;
@@ -100,6 +101,6 @@ test("F9: a wrapper crash mid-hold → CANCELLED_LOCAL_STATE_LOST + Hold Resolut
 
   // a later-arriving approval does NOT execute.
   const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "APPROVE" });
-  const late = fx.engine.decide(holdId, { receipt, decisionArtifact });
+  const late = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   assert.equal(late.status, 409);
 });

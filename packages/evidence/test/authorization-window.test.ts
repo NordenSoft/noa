@@ -1,0 +1,143 @@
+/**
+ * DESIGN 2 — the delegation/manifest validity window, and the two verdict dimensions.
+ *
+ * THE PROBLEM. One word answered two questions that can legitimately disagree: "are these bytes
+ * intact" (permanent) and "is this authority valid" (a policy window that closes). Collapsed, an
+ * auditor reading a five-year-old bundle either sees INVALID for cryptographically perfect evidence
+ * — and learns to ignore the verdict — or sees VALID for a trust chain that expired years ago, and
+ * cannot tell whether acting on it is safe.
+ *
+ * THE RULE NOW. Both purposes require verifier-controlled `now` inside the root-signed delegation
+ * and the manifest's own reject-only window. A caller may use a trusted historical `now`, but the
+ * manifest's issuedAt and the dependent gate's receivedAt cannot supply it. Both purposes report
+ * `dimensions.integrity`, `dimensions.authorization`, and `policy.verifierVersion`.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
+import { b } from "./helpers/bytes.js";
+import { VERIFIER_POLICY_VERSION } from "../src/types.js";
+
+const HERE = dirname(fileURLToPath(import.meta.url));
+const CONF = join(HERE, "..", "..", "conformance");
+const schemas = loadSchemas();
+
+interface Fixture {
+  now: string;
+  maxAgeHours: number;
+  bundle: { keyDelegation: { validFrom: string; expiresAt: string } };
+  tenantRoot: Record<string, unknown>;
+  checkpointKeyring: Record<string, unknown>;
+}
+/**
+ * DENIED, deliberately. The envelope-expiry LIVENESS gate (step 1) is dropped only for the two
+ * terminal-negative outcomes, so this is the outcome whose bundle is designed to be audited long
+ * after the hold window closed — exactly the case where "the evidence is intact and the authority
+ * has since lapsed" has to be expressible. Using EXECUTED here would trip the liveness gate first
+ * and the test would prove nothing about authorization windows.
+ */
+const fx = JSON.parse(readFileSync(join(CONF, "valid", "denied.json"), "utf8")) as Fixture;
+
+/**
+ * `maxAgeMs` is widened for the after-the-window cases so exactly ONE variable moves. The step-16
+ * checkpoint-freshness rule is a different, independent rule with its own INCONCLUSIVE verdict, and
+ * at a `now` six days past the fixture's clock it would fire first and the test would prove nothing
+ * about authorization windows. Widening it here does not weaken anything: freshness has its own
+ * dedicated fixtures (`reject/step16-*`), and this file's subject is the authority window.
+ */
+function run(purpose: "audit" | "authorize" | undefined, now: string, maxAgeMs = fx.maxAgeHours * 60 * 60 * 1000) {
+  return verifyEvidence(b(fx.bundle), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
+    now,
+    maxAgeMs,
+    schemas,
+    ...(purpose ? { purpose } : {}),
+  });
+}
+const YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+
+/** A time comfortably after the delegation's window closes, but inside the checkpoint max-age. */
+const AFTER_DELEGATION = new Date(Date.parse(fx.bundle.keyDelegation.expiresAt) + 60_000).toISOString();
+
+test("the default purpose label remains audit", () => {
+  const r = run(undefined, fx.now);
+  assert.equal(r.verdict, "VALID_FULL_CHAIN");
+  assert.equal(r.policy.purpose, "audit", "the legacy default must not move silently");
+  assert.equal(r.policy.verifierVersion, VERIFIER_POLICY_VERSION);
+});
+
+test("audit cannot use signer-chosen manifest time to accept after delegated authority closes", () => {
+  // CONTROL, same run: the committed bundle verifies while verifier-owned time is inside the
+  // root-signed delegation window. The harness can therefore produce acceptance.
+  const control = run("audit", fx.now);
+  assert.equal(control.verdict, "VALID_FULL_CHAIN", control.reason ?? "");
+
+  // ATTACK: after expiry a compromised delegated key can create a new manifest and backdate its
+  // signed issuedAt into the old window. Those bytes are indistinguishable from genuine historical
+  // bytes without an independent time witness, so issuedAt may reject contradictions but cannot
+  // make an expired delegated signer acceptable.
+  const attack = run("audit", AFTER_DELEGATION, YEAR_MS);
+  assert.equal(attack.verdict, "INVALID", "signer-chosen issuedAt kept expired delegated authority acceptable");
+  assert.equal(attack.failedStep, "STEP_1_HOLD_ENVELOPE");
+  assert.equal(attack.code, "E_DELEGATION_CHAIN");
+  assert.match(attack.reason ?? "", /verifier.*now|trusted/i);
+});
+
+test("authorize refuses the same bundle, fail-closed, naming the window", () => {
+  const r = run("authorize", AFTER_DELEGATION, YEAR_MS);
+  assert.equal(r.verdict, "INVALID");
+  assert.equal(r.failedStep, "STEP_1_HOLD_ENVELOPE");
+  assert.equal(r.code, "E_AUTHORIZATION_WINDOW");
+  assert.match(r.reason ?? "", /keyDelegation window/);
+  assert.match(r.reason ?? "", /EXPIRED/);
+  assert.equal(r.dimensions.authorization, "EXPIRED_NOW");
+});
+
+test("authorize accepts the bundle while the window is open", () => {
+  const r = run("authorize", fx.now);
+  assert.equal(r.verdict, "VALID_FULL_CHAIN", r.reason ?? "");
+  assert.equal(r.dimensions.authorization, "VALID_NOW");
+  assert.equal(r.dimensions.integrity, "INTACT");
+  assert.equal(r.policy.purpose, "authorize");
+});
+
+test("a window that has not OPENED yet is refused for a current decision", () => {
+  const before = new Date(Date.parse(fx.bundle.keyDelegation.validFrom) - 60_000).toISOString();
+  const r = run("authorize", before, YEAR_MS);
+  assert.equal(r.verdict, "INVALID");
+  assert.equal(r.code, "E_AUTHORIZATION_WINDOW");
+  assert.equal(r.dimensions.authorization, "NOT_YET_VALID_NOW");
+});
+
+test("an expired delegated signer cannot retain an INTACT audit verdict without a time witness", () => {
+  const r = run("audit", AFTER_DELEGATION, YEAR_MS);
+  assert.equal(r.verdict, "INVALID");
+  assert.equal(r.dimensions.integrity, "BROKEN", "step 1 failed before chain/checkpoint integrity was proven");
+  assert.equal(r.dimensions.authorization, "EXPIRED_NOW");
+});
+
+test("a verdict is bound to the rule-set that produced it", () => {
+  for (const purpose of ["audit", "authorize"] as const) {
+    const r = run(purpose, fx.now);
+    assert.equal(r.policy.verifierVersion, VERIFIER_POLICY_VERSION);
+    assert.equal(r.policy.purpose, purpose);
+  }
+});
+
+test("integrity is never claimed INTACT for a bundle that failed before it was proven", () => {
+  const broken = structuredClone(fx.bundle) as unknown as Record<string, unknown>;
+  (broken as { outcome: string }).outcome = "EXECUTED"; // artifacts no longer match the outcome's union
+  const r = verifyEvidence(b(broken), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
+    now: fx.now,
+    maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
+    schemas,
+  });
+  assert.equal(r.verdict, "INVALID");
+  assert.equal(r.dimensions.integrity, "BROKEN", "unproven must never be reported as intact");
+});

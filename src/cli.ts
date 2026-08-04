@@ -52,12 +52,23 @@ function usage(msg?: string): never {
   if (msg) process.stderr.write(`error: ${msg}\n`);
   process.stderr.write(
     "usage: noa verify <receipts.json> [--keyring <keyring.json>] [--checkpoint <checkpoint.json>] " +
-      "[--identity <manifest.json>] [--anchors <anchors.json> --trust-set <trust.json> [--max-anchor-age-ms <n>]]\n",
+      "[--identity <manifest.json>] [--anchors <anchors.json> --trust-set <trust.json> [--max-anchor-age-ms <n>]]\n" +
+      "       noa --serve [--frame-timeout-ms <n>]   (PROTOCOL REHEARSAL, ADR-0002 Stage 0.5 — NOT a security\n" +
+      "                                               boundary, NOT the isolated kernel; docs/kernel-wire-protocol.md)\n",
   );
   process.exit(EXIT.USAGE);
 }
 
-function readJsonFile(path: string): unknown {
+/**
+ * Read a document's TEXT and hand it to the kernel unparsed.
+ *
+ * It used to `safeParse` here and pass the resulting object into `verifyChain`. That made the CLI
+ * the odd one out among five implementations: `impl-go`, `impl-rust`, `impl-csharp` and the
+ * `impl-py` CLI each read file bytes and let their own strict parser own the parse. Now this one
+ * does too — the parse happens exactly once, inside the boundary, in the module that is normative
+ * for it. The size cap stays here because it is a property of reading a FILE, not of the document.
+ */
+function readDocumentText(path: string): string {
   const flags = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
   let fd: number;
   try {
@@ -94,7 +105,7 @@ function readJsonFile(path: string): unknown {
   } finally {
     closeSync(fd);
   }
-  return safeParse(text, { maxLength: MAX_FILE_BYTES });
+  return text;
 }
 
 /** Map a receipt-chain verdict to its exit code (shared by the default and witness paths). */
@@ -171,17 +182,17 @@ function main(argv: string[]): number {
     usage("--max-anchor-age-ms requires --anchors and --trust-set");
   }
 
-  let receipts: unknown;
+  let receipts: string;
   const opts: VerifyOptions = {};
-  let anchors: unknown;
-  let trustSet: unknown;
+  let anchors: string | undefined;
+  let trustSet: string | undefined;
   try {
-    receipts = readJsonFile(receiptsPath);
-    if (keyringPath) opts.keyring = readJsonFile(keyringPath) as Keyring;
-    if (checkpointPath) opts.checkpoint = readJsonFile(checkpointPath) as Checkpoint;
-    if (identityPath) opts.identityManifest = readJsonFile(identityPath) as IdentityManifest;
-    if (anchorsPath) anchors = readJsonFile(anchorsPath);
-    if (trustSetPath) trustSet = readJsonFile(trustSetPath);
+    receipts = readDocumentText(receiptsPath);
+    if (keyringPath) opts.keyring = readDocumentText(keyringPath);
+    if (checkpointPath) opts.checkpoint = readDocumentText(checkpointPath);
+    if (identityPath) opts.identityManifest = readDocumentText(identityPath);
+    if (anchorsPath) anchors = readDocumentText(anchorsPath);
+    if (trustSetPath) trustSet = readDocumentText(trustSetPath);
   } catch (e) {
     process.stderr.write(`error: ${(e as Error).message}\n`);
     return EXIT.MALFORMED;
@@ -189,14 +200,14 @@ function main(argv: string[]): number {
 
   if (witnessMode) {
     const wopts: WitnessedOptions = {
-      anchors: anchors as Anchor[],
-      trustSet: trustSet as TrustSet,
+      anchors: anchors as string,
+      trustSet: trustSet as string,
     };
     if (opts.checkpoint !== undefined) wopts.checkpoint = opts.checkpoint;
     if (opts.identityManifest !== undefined) wopts.identityManifest = opts.identityManifest;
     if (maxAnchorAgeMs !== undefined) wopts.freshness = { now: Date.now(), maxAgeMs: maxAnchorAgeMs };
 
-    const result = verifyChainWitnessed(receipts as readonly unknown[], opts.keyring, wopts);
+    const result = verifyChainWitnessed(receipts, opts.keyring, wopts);
     process.stdout.write(JSON.stringify(result, null, 2) + "\n");
 
     const chainExit = statusToExit(result.chain.status);
@@ -214,4 +225,12 @@ function main(argv: string[]): number {
   return statusToExit(result.status);
 }
 
+// `--serve` — Stage 0.5 PROTOCOL REHEARSAL (docs/kernel-wire-protocol.md): length-framed requests
+// on stdin, length-framed signed responses on stdout, long-lived. NOT a security boundary and NOT
+// the isolated Go kernel — same-realm TypeScript behind a process boundary is still poisonable
+// inside the process. Dynamic import so the one-shot path evaluates exactly the modules it always did.
+if (process.argv[2] === "--serve") {
+  const { runServe } = await import("./serve.js");
+  process.exit(await runServe(process.argv.slice(3)));
+}
 process.exit(main(process.argv));

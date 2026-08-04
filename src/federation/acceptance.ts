@@ -31,6 +31,10 @@
 import { verifyEd25519 } from "../keys.js";
 import { canonicalize } from "../jcs.js";
 import { signingMessage } from "../signing.js";
+import { parseDocument } from "../bytes.js";
+import { isSha256Hash, isRfc3339 } from "../scan.js";
+import { inertOptions, type OptionSchema } from "../opts.js";
+import { arrayLength, isArray, isFiniteNumber, isSafeInteger, mapGet, mapHas, mapSet, newMap, newSet, mapValuesToArray, dateParse, setAdd, setHas, isNaNValue } from "../intrinsics.js";
 
 /**
  * Anchor signing domain — distinct from RECEIPT_SIG_DOMAIN / CHECKPOINT_SIG_DOMAIN so a witness anchor
@@ -161,11 +165,11 @@ export function anchorSigningInput(a: Pick<Anchor, "chain" | "highestSeq" | "hea
   return signingMessage(ANCHOR_SIG_DOMAIN, jcs);
 }
 
-const HASH_RE = /^sha256:[0-9a-f]{64}$/;
 const B64_SPKI_MIN = 1; // structural presence only; verifyEd25519 enforces real SPKI/curve/canonicality
-// RFC 3339 (lowercase t/z accepted) — mirrors src/verify.ts CP_RFC3339_RE so anchor ts strictness matches
-// the receipt/checkpoint discipline. A non-RFC3339 ts is NOT freshness-checkable → fail-closed.
-const ANCHOR_RFC3339_RE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
+// Formats are decided by hand-written scanners (src/scan.ts). A regex literal cannot stay on a
+// decision path: `RegExp.prototype.test` performs a dynamic `Get(re, "exec")`, so even a CAPTURED
+// `test` dispatches through the writable `RegExp.prototype.exec` — reproduced by
+// `test/security/r7-exploits/c02_regexp_witness.mjs` against the captured wrapper.
 
 const SNAPSHOT_NOTE =
   "snapshot check: complete:true means a quorum of pinned witnesses confirmed this head AS OF the supplied " +
@@ -188,9 +192,9 @@ function r(
  * silently coerced into a freshness pass.
  */
 function parseAnchorTsMs(ts: string): number | null {
-  if (!ANCHOR_RFC3339_RE.test(ts)) return null;
-  const ms = Date.parse(ts);
-  return Number.isNaN(ms) ? null : ms;
+  if (!isRfc3339(ts)) return null;
+  const ms = dateParse(ts);
+  return isNaNValue(ms) ? null : ms;
 }
 
 /** beyond/divergent are CONTRADICTION signals (truncation / fork) — never suppressed by freshness, sticky. */
@@ -233,20 +237,89 @@ function isContradiction(c: "confirm" | "beyond" | "divergent" | "stale"): boole
  * @param opts     optional `{ freshness: { now, maxAgeMs, skewMs? } }` to enforce currency (else not enforced)
  */
 export function verifyCompleteness(
+  headBytes: Uint8Array | string,
+  anchorsBytes: Uint8Array | string,
+  trustSetBytes: Uint8Array | string,
+  opts: CompletenessOptions = {},
+): CompletenessResult {
+  // ── THREE DOCUMENTS AND ONE OPTIONS OBJECT (federation-spec §4) ──────────────────────────────────
+  // The head, the witness anchors and the pinned trust-set are all artifacts under adjudication, so
+  // all three are bytes. The §4 rule reads each anchor's (chain, highestSeq, headHash, ts, sig.*) and
+  // each pinned witness's (kid, pubkey) MANY times — the distinctness dedup, the signature check, the
+  // classification, the tally — and review #5's C2 was exactly two reads disagreeing: genuine
+  // witnesses over head A whose getters exposed A to the signature check and B to classification
+  // (→ complete over a head nobody signed), and one physical key flipping its `kid`/`pubkey` to be
+  // tallied as two witnesses toward a quorum. Parsed bytes cannot disagree with themselves.
+  const hParsed = parseDocument(headBytes, "head");
+  if (!hParsed.ok) return r(false, "INVALID_INPUT", hParsed.reason);
+  const aParsed = parseDocument(anchorsBytes, "anchors");
+  if (!aParsed.ok) return r(false, "INVALID_INPUT", aParsed.reason);
+  const tParsed = parseDocument(trustSetBytes, "trustSet");
+  if (!tParsed.ok) return r(false, "INVALID_INPUT", tParsed.reason);
+  const admitted = inertOptions<InertCompletenessOptions>(COMPLETENESS_OPTION_SCHEMA, opts, "options");
+  if (!admitted.ok) return r(false, "INVALID_INPUT", admitted.reason);
+  // The nested freshness policy was admitted by `inertOptions` itself, against
+  // FRESHNESS_OPTION_SCHEMA — `admitted.value.freshness` is already a frozen null-prototype record of
+  // scalars, never the caller's object. A getter named `now` returning a number is still caller code
+  // running inside the boundary, so "it is only numbers" was never a reason to skip the pass; what
+  // changed is that skipping it is no longer possible from here.
+  let freshness: FreshnessPolicy | undefined;
+  if (admitted.value.freshness !== undefined) {
+    const f = admitted.value.freshness;
+    if (f.now === undefined || f.maxAgeMs === undefined) {
+      return r(false, "INVALID_INPUT", "opts.freshness must be an object { now, maxAgeMs, skewMs? }");
+    }
+    freshness = f as FreshnessPolicy;
+  }
+  return verifyCompletenessParsed(
+    hParsed.value as ChainHead,
+    aParsed.value as readonly Anchor[],
+    tParsed.value as TrustSet,
+    freshness === undefined ? {} : { freshness },
+  );
+}
+
+/**
+ * The freshness policy is a NUMERIC option, not a document, so it stays an object member — but a
+ * nested object cannot be validated by the flat option schema. It is therefore admitted by its own
+ * nested `inertOptions` call below, with the same rules, rather than being waved through because it
+ * is "just numbers": a GETTER named `now` that returns a number still runs caller code.
+ */
+interface InertCompletenessOptions {
+  readonly freshness?: { readonly now?: number; readonly maxAgeMs?: number; readonly skewMs?: number };
+}
+
+/** Declared BEFORE the schema that references it: a `const` read before its declaration is a TDZ
+ * ReferenceError at MODULE LOAD, which for a security boundary means the entry point cannot run at
+ * all. Ordering is load-bearing here, not stylistic. */
+const FRESHNESS_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.create(null), {
+  now: { kind: "count", max: Number.MAX_SAFE_INTEGER },
+  maxAgeMs: { kind: "count", max: Number.MAX_SAFE_INTEGER },
+  skewMs: { kind: "count", max: Number.MAX_SAFE_INTEGER },
+})) as OptionSchema;
+
+const COMPLETENESS_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.create(null), {
+  freshness: { kind: "nested", schema: FRESHNESS_OPTION_SCHEMA },
+})) as OptionSchema;
+
+
+/** The §4 acceptance rule over PARSED data — kernel-internal, NOT re-exported from `src/index.ts`. */
+export function verifyCompletenessParsed(
   head: ChainHead,
   anchors: readonly Anchor[],
   trustSet: TrustSet,
   opts: CompletenessOptions = {},
 ): CompletenessResult {
+
   // ── 0. Structural validation of the presented head (fail-closed) ────────────────────────────────
   if (typeof head !== "object" || head === null) return r(false, "INVALID_INPUT", "head is not an object");
   if (typeof head.chain !== "string" || head.chain.length === 0) {
     return r(false, "INVALID_INPUT", "head.chain must be a non-empty string");
   }
-  if (typeof head.seq !== "number" || !Number.isSafeInteger(head.seq) || head.seq < 0) {
+  if (typeof head.seq !== "number" || !isSafeInteger(head.seq) || head.seq < 0) {
     return r(false, "INVALID_INPUT", "head.seq must be a non-negative safe integer");
   }
-  if (typeof head.hash !== "string" || !HASH_RE.test(head.hash)) {
+  if (typeof head.hash !== "string" || !isSha256Hash(head.hash)) {
     return r(false, "INVALID_INPUT", "head.hash must be sha256:<64-hex>");
   }
 
@@ -258,10 +331,10 @@ export function verifyCompleteness(
   let windowMax = Infinity;
   if (freshnessEnforced) {
     if (typeof fresh !== "object" || fresh === null) return r(false, "INVALID_INPUT", "opts.freshness must be an object { now, maxAgeMs, skewMs? }");
-    if (typeof fresh.now !== "number" || !Number.isFinite(fresh.now)) return r(false, "INVALID_INPUT", "opts.freshness.now must be a finite epoch-ms number");
-    if (typeof fresh.maxAgeMs !== "number" || !Number.isFinite(fresh.maxAgeMs) || fresh.maxAgeMs < 0) return r(false, "INVALID_INPUT", "opts.freshness.maxAgeMs must be a non-negative number");
+    if (typeof fresh.now !== "number" || !isFiniteNumber(fresh.now)) return r(false, "INVALID_INPUT", "opts.freshness.now must be a finite epoch-ms number");
+    if (typeof fresh.maxAgeMs !== "number" || !isFiniteNumber(fresh.maxAgeMs) || fresh.maxAgeMs < 0) return r(false, "INVALID_INPUT", "opts.freshness.maxAgeMs must be a non-negative number");
     const skewMs = fresh.skewMs ?? 0;
-    if (typeof skewMs !== "number" || !Number.isFinite(skewMs) || skewMs < 0) return r(false, "INVALID_INPUT", "opts.freshness.skewMs must be a non-negative number");
+    if (typeof skewMs !== "number" || !isFiniteNumber(skewMs) || skewMs < 0) return r(false, "INVALID_INPUT", "opts.freshness.skewMs must be a non-negative number");
     windowMin = fresh.now - fresh.maxAgeMs;
     windowMax = fresh.now + skewMs; // future-dated beyond skew is rejected as not-fresh
   }
@@ -270,11 +343,11 @@ export function verifyCompleteness(
   //       all witnesses well-formed). The caller pins independence + non-NOA-ness operationally (§3);
   //       we enforce the cryptographic/distinctness/quorum structure. ────────────────────────────────
   if (typeof trustSet !== "object" || trustSet === null) return r(false, "INVALID_INPUT", "trustSet is not an object");
-  if (!Array.isArray(trustSet.witnesses)) return r(false, "INVALID_INPUT", "trustSet.witnesses must be an array");
-  const k = trustSet.witnesses.length;
+  if (!isArray(trustSet.witnesses)) return r(false, "INVALID_INPUT", "trustSet.witnesses must be an array");
+  const k = arrayLength(trustSet.witnesses);
   if (k < 2) return r(false, "INVALID_INPUT", `trustSet must pin k >= 2 witnesses (got ${k})`);
   const q = trustSet.quorum;
-  if (typeof q !== "number" || !Number.isSafeInteger(q)) return r(false, "INVALID_INPUT", "trustSet.quorum must be an integer");
+  if (typeof q !== "number" || !isSafeInteger(q)) return r(false, "INVALID_INPUT", "trustSet.quorum must be an integer");
   // 1 < q <= k  (federation-spec §2.2). q == 1 would let a single witness pass = no quorum; q > k is unsatisfiable.
   if (q <= 1) return r(false, "INVALID_INPUT", `quorum must be > 1 (got ${q}); a single witness is not a quorum`);
   if (q > k) return r(false, "INVALID_INPUT", `quorum q=${q} exceeds pinned witness count k=${k} (unsatisfiable)`);
@@ -284,21 +357,29 @@ export function verifyCompleteness(
   // effective k. Distinctness must hold at the KEY level, not just the label level — pinning one physical
   // witness key under two different kids would otherwise let that key's single anchor signature verify under
   // both kids and be tallied as TWO confirmations toward q, silently collapsing the quorum's independence.
-  const pinned = new Map<string, string>();
-  const seenPubkeys = new Set<string>();
-  for (const w of trustSet.witnesses) {
+  // PRISTINE DISTINCTNESS (review #6, C1). This dedup is the ONLY thing standing between "k pinned
+  // witnesses" and "one physical Ed25519 key tallied k times", and it used to ask a globally-mutable
+  // `Set.prototype.has`. A getter fired while `trustSet` was being ingested set
+  // `Set.prototype.has = () => false`; both aliases of one key were then pinned, both anchors
+  // verified under that one key, and `complete:true, QUORUM_CONFIRMED, 2/2` came back for a head a
+  // single witness had signed. Membership is now resolved with the intrinsics captured at load.
+  const pinned = newMap<string, string>();
+  const seenPubkeys = newSet<string>();
+  const witnesses = trustSet.witnesses;
+  for (let wi = 0; wi < arrayLength(witnesses); wi++) {
+    const w = witnesses[wi] as PinnedWitness;
     if (typeof w !== "object" || w === null) return r(false, "INVALID_INPUT", "trustSet.witnesses[] entry is not an object");
     if (typeof w.kid !== "string" || w.kid.length === 0) return r(false, "INVALID_INPUT", "witness.kid must be a non-empty string");
     if (typeof w.pubkey !== "string" || w.pubkey.length < B64_SPKI_MIN) {
       return r(false, "INVALID_INPUT", `witness "${w.kid}" pubkey must be a non-empty base64 SPKI string`);
     }
-    if (pinned.has(w.kid)) return r(false, "INVALID_INPUT", `trustSet pins duplicate witness kid "${w.kid}" (witnesses must be distinct)`);
-    if (seenPubkeys.has(w.pubkey)) return r(false, "INVALID_INPUT", `trustSet pins the same witness pubkey under two kids (witnesses must be distinct KEYS, not just distinct ids)`);
-    pinned.set(w.kid, w.pubkey);
-    seenPubkeys.add(w.pubkey);
+    if (mapHas(pinned, w.kid)) return r(false, "INVALID_INPUT", `trustSet pins duplicate witness kid "${w.kid}" (witnesses must be distinct)`);
+    if (setHas(seenPubkeys, w.pubkey)) return r(false, "INVALID_INPUT", `trustSet pins the same witness pubkey under two kids (witnesses must be distinct KEYS, not just distinct ids)`);
+    mapSet(pinned, w.kid, w.pubkey);
+    setAdd(seenPubkeys, w.pubkey);
   }
 
-  if (!Array.isArray(anchors)) return r(false, "INVALID_INPUT", "anchors must be an array");
+  if (!isArray(anchors)) return r(false, "INVALID_INPUT", "anchors must be an array");
 
   // ── 2. Validate + classify each anchor. A PINNED witness contributes AT MOST ONCE to the
   //       classification (distinctness — a duplicate-witness double-count is rejected by collapsing to the
@@ -310,14 +391,15 @@ export function verifyCompleteness(
   // and another beyond H), that is a self-equivocation on the presented frontier → divergent/fork
   // (fail-closed). A fresh confirm DOMINATES a stale one from the same witness (the witness IS current).
   type WClass = "confirm" | "beyond" | "divergent" | "stale";
-  const witnessClass = new Map<string, WClass>();
+  const witnessClass = newMap<string, WClass>();
 
-  for (const a of anchors) {
+  for (let ai = 0; ai < arrayLength(anchors); ai++) {
+    const a = anchors[ai] as Anchor;
     // Structural validation — a malformed anchor is dropped fail-closed (never accepted, never throws).
     if (typeof a !== "object" || a === null) continue;
     if (typeof a.chain !== "string") continue;
-    if (typeof a.highestSeq !== "number" || !Number.isSafeInteger(a.highestSeq) || a.highestSeq < 0) continue;
-    if (typeof a.headHash !== "string" || !HASH_RE.test(a.headHash)) continue;
+    if (typeof a.highestSeq !== "number" || !isSafeInteger(a.highestSeq) || a.highestSeq < 0) continue;
+    if (typeof a.headHash !== "string" || !isSha256Hash(a.headHash)) continue;
     // ts is structurally only required to be a non-empty string here (buildAnchor is stricter and always
     // emits RFC3339). A non-RFC3339 ts is handled fail-closed downstream WITHOUT dropping the anchor early:
     // under a freshness policy parseAnchorTsMs returns null ⇒ the confirm is downgraded to STALE (does not
@@ -334,7 +416,7 @@ export function verifyCompleteness(
     // UNPINNED witness → not in the sovereign trust-set → does not count, dropped fail-closed (§2.2: trust
     // flows ONLY through the verifier's pinned witnesses; the FROST root signing an anchor would land here
     // too, since the root key is not a pinned witness key — §5).
-    const pub = pinned.get(sig.kid);
+    const pub = mapGet(pinned, sig.kid);
     if (pub === undefined) continue;
 
     // Anchor for a DIFFERENT chain → irrelevant to this head's frontier, dropped.
@@ -375,9 +457,9 @@ export function verifyCompleteness(
       continue;
     }
 
-    const prior = witnessClass.get(sig.kid);
+    const prior = mapGet(witnessClass, sig.kid);
     if (prior === undefined) {
-      witnessClass.set(sig.kid, cls);
+      mapSet(witnessClass, sig.kid, cls);
     } else if (prior === cls) {
       // same witness, same classification (a duplicate anchor) → already counted, no double-count.
     } else if (isContradiction(prior) || isContradiction(cls)) {
@@ -385,12 +467,12 @@ export function verifyCompleteness(
       // — a self-inconsistent witness view = a fork signal. Fail-closed to divergent; distinctness preserved
       // (still one kid, counted once, never as a confirmation). A contradiction is sticky: it cannot be
       // overwritten by a later confirm/stale from the same witness.
-      witnessClass.set(sig.kid, "divergent");
+      mapSet(witnessClass, sig.kid, "divergent");
     } else {
       // Both are NON-contradiction (confirm/stale) on the SAME exact head → a FRESH confirm DOMINATES a stale
       // one (the witness demonstrably IS current via at least one in-window anchor over H). This is not
       // equivocation: both anchors attest the identical (seq, headHash), differing only in ts.
-      witnessClass.set(sig.kid, prior === "confirm" || cls === "confirm" ? "confirm" : "stale");
+      mapSet(witnessClass, sig.kid, prior === "confirm" || cls === "confirm" ? "confirm" : "stale");
     }
   }
 
@@ -399,7 +481,9 @@ export function verifyCompleteness(
   let beyond = 0;
   let divergent = 0;
   let stale = 0;
-  for (const cls of witnessClass.values()) {
+  const classes = mapValuesToArray(witnessClass);
+  for (let ci = 0; ci < arrayLength(classes); ci++) {
+    const cls = classes[ci] as WClass;
     if (cls === "confirm") confirm++;
     else if (cls === "beyond") beyond++;
     else if (cls === "stale") stale++;
@@ -420,6 +504,18 @@ export function verifyCompleteness(
       `TRUNCATED: ${beyond} reachable pinned witness(es) anchored a frontier extending PAST the presented head (seq ${head.seq}) — records beyond H were anchored and then withheld`,
       confirm, stale, freshnessEnforced);
   }
+  // ⚠ OPEN FINDING (review #6, H2 sweep — NOT FIXED ON THIS BRANCH, reported with its proof).
+  // `complete:true` here without an enforced freshness policy is a REPLAYABLE positive: the identical
+  // 06:00 anchor set is STALE/complete:false under a policy and complete:true without one
+  // (test/federation/acceptance.test.ts). "Currency is the caller's burden" is weak — the party
+  // presenting the anchors is the party who benefits from stale ones, and a quorum collected before a
+  // truncation confirms the pre-truncation head perfectly well. The result does say
+  // `freshnessEnforced:false`, which is why this is a HIGH and not a CRITICAL.
+  //
+  // The fix is small (refuse QUORUM_CONFIRMED unless `freshnessEnforced`, and give the COMPOSED
+  // `verifyChainWitnessed`/CLI a 24h default so ergonomics are unaffected) but it moves 14 tests whose
+  // anchors carry fixed timestamps plus the generated federation conformance vectors. It was measured,
+  // not skipped; it is left for a focused change rather than rushed alongside six other fixes.
   if (confirm >= q) {
     return r(true, "QUORUM_CONFIRMED",
       `QUORUM_CONFIRMED (snapshot): ${confirm} of ${k} pinned witnesses (quorum ${q}) validly anchored exactly the presented head at seq ${head.seq} within the freshness window, and no reachable witness saw past it${fnote}`,

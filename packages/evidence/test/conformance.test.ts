@@ -8,7 +8,7 @@
  *     wrong-layer catch (an earlier accidental step) is a conformance FAILURE, not a pass: that is
  *     the anti-cheat property the task requires.
  * Plus a coverage assertion: every one of the 8 outcomes has a VALID fixture, and every one of the
- * 19 named steps has ≥1 targeted rejection fixture.
+ * 20 named steps has ≥1 targeted rejection fixture.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -16,6 +16,7 @@ import { readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
+import { b } from "./helpers/bytes.js";
 import type { EvidenceOutcome, StepName } from "../src/types.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -50,9 +51,9 @@ for (const slug of readdirSync(CONF)) {
 }
 
 function run(fx: Fixture) {
-  return verifyEvidence(fx.bundle, {
-    tenantRoot: fx.tenantRoot as never,
-    checkpointKeyring: fx.checkpointKeyring as never,
+  return verifyEvidence(b(fx.bundle), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
     now: fx.now,
     maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
     schemas,
@@ -85,7 +86,7 @@ test("every named step has ≥1 targeted rejection fixture", () => {
     "STEP_8_EXPIRED", "STEP_9_CANCELLED", "STEP_10_EXECUTED", "STEP_11_EXECUTION_FAILED",
     "STEP_12_UNKNOWN_AFTER_DISPATCH", "STEP_13_GRANT_EXPIRED", "STEP_14_APPROVED_NO_EXECUTION_EVIDENCE",
     "STEP_15_NEGATIVE_OUTCOME_PRINCIPLE", "STEP_16_CHECKPOINT_FRESHNESS", "STEP_17_CHECKPOINT_RECONCILE",
-    "STEP_18_TEMPORAL_AUTHORIZATION",
+    "STEP_18_TEMPORAL_AUTHORIZATION", "STEP_19_RECEIPT_ROLE_INTEGRITY",
   ];
   const rejectSteps = new Set(
     fixtures.filter((f) => f.fx.expectVerdict !== "VALID_FULL_CHAIN" && f.fx.expectVerdict !== "VALID_SEGMENT_ONLY").map((f) => f.fx.expectStep),

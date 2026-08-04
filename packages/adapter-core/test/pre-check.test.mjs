@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, verifyChain } from "noa-receipt";
+import { b } from "./helpers/bytes.mjs";
 import { preCheck } from "../src/pre-check.mjs";
 import { createChainSessionStore, preCheckSession, prepareSessionReceipt, commitSessionReceipt, adoptApprovedReceipt } from "../src/session-store.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
@@ -18,8 +19,10 @@ test("preCheck: small refund → ALLOW, chain verifies", () => {
     { signer, policy: REFUND_GUARD_POLICY, prev: null, seq: 0 },
   );
   assert.equal(r.decision, "ALLOW");
-  assert.equal(r.receipt.governance.verdict, "EXECUTED");
-  const v = verifyChain([r.receipt], { keyring });
+  // A pre-execution decision receipt records ALLOWED, not EXECUTED: preCheck decides, it does
+  // not observe. The terminal EXECUTED/FAILED receipt is a separate post-attempt artifact.
+  assert.equal(r.receipt.governance.verdict, "ALLOWED");
+  const v = verifyChain(b([r.receipt]), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
 });
 
@@ -71,7 +74,7 @@ test("preCheck: builds a 4-call chain identical in shape to the original preflig
     decisions.push(r.decision);
   }
   assert.deepEqual(decisions, ["ALLOW", "DENY", "DENY", "DENY"]);
-  const v = verifyChain(chain, { keyring });
+  const v = verifyChain(b(chain), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
   assert.equal(v.count, 4);
 });
@@ -418,8 +421,8 @@ test("createChainSessionStore: two DIFFERENT tenants sharing the exact SAME sess
   assert.equal(tenantACall2.receipt.chain.prevHash, tenantACall1.receipt.chain.hash);
   assert.notEqual(tenantACall1.receipt.scope.chain, tenantBCall1.receipt.scope.chain, "two tenants sharing a sessionId must never share a scope.chain id");
 
-  const vA = verifyChain([tenantACall1.receipt, tenantACall2.receipt], { keyring });
-  const vB = verifyChain([tenantBCall1.receipt], { keyring });
+  const vA = verifyChain(b([tenantACall1.receipt, tenantACall2.receipt]), { keyring: b(keyring) });
+  const vB = verifyChain(b([tenantBCall1.receipt]), { keyring: b(keyring) });
   assert.equal(vA.status, "VALID");
   assert.equal(vB.status, "VALID");
   assert.equal(store.size, 2, "the same sessionId under two different tenants must occupy two SEPARATE store slots");
@@ -458,8 +461,8 @@ test("createChainSessionStore: two sessions get independent {prev,seq} — no cr
   assert.equal(a2.receipt.chain.prevHash, a1.receipt.chain.hash);
   assert.notEqual(a1.receipt.scope.chain, b1.receipt.scope.chain, "sessions must not share a scope.chain id");
 
-  const vA = verifyChain([a1.receipt, a2.receipt], { keyring });
-  const vB = verifyChain([b1.receipt], { keyring });
+  const vA = verifyChain(b([a1.receipt, a2.receipt]), { keyring: b(keyring) });
+  const vB = verifyChain(b([b1.receipt]), { keyring: b(keyring) });
   assert.equal(vA.status, "VALID");
   assert.equal(vB.status, "VALID");
   assert.equal(store.size, 2);
@@ -587,7 +590,7 @@ test("prepareSessionReceipt/commitSessionReceipt: a cap eviction emptying an act
   assert.equal(c1.receipt.chain.seq, 0);
   assert.equal(c2.receipt.chain.seq, 1, "S2's chain advances 0 -> 1 across calls — continuity preserved");
 
-  const v = verifyChain([c1.receipt, c2.receipt], { keyring });
+  const v = verifyChain(b([c1.receipt, c2.receipt]), { keyring: b(keyring) });
   assert.equal(v.status, "VALID", "S2's two-receipt chain verifies VALID end-to-end");
   store.dispose();
 });
@@ -615,8 +618,8 @@ test("prepareSessionReceipt/commitSessionReceipt: idle-TTL eviction of a still-a
   assert.equal(r1.chain.seq, 0);
   assert.equal(r2.chain.seq, 0, "the new segment legitimately starts its own chain at seq 0");
 
-  const vPre = verifyChain([r1], { keyring });
-  const vPost = verifyChain([r2], { keyring });
+  const vPre = verifyChain(b([r1]), { keyring: b(keyring) });
+  const vPost = verifyChain(b([r2]), { keyring: b(keyring) });
   assert.equal(vPre.status, "VALID", "pre-eviction segment verifies VALID on its own");
   assert.equal(vPost.status, "VALID", "post-eviction (resumed) segment ALSO verifies VALID — no fabricated 'duplicate seq 0'");
   store.dispose();
@@ -644,8 +647,8 @@ test("prepareSessionReceipt/commitSessionReceipt: max-sessions cap eviction of a
   assert.notEqual(a4.scope.chain, a1.scope.chain, "the post-eviction (resumed) receipt opens a NEW chain id");
 
   const preEviction = [a1, a2, a3];
-  const vPre = verifyChain(preEviction, { keyring });
-  const vPost = verifyChain([a4], { keyring });
+  const vPre = verifyChain(b(preEviction), { keyring: b(keyring) });
+  const vPost = verifyChain(b([a4]), { keyring: b(keyring) });
   assert.equal(vPre.status, "VALID", "pre-eviction 3-receipt segment verifies VALID");
   assert.equal(vPost.status, "VALID", "post-eviction (resumed) segment ALSO verifies VALID — cap-eviction of an active session no longer corrupts its chain");
 });
@@ -699,7 +702,7 @@ test("prepareSessionReceipt/commitSessionReceipt: evict -> resume -> clean end()
     `every eviction/end/reconnect cycle must mint a DISTINCT chain-id — got ${new Set(chainIds).size} distinct of ${chainIds.length} segments: ${JSON.stringify(chainIds)}`,
   );
   for (const segReceipts of segments) {
-    const v = verifyChain(segReceipts, { keyring });
+    const v = verifyChain(b(segReceipts), { keyring: b(keyring) });
     assert.equal(v.status, "VALID", `every segment must independently verify VALID, got ${v.status} for ${segReceipts[0].scope.chain}`);
   }
   store.dispose();
@@ -741,9 +744,9 @@ test("prepareSessionReceipt: a literal sessionId crafted to look exactly like an
   );
   assert.notEqual(literalReceipt.scope.chain, fooFirst.scope.chain);
 
-  assert.equal(verifyChain([fooFirst], { keyring }).status, "VALID");
-  assert.equal(verifyChain([fooResumed], { keyring }).status, "VALID");
-  assert.equal(verifyChain([literalReceipt], { keyring }).status, "VALID");
+  assert.equal(verifyChain(b([fooFirst]), { keyring: b(keyring) }).status, "VALID");
+  assert.equal(verifyChain(b([fooResumed]), { keyring: b(keyring) }).status, "VALID");
+  assert.equal(verifyChain(b([literalReceipt]), { keyring: b(keyring) }).status, "VALID");
   store.dispose();
 });
 
@@ -781,8 +784,8 @@ test("prepareSessionReceipt: two SEPARATE store instances (simulating two proces
 
   // Each segment must still independently verify VALID on its own — the fix is about NOT
   // colliding, not about breaking either segment's own internal validity.
-  const vRun1 = verifyChain([run1First], { keyring });
-  const vRun2 = verifyChain([run2First], { keyring });
+  const vRun1 = verifyChain(b([run1First]), { keyring: b(keyring) });
+  const vRun2 = verifyChain(b([run2First]), { keyring: b(keyring) });
   assert.equal(vRun1.status, "VALID");
   assert.equal(vRun2.status, "VALID");
 
@@ -806,7 +809,7 @@ test("prepareSessionReceipt/commitSessionReceipt: a session that is NEVER evicte
   }
   const chainIds = new Set(chain.map((r) => r.scope.chain));
   assert.equal(chainIds.size, 1, "a never-evicted session must stay on exactly one chain-id across all its calls");
-  const v = verifyChain(chain, { keyring });
+  const v = verifyChain(b(chain), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
   assert.equal(v.count, 4);
   store.dispose();
@@ -816,13 +819,13 @@ test("preCheck: approvalRules omitted -> behavior byte-identical to before (back
   const { signer, keyring } = signerAndKeyring("test-key-r4-noop");
   const withoutOpt = preCheck({ name: "payment.refund", args: { amountMinor: 4200 } }, { signer, policy: REFUND_GUARD_POLICY });
   assert.equal(withoutOpt.decision, "ALLOW");
-  assert.equal(withoutOpt.receipt.governance.verdict, "EXECUTED");
+  assert.equal(withoutOpt.receipt.governance.verdict, "ALLOWED");
   const withEmptyArray = preCheck(
     { name: "payment.refund", args: { amountMinor: 4200 } },
     { signer, policy: REFUND_GUARD_POLICY, approvalRules: [] },
   );
   assert.equal(withEmptyArray.decision, "ALLOW");
-  const v = verifyChain([withoutOpt.receipt], { keyring });
+  const v = verifyChain(b([withoutOpt.receipt]), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
 });
 
@@ -843,7 +846,7 @@ test("preCheck: an ALLOW that matches an approvalRule is held DEFERRED, never ex
   assert.notEqual(r.receipt.governance.compliance, null, "the underlying policy DID allow — compliance is still committed");
   assert.equal(r.receipt.governance.compliance.verdict, "ALLOW", "L2 compliance verdict is the POLICY's own ALLOW, independent of the governance-level DEFERRED hold");
   assert.equal(r.evidence.approvalRuleFired, "big-refund-needs-human");
-  const v = verifyChain([r.receipt], { keyring });
+  const v = verifyChain(b([r.receipt]), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
 });
 
@@ -864,7 +867,7 @@ test("preCheck: a DENY is untouched by approvalRules (nothing to hold — alread
   assert.equal(allTinyRefundsHeld.decision, "DEFERRED");
 });
 
-test("preCheck: suppressApprovalHold skips the approval gate for ONE consumed-ticket retry — without it the same rule re-matches and the retry re-DEFERs forever, so EXECUTED is unreachable", () => {
+test("preCheck: suppressApprovalHold skips the approval gate for ONE consumed-ticket retry — without it the same rule re-matches and the retry re-DEFERs forever, so ALLOWED is unreachable", () => {
   const { signer, keyring } = signerAndKeyring("test-key-r4-suppress");
   const approvalRules = [
     { id: "big-refund-needs-human", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } },
@@ -880,7 +883,7 @@ test("preCheck: suppressApprovalHold skips the approval gate for ONE consumed-ti
     { signer, policy: REFUND_GUARD_POLICY, approvalRules, suppressApprovalHold: true },
   );
   assert.equal(retried.decision, "ALLOW");
-  assert.equal(retried.receipt.governance.verdict, "EXECUTED");
+  assert.equal(retried.receipt.governance.verdict, "ALLOWED");
   assert.equal(retried.evidence.approvalRuleFired, null, "no approval rule fires on a suppressed call");
   // Suppression must NOT bypass the policy: a call the L2 policy itself DENIES stays DENIED.
   const stillDenied = preCheck(
@@ -888,7 +891,7 @@ test("preCheck: suppressApprovalHold skips the approval gate for ONE consumed-ti
     { signer, policy: REFUND_GUARD_POLICY, approvalRules, suppressApprovalHold: true },
   );
   assert.equal(stillDenied.decision, "DENY", "suppressApprovalHold skips ONLY the hold, never the policy decision");
-  const v = verifyChain([retried.receipt], { keyring });
+  const v = verifyChain(b([retried.receipt]), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
 });
 
@@ -942,4 +945,50 @@ test("index.mjs: R4 public surface is exported from the package root", async () 
     assert.equal(typeof pkg[name], "function", `index.mjs must export "${name}"`);
   }
   assert.equal(typeof pkg.PendingStoreError, "function", "PendingStoreError (a class) must also be exported");
+});
+
+// ROUND 5 / R5-01, reproduced by the lead before the fix.
+//
+// Round 4 made the FLATTEN target a null-prototype object and left the MERGE target a plain literal.
+// `objectAssign(inputs, …)` performs [[Set]], which walks the prototype chain, so an inherited
+// accessor on `Object.prototype["args.<key>"]` swallowed the write and the policy evaluated inputs
+// silently missing a key. Measured DENY -> ALLOW with a signed, chain-valid receipt.
+//
+// Scope, measured not assumed: a policy listing the path in `requiredPaths` fails CLOSED. The exploit
+// bites policies that gate on `args.*` WITHOUT declaring it required — which is the pattern
+// adapter-core's own README teaches as the headline feature.
+test("preCheck: an inherited accessor cannot swallow a policy input and turn DENY into ALLOW", () => {
+  const kp = generateKeyPair("r501-regression");
+  const policy = {
+    spec: "noa.policy/0.2", id: "nested-gate", requiredPaths: ["action"],
+    rules: [
+      { id: "block-big", when: { op: "ge", path: "args.transfer.amount", value: 1000 }, then: "DENY" },
+      { id: "allow", when: { op: "eq", path: "action", value: "payment.transfer" }, then: "ALLOW" },
+    ],
+  };
+  const run = (amount) => preCheck(
+    { name: "payment.transfer", args: { transfer: { amount } } },
+    { signer: { kid: kp.kid, privateKey: kp.privateKey }, policy },
+  ).decision;
+
+  assert.equal(run(10), "ALLOW", "control: a small transfer must be allowed, or the fixture proves nothing");
+  assert.equal(run(999999), "DENY", "control: a large transfer must be denied unpoisoned");
+
+  for (const key of ["args.transfer.amount", "args.amountMinor", "action", "amountMinor"]) {
+    const had = Object.getOwnPropertyDescriptor(Object.prototype, key);
+    let out;
+    try {
+      Object.defineProperty(Object.prototype, key, { configurable: true, set() {}, get() { return undefined; } });
+      out = run(999999);
+    } finally {
+      if (had) Object.defineProperty(Object.prototype, key, had);
+      else delete Object.prototype[key];
+    }
+    assert.equal(out, "DENY",
+      `an inherited accessor on Object.prototype.${key} swallowed a policy input and turned DENY into ` +
+      `ALLOW — no builtin was replaced, so no call/read gate can see it`);
+    assert.equal(key in Object.prototype, false, `control: Object.prototype.${key} was not restored`);
+  }
+
+  assert.equal(run(999999), "DENY", "control: every accessor was removed");
 });

@@ -23,6 +23,13 @@ It also owns the **authoritative atomic single-use grant record** (F8a): the CAS
 at `/reserve` (strictly pre-dispatch) is the enforcer of "exactly one execution", never a
 wrapper-local flag.
 
+> ⚠ **Qualified 2026-07-29.** "Enforcer of exactly one execution" holds only for parties that
+> actually call `/reserve`. This repository's own source says so at `src/engine.ts:635-646`:
+> *"`reserve()` is the single-use BURN, not the authorization — and it is a voluntary call the
+> executing party alone decides whether to make… An agent holding the signed grant could execute out
+> of band, skip `reserve()` entirely."* The authorization is the signed grant; the CAS is the burn.
+> Against an agent that declines to burn, this is a bookkeeping record, not an enforcement control.
+
 ## Endpoints (`POST` are agent-authenticated; per-agent API key, F29)
 
 ```
@@ -43,8 +50,27 @@ versioned projection (**never caller-supplied code**).
 ## Exact-execution wrapper (D3/D14/D18)
 
 `guard({ action, params, execute })` wraps a command: hold → wait → **re-derive the paramsHash from
-the immutable snapshot and refuse on any mismatch** → reserve → execute → report. Approve action A,
-run action B is impossible.
+the immutable snapshot and refuse on any mismatch** → reserve → execute → report.
+
+> 🔴 **CORRECTED 2026-07-29 — this paragraph used to end "Approve action A, run action B is
+> impossible." That was FALSE for every action type except one, and it was a written promise.**
+>
+> The re-derivation is real **only in ENFORCED mode**. In RAW mode `deriveParamsHash`
+> (`src/wrapper.ts:133-136`) returns `input.paramsHash` unchanged and **never reads the `snapshot`
+> argument it is passed**, so the mismatch check at `src/wrapper.ts:199-203` compares the caller's
+> hash against the caller's own hash and *cannot fail*. ENFORCED mode requires a registered
+> projection, and `src/projections.ts:98` registers exactly **one** (`noa.command.exec/1`) — so every
+> other action type runs RAW.
+>
+> Worse, in RAW mode the `display` shown to the human and the `paramsHash` the grant authorizes are
+> two **unrelated** caller-supplied fields (`src/engine.ts:202-209`, whose own comment says the gate
+> "does NOT vouch it is true"). An attacker who controls the caller can show an approver
+> *"Transfer funds → alice → 10.00 DKK"* while binding the hash to *mallory / 9999* — and the gate
+> will sign a receipt with `reasonCode: HUMAN_APPROVED`.
+>
+> **Corrected claim:** approve action A / run action B is prevented **in ENFORCED mode, for a
+> registered action type**. In RAW mode the approval receipt proves that a key-holder approved *the
+> display bytes*, and proves nothing about the action that executed.
 
 ## Security posture
 

@@ -21,3 +21,7 @@ _probe*
 !test/federation/_seeded-keys.ts
 # Per-session agent working dir (evidence/jsonl scratch — never ship)
 agent-context/
+
+# Local agent scratch — must never be committed to a PUBLIC repo by a stray `git add -A`.
+scratchpad/
+.agents/

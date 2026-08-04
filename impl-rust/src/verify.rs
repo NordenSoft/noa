@@ -250,6 +250,43 @@ pub fn verify_chain(
         by_seq.insert(seq, idx);
     }
 
+    // Chain-wide scope.tenant consistency (fail-closed; matches the TS reference DEFAULT, impl-py
+    // and impl-go). scope.tenant sits beside scope.chain but was enforced nowhere, so a chain mixing
+    // tenants verified clean everywhere. Tenant isolation is a security boundary; the partition
+    // split's verdict class is the right one. Walked in SEQ order, and a missing field is distinct
+    // from a present one (absence is consistency only if it is consistent).
+    {
+        let tenant_of = |idx: usize| -> Option<&str> {
+            arr[idx].get("scope").and_then(|s| s.get("tenant")).and_then(|t| t.as_str())
+        };
+        // Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present
+        // is a producer-version change on an OPTIONAL field, not tampering (see src/verify.ts).
+        //
+        // The comparison is NOT adjacent: comparing neighbours let an omission RESET the boundary,
+        // so `acme -> globex` was TAMPERED while `acme -> absent -> globex` — the same splice with
+        // one optional field left out in between — was VALID in all five implementations. The last
+        // PRESENT tenant is carried across absences instead. Absence stays non-fatal; it just no
+        // longer erases what the chain already committed to.
+        let total = arr.len() as i64;
+        let mut last_present: Option<String> = None;
+        for s in 0..total {
+            let cur = match by_seq.get(&s) {
+                Some(c) => *c,
+                None => break, // a gap is reported by the seq-walk below; do not pre-empt it
+            };
+            let cur_tenant = match tenant_of(cur) {
+                Some(t) => t.to_string(),
+                None => continue, // absence never resets the boundary, and is never fatal
+            };
+            if let Some(prev_present) = &last_present {
+                if &cur_tenant != prev_present {
+                    return (Status::Tampered, "cross-tenant splice".into());
+                }
+            }
+            last_present = Some(cur_tenant);
+        }
+    }
+
     // Step 4: seq-walk.
     let n = arr.len();
     let mut pinned: HashMap<String, String> = HashMap::new();

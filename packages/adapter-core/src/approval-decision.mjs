@@ -11,9 +11,23 @@
  * never the agent's private key; per-agent.id key-pinning (enforced by verifyChain's identity
  * manifest) is what keeps this safe within one chain.
  */
-import { buildReceipt, verifyEd25519, receiptHashInput, sha256Prefixed, sha256Digest } from "noa-receipt";
+import { buildReceipt, canonicalize, resolveVerificationKey, verifyEd25519, receiptHashInput, sha256Prefixed, sha256Digest, intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-02. Every builtin this module reaches for on a decision path is taken from the
+// kernel's module-load capture instead of read live. The identity-manifest check below was
+// `authorizedKids.includes(sig.kid)`, and a post-load `Array.prototype.includes = () => true`
+// authorized a co-trusted key into the human-approval seat with a genuine signature, a trusted key
+// and an untampered receipt — nothing upstream fires, because nothing upstream is wrong. Only the
+// seat binding breaks, and that binding is the product.
+//
+// The root kernel has enforced this since the intrinsics work; the PACKAGES were never linted for
+// it, so the rule existed and its coverage stopped at the repository root. Reproduced, then fixed:
+// see "a poisoned Array.prototype.includes cannot authorize a co-trusted key into the approval seat".
 import { randomUUID } from "node:crypto";
 import { assertOpaqueApproverBy } from "./opaque-id.mjs";
+import { describeThrown } from "./safe-throw.mjs";
+
+const { arrayIncludes, isArray, jsonStringify, bufferConcat, bufferFrom, hasOwn } = intrinsics;
 
 /**
  * The domain-separation tag noa-receipt's own builder binds every receipt signature to (its
@@ -105,24 +119,24 @@ export function buildDenialReceipt({ deferredReceipt, by, ts, signer, agentId = 
  *       low-privilege approver may sign) could be adopted to authorize a DIFFERENT held action Y (a
  *       large refund) on the same chain: signature + chain verify, but the human never approved Y.
  *
- * Returns `{ ok: true }` or `{ ok: false, reason }` — never throws (any unexpected throw is caught
+ * Returns `{ ok: true }` or `{ ok: false, reason }` — returns rather than throwing (any unexpected throw is caught
  * and reported as a failure, i.e. fail-closed). See the RECEIPT_SIG_DOMAIN note above for why this
  * verifies a single receipt directly rather than calling verifyChain.
  *
  * @param {object} allowedReceipt
- * @param {{ approverKeyring?: Record<string,string>, identityManifest?: Record<string,string[]>, expectedChain?: string, expectedAction?: { id?: string, paramsHash?: string } }} [opts]
+ * @param {{ approverKeyring?: Record<string,string>|{spec:string,keys:Record<string,{publicKey:string,retiredAt:string|null}>}, identityManifest?: Record<string,string[]>, expectedChain?: string, expectedAction?: { id?: string, paramsHash?: string } }} [opts]
  * @returns {{ ok: boolean, reason?: string }}
  */
 export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identityManifest, expectedChain, expectedAction } = {}) {
   try {
-    if (!approverKeyring || typeof approverKeyring !== "object" || Array.isArray(approverKeyring)) {
+    if (!approverKeyring || typeof approverKeyring !== "object" || isArray(approverKeyring)) {
       return { ok: false, reason: "no trusted approver keyring supplied — approval cannot be authenticated" };
     }
     const r = allowedReceipt;
     if (!r || typeof r !== "object") return { ok: false, reason: "approval receipt is not an object" };
 
     if (!r.governance || typeof r.governance !== "object" || r.governance.verdict !== "ALLOWED") {
-      return { ok: false, reason: `approval verdict is not ALLOWED (got ${JSON.stringify(r.governance?.verdict)})` };
+      return { ok: false, reason: `approval verdict is not ALLOWED (got ${jsonStringify(r.governance?.verdict)})` };
     }
     const approval = r.governance.approval;
     if (!approval || typeof approval !== "object" || typeof approval.by !== "string" || approval.by.length === 0 || typeof approval.at !== "string" || approval.at.length === 0) {
@@ -133,7 +147,7 @@ export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identit
       return { ok: false, reason: "approval receipt has no scope.chain" };
     }
     if (expectedChain !== undefined && r.scope.chain !== expectedChain) {
-      return { ok: false, reason: `approval receipt scope.chain ${JSON.stringify(r.scope.chain)} does not match this session's chain ${JSON.stringify(expectedChain)}` };
+      return { ok: false, reason: `approval receipt scope.chain ${jsonStringify(r.scope.chain)} does not match this session's chain ${jsonStringify(expectedChain)}` };
     }
 
     if (!r.agent || typeof r.agent.id !== "string" || r.agent.id.length === 0) {
@@ -155,11 +169,15 @@ export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identit
       return { ok: false, reason: "approval receipt hash does not match its content (tampered)" };
     }
 
-    const pub = approverKeyring[sig.kid];
-    if (typeof pub !== "string" || pub.length === 0) {
-      return { ok: false, reason: `signing key ${JSON.stringify(sig.kid)} is not in the trusted approver keyring` };
+    const resolved = resolveVerificationKey(canonicalize(approverKeyring), sig.kid);
+    if (!resolved.ok) {
+      if (resolved.reason.endsWith("not in keyring")) {
+        return { ok: false, reason: `signing key ${jsonStringify(sig.kid)} is not in the trusted approver keyring` };
+      }
+      return { ok: false, reason: resolved.reason };
     }
-    const message = Buffer.concat([Buffer.from(RECEIPT_SIG_DOMAIN + ":", "utf8"), sha256Digest(hashInput)]);
+    const pub = resolved.publicKey;
+    const message = bufferConcat([bufferFrom(RECEIPT_SIG_DOMAIN + ":", "utf8"), sha256Digest(hashInput)]);
     let sigOk = false;
     try {
       sigOk = verifyEd25519(pub, message, sig.value);
@@ -169,12 +187,15 @@ export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identit
     if (!sigOk) return { ok: false, reason: `invalid approver signature (kid ${sig.kid})` };
 
     if (identityManifest !== undefined) {
-      if (typeof identityManifest !== "object" || identityManifest === null || Array.isArray(identityManifest)) {
+      if (typeof identityManifest !== "object" || identityManifest === null || isArray(identityManifest)) {
         return { ok: false, reason: "identityManifest must be an object (agent.id -> kid[])" };
       }
-      const authorizedKids = identityManifest[r.agent.id];
-      if (!Array.isArray(authorizedKids) || !authorizedKids.includes(sig.kid)) {
-        return { ok: false, reason: `agent ${JSON.stringify(r.agent.id)} is not authorized for signing key ${JSON.stringify(sig.kid)} (identity manifest)` };
+      // OWN property only. A plain read walks the prototype chain, and `r.agent.id` is chosen by
+      // whoever signed the receipt — so an attacker names a seat, pollutes that one key on
+      // Object.prototype, and the manifest answers for a seat it never listed.
+      const authorizedKids = hasOwn(identityManifest, r.agent.id) ? identityManifest[r.agent.id] : undefined;
+      if (!isArray(authorizedKids) || !arrayIncludes(authorizedKids, sig.kid)) {
+        return { ok: false, reason: `agent ${jsonStringify(r.agent.id)} is not authorized for signing key ${jsonStringify(sig.kid)} (identity manifest)` };
       }
     }
 
@@ -185,7 +206,7 @@ export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identit
     // by the signature check above (it is inside `r`'s hashed content), so an attacker cannot alter
     // the approved params without invalidating the signature.
     if (expectedAction !== undefined) {
-      if (!expectedAction || typeof expectedAction !== "object" || Array.isArray(expectedAction)) {
+      if (!expectedAction || typeof expectedAction !== "object" || isArray(expectedAction)) {
         return { ok: false, reason: "expectedAction must be an object ({ id, paramsHash })" };
       }
       if (!r.action || typeof r.action !== "object") {
@@ -194,13 +215,13 @@ export function verifyApprovalReceipt(allowedReceipt, { approverKeyring, identit
       if (r.action.id !== expectedAction.id || r.action.paramsHash !== expectedAction.paramsHash) {
         return {
           ok: false,
-          reason: `approval is for a different action (approved ${JSON.stringify(r.action.id)}/${JSON.stringify(r.action.paramsHash)}, held ${JSON.stringify(expectedAction.id)}/${JSON.stringify(expectedAction.paramsHash)})`,
+          reason: `approval is for a different action (approved ${jsonStringify(r.action.id)}/${jsonStringify(r.action.paramsHash)}, held ${jsonStringify(expectedAction.id)}/${jsonStringify(expectedAction.paramsHash)})`,
         };
       }
     }
 
     return { ok: true };
   } catch (err) {
-    return { ok: false, reason: `approval-receipt verification failed closed (${err?.message ?? "unknown error"})` };
+    return { ok: false, reason: `approval-receipt verification failed closed (${describeThrown(err)})` };
   }
 }

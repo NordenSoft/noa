@@ -1,0 +1,6 @@
+{
+  "unmeasured": 98,
+  "_why_98": "97 -> 98 when the R5-01 fix landed. One poison moved HELD -> UNMEASURED because the write no longer reaches the merge target, so the poison is never consulted. Coverage did not regress; a vulnerability closed.",
+  "_known_defect_R5-04": "This ratchet is INVERTED and round 5 proved it: only `unmeasured` has a floor, so DELETING the highest-yield oracle passes (fewer runs, fewer unmeasured) while ADDING coverage fails. It penalises the exact action that would find the next defect. `oracles` and `poisons` need floors of their own, and a HELD -> UNMEASURED transition caused by a FIX needs to be distinguishable from one caused by lost coverage. Neither is built. Raising this number by hand each time is the workaround, and it is a bad one — it is a human deciding what the gate was supposed to decide.",
+  "_do_not": "Do not raise this to silence a failure without writing why, above. An unexplained bump is how a ratchet becomes a rubber stamp."
+}

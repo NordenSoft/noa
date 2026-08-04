@@ -16,6 +16,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACTS } from "../src/domains.js";
 import { signArtifact, type Signer } from "../src/sign.js";
+/** Documents are bytes at the boundary (ADR §3.1); the generator serialises at the call, so what is
+ *  signed is literally what these vectors ship. */
+const enc = new TextEncoder();
+const b = (v: unknown): Uint8Array => enc.encode(JSON.stringify(v));
 import { refHash, virtualHash, receiptRefHash } from "../src/refhash.js";
 import { sha256Prefixed } from "../src/crypto.js";
 import type { KeyEntry, VerifyContext } from "../src/verify.js";
@@ -95,7 +99,7 @@ const delegationCore: J = {
   delegatedPublicKey: KEYS["manifest-signer-3"]!.publicKey, permissions: ["key-manifest-sign"],
   validFrom: DELEG_FROM, expiresAt: DELEG_EXPIRES,
 };
-const delegation = signArtifact(delegationCore, D["noa.key-delegation/0.1"]!.domain!, signer("tenant-authority-1"));
+const delegation = signArtifact(b(delegationCore), D["noa.key-delegation/0.1"]!.domain!, signer("tenant-authority-1"));
 
 const manifestKeys = [
   { kid: "gate-prod-1", type: "GATE", roles: ["hold-signer", "execution-signer"], publicKey: KEYS["gate-prod-1"]!.publicKey, validFrom: DELEG_FROM, revokedAt: null },
@@ -103,9 +107,9 @@ const manifestKeys = [
   { kid: "approver-crit-5", type: "APPROVER", roles: ["approve-critical"], publicKey: KEYS["approver-crit-5"]!.publicKey, hpkePublicKey: HPKE["approver-crit-5"], validFrom: DELEG_FROM, revokedAt: null },
   { kid: "audit-1", type: "AUDIT", roles: ["audit-decrypt"], hpkePublicKey: HPKE["audit-1"], validFrom: DELEG_FROM, revokedAt: null },
 ];
-const manifestV1 = signArtifact({ spec: "noa.key-manifest/0.1", tenant: TENANT, version: 1, issuedAt: "2026-07-14T09:00:00.000Z", expiresAt: "2026-07-15T09:00:00.000Z", previousManifestHash: null, keys: manifestKeys }, D["noa.key-manifest/0.1"]!.domain!, signer("manifest-signer-3"));
+const manifestV1 = signArtifact(b({ spec: "noa.key-manifest/0.1", tenant: TENANT, version: 1, issuedAt: "2026-07-14T09:00:00.000Z", expiresAt: "2026-07-15T09:00:00.000Z", previousManifestHash: null, keys: manifestKeys }), D["noa.key-manifest/0.1"]!.domain!, signer("manifest-signer-3"));
 const manifestCore: J = { spec: "noa.key-manifest/0.1", tenant: TENANT, version: 2, issuedAt: "2026-07-14T09:30:00.000Z", expiresAt: "2026-07-15T09:30:00.000Z", previousManifestHash: refHash(manifestV1), keys: manifestKeys };
-const manifest = signArtifact(manifestCore, D["noa.key-manifest/0.1"]!.domain!, signer("manifest-signer-3"));
+const manifest = signArtifact(b(manifestCore), D["noa.key-manifest/0.1"]!.domain!, signer("manifest-signer-3"));
 const MANIFEST_HASH = refHash(manifest);
 const MANIFEST_VERSION = 2;
 
@@ -130,7 +134,7 @@ const envelopeCore: J = {
   canonicalization: "JCS-RFC8785", keyManifestVersion: MANIFEST_VERSION, keyManifestHash: MANIFEST_HASH,
   tenant: TENANT, expiresAt: T_EXPIRES, nonce: "envelope-nonce-01", gateKid: "gate-prod-1",
 };
-const envelope = signArtifact(envelopeCore, D["noa.hold/0.1"]!.domain!, signer("gate-prod-1"));
+const envelope = signArtifact(b(envelopeCore), D["noa.hold/0.1"]!.domain!, signer("gate-prod-1"));
 const ENVELOPE_HASH = refHash(envelope);
 
 // ─── Encrypted Reason (unsigned) + Decision ──────────────────────────────────────────────────────
@@ -142,7 +146,7 @@ const decisionCore: J = {
   spec: "noa.decision/0.1", holdEnvelopeHash: ENVELOPE_HASH, decision: "APPROVE",
   reasonCode: "vendor-verified", reasonEncryption: encReason, decidedAt: "2026-07-14T11:56:00.000Z", approverKid: "approver-1-device-2",
 };
-const decision = signArtifact(decisionCore, D["noa.decision/0.1"]!.domain!, signer("approver-1-device-2"));
+const decision = signArtifact(b(decisionCore), D["noa.decision/0.1"]!.domain!, signer("approver-1-device-2"));
 const DECISION_HASH = refHash(decision);
 
 // ─── Execution Grant / Consumption / Uncertainty ─────────────────────────────────────────────────
@@ -151,21 +155,21 @@ const grantCore: J = {
   paramsHash: "sha256:" + "a".repeat(64), holdEnvelopeHash: ENVELOPE_HASH, approvalReceiptHash: (allowedReceipt.chain as J).hash,
   issuedAt: T_ISSUE, expiresAt: T_EXPIRES, maxUses: 1, nonce: "grant-nonce-01",
 };
-const grant = signArtifact(grantCore, D["noa.execution-grant/0.1"]!.domain!, signer("gate-prod-1"));
+const grant = signArtifact(b(grantCore), D["noa.execution-grant/0.1"]!.domain!, signer("gate-prod-1"));
 const GRANT_HASH = refHash(grant);
 
 const consumptionCore: J = {
   spec: "noa.execution-consumption/0.1", grantHash: GRANT_HASH, consumedAt: "2026-07-14T11:57:00.000Z",
   attemptReceiptHash: (executedReceipt.chain as J).hash, result: "DISPATCHED",
 };
-const consumption = signArtifact(consumptionCore, D["noa.execution-consumption/0.1"]!.domain!, signer("gate-prod-1"));
+const consumption = signArtifact(b(consumptionCore), D["noa.execution-consumption/0.1"]!.domain!, signer("gate-prod-1"));
 
 const uncertaintyCore: J = {
   spec: "noa.execution-uncertainty/0.1", grantHash: GRANT_HASH, lastKnownState: "DISPATCH_STARTED",
   detectedAt: "2026-07-14T11:58:00.000Z", reason: "PROCESS_CRASH_BEFORE_RECEIPT_COMMIT",
   bootId: "boot-7f3a9c", uptimeResetAt: "2026-07-14T11:50:00.000Z",
 };
-const uncertainty = signArtifact(uncertaintyCore, D["noa.execution-uncertainty/0.1"]!.domain!, signer("gate-prod-1"));
+const uncertainty = signArtifact(b(uncertaintyCore), D["noa.execution-uncertainty/0.1"]!.domain!, signer("gate-prod-1"));
 
 // ─── Hold Resolution ─────────────────────────────────────────────────────────────────────────────
 const holdResCore: J = {
@@ -174,7 +178,7 @@ const holdResCore: J = {
   status: "APPROVED", reasonCode: null, receivedAt: "2026-07-14T11:56:30.000Z",
   keyManifestVersion: MANIFEST_VERSION, keyManifestHash: MANIFEST_HASH,
 };
-const holdRes = signArtifact(holdResCore, D["noa.hold-resolution/0.1"]!.domain!, signer("gate-prod-1"));
+const holdRes = signArtifact(b(holdResCore), D["noa.hold-resolution/0.1"]!.domain!, signer("gate-prod-1"));
 
 // ─── Pairing: CHALLENGE / CONFIRMATION / ACCEPTED + transcript + confirmation ────────────────────
 const PAIRING_ID = "pair-001";
@@ -184,7 +188,7 @@ const challengeCore: J = {
   tenantAuthorityKid: "tenant-authority-1", tenantAuthorityPublicKey: KEYS["tenant-authority-1"]!.publicKey,
   initialKeyManifestHash: MANIFEST_HASH, allowedRole: "approver", expiresAt: T_EXPIRES, challengeNonce: "chal-nonce-01",
 };
-const challenge = signArtifact(challengeCore, D["noa.pairing/0.1"]!.domain!, signer("gate-prod-1"));
+const challenge = signArtifact(b(challengeCore), D["noa.pairing/0.1"]!.domain!, signer("gate-prod-1"));
 const CHALLENGE_HASH = refHash(challenge);
 
 const confirmationCore: J = {
@@ -192,7 +196,7 @@ const confirmationCore: J = {
   approverKid: "approver-1-device-2", approverPublicKey: KEYS["approver-1-device-2"]!.publicKey,
   approverHpkePublicKey: HPKE["approver-1-device-2"]!, confirmedAt: "2026-07-14T11:54:00.000Z",
 };
-const confirmation = signArtifact(confirmationCore, D["noa.pairing/0.1"]!.domain!, signer("approver-1-device-2"));
+const confirmation = signArtifact(b(confirmationCore), D["noa.pairing/0.1"]!.domain!, signer("approver-1-device-2"));
 
 const transcript: J = {
   spec: "noa.pairing-transcript/0.1", pairingId: PAIRING_ID, tenant: TENANT, allowedRole: "approver",
@@ -208,13 +212,13 @@ const acceptedCore: J = {
   approverKid: "approver-1-device-2", keyManifestVersion: MANIFEST_VERSION, keyManifestHash: MANIFEST_HASH,
   keyDelegationHash: refHash(delegation), delegatedManifestSignerKid: "manifest-signer-3", acceptedAt: "2026-07-14T11:55:00.000Z",
 };
-const accepted = signArtifact(acceptedCore, D["noa.pairing/0.1"]!.domain!, signer("gate-prod-1"));
+const accepted = signArtifact(b(acceptedCore), D["noa.pairing/0.1"]!.domain!, signer("gate-prod-1"));
 
 const sasConfirmCore: J = {
   spec: "noa.pairing-confirmation/0.1", pairingId: PAIRING_ID, transcriptHash: TRANSCRIPT_HASH,
   result: "SAS_MATCH_CONFIRMED", confirmedAt: "2026-07-14T11:54:30.000Z", gateKid: "gate-prod-1",
 };
-const sasConfirm = signArtifact(sasConfirmCore, D["noa.pairing-confirmation/0.1"]!.domain!, signer("gate-prod-1"));
+const sasConfirm = signArtifact(b(sasConfirmCore), D["noa.pairing-confirmation/0.1"]!.domain!, signer("gate-prod-1"));
 
 // ─── Vector emit machinery ───────────────────────────────────────────────────────────────────────
 interface Vector {
@@ -234,7 +238,7 @@ function clone<T>(x: T): T {
 }
 /** re-sign a mutated core with a (possibly different) signer. */
 function reSign(core: J, spec: string, kid: string): J {
-  return signArtifact(clone(core), D[spec]!.domain!, signer(kid));
+  return signArtifact(b(clone(core)), D[spec]!.domain!, signer(kid));
 }
 /** tamper: mutate a benign field on a SIGNED artifact WITHOUT re-signing (breaks the signature). */
 function tamper(signed: J, field: string, value: unknown): J {

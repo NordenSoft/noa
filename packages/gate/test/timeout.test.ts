@@ -9,18 +9,19 @@ import assert from "node:assert/strict";
 import { verifyChain } from "noa-receipt";
 import { verifyArtifact } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
-import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
+import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
 
 function freeze(fx: ReturnType<typeof setupGate>, chain: string, ttlMs = 60_000): string {
-  const created = fx.engine.createHold(fx.agent, `idem-${chain}`, {
+  const created = fx.engine.createHold(fx.agent, `idem-${chain}`, body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain,
     ttlMs,
-  });
+  }));
   return (created.body as { holdId: string }).holdId;
 }
 
@@ -29,7 +30,7 @@ test("expired hold → BLOCKED timeout receipt (POLICY signer, ruleId approval-t
   const holdId = freeze(fx, "chain-to");
 
   fx.clock.advance(60_001); // past TTL
-  const view = fx.engine.getHold(holdId);
+  const view = fx.engine.getHold(holdId, fx.agent);
   assert.equal(view.status, 200);
   const body = view.body as { status: string; verdictReceipt: Record<string, unknown>; holdResolution: Record<string, unknown> };
   assert.equal(body.status, "EXPIRED");
@@ -43,13 +44,13 @@ test("expired hold → BLOCKED timeout receipt (POLICY signer, ruleId approval-t
 
   // The timeout receipt chains onto the DEFERRED and verifies VALID (gate keyring).
   const deferred = fx.store.getHold(holdId)!.deferredReceipt;
-  const vc = verifyChain([deferred, timeout], { keyring: fx.trust.receiptKeyring, requireTenantConsistency: true });
+  const vc = verifyChain(b([deferred, timeout]), { keyring: b(fx.trust.receiptKeyring), requireTenantConsistency: true });
   assert.equal(vc.status, "VALID", vc.reason);
 
   // F10 Hold Resolution — status EXPIRED, gate-signed, verifyArtifact passes.
   const resolution = body.holdResolution;
   assert.equal(resolution["status"], "EXPIRED");
-  const rc = verifyArtifact(resolution, {
+  const rc = verifyArtifact(b(resolution), b({
     schemas,
     keyring: fx.trust.keyring,
     now: new Date(fx.trust.now()).toISOString(),
@@ -57,7 +58,7 @@ test("expired hold → BLOCKED timeout receipt (POLICY signer, ruleId approval-t
       { path: "holdEnvelopeHash", rule: "side", artifact: fx.store.getHold(holdId)!.holdEnvelope },
       { path: "verdictReceiptHash", rule: "receipt", artifact: timeout },
     ],
-  });
+  }));
   assert.ok(rc.ok, `holdResolution: ${rc.reason}`);
 });
 
@@ -67,10 +68,10 @@ test("a decision arriving AFTER expiry is rejected fail-closed (409), never over
   const hold = fx.store.getHold(holdId)!;
 
   fx.clock.advance(60_001);
-  fx.engine.getHold(holdId); // trip lazyExpire
+  fx.engine.getHold(holdId, fx.agent); // trip lazyExpire
 
   const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "APPROVE" });
-  const late = fx.engine.decide(holdId, { receipt, decisionArtifact });
+  const late = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   assert.equal(late.status, 409);
   assert.equal((late.body as { error: string }).error, "HOLD_ALREADY_RESOLVED");
   assert.equal(fx.store.getHold(holdId)!.status, "EXPIRED");

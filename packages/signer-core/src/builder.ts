@@ -1,8 +1,10 @@
 import { sha256Hex } from "./hash.js";
 import { receiptHashInput } from "./receipt-hash.js";
+import { inertDeepCopy } from "./deep-copy.js";
 import { signReceipt, type SignerKey } from "./sign.js";
 import { RECEIPT_SPEC } from "./types.js";
 import type { Receipt, ReceiptAction, ReceiptAgent, ReceiptGovernance, ReceiptScope } from "./types.js";
+import { nonNfcPaths, isNFC } from "./nfc.js";
 
 /** Same shape as `noa-receipt`'s `BuildInput` (`src/builder.ts`). */
 export interface BuildInput {
@@ -27,7 +29,12 @@ export interface BuildInput {
  * `noa-receipt`'s own `validateReceiptShape`/`verifyChain` before trusting it.
  */
 export function buildReceiptDraft(input: BuildInput, prev: Receipt | null, kid: string): Receipt {
-  const cloned = structuredClone({
+  // C-01 sibling, producer half. This was `structuredClone`, a writable global, snapshotting
+  // caller-supplied fields that are then hashed into the draft. Poisoned, it substituted the entire
+  // payload before hashing — so the draft, and every signature later taken over it, described an
+  // action the caller never submitted. `inertDeepCopy` uses intrinsics captured at module load,
+  // invokes no accessor, and refuses anything that is not JSON-shaped rather than reshaping it.
+  const cloned = inertDeepCopy({
     id: input.id,
     ts: input.ts,
     scope: input.scope,
@@ -35,6 +42,20 @@ export function buildReceiptDraft(input: BuildInput, prev: Receipt | null, kid: 
     action: input.action,
     governance: input.governance,
   });
+
+  // NFC ENFORCEMENT AT THE PRODUCER, before anything is hashed or signed. This package is an
+  // INDEPENDENT signing implementation, so enforcing it only in noa-receipt's builder left a second
+  // door open and the invariant was not universal. Same rule, same failure mode, both producers.
+  // The SIGNER KID is scanned too — it is inserted after this clone, so it was the one string in
+  // the receipt that neither producer checked (see noa-receipt's src/builder.ts for the full
+  // reasoning). Same rule, same failure mode, both producers — which is the entire reason this
+  // package's NFC enforcement exists.
+  const nonNfc = [...nonNfcPaths(cloned), ...(isNFC(kid) ? [] : ["sig.kid"])];
+  if (nonNfc.length > 0) {
+    throw new Error(
+      `buildReceipt: refusing to sign a payload with non-NFC strings (the profile requires producers to emit Unicode NFC): ${nonNfc.join(", ")}`,
+    );
+  }
 
   const seq = prev ? prev.chain.seq + 1 : 0;
   const prevHash = prev ? prev.chain.hash : null;

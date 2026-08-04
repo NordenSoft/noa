@@ -152,17 +152,33 @@ import { randomUUID, createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, writeFileSync, openSync, writeSync, fsyncSync, closeSync, unlinkSync } from "node:fs";
 import path from "node:path";
 import { createChainSessionStore, DEFAULT_TENANT } from "./session-store.mjs";
+import { describeThrown, thrownCode } from "./safe-throw.mjs";
+
+import { intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths. Four CRITICALs came out of
+// this package in two days, every one of them a LIVE builtin read that an attacker could replace
+// after module load: an approval seat bound by `Array.prototype.includes`, a signature verified over
+// bytes from `Buffer.concat`, a policy weakening hidden by `JSON.stringify`, an approval rule made
+// invisible by `Array.isArray`. Auditing the remaining ~300 flagged reads one at a time is not a
+// control — it is a race against the next person who adds one.
+//
+// So the builtins are taken from the kernel's module-load capture here too, whether or not each
+// individual site is reachable today. Reachability is a property of the surrounding code, and the
+// surrounding code changes.
+const { isInteger, jsonParse, jsonStringify } = intrinsics;
+
 
 const LOCK_FILENAME = ".lock";
 const INSTANCE_FILENAME = ".instance.json";
 
 function isPidAlive(pid) {
-  if (!Number.isInteger(pid) || pid <= 0) return false;
+  if (!isInteger(pid) || pid <= 0) return false;
   try {
     process.kill(pid, 0);
     return true;
   } catch (err) {
-    return err.code !== "ESRCH";
+    return thrownCode(err) !== "ESRCH";
   }
 }
 
@@ -177,13 +193,13 @@ function acquireLock(dir) {
   for (let attempt = 0; attempt < 2; attempt++) {
     const nonce = randomUUID();
     try {
-      writeFileSync(lockPath, JSON.stringify({ pid: process.pid, nonce, startedAt: new Date().toISOString() }), { flag: "wx" });
+      writeFileSync(lockPath, jsonStringify({ pid: process.pid, nonce, startedAt: new Date().toISOString() }), { flag: "wx" });
       return nonce;
     } catch (err) {
-      if (err.code !== "EEXIST") throw err;
+      if (thrownCode(err) !== "EEXIST") throw err;
       let holder;
       try {
-        holder = JSON.parse(readFileSync(lockPath, "utf8"));
+        holder = jsonParse(readFileSync(lockPath, "utf8"));
       } catch {
         throw new Error(`createFileSessionStore: lock file "${lockPath}" exists but is unreadable/corrupt — remove it manually if no other process is using "${dir}"`);
       }
@@ -193,7 +209,7 @@ function acquireLock(dir) {
       try {
         unlinkSync(lockPath);
       } catch (unlinkErr) {
-        if (unlinkErr.code !== "ENOENT") throw unlinkErr;
+        if (thrownCode(unlinkErr) !== "ENOENT") throw unlinkErr;
       }
       // loop retries the "wx" create now that the stale lock is gone
     }
@@ -215,35 +231,35 @@ function releaseLock(dir, nonce) {
   const lockPath = path.join(dir, LOCK_FILENAME);
   let holder;
   try {
-    holder = JSON.parse(readFileSync(lockPath, "utf8"));
+    holder = jsonParse(readFileSync(lockPath, "utf8"));
   } catch (err) {
-    if (err.code === "ENOENT") return; // already gone
+    if (thrownCode(err) === "ENOENT") return; // already gone
     return; // unreadable/corrupt — nothing safe to verify ownership against
   }
   if (holder.nonce !== nonce) return; // someone else's lock now — not ours to delete
   try {
     unlinkSync(lockPath);
   } catch (err) {
-    if (err.code !== "ENOENT") throw err;
+    if (thrownCode(err) !== "ENOENT") throw err;
   }
 }
 
 function loadOrCreateInstanceToken(dir) {
   const p = path.join(dir, INSTANCE_FILENAME);
   try {
-    const raw = JSON.parse(readFileSync(p, "utf8"));
+    const raw = jsonParse(readFileSync(p, "utf8"));
     if (typeof raw.instanceToken !== "string" || raw.instanceToken.length === 0) {
       throw new Error(`createFileSessionStore: "${p}" is malformed (expected { instanceToken })`);
     }
     return raw.instanceToken;
   } catch (err) {
-    if (err.code !== "ENOENT") throw err;
+    if (thrownCode(err) !== "ENOENT") throw err;
   }
   const token = randomUUID();
   try {
-    writeFileSync(p, JSON.stringify({ instanceToken: token }), { flag: "wx" });
+    writeFileSync(p, jsonStringify({ instanceToken: token }), { flag: "wx" });
   } catch (err) {
-    if (err.code === "EEXIST") return JSON.parse(readFileSync(p, "utf8")).instanceToken;
+    if (thrownCode(err) === "EEXIST") return jsonParse(readFileSync(p, "utf8")).instanceToken;
     throw err;
   }
   return token;
@@ -261,7 +277,7 @@ function tenantFilePath(dir, tenant) {
  *  durably on disk" — see advance()'s own "COMMIT-TIME, MEMORY-FIRST" docstring section below
  *  for why that durability property specifically matters for advance(). */
 function appendLineSync(filePath, obj) {
-  const line = JSON.stringify(obj) + "\n";
+  const line = jsonStringify(obj) + "\n";
   const expectedBytes = Buffer.byteLength(line, "utf8");
   const fd = openSync(filePath, "a");
   try {
@@ -290,10 +306,10 @@ function reloadAll(dir) {
     lines.forEach((line, idx) => {
       let parsed;
       try {
-        parsed = JSON.parse(line);
+        parsed = jsonParse(line);
       } catch (err) {
         throw new Error(
-          `createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} is not valid JSON (${err.message}); this looks like a torn write from a process killed mid-append. Restore from backup or remove the corrupt trailing line by hand before restarting.`,
+          `createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} is not valid JSON (${describeThrown(err)}); this looks like a torn write from a process killed mid-append. Restore from backup or remove the corrupt trailing line by hand before restarting.`,
         );
       }
       if (!parsed || typeof parsed !== "object") {
@@ -310,13 +326,13 @@ function reloadAll(dir) {
         return;
       }
       if (parsed.kind !== "receipt") {
-        throw new Error(`createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} has an unrecognized "kind" (${JSON.stringify(parsed.kind)})`);
+        throw new Error(`createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} has an unrecognized "kind" (${jsonStringify(parsed.kind)})`);
       }
-      if (!Number.isInteger(parsed.segmentId) || parsed.segmentId < 1) {
+      if (!isInteger(parsed.segmentId) || parsed.segmentId < 1) {
         throw new Error(`createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} has an invalid "segmentId"`);
       }
       const receipt = parsed.receipt;
-      if (!receipt || typeof receipt !== "object" || !receipt.chain || !Number.isInteger(receipt.chain.seq) || typeof receipt.scope?.chain !== "string") {
+      if (!receipt || typeof receipt !== "object" || !receipt.chain || !isInteger(receipt.chain.seq) || typeof receipt.scope?.chain !== "string") {
         throw new Error(`createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} has a malformed "receipt"`);
       }
       if (parsed.segmentId > segmentCounterFloor) segmentCounterFloor = parsed.segmentId;
@@ -352,15 +368,17 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
   mkdirSync(dir, { recursive: true });
   const lockNonce = acquireLock(dir);
 
-  // POISON latch — see the module docstring's "FAIL-CLOSED POISON" section above. `null` means
-  // healthy; once set to an Error, every method below (except `dispose()`, which must still be
-  // reachable so a caller can clean up and let a restart recover) rejects with it instead of
-  // silently operating on a store instance whose disk state is provably no longer consistent
-  // with its in-memory state. Declared BEFORE `inner` is constructed so the `onEvict` callback
-  // passed into it below (which can run synchronously from `inner`'s OWN internal machinery —
-  // a cap-eviction inside `stateFor()`, or the background sweep timer's own `setInterval`
-  // callback) can set it directly.
-  let poisoned = null;
+  // POISON latch — see the module docstring's "FAIL-CLOSED POISON" section above. A PRESENCE FLAG,
+  // not the thrown Error itself: the fifth review's H2 found that `let poisoned = <err>` + `if
+  // (poisoned)` tested TRUTHINESS, so a disk-write that threw a FALSY value (`throw 0`, `throw null`,
+  // `throw ""`, `throw NaN`, `throw 0n`, …) set `poisoned` to a falsy value and the latch never armed
+  // — the very next call ran against advanced-but-unpersisted memory, the exact divergence the latch
+  // exists to prevent. `poisoned` is now a boolean, and the human-readable cause is captured through
+  // `describeThrown` (which is total and never reads a raw `.message`), so a falsy thrown value still
+  // poisons. Declared BEFORE `inner` so the `onEvict` callback (which can run synchronously from
+  // `inner`'s own machinery — a cap-eviction inside `stateFor()`, or the sweep timer) can set it.
+  let poisoned = false;
+  let poisonCause = "";
 
   let inner;
   try {
@@ -391,10 +409,11 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
           // assertNotPoisoned() — and the failure is surfaced loudly (console.error, not a
           // swallowed warn) so an operator watching stderr sees it immediately, not only once a
           // later call happens to reject.
-          poisoned = err;
+          poisoned = true;
+          poisonCause = describeThrown(err);
           console.error(
             `noa-mcp-adapter-core(file-session-store): eviction tombstone FAILED to persist to disk ` +
-              `for session "${sessionId}" (tenant "${tenant}"): ${err.message} -- this store instance ` +
+              `for session "${sessionId}" (tenant "${tenant}"): ${poisonCause} -- this store instance ` +
               `is now POISONED and will refuse all further calls.`,
           );
         }
@@ -410,7 +429,7 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
       throw new Error(
         `createFileSessionStore: this store instance is POISONED and refuses all further calls ` +
           `(${callerLabel}) -- a prior advance() call accepted a receipt into the live in-memory ` +
-          `chain but then failed to durably persist it to disk (${poisoned.message}). Continuing ` +
+          `chain but then failed to durably persist it to disk (${poisonCause}). Continuing ` +
           `would let the live chain silently diverge from what a restart would reload from disk. ` +
           `Restart the process against "${dir}" -- reloadAll() will either resume cleanly from the ` +
           `last GOOD line on disk, or refuse to start with a clear error if the failed write left a ` +
@@ -447,11 +466,13 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
         // FATAL, un-rollback-able inconsistency — see the module docstring's "FAIL-CLOSED
         // POISON" section: `inner` has no API to undo an already-succeeded advance(), so this
         // store instance's disk and in-memory state are now PROVABLY diverged. Poison it (every
-        // subsequent call rejects) and fail THIS call closed too.
-        poisoned = err;
+        // subsequent call rejects) and fail THIS call closed too. The flag is set from PRESENCE of a
+        // failure, never the thrown value's truthiness — a `throw 0`/`throw null` here still poisons.
+        poisoned = true;
+        poisonCause = describeThrown(err);
         throw new Error(
           `createFileSessionStore: receipt was accepted into the live in-memory chain but FAILED ` +
-            `to persist to disk (${err.message}) — this store instance is now POISONED and refuses ` +
+            `to persist to disk (${poisonCause}) — this store instance is now POISONED and refuses ` +
             `all further calls. Restart the process against "${dir}".`,
         );
       }
@@ -471,10 +492,11 @@ export function createFileSessionStore(dir, { idleTtlMs, maxSessions, sweepInter
         // is a direct external entry point (never invoked from inner's own internal machinery, see
         // the onEvict callback above for that distinct case), so throwing synchronously here is
         // safe and matches advance()'s own contract — poison rather than silently warn-and-continue.
-        poisoned = err;
+        poisoned = true;
+        poisonCause = describeThrown(err);
         throw new Error(
           `createFileSessionStore: session "${sessionId}" (tenant "${tenant}") was ended in memory ` +
-            `but its end-tombstone FAILED to persist to disk (${err.message}) — this store instance ` +
+            `but its end-tombstone FAILED to persist to disk (${poisonCause}) — this store instance ` +
             `is now POISONED and refuses all further calls. Restart the process against "${dir}".`,
         );
       }

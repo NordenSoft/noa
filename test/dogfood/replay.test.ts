@@ -10,6 +10,7 @@
 
 import { describe, it, expect } from "vitest";
 import { verifyChain } from "../../src/verify.js";
+import { buildReceipt } from "../../src/builder.js";
 import { canonicalize } from "../../src/jcs.js";
 import { sha256Prefixed } from "../../src/hash.js";
 import type { Receipt } from "../../src/types.js";
@@ -22,6 +23,7 @@ import {
   REFUND_CEILING_MINOR,
 } from "./proxy.js";
 import { replay, assertReplayReproduces, REF_EVAL_VERSION } from "./replay.js";
+import { b } from "../helpers/bytes.js";
 
 /** A different valid "sha256:<64hex>" string (last hex char advanced), for tamper tests. */
 function flipSha256(prefixed: string): string {
@@ -48,7 +50,7 @@ describe("dogfood: emit -> replay -> verify round-trip", () => {
     expect(receipt.governance.compliance?.verdict).toBe("ALLOW");
     expect(receipt.governance.verdict).toBe("EXECUTED");
 
-    const r = replay(receipt, policy, inputs, { keyring: signer.keyring });
+    const r = replay(receipt, policy, inputs, { keyring: b(signer.keyring) });
     expect(r.engine).toBe(REF_EVAL_VERSION);
     expect(r.recordedVerdict).toBe("ALLOW");
     expect(r.reproducedVerdict).toBe("ALLOW");
@@ -57,9 +59,9 @@ describe("dogfood: emit -> replay -> verify round-trip", () => {
     expect(r.reproducedRuleFired).toBe("allow-refund");
 
     // the exercise form throws nothing on a faithful round-trip…
-    expect(() => assertReplayReproduces(receipt, policy, inputs, { keyring: signer.keyring })).not.toThrow();
+    expect(() => assertReplayReproduces(receipt, policy, inputs, { keyring: b(signer.keyring) })).not.toThrow();
     // …and the carrier is a VALID signed chain against the trust root.
-    expect(verifyChain([receipt], { keyring: signer.keyring }).status).toBe("VALID");
+    expect(verifyChain(b([receipt]), { keyring: b(signer.keyring) }).status).toBe("VALID");
   });
 
   it("reproduces a DENY decision byte-for-byte (refund at the ceiling, $10,000.00)", () => {
@@ -75,7 +77,7 @@ describe("dogfood: emit -> replay -> verify round-trip", () => {
     expect(receipt.governance.compliance?.verdict).toBe("DENY");
     expect(receipt.governance.verdict).toBe("BLOCKED");
 
-    const r = replay(receipt, policy, inputs, { keyring: signer.keyring });
+    const r = replay(receipt, policy, inputs, { keyring: b(signer.keyring) });
     expect(r.recordedVerdict).toBe("DENY");
     expect(r.reproducedVerdict).toBe("DENY");
     expect(r.reproducedByteForByte).toBe(true);
@@ -98,7 +100,7 @@ describe("dogfood: emit -> replay -> verify round-trip", () => {
       signer,
       e0.receipt,
     );
-    const res = verifyChain([e0.receipt, e1.receipt], { keyring: signer.keyring });
+    const res = verifyChain(b([e0.receipt, e1.receipt]), { keyring: b(signer.keyring) });
     expect(res.status).toBe("VALID");
     expect(res.count).toBe(2);
   });
@@ -119,11 +121,11 @@ describe("dogfood: a tampered receipt FAILS", () => {
     tampered.governance.compliance!.inputsHash = flipSha256(tampered.governance.compliance!.inputsHash);
 
     // carrier integrity: the signed body changed, so the stale hash/signature no longer verify.
-    expect(verifyChain([tampered], { keyring: signer.keyring }).status).toBe("TAMPERED");
+    expect(verifyChain(b([tampered]), { keyring: b(signer.keyring) }).status).toBe("TAMPERED");
     // L2 proof: the committed inputsHash no longer matches the recorded inputs.
-    const r = replay(tampered, policy, inputs, { keyring: signer.keyring });
+    const r = replay(tampered, policy, inputs, { keyring: b(signer.keyring) });
     expect(r.complianceOk).toBe(false);
-    expect(() => assertReplayReproduces(tampered, policy, inputs, { keyring: signer.keyring })).toThrow();
+    expect(() => assertReplayReproduces(tampered, policy, inputs, { keyring: b(signer.keyring) })).toThrow();
   });
 
   it("a receipt forged to the OPPOSITE verdict is rejected (verdict reconciliation)", () => {
@@ -137,20 +139,32 @@ describe("dogfood: a tampered receipt FAILS", () => {
     );
     expect(receipt.governance.compliance?.verdict).toBe("ALLOW"); // committed the TRUE decision
 
-    // Forge: flip the recorded verdict to DENY while the inputs still evaluate to ALLOW.
-    const forged: Receipt = structuredClone(receipt);
-    forged.governance.compliance!.verdict = "DENY";
+    // Forge: flip the recorded verdict to DENY while the inputs still evaluate to ALLOW, and RE-SIGN
+    // so the carrier is genuinely authentic. H2 (review #6) requires a keyring for any positive
+    // result, and a stale signature would then reject at carrier auth BEFORE the semantic rule ran —
+    // which would leave the verdict-reconciliation rule this test exists for completely unexercised.
+    // Re-signing makes the test strictly harder: every signature is real and only the rule catches it.
+    const forgedBody: Receipt = structuredClone(receipt);
+    forgedBody.governance.compliance!.verdict = "DENY";
+    const forged: Receipt = buildReceipt(
+      { id: forgedBody.id, ts: forgedBody.ts, scope: forgedBody.scope, agent: forgedBody.agent, action: forgedBody.action, governance: forgedBody.governance as never },
+      null,
+      signer.signer,
+    );
 
-    // L2 proof (no keyring — isolates the semantic reconciliation from carrier auth): the re-run
-    // reproduces ALLOW, which does NOT equal the forged recorded DENY ⇒ ok:false.
-    const r = replay(forged, policy, inputs);
+    // H2 (review #6): the keyring is now REQUIRED for any positive verdict, so it is supplied here
+    // too. That makes this test STRICTER, not weaker — carrier auth and the semantic reconciliation
+    // must BOTH reject, and the assertion below still pins the semantic reason. (Isolating the
+    // semantic rule by omitting the trust root is exactly how a false green got frozen elsewhere.)
+    const r = replay(forged, policy, inputs, { keyring: b(signer.keyring) });
     expect(r.reproducedVerdict).toBe("ALLOW");
     expect(r.reproducedByteForByte).toBe(false);
     expect(r.complianceOk).toBe(false);
     expect(r.complianceReason).toMatch(/verdict mismatch/);
     expect(r.reproducedComplianceVerdict).toBe("ALLOW");
-    // carrier integrity: the body changed under a stale signature.
-    expect(verifyChain([forged], { keyring: signer.keyring }).status).toBe("TAMPERED");
+    // …and the STALE-signature variant of the same forgery is caught independently by carrier auth.
+    expect(verifyChain(b([forgedBody]), { keyring: b(signer.keyring) }).status).toBe("TAMPERED");
+    expect(replay(forgedBody, policy, inputs, { keyring: b(signer.keyring) }).complianceOk).toBe(false);
   });
 
   it("substituted INPUTS are rejected (inputsHash bind) even when the re-run verdict matches", () => {
@@ -166,7 +180,7 @@ describe("dogfood: a tampered receipt FAILS", () => {
     // Different amount that ALSO evaluates to ALLOW — so the verdict alone cannot catch this;
     // the inputsHash bind is what does.
     const wrongInputs = { action: "payment.refund", amountMinor: 999_999 };
-    const r = replay(receipt, policy, wrongInputs);
+    const r = replay(receipt, policy, wrongInputs, { keyring: b(signer.keyring) });
     expect(r.reproducedVerdict).toBe("ALLOW");
     expect(r.reproducedByteForByte).toBe(true); // coincidentally still ALLOW…
     expect(r.complianceOk).toBe(false); // …but the recorded inputs were NOT these.
@@ -189,7 +203,7 @@ describe("dogfood: a tampered receipt FAILS", () => {
       requiredPaths: [],
       rules: [{ id: "always", when: { op: "exists", path: "action" }, then: "ALLOW" }],
     };
-    const r = replay(receipt, permissive, inputs);
+    const r = replay(receipt, permissive, inputs, { keyring: b(signer.keyring) });
     expect(r.complianceOk).toBe(false);
     expect(r.complianceReason).toMatch(/policyHash mismatch/);
   });

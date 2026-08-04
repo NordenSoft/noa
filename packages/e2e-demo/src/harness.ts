@@ -100,7 +100,10 @@ export async function setupHarness(opts: { echo?: boolean; sink?: string[] } = {
       if (event === 'hold.created' && typeof fields['holdId'] === 'string') gateHoldQueue.push(fields['holdId']);
     },
   });
-  const relay = createRelay({ config: { port: 0, now: () => clock.now() }, log: (event, fields) => logger.child('relay').event(event, fields) });
+  // R8-07: enrolment is CLOSED by default now — anonymous credential minting was measured running
+  // end to end through an undeclared reverse proxy. This demo mints its own agent and device on
+  // loopback, so it declares the development opt-in explicitly rather than inheriting one.
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true, now: () => clock.now() }, log: (event, fields) => logger.child('relay').event(event, fields) });
 
   // register the gate-side agent credential (the gate has no pairing endpoint; agents are provisioned).
   const gateAgent: AgentRecord = { id: 'gate-agent-1', name: 'demo-agent', apiKeyHash: hashSecret(GATE_AGENT_KEY), createdAt: clock.now() };
@@ -108,17 +111,40 @@ export async function setupHarness(opts: { echo?: boolean; sink?: string[] } = {
 
   const g = await gate.listen();
   const r = await relay.listen();
-  const gateBaseUrl = `http://127.0.0.1:${g.port}`;
-  const relayBaseUrl = `http://127.0.0.1:${r.port}`;
 
-  // 4. Onboard the transport bridge (relay agent) + the phone (relay device).
-  const { apiKey: relayAgentKey } = await registerRelayAgent(relayBaseUrl, 'demo-bridge');
-  const bridge = new GateRelayBridge(relayBaseUrl, relayAgentKey, logger.child('bridge'));
-  const { deviceSecret } = await registerRelayDevice(relayBaseUrl, phone.approverKid, phone.approverPublicKeyRawHex);
-  const phoneClient = new PhoneRelayClient(relayBaseUrl, deviceSecret, logger.child('phone'));
+  // ── FROM HERE ON THIS FUNCTION OWNS TWO LISTENING SOCKETS, AND MUST NOT LEAK THEM ─────────────
+  // Every caller writes `const ctx = await setupHarness(); try { … } finally { teardownHarness(ctx) }`
+  // — so the try/finally starts AFTER this function returns. Anything that throws BELOW this line
+  // therefore left the gate and relay listening with nobody holding a reference to close them, and
+  // Node cannot exit while a server is listening.
+  //
+  // MEASURED, 2026-07-31, and the failure mode is the point: the R8-07 enrolment change made
+  // `registerRelayDevice` return 503 here. The demo did not fail — it HUNG. Eight such processes
+  // accumulated at 0.0% CPU holding 42 listening sockets, up to 2h20m each, and were reported to the
+  // owner as "running" because a hang and slow work are indistinguishable from outside.
+  //
+  // A failure that presents as a hang is worse than a crash: a crash names itself. So a function
+  // that opens a resource and can then throw closes it on the way out, and the original error is
+  // rethrown untouched — a cleanup failure must never mask the fault that triggered it.
+  try {
+    const gateBaseUrl = `http://127.0.0.1:${g.port}`;
+    const relayBaseUrl = `http://127.0.0.1:${r.port}`;
 
-  logger.event('harness.ready', { gate: g.port, relay: r.port, tenant: TENANT, approverKid: phone.approverKid });
-  return { clock, ids, logger, authority, phone, trust, tenantRoot, gate, relay, gateBaseUrl, relayBaseUrl, bridge, phoneClient, gateHoldQueue };
+    // 4. Onboard the transport bridge (relay agent) + the phone (relay device).
+    const { apiKey: relayAgentKey } = await registerRelayAgent(relayBaseUrl, 'demo-bridge');
+    const bridge = new GateRelayBridge(relayBaseUrl, relayAgentKey, logger.child('bridge'));
+    const { deviceSecret } = await registerRelayDevice(relayBaseUrl, phone.approverKid, phone.approverPublicKeyRawHex, relayAgentKey);
+    const phoneClient = new PhoneRelayClient(relayBaseUrl, deviceSecret, logger.child('phone'));
+
+    logger.event('harness.ready', { gate: g.port, relay: r.port, tenant: TENANT, approverKid: phone.approverKid });
+    return { clock, ids, logger, authority, phone, trust, tenantRoot, gate, relay, gateBaseUrl, relayBaseUrl, bridge, phoneClient, gateHoldQueue };
+  } catch (err) {
+    // Best-effort, and deliberately swallowing only the CLOSE errors: if closing also fails there is
+    // nothing further to do, and letting that failure propagate would replace a precise diagnosis
+    // ("the relay refused enrolment with 503") with a vague one ("close failed").
+    await Promise.allSettled([gate.close(), relay.close()]);
+    throw err;
+  }
 }
 
 export async function teardownHarness(ctx: HarnessContext): Promise<void> {
@@ -406,22 +432,36 @@ export interface EncryptedDisplayProbe {
 export async function runEncryptedDisplayRoundTrip(ctx: HarnessContext): Promise<EncryptedDisplayProbe> {
   const chain = 'chain-' + ctx.ids();
   const idem = 'idem-' + ctx.ids();
-  const knownDisplay: J = {
-    title: 'Wire transfer approval',
-    amountMinor: 420000, // integer minor units (€4,200.00)
-    currency: 'EUR',
-    to: 'ACME GmbH',
-    memo: 'invoice 2026-0715',
+  // ─── MIGRATED OFF RAW, 2026-07-30 (owner decision B-1's migration clause) ──────────────────────
+  // This probe used to create a RAW hold on the unregistered `noa.custom.wire` and hand the gate a
+  // caller-authored `display`. Both of those are now refused: an unmatched action classifies to the
+  // highest tier and fails closed, and a caller no longer authors what the human reads.
+  //
+  // The probe's SUBJECT is unchanged and is not RAW mode — it is the HPKE round trip: the gate seals a
+  // display, the phone opens it locally, the plaintext is EXACT, and a tampered ciphertext is refused.
+  // That is now exercised on the ENFORCED path, which is the only path that can reach a sealer, so the
+  // probe covers the shape that actually ships rather than a diagnostic one.
+  //
+  // `expectedDisplay` is re-derived HERE, by hand, from the params being sent — deliberately NOT read
+  // back from the gate. The gate keeps no plaintext copy (only `encryptedDisplay`), so comparing the
+  // phone's decrypted view against an independent derivation is a genuine oracle. Reading both sides
+  // from one source would be the tautology this project keeps catching.
+  const params = deployCommandParams();
+  const expectedDisplay: J = {
+    Action: PILOT_CANONICAL,
+    Command: params['executable'] as string,
+    Args: (params['argv'] as string[]).join(' '),
+    Cwd: params['cwd'] as string,
+    Env: params['targetEnv'] as string,
   };
-  const paramsHash = 'sha256:' + 'a'.repeat(64);
   const res = await fetch(`${ctx.gateBaseUrl}/v1/holds`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${GATE_AGENT_KEY}`, 'idempotency-key': idem },
-    body: JSON.stringify({ mode: 'RAW', action: { canonical: 'noa.custom.wire', riskClass: 'HIGH', paramsHash }, display: knownDisplay, chain }),
+    body: JSON.stringify({ mode: 'ENFORCED', action: { canonical: PILOT_CANONICAL, riskClass: PILOT_RISK }, params, chain }),
   });
   const body = (await res.json().catch(() => null)) as J | null;
   const gateHoldId = body && typeof body['holdId'] === 'string' ? (body['holdId'] as string) : '';
-  if (res.status !== 201 || !gateHoldId) throw new DemoError('GATE', 'GATE_HOLD_FAILED', 'RAW hold for the encrypted-display probe failed', { status: res.status, body });
+  if (res.status !== 201 || !gateHoldId) throw new DemoError('GATE', 'GATE_HOLD_FAILED', 'ENFORCED hold for the encrypted-display probe failed', { status: res.status, body });
 
   const hold = ctx.gate.store.getHold(gateHoldId);
   if (!hold || !hold.holdEnvelope || !hold.deferredReceipt || !hold.encryptedDisplay) {
@@ -458,5 +498,5 @@ export async function runEncryptedDisplayRoundTrip(ctx: HarnessContext): Promise
     tamperErrorCode = e instanceof DemoError ? e.code : 'UNKNOWN';
   }
 
-  return { knownDisplay, openedDisplay: view.display, isRealHpke, actualDisplayHash, envelopeDisplayHash, tamperRejected, tamperErrorCode };
+  return { knownDisplay: expectedDisplay, openedDisplay: view.display, isRealHpke, actualDisplayHash, envelopeDisplayHash, tamperRejected, tamperErrorCode };
 }

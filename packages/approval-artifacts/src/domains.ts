@@ -8,6 +8,8 @@
  * constants; each is distinct from every other and from the receipt/checkpoint tags upstream.
  */
 
+import { frozenTable } from "./inert-core/inert.js";
+
 export type SignerType = "GATE" | "APPROVER" | "AUDIT" | "ROOT";
 export type ManifestRole =
   | "hold-signer"
@@ -29,7 +31,13 @@ export interface ArtifactMeta {
   signerRole: ManifestRole | null;
 }
 
-export const ARTIFACTS: Record<string, ArtifactMeta> = {
+// INERT AT LOAD (review #6, C3 — found by the policy-table walker, not by a reviewer). This is the §6
+// authority table: which specs exist, which domain tag each is signed under, and which signer TYPE and
+// ROLE each requires. It was a plain mutable object, so
+// `ARTIFACTS["noa.decision/0.1"].signerRole = "anything"` rewrote, at runtime, who may sign an
+// approval — the same class as review #5's mutable Set and review #6's mutable outcome tables, in a
+// third file. `frozenTable` deep-freezes it and refuses anything mutable at construction.
+export const ARTIFACTS: Record<string, ArtifactMeta> = frozenTable({
   "noa.hold/0.1": {
     spec: "noa.hold/0.1",
     domain: "NOA-Hold-v0.1-sig",
@@ -118,9 +126,11 @@ export const ARTIFACTS: Record<string, ArtifactMeta> = {
     signerType: null,
     signerRole: null,
   },
-};
+});
 
 /** The eight signed artifact `spec`s whose domain tags MUST all be distinct (anti-replay). */
-export const SIGNED_SPECS = Object.values(ARTIFACTS)
-  .filter((m) => m.domain !== null)
-  .map((m) => m.spec);
+export const SIGNED_SPECS: readonly string[] = frozenTable(
+  Object.values(ARTIFACTS)
+    .filter((m) => m.domain !== null)
+    .map((m) => m.spec),
+);

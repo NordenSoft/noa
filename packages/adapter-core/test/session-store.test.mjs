@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, verifyChain } from "noa-receipt";
+import { b } from "./helpers/bytes.mjs";
 import {
   createChainSessionStore,
   prepareSessionReceipt,
@@ -161,7 +162,7 @@ test("prepareSessionReceipt/commitSessionReceipt: instanceToken override + seedS
 
   const combined = [p1.receipt, p2.receipt, p3.receipt];
   assert.equal(new Set(combined.map((r) => r.scope.chain)).size, 1, "all 3 receipts must share the exact same scope.chain across the simulated restart");
-  const v = verifyChain(combined, { keyring });
+  const v = verifyChain(b(combined), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
   assert.equal(v.count, 3);
   store2.dispose();

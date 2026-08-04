@@ -1,13 +1,13 @@
 {
-  "description": "STEP_11: EXECUTION_FAILED but failedReceipt.governance.verdict != FAILED",
+  "description": "STEP_19/BOUNDARY-1: DENIED but blockedReceipt.governance.verdict != BLOCKED (fully re-signed, every hash binds)",
   "expectVerdict": "INVALID",
-  "expectStep": "STEP_11_EXECUTION_FAILED",
-  "expectCode": "E_EXECUTION_FAILED",
+  "expectStep": "STEP_19_RECEIPT_ROLE_INTEGRITY",
+  "expectCode": "E_RECEIPT_ROLE",
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {
     "spec": "noa.approval-evidence/0.1",
-    "outcome": "EXECUTION_FAILED",
+    "outcome": "DENIED",
     "holdEnvelope": {
       "spec": "noa.hold/0.1",
       "holdId": "hold-001",
@@ -27,7 +27,7 @@
       },
       "canonicalization": "JCS-RFC8785",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:f0d96146653426b378236120d9f8c4a4077eed35b00ffd94083d12733f367a35",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "tenant": "tenant-acme",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "nonce": "envelope-nonce-01",
@@ -35,7 +35,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "u+WZ3RdXph0K2ZjTWpdVPFoWD7oUlgKUccclg6A97ykhqu/J5NZJX7jsLFlZaJOA9IHodedXVSnBTEqDiY2eBg=="
+        "value": "0sSXFUpEMfgAK9Jacoa9TYWGnLmU27qlEMeI08wupPGn8n3uJ48hd6lFnNSQw8JkM18Ot6FldNxeO60i6fRVCg=="
       }
     },
     "deferredReceipt": {
@@ -79,7 +79,7 @@
       "spec": "noa.key-manifest/0.1",
       "tenant": "tenant-acme",
       "version": 2,
-      "issuedAt": "2026-07-14T09:30:00.000Z",
+      "issuedAt": "2026-07-14T10:30:00.000Z",
       "expiresAt": "2026-07-15T09:30:00.000Z",
       "previousManifestHash": null,
       "keys": [
@@ -130,7 +130,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "manifest-signer-3",
-        "value": "qbcPdgnriRZEgkdS2vAYYX/RWJqIfzp0lYgj1z6niqLMpL2iZP3q872iKRb4jRjV89SXjVKQSy3PeYHvby9DBQ=="
+        "value": "49QimrPznzz9h17Bm4lyMyH9sprj+p1+7Ywt4I0OQhiwASoOrtRRL9TCziSlX+Ae8WUvoU/az1N9na+QXvRXAg=="
       }
     },
     "keyDelegation": {
@@ -152,23 +152,23 @@
     "holdResolution": {
       "spec": "noa.hold-resolution/0.1",
       "holdId": "hold-001",
-      "holdEnvelopeHash": "sha256:4e27da8c80bd06dcf3b2ead2ee0e35315c57c1ba9d2e1aab41bcdbb8ae2bf8f6",
-      "decisionArtifactHash": "sha256:03dabe293d3bbab1a05045100edc4791e768431be63dfe472e2db3a6fcb9a4c5",
-      "verdictReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
-      "status": "APPROVED",
+      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
+      "decisionArtifactHash": "sha256:dafe9a09c3cfd92feafc85feca01857cd18b03255e0e336c20631018a7f04aab",
+      "verdictReceiptHash": "sha256:db3883c78c566621590246971f26b143fc2312ce934ae5c86472ee3de7881218",
+      "status": "DENIED",
       "reasonCode": null,
       "receivedAt": "2026-07-14T11:56:30.000Z",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:f0d96146653426b378236120d9f8c4a4077eed35b00ffd94083d12733f367a35",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "ktmoLtN8Lxpub2miPPKQO7x3DrNDIoZ1dH8qdwORv8h2+DFWaqqoqTJYfShpW+5KOQiYapjT9Cy18HFnBaByDQ=="
+        "value": "JXaTUplgHoyDwk1DuXgOOAVPC+9EEaFsYUsFAssBjssMmMQXuJgwvBybIdCJKahtIplSFOHXGXWNndJq0euqCg=="
       }
     },
-    "allowedReceipt": {
+    "blockedReceipt": {
       "spec": "noa.receipt/0.1",
-      "id": "rcpt_allowed",
+      "id": "rcpt_blocked",
       "ts": "2026-07-14T11:56:30.000Z",
       "scope": {
         "tenant": "tenant-acme",
@@ -190,7 +190,7 @@
       "governance": {
         "mode": "on",
         "verdict": "ALLOWED",
-        "ruleId": "human-approved",
+        "ruleId": "human-denied",
         "approval": {
           "by": "approver-1-device-2",
           "at": "2026-07-14T11:56:30.000Z"
@@ -200,18 +200,18 @@
       "chain": {
         "seq": 1,
         "prevHash": "sha256:b72deb557c8efc8d669bd934f94db302ce2a38ecaf9b6003d6c326e457f8cc8d",
-        "hash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c"
+        "hash": "sha256:db3883c78c566621590246971f26b143fc2312ce934ae5c86472ee3de7881218"
       },
       "sig": {
         "alg": "ed25519",
         "kid": "approver-1-device-2",
-        "value": "AnLk2jkvVUokmtIYqGSCqEUGZL2xKi1bflQNq3w+anl1FEPpmRJyEIbs0m8tzdbmqbkrdUsmc6brnYLnXVuDBQ=="
+        "value": "jnsRmszg13bihf/0qFMwI9bo68swpK0/ewvypYYLOFd7LMpQB9SNVrlyT7Njc/iisd8KgkhUibuhNU7gv6cDCA=="
       }
     },
     "decisionArtifact": {
       "spec": "noa.decision/0.1",
-      "holdEnvelopeHash": "sha256:4e27da8c80bd06dcf3b2ead2ee0e35315c57c1ba9d2e1aab41bcdbb8ae2bf8f6",
-      "decision": "APPROVE",
+      "holdEnvelopeHash": "sha256:a0e588fdc0ba3a822e25af6b6ce41860baa2fb2e10d66672eae79cff9d6042c5",
+      "decision": "DENY",
       "reasonCode": "vendor-verified",
       "reasonEncryption": {
         "spec": "noa.encrypted-reason/0.1",
@@ -230,85 +230,19 @@
       "sig": {
         "alg": "ed25519",
         "kid": "approver-1-device-2",
-        "value": "KW+XyfdxNT/0fi+mZeoEtD+FSZAjpMUJPn80Pm2EBMhvzXy3MkY4dWmREtXflrVmEMCWUtvEB/biGHXLdxTHCg=="
-      }
-    },
-    "executionGrant": {
-      "spec": "noa.execution-grant/0.1",
-      "grantId": "grant-001",
-      "holdId": "hold-001",
-      "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "holdEnvelopeHash": "sha256:4e27da8c80bd06dcf3b2ead2ee0e35315c57c1ba9d2e1aab41bcdbb8ae2bf8f6",
-      "approvalReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
-      "issuedAt": "2026-07-14T11:57:00.000Z",
-      "expiresAt": "2026-07-14T12:30:00.000Z",
-      "maxUses": 1,
-      "nonce": "grant-nonce-01",
-      "sig": {
-        "alg": "ed25519",
-        "kid": "gate-prod-1",
-        "value": "ClfJOj2qRBNTsN/h+I3yO/uTYaYC+UEyJ7gnpvtKxsOweJHm0SAB/hLzyS1qBhoPdW0q3HdTJfFeaooYezM6Cg=="
-      }
-    },
-    "executionConsumption": {
-      "spec": "noa.execution-consumption/0.1",
-      "grantHash": "sha256:903486ad56b7c388a311bd10b4969a579b37924f8dbcce147171751c1d7fb8cf",
-      "consumedAt": "2026-07-14T11:58:00.000Z",
-      "attemptReceiptHash": "sha256:6c9090abc8e880cb65a1008c212b8dd6368f184c40075b0d1866892e8325af42",
-      "result": "DISPATCHED",
-      "sig": {
-        "alg": "ed25519",
-        "kid": "gate-prod-1",
-        "value": "01xKDjTSwz+j1RyJ7tZnM8SsBjltVmugdRAEmIKfweH2f+4gSdbJyWtATvnGSBGzc/wF4HPDeOM+cmhzA1bVAQ=="
+        "value": "+EfCCoZtNbYwWEAZvMyDbK7luR0+C2wxaUO4vNMtnDtRs7lVxjQum9OuB4Li9oRsto7tLmpGaYx2mkXdDq1eBg=="
       }
     },
     "checkpoint": {
       "spec": "noa.checkpoint/0.1",
       "chain": "chain-acme-1",
-      "highestSeq": 2,
-      "headHash": "sha256:6c9090abc8e880cb65a1008c212b8dd6368f184c40075b0d1866892e8325af42",
+      "highestSeq": 1,
+      "headHash": "sha256:db3883c78c566621590246971f26b143fc2312ce934ae5c86472ee3de7881218",
       "ts": "2026-07-14T11:59:00.000Z",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "KnqdlUtgPXYgncCEZLWseizlod6dfX00KlMcaykLY5BLAc16X5AYYjqT08huFP1zpzHCeOhb5qobmcdoFlf4AQ=="
-      }
-    },
-    "failedReceipt": {
-      "spec": "noa.receipt/0.1",
-      "id": "rcpt_failed",
-      "ts": "2026-07-14T11:58:00.000Z",
-      "scope": {
-        "tenant": "tenant-acme",
-        "chain": "chain-acme-1"
-      },
-      "agent": {
-        "id": "agent-a",
-        "model": null,
-        "principal": "SERVICE"
-      },
-      "action": {
-        "id": "deploy.apply",
-        "canonical": "deploy.apply",
-        "riskClass": "HIGH",
-        "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-        "reversible": false,
-        "rollbackRef": null
-      },
-      "governance": {
-        "mode": "on",
-        "verdict": "ROLLED_BACK",
-        "sandboxed": false
-      },
-      "chain": {
-        "seq": 2,
-        "prevHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
-        "hash": "sha256:6c9090abc8e880cb65a1008c212b8dd6368f184c40075b0d1866892e8325af42"
-      },
-      "sig": {
-        "alg": "ed25519",
-        "kid": "gate-prod-1",
-        "value": "574Mt5mR3iTqfajsU8eiOrNjO034hh/xXa1DHpMvWWpB0ntUnQON/Eoy6Hk6d1YMwmy7632YGrXuUIEiM2WEBg=="
+        "value": "f777QxKQQvIk6gaAO3HnVoBhdR9waZojRQTuhkbKK4p7jcYOb/B1YRJ6RTqknWHn4hlTPC/Kt3Ndyy2ZjJUuAQ=="
       }
     }
   },

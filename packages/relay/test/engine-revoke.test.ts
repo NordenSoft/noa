@@ -18,7 +18,8 @@ const ACTION = { canonical: "infra.deploy", riskClass: "HIGH" as const, paramsHa
 
 test("revokeSelf sets revokedAt exactly once; a second call is idempotent (still 204, timestamp unchanged)", () => {
   const h = makeHarness();
-  const d = makeDevice(h);
+  const { agent } = makeAgent(h);
+  const d = makeDevice(h, agent);
   assert.equal(d.device.revokedAt, null);
 
   const first = h.engine.revokeSelf(d.device);
@@ -36,7 +37,8 @@ test("revokeSelf sets revokedAt exactly once; a second call is idempotent (still
 
 test("resolveDevice still finds a revoked device by its (unchanged) bearer secret hash", () => {
   const h = makeHarness();
-  const d = makeDevice(h);
+  const { agent } = makeAgent(h);
+  const d = makeDevice(h, agent);
   assert.equal(h.engine.revokeSelf(d.device).status, 204);
 
   const resolved = h.engine.resolveDevice(d.deviceSecret);
@@ -79,7 +81,7 @@ test("R3 — revokeSelf reloads AUTHORITATIVE store state: calling it TWICE with
 test("after revokeSelf, the signer-revoke check in decide() rejects — 403 DEVICE_REVOKED", () => {
   const h = makeHarness();
   const { agent } = makeAgent(h);
-  const d = makeDevice(h);
+  const d = makeDevice(h, agent);
   const created = h.engine.createHold(agent, "idem-1", { action: ACTION });
   const { holdId } = bodyOf<{ holdId: string }>(created);
 

@@ -1,11 +1,24 @@
 # noa-approval-evidence
 
 The §13 **Approval Evidence Bundle** (`noa.approval-evidence/0.1`, D11-v2) + the offline
-**`noa verify-evidence`** 18-step verifier for the NOA Mobile Approval App.
+**`noa verify-evidence`** 18-step verifier for the NOA Mobile Approval App (plus step 0's tenant-equality pre-rule and step 19's receipt-role integrity boundary — both verifier-owned, not §13).
 
-`verifyChain` proves receipt-chain integrity. `verify-evidence` proves the harder claim: *the human
-saw THIS context, decided THIS, and exactly this executed* — still a gate-boundary claim, never a
-downstream-outcome claim (Red Line 14).
+`verifyChain` proves receipt-chain integrity. `verify-evidence` proves the harder claim: *a
+**manifest-authorized approver key** saw THIS context, decided THIS, and exactly this executed* —
+still a gate-boundary claim, never a downstream-outcome claim (Red Line 14).
+
+> **NARROWED 2026-07-31 (R8-01/R8-C01).** This sentence used to say *"the human"*. It could not: the
+> gate compared `governance.approval.by`, `agent.principal` and `approval.at` to nothing, so the
+> legitimate approver device could sign an approval naming a DIFFERENT human at a time that had not
+> happened, and the chain returned `VALID_FULL_CHAIN`. Measured, then fixed — the gate now requires
+> `approval.by === approverKid === receipt.sig.kid`, `principal: "HUMAN"`, and an `approval.at`
+> inside the hold's own window.
+>
+> **What that buys, exactly:** the approval is bound to the KEY the tenant's key manifest authorized
+> as an approver. It does **not** bind to a PERSON. `agent.id` remains a signer-asserted label
+> (`THREAT-MODEL.md:92-94`); resolving it to a real human needs a tenant identity registry, which is
+> ADR-0006 and is not built. Read this verifier as *"an authorized approver key approved this"* — a
+> real and useful claim, and a smaller one than the sentence above once made.
 
 ## What it is
 

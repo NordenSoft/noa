@@ -28,4 +28,45 @@ export {
 // verify primitives the decision receipt is built/checked with, WITHOUT the mcp-proxy package
 // having to add a direct `noa-receipt` dependency it otherwise never carries. Purely additive —
 // no existing export changes.
-export { generateKeyPair, verifyChain, signEd25519, verifyEd25519, canonicalize, buildReceipt } from "noa-receipt";
+export {
+  generateKeyPair,
+  verifyChain,
+  signEd25519,
+  verifyEd25519,
+  canonicalize,
+  buildReceipt,
+  buildReceiptAsync,
+  resolveVerificationKey,
+  SIGNING_KEY_LIFECYCLE_SPEC,
+} from "noa-receipt";
+
+// BOUNDARY 2 — the ONE conversion from an arbitrary thrown value to a safe descriptor. Re-exported
+// from the package root as well as the `./safe-throw` subpath so no consumer has a reason to write
+// its own `e instanceof Error ? e.message : String(e)` ever again (see safe-throw.mjs, and
+// scripts/lint-thrown-value-handling.mjs, which fails the build when one does).
+export { describeThrown, describeThrownDetailed, isErrorLike, thrownName, thrownCode, truncateThrown, MAX_DESCRIPTION_LEN } from "./safe-throw.mjs";
+
+// The ONE "it already ran and the record could not be written" type, shared by every package that
+// can be in that state (framework-adapters, gate, mcp-proxy). Built ON the boundary above: its
+// anti-retry discriminator is exactly what an exotic thrown `cause` used to destroy.
+export { ToolOutcomeNotRecorded } from "./tool-outcome-not-recorded.mjs";
+
+// DESIGN 3 — the executable side-effect state machine. `SIDE_EFFECT_UNCONFIRMED` is a state, not a
+// guess: dispatch happened, the outcome is unknown, and it resolves ONLY through reconciliation
+// against the remote system of record. Specification + plan: docs/side-effect-unconfirmed.md.
+export {
+  SIDE_EFFECT_STATES,
+  SIDE_EFFECT_EVENTS,
+  EVIDENCE_OUTCOME_FOR,
+  IllegalSideEffectTransition,
+  next as nextSideEffectState,
+  replay as replaySideEffectEvents,
+  isSafeToRetry,
+  isTerminal as isTerminalSideEffectState,
+} from "./side-effect-state.mjs";
+
+// Re-exported so the sibling packages that depend on adapter-core (mcp-proxy) can take their
+// builtins from the SAME module-load capture without declaring a second path to the kernel.
+// mcp-proxy does not depend on `noa-receipt` directly — importing it there resolved at dev time
+// through the workspace and would have failed for every consumer of the published tarball.
+export { intrinsics } from "noa-receipt";

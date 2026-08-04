@@ -20,7 +20,7 @@ async function registerDevice(port: number, kid: string, seedByte: number): Prom
 }
 
 test("self-revoke: valid bearer → 204; device then 403 on device routes; second self-revoke is idempotent 204", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const deviceSecret = await registerDevice(port, "approver-selfrevoke", 21);
@@ -48,7 +48,7 @@ test("self-revoke: valid bearer → 204; device then 403 on device routes; secon
 });
 
 test("self-revoke: missing / unknown / wrong-scheme bearer fails closed with 401", async () => {
-  const relay = createRelay({ config: { port: 0 } });
+  const relay = createRelay({ config: { port: 0, allowAnonymousEnrolment: true } });
   const { port } = await relay.listen();
   try {
     const noAuth = await httpJson(port, "POST", "/v1/devices/self/revoke", {});

@@ -1,0 +1,22 @@
+{
+  "_why": [
+    "KURAL 29, refusal 5: a gate that always blocks gets switched off by a human, and then there is",
+    "no gate. This repository has a long-standing, DOCUMENTED red baseline. A pre-push hook that",
+    "blocks on it would be turned off within a day, so the hook blocks on NEW failures only.",
+    "",
+    "A baseline is a RATCHET, never a permit. `scripts/pre-push-gate.mjs` refuses when actual >",
+    "allowed, and PRINTS A DEMAND when actual < allowed: lower the number in the same commit that",
+    "earned it. A baseline that is never lowered has stopped measuring and started excusing.",
+    "",
+    "Every entry needs `why` and `since`. An entry with neither is an unexplained exemption, which is",
+    "the shape this project has repeatedly found hiding a real defect."
+  ],
+  "suites": {
+    "packages/gate": {
+      "allowedFailures": 0,
+      "why": "No exemption. Ratcheted 2 -> 1 -> 0 on 2026-08-03 as ADR-0006-A parts A and B landed (01dc642, 0e0d6a8). The entry is kept at zero rather than deleted so that the ratchet's history stays readable and a future red cannot be quietly re-baselined without editing a number someone has to justify.",
+      "since": "2026-08-03",
+      "closesWhen": "n/a — already zero. Raising this number requires a `why` and a `since`, and a reviewer who accepts them."
+    }
+  }
+}

@@ -2,8 +2,25 @@
  * NOA Relay — bearer auth for non-signing calls.
  *
  * Agents authenticate with `Authorization: Bearer noa_agent_<secret>`, devices with
- * `noa_device_<secret>` (spec §8 / FAZ-APP §4.2). Only the sha256 HASH of each secret is stored;
- * comparison is constant-time. These secrets are session/bearer credentials for TRANSPORT — they
+ * `noa_device_<secret>` (spec §8 / FAZ-APP §4.2). Only the sha256 HASH of each secret is stored.
+ *
+ * ⚠ CORRECTED 2026-07-31 (claim finding C09). This line read "comparison is constant-time". It is
+ * NOT, on this path: the bearer lookup is `store.ts:145-147`, a linear scan comparing with plain
+ * `===` and returning early on a match. `constantTimeEqualHex` DOES exist in this file (:58) and IS
+ * used — for the ENROLMENT SECRET, not for bearers. Three surfaces named a control that is not on
+ * the path (this comment, and `packages/relay/README.md`).
+ *
+ * The wording is corrected rather than the code, deliberately: making the per-entry compare
+ * constant-time would NOT make the sentence true, because the scan itself early-returns and its
+ * duration is dominated by how many agents precede the match. Claiming constant-time for an
+ * early-returning linear scan would replace one overclaim with another.
+ *
+ * WHAT THE COMPARISON IS OVER, which bounds the consequence: the stored value is a sha256 HASH, not
+ * the secret. Timing information about a hash comparison yields hash-prefix knowledge, and turning
+ * that into a usable bearer requires a preimage. This is a false CONTROL CLAIM, not an authorization
+ * bypass. Tracked as P1 (C09), not P0.
+ *
+ * These secrets are session/bearer credentials for TRANSPORT — they
  * are NOT signing keys and grant no ability to forge a receipt (the phone's Ed25519 device key,
  * held only on-device, is the sole approval signer).
  */

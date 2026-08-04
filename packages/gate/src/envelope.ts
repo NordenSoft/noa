@@ -11,6 +11,7 @@
 import { signArtifact, receiptRefHash, virtualHash } from "noa-approval-artifacts";
 import type { GateKeyPair } from "./trust.js";
 import type { EncryptedDisplay, HoldEnvelope, Mode, ProjectionId, Receipt } from "./types.js";
+import { encodeDocument } from "./bytes.js";
 
 export interface BuildHoldEnvelopeInput {
   holdId: string;
@@ -45,5 +46,5 @@ export function buildHoldEnvelope(input: BuildHoldEnvelopeInput): HoldEnvelope {
     nonce: input.nonce,
     gateKid: input.gate.kid,
   };
-  return signArtifact(doc, "NOA-Hold-v0.1-sig", { kid: input.gate.kid, privateKey: input.gate.privateKey }) as HoldEnvelope;
+  return signArtifact<typeof doc>(encodeDocument(doc), "NOA-Hold-v0.1-sig", { kid: input.gate.kid, privateKey: input.gate.privateKey }) as HoldEnvelope;
 }

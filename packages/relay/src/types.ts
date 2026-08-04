@@ -115,6 +115,26 @@ export interface AgentRecord {
   /** sha256 hex of "noa_agent_<secret>". Plaintext is never stored. */
   apiKeyHash: string;
   ownerDevice: string | null;
+  /**
+   * WHICH TENANT'S KEY MANIFEST THIS AGENT MAY PUBLISH. `null` means none, and null FAILS CLOSED.
+   *
+   * MEASURED BEFORE THIS FIELD EXISTED (R8-11, round 8, two independent reviewers): customer A
+   * authenticated with its own legitimate credential, put `"tenant": "customer-B"` in the manifest
+   * BODY, and the relay stored it. `GET /v1/trust?tenant=customer-B` then served A's keys as B's
+   * approver and root. Worse than the forgery: B's own next legitimate publish at the same version
+   * came back `409 MANIFEST_EQUIVOCATION`, so any authenticated customer could permanently wedge
+   * another customer's key rotation and recovery path.
+   *
+   * The tenant was read from `manifest["tenant"]` — the caller's own body — and `putManifest` did
+   * not take an agent at all, so there was nothing to check it against. Authentication answered
+   * "who are you"; nothing answered "and whose keys may you replace".
+   *
+   * Bound ONCE at pairing redemption, from the operator-issued pairing token, and never from a
+   * request body. `null` is refused rather than defaulted: an agent whose tenant nobody declared is
+   * exactly the agent that must not be able to publish, and the old `?? "default"` fallback is how
+   * an unscoped credential silently acquired a scope.
+   */
+  tenant: string | null;
   createdAt: number;
 }
 
@@ -127,6 +147,24 @@ export interface DeviceRecord {
   custodyTier: string;
   /** sha256 hex of "noa_device_<secret>" for non-signing session calls. */
   deviceSecretHash: string;
+  /**
+   * WHICH AGENT'S HOLDS THIS DEVICE MAY SEE AND DECIDE. `null` until an agent CLAIMS it with its own
+   * credential, and an unclaimed device can do nothing — it cannot list, read or decide any hold.
+   *
+   * MEASURED BEFORE THIS FIELD EXISTED: a device belonging to customer B, freshly enrolled and
+   * unrelated to customer A, called `listPending()` and received A's hold with its canonical action,
+   * risk class and paramsHash; then posted its OWN honestly-signed ALLOWED on A's hold and drove it
+   * to APPROVED / HUMAN_APPROVED. No forgery and no stolen credential — B simply approved someone
+   * else's action. With several customers on one relay that is one customer resolving another's
+   * approvals.
+   *
+   * `AgentRecord.ownerDevice` already existed for this and was never populated or read — a control
+   * that was designed and never wired. The binding is put here, on the DEVICE, because the question
+   * every device route must answer is "whose holds is THIS caller allowed to see", and answering it
+   * from the device record makes the check impossible to forget: there is no code path that reads a
+   * hold for a device without having the device in hand.
+   */
+  agentId: string | null;
   revokedAt: number | null;
   createdAt: number;
 }
@@ -142,6 +180,13 @@ export interface PushSubscriptionRecord {
 export interface PairingRecord {
   token: string;
   agentHint: string | null;
+  /**
+   * The tenant the redeemed agent will be scoped to (R8-11). Carried on the OPERATOR-ISSUED pairing
+   * token because that is the last point at which a party other than the agent decides anything
+   * about it — after redemption every byte the agent sends is its own. `null` yields a
+   * `tenant: null` agent, which cannot publish a manifest at all.
+   */
+  tenant: string | null;
   usedAt: number | null;
   expiresAt: number;
   createdAt: number;
@@ -167,4 +212,23 @@ export interface KeyManifestRecord {
   delegation?: Record<string, unknown> | null;
   refHash: string;
   createdAt: number;
+  /**
+   * PROVENANCE, not a number: set by `RelayEngine.putManifest` on every record it accepts under the
+   * R6 version bound. It is the ONLY thing that qualifies a stored record for re-genesis recovery
+   * (see engine.ts) — a record carrying this marker was produced by a conforming publish and is
+   * therefore never "residue", whatever its version happens to be.
+   *
+   * WHY THIS EXISTS. Recovery used to be gated on a NUMERIC threshold: a stored version above
+   * 1,000,000 "cannot have been produced by a conforming publish". That was false. Each publish may
+   * advance the counter by up to MAX_VERSION_JUMP (1,000), so 1,001 ordinary accepted publishes
+   * reach 1,000,001 — and the tenant then qualifies for recovery, which bypasses monotonic conflict
+   * handling entirely and lets the manifest be rolled back to version 1 with any key list. The
+   * threshold was walkable by exactly the operation it was assumed to be out of reach of.
+   *
+   * OPTIONAL, and absence is meaningful: a record WITHOUT the marker predates this field (pre-bound
+   * residue, or a snapshot written by an older relay) and is the only kind that may re-genesis. The
+   * field is `?:` for the same reason `delegation` is — this type is exported, and making it
+   * required would break external `Store`/record implementers at compile time.
+   */
+  publishedUnderVersionBound?: true;
 }

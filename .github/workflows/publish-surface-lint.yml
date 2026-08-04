@@ -30,3 +30,45 @@ jobs:
       - run: npm ci
       - name: Lint the published npm tarball surface (K4 internal-process jargon + K5 security-marketing claims)
         run: npm run lint:publish-surface
+      - name: Lint EVERY publishable workspace, not just the root (list derived, never hand-maintained)
+        # ── P1-10 ─────────────────────────────────────────────────────────────────────────────────
+        # The step above lints the ROOT package only. Measured: SEVEN publishable workspaces exist
+        # (`private !== true`), and at PR time exactly ONE was linted. `publish-mcp.yml:148,151` does
+        # pass `--dir` for adapter-core and mcp-proxy — but that workflow is TAG-triggered, so the
+        # coverage arrives after the claim is already written and reviewed.
+        #
+        # Never linted at PR time, until now: approval-artifacts, framework-adapters, signer-sidecar,
+        # tsa-anchor. An absolute — *undefeatable, cannot, never, always, constant-time, atomic,
+        # proves, guarantee* — could be written into any of them with nothing checking it. Three of
+        # the audit's own claim findings (C08, C09, C19) are exactly what this would have caught
+        # mechanically.
+        #
+        # The list is DERIVED from the manifests, following the same reasoning as ci.yml's
+        # kernel-dependency step: a hand-written list is how this class of check rots — someone adds a
+        # publishable package, nobody updates the list, and the gate silently stops covering it.
+        #
+        # FAIL CLOSED on an empty derivation. "The check could not run" and "the check passed" must
+        # never share an exit code, and a glob that silently matches nothing is the cheapest way to
+        # turn a gate into decoration.
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t DIRS < <(node -e '
+            const fs = require("node:fs");
+            for (const d of fs.readdirSync("packages", { withFileTypes: true })) {
+              if (!d.isDirectory()) continue;
+              const p = `packages/${d.name}/package.json`;
+              if (!fs.existsSync(p)) continue;
+              const m = JSON.parse(fs.readFileSync(p, "utf8"));
+              if (m.private !== true && m.name) console.log(`packages/${d.name}`);
+            }
+          ')
+          if [ "${#DIRS[@]}" -eq 0 ]; then
+            echo "::error::derived zero publishable workspaces — the derivation is broken, not the tree. Refusing to report success."
+            exit 1
+          fi
+          echo "linting ${#DIRS[@]} publishable workspace(s): ${DIRS[*]}"
+          for d in "${DIRS[@]}"; do
+            echo "── $d"
+            node scripts/lint-published-surface.mjs --dir "$d"
+          done

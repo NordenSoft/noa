@@ -1,0 +1,378 @@
+/**
+ * INERT DATA — values that inherit from nothing an attacker can reach, and policy tables that cannot
+ * be built mutable in the first place.
+ *
+ * TWO CLASSES, ONE ROOT CAUSE. The fifth review found a mutable `Set` in a frozen policy table
+ * (`Object.freeze` does not disable `Set.prototype.add`); the sixth found the same defect in the
+ * file next door, plus a NEW variant — a frozen array that still inherits the globally-mutable
+ * `Array.prototype`, so poisoning `Array.prototype.includes` made the frozen `["DEFERRED"]` policy
+ * row answer `true` to everything. Hand-freezing the tables a review happened to name closes neither
+ * class; the next table added by the next change is mutable again, and the frozen ones still
+ * inherit.
+ *
+ * This module removes both possibilities at the point of CONSTRUCTION:
+ *
+ *   • `INERT_ARRAY_PROTOTYPE` — a frozen, null-rooted prototype carrying PRISTINE copies of the
+ *     non-mutating `Array.prototype` methods plus a self-contained iterator. A snapshot array gets
+ *     this instead of `Array.prototype`, so `snap.includes(...)`, `for (const x of snap)` and
+ *     `[...snap]` all keep working and NONE of them can be redirected by mutating a global. There is
+ *     no mutator on it at all, so `push`/`sort`/`splice` are not merely frozen-out, they are absent.
+ *
+ *   • `frozenSet(...)` — a membership table with no `Set` in it. Its `has` is an own closure over a
+ *     private array, resolved with a pristine `indexOf`. `Object.freeze` genuinely freezes it,
+ *     because there is nothing inside whose mutators bypass freezing.
+ *
+ *   • `frozenTable(...)` — deep-freezes a policy table AND REFUSES, at construction time, to accept
+ *     anything that could later be mutated: a `Set`, a `Map`, a `Date`, a class instance, a function.
+ *     A table that would have been mutable does not become a frozen-looking mutable table; it throws
+ *     on the module's very first evaluation, in every process that imports it, including the build.
+ *     That is the "cannot be forgotten for the next table" property: the next table either goes
+ *     through here or is caught by `policy-tables-inert` (which walks every export of every entry
+ *     point and requires the same invariant of values that never came through this file).
+ */
+
+import {
+  ARRAY_PROTOTYPE,
+  INERT_ARRAY_PROTOTYPE,
+  OBJECT_PROTOTYPE,
+  arrayIndexOf,
+  arrayPush,
+  arraySlice,
+  getOwnPropertyDescriptor,
+  getPrototypeOf,
+  hasOwn,
+  isArray,
+  objectCreateNull,
+  objectDefineProperty,
+  objectFreeze,
+  objectGetOwnPropertyNames,
+  collectionBrand,
+  objectIsFrozen,
+  objectSetPrototypeOf,
+  newWeakSet,
+  weakSetHas,
+  weakSetAdd,
+  publishArray,
+} from "./intrinsics.js";
+
+/**
+ * ── MOVED 2026-07-29 (round-4 containment, A1) ───────────────────────────────────────────────────
+ * `INERT_ARRAY_PROTOTYPE` and the `MUTATORS` list it is built from now live in `src/intrinsics.ts`,
+ * and this module RE-EXPORTS the binding so every existing importer is unchanged.
+ *
+ * The move is not tidying. Round 4 measured the iterator/HOF class one call further out than round 3
+ * closed it: the captured wrappers `objectKeys`, `objectGetOwnPropertyNames`, `ownKeys`, `arraySlice`
+ * and `strSplit` MANUFACTURE a fresh ordinary array on every call, and a fresh ordinary array is
+ * rooted on the live `Array.prototype`. Making those wrappers hand back inert-rooted arrays is the
+ * fix, and a wrapper cannot re-root through a prototype defined in a module that imports it — the
+ * cycle would leave the captured `const`s in TDZ while this file's module-level construction ran.
+ * So the prototype moved DOWN to the capture module, which imports nothing.
+ *
+ * Its construction — including the refusal to copy accessor descriptors — is unchanged; see the
+ * docstring at the construction site in `src/intrinsics.ts`.
+ */
+export { INERT_ARRAY_PROTOTYPE } from "./intrinsics.js";
+
+/**
+ * Re-root a real array onto `INERT_ARRAY_PROTOTYPE` and freeze it. `Array.isArray` still answers
+ * true (it reads an internal slot, not the prototype), so every `Array.isArray` guard in the
+ * codebase keeps working on inert data.
+ */
+export function makeInertArray<T>(values: T[]): readonly T[] {
+  objectSetPrototypeOf(values, INERT_ARRAY_PROTOTYPE);
+  return objectFreeze(values);
+}
+
+/**
+ * RE-ROOT ONLY — no freeze. For arrays the PARSER emits (`safeParse`), where the security property
+ * and the ownership property point in opposite directions:
+ *
+ *   • the security property is the PROTOTYPE. Every `for…of`, spread, destructuring and HOF over
+ *     parsed data dispatches through the array's prototype, so re-rooting is what removes the
+ *     attacker's slot. That is delivered here in full.
+ *
+ *   • freezing delivers nothing against THIS threat model — the parsed array is a fresh object the
+ *     adversary holds no reference to; a prototype poison is a poison of the SHARED slot, not of our
+ *     private data — and it breaks a documented affordance: a caller owns its own parse and may
+ *     mutate it (`test/ingest.test.ts`, "re-verifying the same bytes always re-derives the same
+ *     tree"). `makeInertArray` freezes because a POLICY TABLE must not change after load; a parse
+ *     result is not a policy table.
+ *
+ * Measured, not assumed: with this prototype a poisoned `Array.prototype.forEach` / `[Symbol.iterator]`
+ * is not consulted, `Array.isArray` still answers true, and `JSON.stringify` is unchanged. What DOES
+ * change, and is asserted directly in `test/safe-json.test.ts` rather than left to be discovered:
+ * `parsed instanceof Array` is now false and `deepStrictEqual` against an array literal no longer
+ * matches, exactly as was already true for the null-prototype OBJECTS this parser has always emitted.
+ */
+export function inertArray<T>(values: T[]): T[] {
+  objectSetPrototypeOf(values, INERT_ARRAY_PROTOTYPE);
+  return values;
+}
+
+/** True iff `v` is an array that has been re-rooted onto the inert prototype. */
+export function isInertArray(v: unknown): boolean {
+  return isArray(v) && getPrototypeOf(v as object) === INERT_ARRAY_PROTOTYPE;
+}
+
+// ── frozenSet ─────────────────────────────────────────────────────────────────────────────────────
+
+const FROZEN_SET_BRAND = Symbol("noa.frozen-set");
+
+/**
+ * A membership table with no mutable collection inside it. Deliberately NOT a `Set`: `Object.freeze`
+ * does not disable `Set.prototype.add`/`delete`, which is how the fifth AND sixth reviews both
+ * widened a "frozen" policy table at runtime.
+ */
+export interface FrozenSet<T> {
+  /** Membership, resolved with a PRISTINE `indexOf` over a private frozen array. */
+  has(value: T): boolean;
+  /** The members, as an inert frozen array (safe to iterate and to read `.length` from). */
+  readonly values: readonly T[];
+  readonly size: number;
+}
+
+/** Build a `FrozenSet`. Duplicates collapse; the input array is copied, never retained. */
+export function frozenSet<T>(values: readonly T[]): FrozenSet<T> {
+  const members: T[] = [];
+  for (let i = 0; i < (values as { length: number }).length; i++) {
+    const v = values[i] as T;
+    if (arrayIndexOf(members, v) === -1) arrayPush(members, v);
+  }
+  const frozenMembers = makeInertArray(members);
+  const out = objectCreateNull<Record<PropertyKey, unknown>>();
+  objectDefineProperty(out as object, FROZEN_SET_BRAND, { value: true, enumerable: false, writable: false, configurable: false });
+  objectDefineProperty(out as object, "has", {
+    value: (value: T): boolean => arrayIndexOf(frozenMembers, value) !== -1,
+    enumerable: false, writable: false, configurable: false,
+  });
+  objectDefineProperty(out as object, "values", { value: frozenMembers, enumerable: true, writable: false, configurable: false });
+  objectDefineProperty(out as object, "size", { value: (frozenMembers as { length: number }).length, enumerable: true, writable: false, configurable: false });
+  return objectFreeze(out) as unknown as FrozenSet<T>;
+}
+
+/** True iff `v` was produced by `frozenSet`. */
+export function isFrozenSet(v: unknown): boolean {
+  return typeof v === "object" && v !== null && hasOwn(v as object, FROZEN_SET_BRAND);
+}
+
+// ── membership ────────────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ADR §5.5's membership primitive, and the strongest form available: **a direct own-property probe
+ * on a frozen null-prototype table.**
+ *
+ * `frozenSet` above is already unpoisonable — its `has` is an own closure over a pristine `indexOf`.
+ * This is stronger in two further ways that matter for the TCB's hottest paths:
+ *
+ *   1. NO METHOD IS CALLED ON THE TABLE AT ALL. `frozenSet(...).has(x)` still READS the property
+ *      `has` off a value before invoking it. That read is safe here because the object is frozen and
+ *      null-rooted, but "safe because of what this particular object is" is the reasoning that lost
+ *      four rounds in a row. `hasOwn(TABLE, x)` reads no property off the table; it passes the table
+ *      as an argument to a `hasOwnProperty` captured at module load.
+ *   2. IT IS MECHANICALLY VISIBLE. `scripts/lint-security-gates.mjs` L2 bans the TEXT `.has(` on a
+ *      TCB decision path, because a source lint cannot know whether a receiver is a `Set` or a
+ *      `frozenSet`. A primitive that reads correct AND lints clean is the one that survives the next
+ *      author, who will not have read this comment.
+ *
+ * The table is null-prototype, so `Object.prototype` pollution cannot forge a member (C-03's class),
+ * and frozen, so nothing can widen it after load (the `Set.prototype.add` class from reviews #5/#6).
+ */
+export function membership(values: readonly string[]): (v: unknown) => boolean {
+  const table = objectCreateNull<Record<string, true>>();
+  for (let i = 0; i < (values as { length: number }).length; i++) {
+    objectDefineProperty(table as object, values[i] as string, {
+      value: true, enumerable: true, writable: false, configurable: false,
+    });
+  }
+  objectFreeze(table);
+  return (v: unknown): boolean => typeof v === "string" && hasOwn(table as object, v);
+}
+
+// ── frozenTable ───────────────────────────────────────────────────────────────────────────────────
+
+/** Thrown at MODULE-EVALUATION time by `frozenTable` — a policy table that could be mutated later
+ *  never gets built, in any process, including the build itself. */
+export class MutablePolicyTableError extends Error {
+  constructor(message: string, public readonly path: string) {
+    super(message);
+    this.name = "MutablePolicyTableError";
+  }
+}
+
+function describe(v: unknown): string {
+  if (v === null) return "null";
+  const t = typeof v;
+  if (t !== "object" && t !== "function") return t;
+  if (t === "function") return "a function";
+  const proto = getPrototypeOf(v as object);
+  if (proto === null) return "a null-prototype object";
+  // CAPTURED (round-4, found by the AST gate). `proto.constructor?.name` walks two live property
+  // slots to build an ERROR MESSAGE. The message is not a verdict, but a value that decides what a
+  // human reads about a rejected policy table should not itself be attacker-steerable, and the read
+  // is the same class this module exists to close. Own-descriptor probes: no chain walk, no getter.
+  const ctorDesc = getOwnPropertyDescriptor(proto as object, "constructor");
+  const ctor = ctorDesc === undefined ? undefined : ctorDesc.value;
+  const nameDesc = ctor === undefined || ctor === null ? undefined : getOwnPropertyDescriptor(ctor as object, "name");
+  const ctorName = nameDesc === undefined ? undefined : nameDesc.value;
+  return typeof ctorName === "string" ? `a ${ctorName}` : "an exotic object";
+}
+
+/**
+ * Deep-freeze a policy table, RE-ROOT IT ONTO A NULL PROTOTYPE, and REFUSE anything that could be
+ * mutated after load.
+ *
+ * Accepted: primitives, plain objects (`Object.prototype`- or null-rooted), arrays, and `FrozenSet`s.
+ * Rejected (thrown, at construction): `Set`, `Map`, `WeakSet`, `WeakMap`, `Date`, `RegExp`, typed
+ * arrays, promises, class instances, and functions — every one of which either has mutators that
+ * survive `Object.freeze` or carries a prototype an attacker can reach.
+ *
+ * Arrays are re-rooted onto `INERT_ARRAY_PROTOTYPE`, so a policy table's membership arrays cannot be
+ * redirected by poisoning `Array.prototype`.
+ *
+ * ── C-03, AND WHY FREEZING WAS NEVER ENOUGH (ADR §5.6; fixed 2026-07-28) ─────────────────────────
+ * The previous version froze the table and LEFT IT ROOTED ON `Object.prototype`. Freezing an object
+ * says nothing about what it INHERITS, and a policy table is read by membership tests
+ * (`spec in TABLE`) and indexed reads (`TABLE[spec]`) — both of which walk the prototype chain.
+ * `c03_frozentable_proto.mjs` defined ONE property on `Object.prototype` and the frozen `ARTIFACTS`
+ * registry answered with it: an unsigned, unregistered artifact verified `{ok:true}` against a
+ * table nobody had modified. Nothing about the table changed, which is exactly why freezing it
+ * could not help.
+ *
+ * A null-rooted table has no chain to walk. `TABLE[x]` is `undefined` for every `x` that is not an
+ * own property, whatever `Object.prototype` says. That is the structural form of the control; the
+ * own-property probes at the call sites are the belt to this pair of braces.
+ */
+export function frozenTable<T>(table: T, path = "<table>"): T {
+  return freezeInert(table, path) as T;
+}
+
+function freezeInert(v: unknown, path: string): unknown {
+  if (v === null) return v;
+  const t = typeof v;
+  if (t === "string" || t === "number" || t === "boolean" || t === "bigint" || t === "undefined" || t === "symbol") return v;
+  if (t === "function") {
+    throw new MutablePolicyTableError(`policy table ${path} contains a function; a policy table must be inert data only`, path);
+  }
+  if (isFrozenSet(v)) return v; // already inert by construction
+  if (isArray(v)) {
+    const arr = v as unknown[];
+    for (let i = 0; i < arr.length; i++) freezeInert(arr[i], `${path}[${i}]`);
+    return makeInertArray(arr);
+  }
+  const proto = getPrototypeOf(v as object);
+  if (proto !== OBJECT_PROTOTYPE && proto !== null) {
+    throw new MutablePolicyTableError(
+      `policy table ${path} contains ${describe(v)}; only plain objects, arrays, FrozenSets and primitives are inert ` +
+      `(a Set/Map keeps its mutators through Object.freeze — that is the exact defect this refusal exists to prevent)`,
+      path,
+    );
+  }
+  const names = objectGetOwnPropertyNames(v as object);
+  for (let i = 0; i < names.length; i++) {
+    const k = names[i] as string;
+    const d = getOwnPropertyDescriptor(v as object, k);
+    if (d === undefined) continue;
+    if (d.get !== undefined || d.set !== undefined) {
+      throw new MutablePolicyTableError(`policy table ${path}.${k} is an ACCESSOR; a policy table must be plain data (an accessor can answer differently on two reads)`, `${path}.${k}`);
+    }
+    freezeInert(d.value, `${path}.${k}`);
+  }
+  // Re-root BEFORE freezing: `Object.setPrototypeOf` on a frozen object throws. A frozen table that
+  // still inherits from `Object.prototype` is the C-03 defect verbatim.
+  if (proto === OBJECT_PROTOTYPE) objectSetPrototypeOf(v as object, null);
+  return objectFreeze(v);
+}
+
+/**
+ * The read-only counterpart of `frozenTable`, for values that were NOT built through it (a table in
+ * a package that predates this module, an export from a dependency). Returns the list of violations
+ * instead of throwing, so a test can report every offending export in one run.
+ */
+export function inertViolations(v: unknown, path: string, seen: WeakSet<object> = newWeakSet()): string[] {
+  const out: string[] = [];
+  const walk = (value: unknown, at: string): void => {
+    if (value === null) return;
+    const t = typeof value;
+    if (t !== "object" && t !== "function") return;
+    if (t === "function") return; // an exported FUNCTION is code, not a policy table
+    // CAPTURED (round-4). This cycle guard used to be `seen.has(...)` / `seen.add(...)`, i.e. the
+    // policy-table AUDIT decided whether it had already seen a node by calling a method it did not
+    // own. Measured: `WeakSet.prototype.has = () => true` makes the very first node look already-
+    // visited, so `inertViolations` returns `[]` — the control that hunts runtime-mutable policy
+    // tables reports CLEAN precisely when an attacker is present, which is the worst direction for a
+    // gate to fail in. It is the same intrinsic class this module exists to close, in the file that
+    // closes it.
+    if (weakSetHas(seen, value as object)) return;
+    weakSetAdd(seen, value as object);
+    if (isFrozenSet(value)) return;
+    // `collectionBrand` (captured proto-chain walk) instead of `instanceof`, whose
+    // Symbol.hasInstance lookup a poison could make lie and hide a mutable Set/Map table.
+    if (collectionBrand(value) !== null) {
+      arrayPush(out, `${at} is ${describe(value)} — its mutators survive Object.freeze, so it is runtime-mutable policy state`);
+      return;
+    }
+    if (!objectIsFrozenSafe(value)) arrayPush(out, `${at} is not frozen`);
+    if (!isArray(value) && getPrototypeOf(value as object) === OBJECT_PROTOTYPE) {
+      // C-03's class, made mechanical. A frozen table rooted on `Object.prototype` answers
+      // membership tests and indexed reads with whatever a single `Object.defineProperty` on that
+      // prototype says — and nothing about the table itself has to change for it to happen.
+      arrayPush(out, `${at} is rooted on the LIVE Object.prototype — one Object.prototype pollution forges a member of this table (C-03; use frozenTable, which re-roots onto null)`);
+    }
+    if (isArray(value)) {
+      const arr = value as unknown[];
+      if (getPrototypeOf(value as object) === ARRAY_PROTOTYPE) {
+        arrayPush(out, `${at} is an array rooted on the LIVE Array.prototype — poisoning Array.prototype.includes/find redirects every lookup through it`);
+      }
+      for (let i = 0; i < arr.length; i++) walk(arr[i], `${at}[${i}]`);
+      return;
+    }
+    const names = objectGetOwnPropertyNames(value as object);
+    for (let i = 0; i < names.length; i++) {
+      const k = names[i] as string;
+      const d = getOwnPropertyDescriptor(value as object, k);
+      if (d === undefined) continue;
+      if (d.get !== undefined || d.set !== undefined) { arrayPush(out, `${at}.${k} is an accessor`); continue; }
+      walk(d.value, `${at}.${k}`);
+    }
+  };
+  walk(v, path);
+  // PUBLISHED as an ordinary array (round-4, A1) — same reasoning as `verifyChain`'s `warnings`:
+  // this is a caller-facing report, and the decision (whether a table is inert) was already taken
+  // over the inert working copy above.
+  return publishArray(out);
+}
+
+function objectIsFrozenSafe(v: unknown): boolean {
+  try { return objectIsFrozen(v); } catch { return false; }
+}
+
+/**
+ * Recursively freeze an already-inert, module-owned structure (a policy/spec table built from
+ * literals) so it cannot be mutated at runtime. Unlike `snapshotImmutable` this does NOT copy and
+ * does NOT strip prototypes — it is for OUR OWN constant tables, where the goal is only "no code,
+ * ours or an attacker's, can rewrite this after load". Returns the same reference, frozen.
+ *
+ * ⚠ IT IS NOT ENOUGH FOR A POLICY TABLE. It cannot make a `Set`/`Map` immutable (their mutators
+ * bypass `Object.freeze` — review #5's `RECEIPT_ROLE_VERDICTS.deferredReceipt.add("ALLOWED")` and
+ * review #6's `POSITIVE_OUTCOMES.add(...)`), and it leaves an array rooted on the LIVE
+ * `Array.prototype` (review #6's poisoned `.includes`). Use `frozenTable` for a policy table: it
+ * REFUSES a `Set`/`Map`/accessor at construction and re-roots arrays onto the inert prototype.
+ * `deepFreeze` remains only for callers that already depend on its in-place semantics.
+ *
+ * It moved here from the deleted `ingest.ts` unchanged. It never belonged to the ingest boundary —
+ * it operates on the module's OWN constant tables, which is this file's subject.
+ */
+export function deepFreeze<T>(o: T): T {
+  if (o === null || (typeof o !== "object" && typeof o !== "function")) return o;
+  const names = objectGetOwnPropertyNames(o as object);
+  for (let i = 0; i < names.length; i++) {
+    const key = names[i] as string;
+    const d = getOwnPropertyDescriptor(o as object, key);
+    if (d === undefined || d.get !== undefined || d.set !== undefined) continue;
+    const v = d.value;
+    if (v !== null && (typeof v === "object" || typeof v === "function") && !objectIsFrozen(v)) {
+      deepFreeze(v);
+    }
+  }
+  return objectFreeze(o);
+}

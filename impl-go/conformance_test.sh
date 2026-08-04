@@ -74,6 +74,12 @@ run_case "attack/unknown-kid (no keyring)"               "$V/attack/unknown-kid.
 run_case "attack/seq-gap + keyring"                      "$V/attack/seq-gap.json" "$V/keyring.json"
 run_case "attack/head-truncated + keyring"               "$V/attack/head-truncated.json" "$V/keyring.json"
 run_case "attack/cross-chain-splice + keyring"           "$V/attack/cross-chain-splice.json" "$V/keyring.json"
+# Cross-tenant splice laundered through an OPTIONAL-field omission, and the two legitimate
+# absent<->present transitions that must STAY valid (see scripts/gen-vectors.ts 5d).
+run_case "attack/tenant-splice-via-absent + keyring"     "$V/attack/tenant-splice-via-absent.json" "$V/keyring.json"
+run_case "attack/tenant-splice-via-absent-long + kr"     "$V/attack/tenant-splice-via-absent-long.json" "$V/keyring.json"
+run_case "tenant-omission-then-same-tenant + keyring"    "$V/tenant-omission-then-same-tenant.json" "$V/keyring.json"
+run_case "tenant-enrichment-absent-first + keyring"      "$V/tenant-enrichment-absent-first.json" "$V/keyring.json"
 run_case "attack/dup-seq + keyring"                      "$V/attack/dup-seq.json" "$V/keyring.json"
 run_case "attack/wrong-signature + keyring"              "$V/attack/wrong-signature.json" "$V/keyring.json"
 run_case "attack/wrong-signature (no keyring)"           "$V/attack/wrong-signature.json"

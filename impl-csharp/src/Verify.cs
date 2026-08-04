@@ -158,6 +158,32 @@ public static class Verifier
             bySeq[seq] = r;
         }
 
+        // Chain-wide scope.tenant consistency (fail-closed; matches the TS reference DEFAULT,
+        // impl-py, impl-go and impl-rust). scope.tenant sits beside scope.chain but was enforced
+        // nowhere, so a chain mixing tenants verified clean in every implementation. Tenant
+        // isolation is a security boundary; the partition split's verdict class is the right one.
+        // Walked in SEQ order; a MISSING tenant is distinct from a present one.
+        // Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present is
+        // a producer-version change on an OPTIONAL field, not tampering (see src/verify.ts).
+        //
+        // The comparison is NOT adjacent: comparing neighbours let an omission RESET the boundary,
+        // so `acme -> globex` was TAMPERED while `acme -> absent -> globex` — the same splice with
+        // one optional field left out in between — was VALID in all five implementations. The last
+        // PRESENT tenant is carried across absences instead. Absence stays non-fatal; it just no
+        // longer erases what the chain already committed to.
+        string? lastPresentTenant = null;
+        for (int s = 0; s < receipts.Count; s++)
+        {
+            if (!bySeq.TryGetValue(s, out JObj? curT))
+                break; // a gap is reported by the seq-walk below; do not pre-empt it
+            string? cur = TenantOf(curT);
+            if (cur is null)
+                continue; // absence never resets the boundary, and is never fatal
+            if (lastPresentTenant is not null && !string.Equals(cur, lastPresentTenant, StringComparison.Ordinal))
+                return new VerifyResult(VerifyStatus.Tampered, "cross-tenant splice");
+            lastPresentTenant = cur;
+        }
+
         var pinned = new Dictionary<string, string>(StringComparer.Ordinal);
         JObj? prev = null;
         for (int s = 0; s < receipts.Count; s++)
@@ -276,6 +302,10 @@ public static class Verifier
     // ── field accessors (structural validation already guarantees presence/shape) ──
     private static string? ChainOf(JObj r) =>
         r.Get("scope") is JObj sc && sc.Get("chain") is JStr c ? c.Value : null;
+
+    /// scope.tenant when present as a string, else null (ABSENT is distinct from any present value).
+    private static string? TenantOf(JObj r) =>
+        r.Get("scope") is JObj sc && sc.Get("tenant") is JStr t ? t.Value : null;
 
     private static long SeqOf(JObj r) =>
         r.Get("chain") is JObj ch && ch.Get("seq") is JInt s ? s.Value : -1;

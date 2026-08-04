@@ -2,7 +2,9 @@ name: ci
 
 on:
   push:
-    branches: [main]
+    # main plus the long-lived hardening branches, so a branch under independent review is gated by
+    # the SAME matrix as main rather than by a laptop. Feature branches are not merged to get CI.
+    branches: [main, 'arp-interop-response-*']
   pull_request:
     branches: [main]
 
@@ -35,6 +37,69 @@ jobs:
             npm --prefix "$package_dir" audit --package-lock-only --omit=dev --audit-level=high
           done < <(find . \( -name package-lock.json -o -name npm-shrinkwrap.json \) -not -path '*/node_modules/*' -print | sort)
 
+  dependency-topology:
+    # Every internal package that links the trust kernel must link THIS repository's kernel, not a
+    # registry copy of it. adapter-core and signer-sidecar previously resolved `noa-receipt` from
+    # npm, so their suites measured the PUBLISHED kernel while the local one changed underneath —
+    # a gate reporting health about a different artifact. This job makes that unrepeatable.
+    #
+    # It is a SEPARATE job on purpose: no existing job installs every declaring package, so none of
+    # them can prove resolution across the full inventory. --strict requires exactly that.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: "Install the root FIRST — a file: link install builds its target"
+        # NOT optional, and not obvious. `npm ci` inside a package whose manifest says
+        # `noa-receipt: file:../..` makes npm run the LINK TARGET's `prepare` script — and this
+        # repository's root `prepare` is `npm run build` (tsc). Without the root's own devDeps
+        # installed, that build dies with `TS2688: Cannot find type definition file for 'node'`
+        # and takes the whole job with it, before this gate has inspected anything.
+        #
+        # Every other job in this file happens to satisfy this by installing the root for its own
+        # reasons. This job has no other reason to, so the dependency is stated explicitly here.
+        run: npm ci
+
+      - name: Install every package that declares the kernel (list derived, never hand-maintained)
+        # The set is computed from the manifests themselves. A hand-written list is how this class
+        # of check rots: someone adds a package with a kernel dependency, nobody updates the list,
+        # and the gate silently stops covering it.
+        shell: bash
+        run: |
+          set -euo pipefail
+          node -e '
+            const {readdirSync,existsSync,readFileSync} = require("node:fs");
+            for (const d of readdirSync("packages",{withFileTypes:true}).filter(e=>e.isDirectory())) {
+              const p = `packages/${d.name}/package.json`;
+              if (!existsSync(p)) continue;
+              const m = JSON.parse(readFileSync(p,"utf8"));
+              const has = ["dependencies","devDependencies","optionalDependencies","peerDependencies"]
+                .some(f => m[f] && m[f]["noa-receipt"] !== undefined);
+              if (has) console.log(d.name);
+            }
+          ' > declaring.txt
+          echo "packages declaring noa-receipt:"; cat declaring.txt
+          while IFS= read -r pkg; do
+            echo "::group::npm ci packages/$pkg"
+            npm --prefix "packages/$pkg" ci
+            echo "::endgroup::"
+          done < declaring.txt
+      - name: DEPENDENCY TOPOLOGY — manifest intent, lockfile record, and resolved reality agree
+        run: node scripts/lint-dependency-topology.mjs --strict
+      - name: Self-test the publish tarball gate (prove it detects local-path deps at all)
+        # The publish workflows rely on this gate to confirm their dependency rewrites took effect.
+        # A gate that has never been observed to fail is not known to be a gate — so on the dev
+        # tree, where local-path deps are correct and expected, it must FIND them.
+        run: |
+          node scripts/lint-publish-tarball-deps.mjs --dir packages/adapter-core --expect-local
+          node scripts/lint-publish-tarball-deps.mjs --dir packages/mcp-proxy --expect-local
+
   extended-package-tests:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -48,6 +113,26 @@ jobs:
           cache: npm
       - name: Build the root package
         run: npm ci && npm run build
+      - name: BOUNDARY 2 — thrown-value handling gate (no caught value read outside the boundary)
+        run: npm run lint:thrown
+      - name: INERT CORE — the vendored ingest boundary is byte-identical to its source
+        # `noa-approval-artifacts` is zero-runtime-dependency by design, so src/intrinsics.ts,
+        # src/inert.ts and src/ingest.ts are GENERATED into it rather than imported. Same
+        # "regenerate + git-diff" discipline as the conformance vectors: a drifted copy means one
+        # package's verifier is held to a different rule than the others, which is exactly how "a
+        # rule enforced in some implementations" stops being an invariant.
+        run: npm run check:inert-core
+      - name: Install adapter-core FIRST — several suites below import noa-receipt through it
+        # MOVED 2026-08-03. This sat AFTER the gate/approval-artifacts suites, so every one of them
+        # died on `ERR_MODULE_NOT_FOUND: Cannot find package 'noa-receipt' imported from
+        # packages/adapter-core/src/...`. It passes on a developer machine because the workspace is
+        # already installed — the same shape as the verdict-differential step fixed earlier the same
+        # day, and the reason that fix's comment says to look for siblings.
+        #
+        # Measured cost of leaving it: `extended-package-tests` reported 7 failures of which 6 were
+        # this import error, and `lint:knockout` reported 63 findings / 3-of-66 load-bearing where a
+        # correctly-ordered run gives 66/66.
+        run: cd packages/adapter-core && npm ci
       - name: approval-artifacts tests
         run: cd packages/approval-artifacts && npm ci && npm test
       - name: evidence tests
@@ -58,10 +143,168 @@ jobs:
         run: cd packages/signer-core && npm ci && npm run build
       - name: relay tests
         run: cd packages/relay && npm ci && npm test
-      - name: Install adapter-core for framework-adapters' local package dependency
-        run: cd packages/adapter-core && npm ci
+      - name: signer-core tests
+        # Built above for relay; its OWN suite was never run here. It is an INDEPENDENT signing
+        # implementation (its own JCS + builder), so a producer-side invariant that holds only in
+        # noa-receipt's builder is not an invariant — that gap is now covered by its nfc-universal
+        # test and must be gated.
+        run: cd packages/signer-core && npm test
+      - name: tsa-anchor tests
+        run: cd packages/tsa-anchor && npm ci && npm test
       - name: framework-adapters tests
         run: cd packages/framework-adapters && npm ci && npm test
+
+  e2e-demo-contract:
+    # THE HALF THAT IS ALWAYS OURS TO GATE — and it is now its OWN job, for a measured reason.
+    #
+    # `packages/e2e-demo` is the Instant-Tether demo: agent -> gate -> relay -> a REAL phone core ->
+    # grant -> exact execution -> an offline-verifiable Approval Evidence Bundle. Its nine phone-core
+    # imports were once deep relative specifiers that resolved only from the maintainer's directory
+    # layout, so the end-to-end path could have been broken indefinitely while every check stayed
+    # green. The contract check (one declared location, one import surface, no deep relative
+    # specifiers) tests defects in THIS repo, needs no credential, and is therefore unconditional.
+    #
+    # It also PUBLISHES whether the phone core is reachable, which is what lets the suite below be
+    # skipped as a job rather than as eight separate steps.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      phone-core: ${{ steps.preflight.outputs.present }}
+    env:
+      # The `secrets` context is NOT available in a step-level `if:`; a job-level `env` is where it
+      # can be read, so the presence of the credential becomes an ordinary string to branch on.
+      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Dependency contract (ALWAYS gated) + honest presence report
+        id: preflight
+        run: |
+          set -euo pipefail
+          node scripts/e2e-demo-preflight.mjs | tee preflight.out
+          if [ "${HAS_PHONE_CORE_TOKEN}" = "true" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+          { echo "### e2e-demo contract"; sed -n '1,20p' preflight.out; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Say out loud what will NOT be measured
+        # A silent skip is how a repository comes to believe it tests a path nobody has run since
+        # the credential lapsed. This warning appears on the PR checks page, next to the green ticks
+        # it is qualifying: 6 scenarios here, plus 10 knockout controls in the `test` job that
+        # declare `requires: ["phone-core"]` and are excluded as SETUP_FAILED.
+        if: steps.preflight.outputs.present != 'true'
+        run: |
+          echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_TOKEN secret to measure them."
+          { echo ""; echo "**NOT EXECUTED** — phone core unreachable. 6 golden-path scenarios and 10 knockout controls were not measured."; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail closed when the owner has demanded the phone core
+        # Opt-in strictness, never the default. A gate that blocks EVERY push on an absence only the
+        # owner can cure is a gate someone eventually switches off — and then there is no gate. Set
+        # the repository variable REQUIRE_PHONE_CORE=true once the credential is permanent.
+        if: vars.REQUIRE_PHONE_CORE == 'true' && steps.preflight.outputs.present != 'true'
+        run: |
+          echo "::error title=Phone core required::REQUIRE_PHONE_CORE is set but the phone core is unreachable."
+          exit 1
+
+  e2e-demo-golden-path:
+    # THE SUITE. Skipped as a JOB when the phone core is unreachable, and that is the entire point.
+    #
+    # ⚠ WHAT THIS REPLACED, AND WHY (measured 2026-08-04) ⚠
+    # Every step here used to live in one job behind `if: steps.preflight.outputs.present == 'true'`.
+    # With `secrets.NOA_MOBILE_TOKEN` unconfigured, the checkout and all three suite steps were
+    # SKIPPED and the job concluded **SUCCESS** — a green tick for six scenarios that never ran. The
+    # repository's own rule is that "the check could not run" and "the check passed" must never share
+    # an exit code; this job was the counter-example, in the workflow layer.
+    #
+    # Actions has exactly one honest "did not run" state and it is a job-level skip. So the branch
+    # moved up: the contract job publishes reachability, and this job either RUNS AND MEANS IT or
+    # reports `skipped`. There is no third state, and no path to a pass it did not earn.
+    #
+    # `continue-on-error` is deliberately GONE from the checkout. It existed to keep the old job
+    # green when the token was absent; here the job only runs when the token exists, so a failed
+    # checkout means a credential the owner armed is broken — a hard red that measures a real fault.
+    needs: e2e-demo-contract
+    if: needs.e2e-demo-contract.outputs.phone-core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check out the private phone core
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NordenSoft/noa-mobile
+          path: noa-mobile
+          token: ${{ secrets.NOA_MOBILE_TOKEN }}
+          persist-credentials: false
+      - name: Prove the phone core is actually here before claiming to test it
+        # The token can exist and the checkout still land nothing usable. Without this, a partial
+        # clone would fall through to a suite that skips its phone-dependent assertions and passes.
+        run: |
+          set -euo pipefail
+          node scripts/e2e-demo-preflight.mjs | tee preflight.out
+          grep -q "^phone-core: PRESENT" preflight.out || {
+            echo "::error title=Phone core missing after checkout::the credential is configured but the phone core did not land"
+            exit 1
+          }
+      - name: Build the in-repo dependencies
+        run: cd packages/e2e-demo && npm ci && npm run build:deps
+      - name: Typecheck the golden path
+        run: cd packages/e2e-demo && npm run typecheck
+      - name: Run the 6 golden-path scenarios
+        run: cd packages/e2e-demo && npm test
+
+  five-verifier-conformance:
+    # THE FIVE-LANGUAGE INTEROP BAR, GATED. The `test` job below runs the TS<->Python conformance
+    # only; Go, Rust and C# were verified on developer machines and by nothing else. That is exactly
+    # the shape of gap this repository keeps finding: a rule enforced in some implementations is not
+    # an invariant. Every verifier that claims conformance is now checked on every push.
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: "1.23"
+      - uses: dtolnay/rust-toolchain@56f84321dbccf38fb67ce29ab63e4754056677e0 # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
+        with:
+          dotnet-version: "10.0.x"
+      - run: npm ci
+      - name: Build + generate vectors (the corpus every verifier is held to)
+        run: npm test
+      - name: Go verifier == Python reference
+        run: bash impl-go/conformance_test.sh
+      - name: Build the Rust verifier
+        # impl-rust/conformance.sh deliberately requires a pre-built binary and FATALs without one
+        # (impl-go's script builds its own). A developer machine always has it from a previous run —
+        # which is precisely why this only ever failed in CI.
+        run: cd impl-rust && cargo build --release
+      - name: Rust verifier == Python reference
+        run: bash impl-rust/conformance.sh
+      - name: C# verifier == Python reference
+        run: bash impl-csharp/conformance.sh
 
   test:
     runs-on: ubuntu-latest
@@ -69,9 +312,31 @@ jobs:
     strategy:
       matrix:
         node: [20, 22]
+    env:
+      # SELF-ARMING. Ten knockout controls declare `requires: ["phone-core"]` and this job never had
+      # a phone-core checkout, so `lint:knockout` ran their suites against a dependency that was not
+      # there: three suites failed at BASELINE, ten controls came back ANTI_VACUITY_FAILED, the gate
+      # went to `proven load-bearing 58/68` and blocked a merge — over ten controls that are all fine
+      # when the dependency is present.
+      #
+      # The runner now excludes them as SETUP_FAILED and says so loudly, which makes CI honest but
+      # leaves them unmeasured. This env + the conditional checkout below is the other half: inert
+      # today (the secret is unset, the step is skipped, nothing changes), and the moment the owner
+      # saves a read token as NOA_MOBILE_TOKEN all ten start being measured here with no further
+      # work. Recording "configure the secret later" in a document instead would mean the fix only
+      # lands if somebody remembers to come back and wire it.
+      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - name: Check out the private phone core (only when a credential is configured)
+        if: env.HAS_PHONE_CORE_TOKEN == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NordenSoft/noa-mobile
+          path: noa-mobile
+          token: ${{ secrets.NOA_MOBILE_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -84,6 +349,9 @@ jobs:
           python-version: "3.12"
       - run: npm ci
       - name: Build + generate vectors + test
+        # `id` so every INDEPENDENT gate below can condition on the BUILD succeeding rather than on
+        # whichever gate happens to sit above it in this list. See the ORDERING note below.
+        id: build
         run: npm test
       - name: Cross-impl conformance (TS reference == independent Python verifier)
         # Gates the TS↔PY interop bar: a divergence on identical signed bytes FAILS the build (not just the
@@ -91,7 +359,30 @@ jobs:
         run: |
           npm run build
           node impl-py/conformance.mjs
+      # ══════════════════════════════════════════════════════════════════════════════════════════════
+      # INDEPENDENT GATES — EACH ONE RUNS EVEN IF ANOTHER FAILED (ADR-0005 Slice 5, 2026-07-30)
+      #
+      # THE DEFECT THIS FIXES, and it was live: these gates ran as a plain sequential chain, so the FIRST
+      # failure suppressed every gate after it. `lint-trusted-roots` (L9) is BLOCKING and currently
+      # carries ONE parked finding — the owner-deferred L9-C `execute()` callback, waiting on ADR-0006.
+      # That single parked finding therefore silently disabled THREE independent gates downstream of it:
+      #
+      #     the R7 exploit corpus (13 pinned exploits)
+      #     the L4 control knockout (28 controls)
+      #     the conformance matrix drift check
+      #
+      # A parked finding in one layer must never buy silence in another. Nothing about L9-C tells you
+      # whether a CLOSED exploit started reproducing again — but for as long as L9 exits 1 first, nobody
+      # would have been told.
+      #
+      # `!cancelled() && steps.build.outcome == 'success'` rather than `always()`: `always()` also runs on
+      # cancellation (burning runner minutes and masking the cancel), and an unconditional gate after a
+      # FAILED BUILD reports noise instead of findings. Conditioning on the BUILD means each gate is
+      # independent of its SIBLINGS while still requiring the thing all of them need. Every gate remains
+      # blocking — the job still fails; it now fails with the full picture instead of the first item.
+      # ══════════════════════════════════════════════════════════════════════════════════════════════
       - name: Conformance vectors are reproducible (no drift)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           # catches modified AND newly-generated (untracked) vector files
           if [ -n "$(git status --porcelain conformance/)" ]; then
@@ -99,13 +390,148 @@ jobs:
             git status --porcelain conformance/
             exit 1
           fi
+      # ── WIDENED FROM conformance/ TO THE WHOLE TREE (2026-07-30) ───────────────────────────────
+      # The check above has existed for a while and watches ONE directory. `fa2179c` then had to
+      # commit 27 untracked files whose message says it plainly: "the gates existed only in my
+      # working directory". Every mechanical gate in `scripts/` had been running locally, passing,
+      # and being quoted as evidence — while CI, which never had the files, could not have run a
+      # single one of them. A gate that is not committed is not a gate; it is a habit on one laptop.
+      #
+      # Scoping the drift check to `conformance/` encoded the assumption that generated VECTORS are
+      # the only thing that can go missing. Authored files can too, and those are worse, because a
+      # missing vector fails loudly while a missing gate simply never speaks.
+      #
+      # WHOLE-TREE, and that is safe rather than aspirational: measured locally on 2026-07-30 that
+      # `npm run build`, `npm test`, `npm run security-gates` and `lint-trusted-roots --selftest`
+      # ALL leave `git status --porcelain` completely empty — the L9 selftest plants and removes its
+      # own fixtures, including a symlink and its target directory. If a future step starts leaving
+      # a file behind, that is the finding, not the reason to narrow this back.
+      - name: Working tree is clean (nothing generated, nothing uncommitted)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: |
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::the working tree is dirty after build+test+gates — a file is generated-and-uncommitted, or an authored file (a gate in scripts/, a test, a source) was never committed. See fa2179c."
+            git status --porcelain
+            exit 1
+          fi
+      - name: Entry-point registry is up to date (no drift)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # The registry of security-sensitive entry points is GENERATED from src/index.ts via the
+        # TypeScript compiler API and diff-gated exactly like the conformance matrix. A new export
+        # cannot reach the public surface without a human reading the change. Hand-maintained lists
+        # are what H-03 was made of.
+        run: npm run check:entry-points
+      - name: Dispatch-surface enumeration (C-04 / H-02 class)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # Every call that hands control to code we do not own is matched from source and reconciled
+        # against a registry stating its mechanism and its failing-test evidence. Bidirectional: an
+        # unregistered surface bypassed review, and a stale entry describes code that is gone.
+        run: npm run lint:dispatch-surfaces
+      - name: L1-L7 security gates
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # Source-level, full strength, ratcheted enforcement. L5/L6/L7 block today. L1/L2/L3 report
+        # against a violation BUDGET that fails on regression — the count may only fall, and each
+        # flips to blocking when it reaches zero. The rule is never weakened to fit the code.
+        run: npm run lint:security-gates
+      - name: L9 trusted-root inventory + forbidden trust-input patterns
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # BLOCKING. L1-L7 above walk `src/` ONLY and contain zero `packages/` paths, so they were
+        # structurally blind to `packages/gate/src` — where ALLOW/DENY is actually decided, and where
+        # eight measured defects lived while this suite reported a blocking zero. L9 reconciles the set
+        # of trusted source ROOTS mechanically, so a new security-critical package cannot be silently
+        # unguarded. Added to CI 2026-07-30 after a reviewer found it wired to NOTHING: I wrote the
+        # gate, wrote its selftest, and never put it in a blocking chain. A gate nobody runs is not a
+        # gate — the same failure this project has already made three times.
+        run: node scripts/lint-trusted-roots.mjs
+      - name: L9 selftest (the layer must be observed to fail)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # A layer never observed to fail is not known to be a gate.
+        #
+        # THE LIMITATION RECORDED HERE IS NOW CLOSED (ADR-0005 Slices 1+5). It read: "this selftest plants
+        # L9-B and L9-C fixtures only, so it does NOT prove L9-D. `L9-D = 0` must never be cited as clause
+        # evidence." The selftest now plants FOUR samples and asserts each arm individually:
+        #   L9-D POSITIVE  — a live re-read, must FIRE (or the Slice 1 parse-provenance skip has silently
+        #                    turned the whole layer off, which a total-count check would not notice);
+        #   L9-D NEGATIVE  — a parse-snapshot re-read, must stay SILENT (the correct shape must not alarm);
+        #   .mjs REACHED   — a fixture in a `.mjs`-only root, because discovery was `.ts`-only and this
+        #                    selftest could not have detected that;
+        #   L9-B / L9-C    — as before, now asserted per layer rather than by a summed count.
+        # So `L9-D = 0` IS now citable as clause evidence. See docs/ADR-0005-VERIFICATION.md §3.2.
+        run: node scripts/lint-trusted-roots.mjs --selftest
+      - name: R7 exploit corpus (pinned dispositions)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # All eleven preserved review-round-7 exploits, each pinned CLOSED or OPEN in BOTH
+        # directions: a CLOSED exploit that reproduces again is a regression, and an OPEN exploit
+        # that silently stops reproducing is an exploit that rotted into measuring nothing.
+        #
+        # The two builds below are load-bearing, not tidiness. Without them the exploits that import
+        # packages/gate and packages/approval-artifacts die on ERR_MODULE_NOT_FOUND, and the first
+        # version of the runner scored that crash as CLOSED — a fixed vulnerability. The runner now
+        # requires each exploit to PRINT its verdict and treats a silent death as INDETERMINATE, so
+        # this step can no longer pass vacuously; building the dependencies is what makes it pass
+        # for the right reason instead.
+        run: |
+          npm --prefix packages/approval-artifacts ci && npm --prefix packages/approval-artifacts run build
+          npm --prefix packages/gate ci && npm --prefix packages/gate run build
+          npm run test:r7-exploits
+      - name: Install adapter-core before the knockout sweep — it mutates sources these suites import
+        # MOVED 2026-08-03, same defect as above: the knockout ran before adapter-core was installed,
+        # so 63 of its 66 controls could not even load the code they mutate. It reported findings that
+        # were import errors, not measurements — a red gate for a reason that had nothing to do with
+        # the controls it exists to prove.
+        run: cd packages/adapter-core && npm ci
+      - name: Install EVERY package the knockout sweep mutates — a suite that cannot run measures nothing
+        # ADDED 2026-08-03, and it is the same class as the adapter-core step above found one layer up.
+        #
+        # The knockout registry mutates controls across ten packages and re-runs each one's suite. This
+        # job installed FOUR of them (root, approval-artifacts, gate, adapter-core). The other six were
+        # never installed, so the runner measured baselines like this, in CI, at 3c9a30f:
+        #
+        #     packages/relay        exit 2    0 pre-existing failure(s)
+        #     packages/signer-core  exit 2    0 pre-existing failure(s)
+        #     packages/evidence     exit 2    0 pre-existing failure(s)
+        #
+        # `exit 2` with ZERO failures is a suite that could not START. Against a baseline that is
+        # already broken, a mutation cannot make anything worse — so six knockouts reported
+        # ANTI_VACUITY_FAILED with the exact words "a GATE suite failed exactly as its baseline did
+        # (exit 1 -> 1). Nothing got worse." **The gate was right and honest**; it was measuring an
+        # environment, not the controls.
+        #
+        # Locally the same sweep is 66/66, because a developer's tree has everything installed. That
+        # divergence is the whole point of this step.
+        #
+        # signer-core is BUILT, not just installed: relay resolves it as a local package dependency and
+        # imports its build output, so `npm ci` alone leaves relay unable to start.
+        run: |
+          set -euo pipefail
+          npm --prefix packages/signer-core ci && npm --prefix packages/signer-core run build
+          npm --prefix packages/relay ci
+          npm --prefix packages/evidence ci
+          npm --prefix packages/framework-adapters ci
+          npm --prefix packages/signer-sidecar ci
+          npm --prefix packages/mcp-proxy ci
+          npm --prefix packages/e2e-demo ci
+          # e2e-demo runs `node --import tsx --test test/*.test.ts` straight from source, but it
+          # IMPORTS six siblings' BUILD OUTPUT. `npm ci` alone left it at `exit 1` with real failures
+          # in CI while a developer tree passed, because a developer tree already has them built. Its
+          # own `build:deps` script is the authoritative list — using it rather than repeating the six
+          # here means the two cannot drift.
+          npm --prefix packages/e2e-demo run build:deps
+
+      - name: L4 control knockout (every control has a test that dies without it)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # Slow by construction: each control is removed and its suite re-run. It runs here rather
+        # than in a fast lane precisely because "what would have caught this?" is worth the minutes.
+        run: npm run lint:knockout
       - name: Conformance matrix is up to date (no drift)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Regenerates conformance/MATRIX.md from conformance.mjs's own output and fails if it differs
         # from the committed copy (or if any vector could not be classified into a security class).
         # Same "regenerate + git-diff" discipline as the vector-drift check above, applied to the
         # derived TS↔Python pass/fail matrix so it can never silently go stale against the harness.
         run: node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md
       - name: Self-check the CLI exit-code contract
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           set -e
           node dist/src/cli.js verify conformance/vectors/valid-chain.json \
@@ -119,19 +545,47 @@ jobs:
             echo "TAMPERED -> exit $? (want non-zero)"
           fi
       - name: Dogfood pilots (PRIVATE, vitest — proxy/replay/co-attestation behaviour)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # The dogfood harnesses under test/dogfood/ are PRIVATE/internal (not in package.json `files`)
         # and use vitest (resolved via a pinned npx, NOT a project dependency — the lib stays zero-dep).
         # `npm test` (node:test) deliberately excludes them; this gates their runtime behaviour.
         run: npm run test:dogfood
+      - name: INERT CORE — the vendored ingest boundary is byte-identical to its source
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        run: npm run check:inert-core
+      # MOVED here 2026-08-03: this step ran BEFORE `packages/adapter-core && npm ci`, so the
+      # `file:../..` link to noa-receipt did not exist yet and every import failed with
+      # ERR_MODULE_NOT_FOUND. It passed locally because the workspace was already installed — the
+      # exact shape of defect this repository keeps finding, in the gate written to find it.
+      - name: Verdict-differential poison sweep (does a poison move a verdict toward permissive?)
+        # Indexed by POISON x ORACLE, never by site. The site-indexed gates above find LINES that read
+        # or call a replaceable builtin; four adversarial rounds proved they cannot tell inert from
+        # exploitable among those lines, and cannot express a property WRITE at all — round 4's
+        # exploit replaced nothing and appeared in none of their findings. This one measures the only
+        # property that survives a class the instrument cannot name: did the verdict move?
+        #
+        # Validated against history rather than asserted: reverting the adapter-core sources to
+        # 17a2be2 makes it report 7 EXPLOITABLE (the round-3 policy-weakening and fail-open findings);
+        # at HEAD it reports 0 with no false positives.
+        run: npm run lint:verdict-differential
+
       - name: adapter-core unit tests (packages/adapter-core)
-        # package-lock.json is committed here — adapter-core now depends on the published
-        # noa-receipt registry package instead of importing the repo's built dist/ directly, so
-        # `npm ci` is correct (and no longer needs the root build step above for this dependency).
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # adapter-core depends on the kernel via `noa-receipt: file:../..`, so `npm ci` here only
+        # creates the symlink and `import "noa-receipt"` resolves through the root's
+        # `main: dist/src/index.js`. That dist/ exists because this job's earlier `npm test` built
+        # it. Keep this step AFTER that build — do not move it earlier.
+        #
+        # It used to depend on the PUBLISHED noa-receipt instead, which meant this step measured a
+        # registry copy of the kernel rather than the kernel in this commit: during a kernel change
+        # it would report green against code that was no longer here. The dependency-topology job
+        # enforces the local link across every declaring package.
         run: |
           cd packages/adapter-core
           npm ci
           npm test
       - name: signer-sidecar smoke test (packages/signer-sidecar)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Real 2-process smoke test (sidecar.mjs child process + client.mjs). Must run AFTER
         # adapter-core's own `npm ci` above (same file:../adapter-core node_modules-population
         # reason the mcp-proxy step below already documents) and BEFORE mcp-proxy's own step
@@ -142,6 +596,7 @@ jobs:
           npm ci
           npm test
       - name: mcp-proxy smoke test (packages/mcp-proxy)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Real-transport smoke test: fail-closed DENY, live tools/list reflection, session
         # isolation, persist-then-commit ordering, and CLI double-stdio integration.
         # Must run AFTER the adapter-core AND signer-sidecar steps above: mcp-proxy links both
@@ -154,17 +609,19 @@ jobs:
           npm ci
           npm test
       - name: tsa-anchor unit tests (packages/tsa-anchor)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # RFC 3161 DER encode/decode, TimeStampReq/Resp, client self-checks, verifyStamp, CLI.
-        # UNLIKE adapter-core (which uses the PUBLISHED noa-receipt), tsa-anchor depends on the
-        # LOCAL repo via `noa-receipt: file:../..`, so `npm ci` here just symlinks node_modules/
-        # noa-receipt -> the repo root, and `import "noa-receipt"` resolves to the root's built
-        # dist/ (main: dist/src/index.js). That dist/ already exists because the conformance step
-        # above ran `npm run build`. Keep this step AFTER that build — do not move it earlier.
+        # LIKE every other kernel-linking package, tsa-anchor depends on the LOCAL repo via
+        # `noa-receipt: file:../..`, so `npm ci` here just symlinks node_modules/noa-receipt -> the
+        # repo root, and `import "noa-receipt"` resolves to the root's built dist/
+        # (main: dist/src/index.js). That dist/ already exists because the conformance step above
+        # ran `npm run build`. Keep this step AFTER that build — do not move it earlier.
         run: |
           cd packages/tsa-anchor
           npm ci
           npm test
       - name: signer-core parity gates (packages/signer-core)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # G1 (RFC 8032 vectors) + G2 (golden-receipt byte-parity vs noa-receipt's own
         # buildReceipt/signEd25519) — the P1a kill-gates from .plan/MOBILE-APP-BUILD-SPEC.md §3.
         # Same `noa-receipt: file:../..` local-repo dependency as tsa-anchor above (needs the

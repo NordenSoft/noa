@@ -76,3 +76,32 @@ export function safeRefHash(value: unknown): string | null {
     return null;
   }
 }
+
+/**
+ * R-ING-01 — ONE accessor-free snapshot of a caller-supplied document.
+ *
+ * THE DEFECT THIS EXISTS FOR, measured on this tree: `engine.decide()` read
+ * `receipt.governance.verdict` at one line and the signature check re-read the same property a few
+ * lines later (through `noa-signer`'s `receiptHashInput`, which uses `structuredClone` and therefore
+ * INVOKES accessors). A getter answering `ALLOWED` on the first read and `BLOCKED` on the second
+ * made the relay record `APPROVED` / `HUMAN_APPROVED` while the signature that verified covered a
+ * genuine human DENIAL. Same split reached the action binding and the stored receipt.
+ *
+ * Canonicalizing and re-parsing collapses the document to plain data ONCE, so every later read
+ * necessarily returns the same value — there is no second answer left to give. It also removes the
+ * accessor before the record is persisted, which is why the store can no longer invoke one either.
+ *
+ * KURAL 5 — this adds no dependency: `canonicalize` is already imported above for the signature
+ * preimage. Fail-closed in the shape of `safeRefHash`: RFC 8785 rejects floats, non-finite numbers
+ * and `undefined`, and a throwing getter throws here rather than deeper in.
+ *
+ * NOT a validity check. It answers "is this plain, canonicalizable data?" and nothing else; the
+ * shape, the signature and the action binding are all still checked downstream.
+ */
+export function inertSnapshot(value: unknown): unknown | null {
+  try {
+    return JSON.parse(canonicalize(value)) as unknown;
+  } catch {
+    return null;
+  }
+}

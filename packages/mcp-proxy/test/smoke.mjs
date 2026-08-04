@@ -28,9 +28,10 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ListToolsRequestSchema, CallToolRequestSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalReceipt, recordApproved, signEd25519 } from "noa-mcp-adapter-core";
+import { b } from "./helpers/bytes.mjs";
 import { createProxyServer } from "../src/create-proxy-server.mjs";
 import { startHttpProxy } from "../src/http-server.mjs";
-import { verifyOutcomeReceipt, OUTCOME_RECEIPT_SPEC } from "../src/outcome-receipt.mjs";
+import { buildOutcomeReceipt, verifyOutcomeReceipt, OUTCOME_RECEIPT_SPEC, SIGNING_KEY_LIFECYCLE_SPEC } from "../src/outcome-receipt.mjs";
 import { createRotatableSigner } from "../src/rotatable-signer.mjs";
 import { TRANSFER_GUARD_POLICY, APPROVAL_RULES } from "../src/policy.mjs";
 
@@ -85,12 +86,13 @@ async function makeSession({ sessionId, store, extraTool = false, countsFile, on
     env,
   });
 
-  // A caller-supplied `signer` (e.g. a rotatable signer) overrides the default fresh keypair; its
-  // keyring is derived from `signer.keyring()` when available (rotation), else the single kid.
+  // A caller-supplied `signer` (e.g. a rotatable signer) overrides the default fresh keypair. The
+  // returned flat map is test plumbing for this session's current signer; rotation enforcement uses
+  // `verificationLifecycle()` explicitly in Scenario X.
   const kp = customSigner ? null : generateKeyPair(`smoke:${sessionId}`);
   const signer = customSigner ?? { kid: kp.kid, privateKey: kp.privateKey };
   const keyring = customSigner
-    ? (typeof customSigner.keyring === "function" ? customSigner.keyring() : { [customSigner.kid]: customSigner.publicKey })
+    ? { [customSigner.kid]: customSigner.publicKey }
     : { [kp.kid]: kp.publicKey };
   const receipts = [];
   // R2 — outcome receipts are collected only when a scenario opts in (collectOutcomes), so every
@@ -259,9 +261,11 @@ async function main() {
   ok(
     "(a) decisions in order [ALLOW,ALLOW,ALLOW,DENY,DENY]",
     JSON.stringify(sessA.receipts.map((r) => r.governance.verdict)) ===
-      JSON.stringify(["EXECUTED", "EXECUTED", "EXECUTED", "BLOCKED", "BLOCKED"]),
+      // A DECISION receipt records what policy decided, not what happened: ALLOW -> ALLOWED. The
+      // post-execution fact lives in the separate R2 OUTCOME receipt (scenario U below).
+      JSON.stringify(["ALLOWED", "ALLOWED", "ALLOWED", "BLOCKED", "BLOCKED"]),
   );
-  const vA = verifyChain(sessA.receipts, { keyring: sessA.keyring });
+  const vA = verifyChain(b(sessA.receipts), { keyring: b(sessA.keyring) });
   ok(`(a) verifyChain(5 receipts) → VALID, offline, count=${vA.count}`, vA.status === "VALID" && vA.count === 5);
 
   const countsAfterA = readCounts(countsA);
@@ -333,8 +337,8 @@ async function main() {
     "(e) E1 and E2 use distinct scope.chain identifiers (no shared chain id)",
     sessE1.receipts[0].scope.chain !== sessE2.receipts[0].scope.chain,
   );
-  const vE1 = verifyChain(sessE1.receipts, { keyring: sessE1.keyring });
-  const vE2 = verifyChain(sessE2.receipts, { keyring: sessE2.keyring });
+  const vE1 = verifyChain(b(sessE1.receipts), { keyring: b(sessE1.keyring) });
+  const vE2 = verifyChain(b(sessE2.receipts), { keyring: b(sessE2.keyring) });
   ok("(e) session E1 chain independently verifies VALID", vE1.status === "VALID");
   ok("(e) session E2 chain independently verifies VALID", vE2.status === "VALID");
   ok("(e) shared store tracked exactly 2 sessions", storeE.size === 2);
@@ -380,7 +384,7 @@ async function main() {
     "(h) call 2: reuses seq 0 — the seq call 1 would have consumed — no gap left behind",
     sessH.receipts.length === 1 && sessH.receipts[0].chain.seq === 0,
   );
-  const vH = verifyChain(sessH.receipts, { keyring: sessH.keyring });
+  const vH = verifyChain(b(sessH.receipts), { keyring: b(sessH.keyring) });
   ok(`(h) verifyChain(persisted receipts) -> VALID, the chain never saw the lost attempt (status=${vH.status})`, vH.status === "VALID");
 
   await sessH.close();
@@ -428,7 +432,7 @@ async function main() {
     JSON.stringify(seqsJ) === JSON.stringify(Array.from({ length: 25 }, (_, i) => i)),
   );
   const orderedJ = [...sessJ.receipts].sort((a, b) => a.chain.seq - b.chain.seq);
-  const vJ = verifyChain(orderedJ, { keyring: sessJ.keyring });
+  const vJ = verifyChain(b(orderedJ), { keyring: b(sessJ.keyring) });
   ok(`(j) verifyChain(25 receipts, seq order) -> VALID, count=${vJ.count}`, vJ.status === "VALID" && vJ.count === 25);
 
   await sessJ.close();
@@ -503,7 +507,7 @@ async function main() {
     JSON.stringify(seqsM) === JSON.stringify(Array.from({ length: 25 }, (_, i) => i)),
   );
   const orderedM = [...sessM.receipts].sort((a, b) => a.chain.seq - b.chain.seq);
-  const vM = verifyChain(orderedM, { keyring: sessM.keyring });
+  const vM = verifyChain(b(orderedM), { keyring: b(sessM.keyring) });
   ok(`(m) verifyChain(25 receipts, seq order) -> VALID, count=${vM.count}`, vM.status === "VALID" && vM.count === 25);
 
   await sessM.close();
@@ -571,8 +575,8 @@ async function main() {
     call2ReceiptP.scope.chain !== call1ReceiptP.scope.chain,
   );
 
-  const vCall1SegmentP = verifyChain([call1ReceiptP], { keyring: sessP.keyring });
-  const vCall2SegmentP = verifyChain([call2ReceiptP], { keyring: sessP.keyring });
+  const vCall1SegmentP = verifyChain(b([call1ReceiptP]), { keyring: b(sessP.keyring) });
+  const vCall2SegmentP = verifyChain(b([call2ReceiptP]), { keyring: b(sessP.keyring) });
   ok(`(p) call 1's own segment independently verifies VALID — status=${vCall1SegmentP.status}`, vCall1SegmentP.status === "VALID");
   ok(
     `(p) call 2's segment independently verifies VALID (no fabricated TAMPERED seq-gap) — status=${vCall2SegmentP.status}`,
@@ -646,8 +650,8 @@ async function main() {
     "(q) call 2's segment is a DISTINCT scope.chain from call 1's dropped segment",
     sessQ.receipts[1].scope.chain !== sessQ.receipts[0].scope.chain,
   );
-  const vQCall1 = verifyChain([sessQ.receipts[0]], { keyring: sessQ.keyring });
-  const vQCall2 = verifyChain([sessQ.receipts[1]], { keyring: sessQ.keyring });
+  const vQCall1 = verifyChain(b([sessQ.receipts[0]]), { keyring: b(sessQ.keyring) });
+  const vQCall2 = verifyChain(b([sessQ.receipts[1]]), { keyring: b(sessQ.keyring) });
   ok(`(q) call 1's dropped-but-persisted segment still independently verifies VALID on its own — status=${vQCall1.status}`, vQCall1.status === "VALID");
   ok(`(q) call 2's fresh segment independently verifies VALID — status=${vQCall2.status}`, vQCall2.status === "VALID");
 
@@ -678,6 +682,13 @@ async function main() {
     pendingStorePath: pendingStorePathR,
     approverKeyring: { [approverKp.kid]: approverKp.publicKey },
     approverIdentityManifest: { "human-approval-cli": [approverKp.kid] },
+    // Collect OUTCOME receipts. When the decision verdict was corrected from EXECUTED to ALLOWED
+    // (a decision receipt records what policy decided, not what happened), this scenario stopped
+    // asserting any execution evidence at all: it checked the downstream counter and the decision
+    // sequence, neither of which is a signed artifact attesting that the approved call ran. The
+    // terminal receipt moved to the onOutcome channel, so the assertion has to follow it there
+    // rather than disappear — otherwise correcting a verdict quietly deleted the coverage.
+    collectOutcomes: true,
   });
 
   const denyDeferred = await expectDeny(sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } }));
@@ -718,24 +729,39 @@ async function main() {
   const rExecuted = await sessR.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 5000, to: "account-42" } });
   ok("(r) call 3: the EXACT same retried call is now forwarded and succeeds", /transferred 5000/.test(rExecuted.content?.[0]?.text ?? ""));
   ok("(r) call 3: downstream handler invoked EXACTLY once (the retry, not the held attempt)", readCounts(countsR).transfer_funds === 1);
-  ok("(r) exactly 3 receipts total: DEFERRED, ALLOWED (adopted), EXECUTED", sessR.receipts.length === 3);
+  ok("(r) exactly 3 receipts total: DEFERRED, ALLOWED (adopted), ALLOWED (retry decision)", sessR.receipts.length === 3);
   ok(
-    "(r) verdict sequence is [DEFERRED, ALLOWED, EXECUTED]",
-    JSON.stringify(sessR.receipts.map((r) => r.governance.verdict)) === JSON.stringify(["DEFERRED", "ALLOWED", "EXECUTED"]),
+    "(r) verdict sequence is [DEFERRED, ALLOWED, ALLOWED]",
+    JSON.stringify(sessR.receipts.map((r) => r.governance.verdict)) === JSON.stringify(["DEFERRED", "ALLOWED", "ALLOWED"]),
+  );
+  // THE EXECUTION EVIDENCE FOR THE RETRY (restored). The third DECISION receipt says policy allowed
+  // the retry; it does not say the call ran. That claim now lives in the OUTCOME receipt, and it is
+  // asserted here — signed, offline-verifiable, and bound to the exact decision it settles — so the
+  // scenario proves "approved AND executed", not merely "approved and the counter moved".
+  ok("(r) exactly ONE outcome receipt: the approved retry, and nothing else, actually dispatched", sessR.outcomes.length === 1);
+  ok("(r) the outcome receipt carries the distinct R2 outcome spec, not the decision spec", sessR.outcomes[0].spec === OUTCOME_RECEIPT_SPEC);
+  ok("(r) the outcome status is success (the transfer really executed)", sessR.outcomes[0].outcome.status === "success");
+  ok(
+    "(r) the outcome receipt verifies offline AND is bound to the RETRY decision (id+hash)",
+    verifyOutcomeReceipt(sessR.outcomes[0], { verification: sessR.keyring, expectedDecisionReceipt: sessR.receipts[2] }).ok === true,
+  );
+  ok(
+    "(r) the same outcome checked against the ADOPTED-APPROVAL decision is rejected (binding is to the call that ran)",
+    verifyOutcomeReceipt(sessR.outcomes[0], { verification: sessR.keyring, expectedDecisionReceipt: sessR.receipts[1] }).ok === false,
   );
   // AGENT-LEVEL IDENTITY BINDING: with only { keyring }, attribution is kid-level — any trusted
   // key may claim any agent.id. The identityManifest pins the proxy agent's kid to "session-R"
   // (agentId defaults to sessionId here) and the approver's kid to "human-approval-cli", so a
   // co-trusted key can never impersonate the human approval seat.
   const proxyKidR = Object.keys(sessR.keyring)[0];
-  const vR = verifyChain(sessR.receipts, {
-    keyring: { ...sessR.keyring, [approverKp.kid]: approverKp.publicKey },
-    identityManifest: { "session-R": [proxyKidR], "human-approval-cli": [approverKp.kid] },
+  const vR = verifyChain(b(sessR.receipts), {
+    keyring: b({ ...sessR.keyring, [approverKp.kid]: approverKp.publicKey }),
+    identityManifest: b({ "session-R": [proxyKidR], "human-approval-cli": [approverKp.kid] }),
   });
   ok(`(r) the full 3-receipt chain (2 different signing agents) verifies VALID with agent-level identity binding — status=${vR.status}`, vR.status === "VALID" && vR.count === 3);
-  const vRForged = verifyChain(sessR.receipts, {
-    keyring: { ...sessR.keyring, [approverKp.kid]: approverKp.publicKey },
-    identityManifest: { "session-R": [proxyKidR], "human-approval-cli": [proxyKidR] },
+  const vRForged = verifyChain(b(sessR.receipts), {
+    keyring: b({ ...sessR.keyring, [approverKp.kid]: approverKp.publicKey }),
+    identityManifest: b({ "session-R": [proxyKidR], "human-approval-cli": [proxyKidR] }),
   });
   ok(`(r) a manifest authorizing the AGENT's own kid for the human-approval seat is rejected UNTRUSTED — status=${vRForged.status}`, vRForged.status === "UNTRUSTED");
 
@@ -783,7 +809,7 @@ async function main() {
     .filter(Boolean)
     .map((line) => JSON.parse(line));
   ok("(F) CLI persisted 2 receipts to --receipt-log", cliReceipts.length === 2);
-  const vCli = verifyChain(cliReceipts, { keyring: cliKeyring });
+  const vCli = verifyChain(b(cliReceipts), { keyring: b(cliKeyring) });
   ok("(F) CLI receipt log independently verifies VALID against the CLI's --keyring-file", vCli.status === "VALID");
 
   // ---------------------------------------------------------------------------------------
@@ -835,8 +861,8 @@ async function main() {
   const receiptsRun1 = fs.readFileSync(receiptLogRun1, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
   const receiptsRun2 = fs.readFileSync(receiptLogRun2, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
   const persistedKeyring = { [keyAfterRun1.kid]: keyAfterRun1.publicKey };
-  const vRun1 = verifyChain(receiptsRun1, { keyring: persistedKeyring });
-  const vRun2 = verifyChain(receiptsRun2, { keyring: persistedKeyring });
+  const vRun1 = verifyChain(b(receiptsRun1), { keyring: b(persistedKeyring) });
+  const vRun2 = verifyChain(b(receiptsRun2), { keyring: b(persistedKeyring) });
   ok(`(n) run 1's receipt verifies VALID under the persisted key (status=${vRun1.status})`, vRun1.status === "VALID");
   ok(`(n) run 2's receipt (after restart) ALSO verifies VALID under the SAME persisted key (status=${vRun2.status})`, vRun2.status === "VALID");
 
@@ -895,7 +921,7 @@ async function main() {
   ok(`(r) seq is continuous 0..3 across the restart — got [${rSeqs.join(",")}]`, JSON.stringify(rSeqs) === JSON.stringify([0, 1, 2, 3]));
 
   const rKeyring = { [rKey.kid]: rKey.publicKey };
-  const vCombined = verifyChain(rCombined, { keyring: rKeyring });
+  const vCombined = verifyChain(b(rCombined), { keyring: b(rKeyring) });
   ok(`(r) the COMBINED 4-receipt log (both runs) verifies as ONE VALID chain — status=${vCombined.status}`, vCombined.status === "VALID");
   ok("(r) verifyChain sees all 4 receipts, not 2 disjoint segments", vCombined.count === 4);
 
@@ -1050,7 +1076,7 @@ async function main() {
   const keyringS = JSON.parse(fs.readFileSync(keyringFileS, "utf8"));
   const receiptsS = fs.readFileSync(receiptLogS, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
   ok("(S) exactly 1 receipt persisted", receiptsS.length === 1);
-  const vS = verifyChain(receiptsS, { keyring: keyringS });
+  const vS = verifyChain(b(receiptsS), { keyring: b(keyringS) });
   ok(`(S) the receipt verifies VALID under the SIDECAR's own keyring-file (status=${vS.status})`, vS.status === "VALID");
 
   const sidecarIdentityS = JSON.parse(fs.readFileSync(sidecarKeyFileS, "utf8"));
@@ -1111,18 +1137,18 @@ async function main() {
   await sessU.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 300, to: "account-42" } });
   await expectDeny(sessU.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 999_999_999, to: "attacker" } }));
   ok("(u) 3 decision receipts recorded (2 ALLOW + 1 DENY) — unchanged from round-1", sessU.receipts.length === 3);
-  ok("(u) exactly 2 OUTCOME receipts — one per EXECUTED tool, NONE for the DENY (it never ran)", sessU.outcomes.length === 2);
+  ok("(u) exactly 2 OUTCOME receipts — one per DISPATCHED tool, NONE for the DENY (it never ran)", sessU.outcomes.length === 2);
   ok("(u) outcome receipts carry the distinct R2 spec, not the decision spec", sessU.outcomes.every((o) => o.spec === OUTCOME_RECEIPT_SPEC && o.spec !== sessU.receipts[0].spec));
   ok("(u) each outcome status is success", sessU.outcomes.every((o) => o.outcome.status === "success"));
-  const decU = sessU.receipts.filter((r) => r.governance.verdict === "EXECUTED");
-  ok("(u) outcome[0] verifies offline + is bound to the echo decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[0], { keyring: sessU.keyring, expectedDecisionReceipt: decU[0] }).ok === true);
-  ok("(u) outcome[1] verifies offline + is bound to the transfer decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[1], { keyring: sessU.keyring, expectedDecisionReceipt: decU[1] }).ok === true);
-  const vU = verifyChain(sessU.receipts, { keyring: sessU.keyring });
+  const decU = sessU.receipts.filter((r) => r.governance.verdict === "ALLOWED");
+  ok("(u) outcome[0] verifies offline + is bound to the echo decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[0], { verification: sessU.keyring, expectedDecisionReceipt: decU[0] }).ok === true);
+  ok("(u) outcome[1] verifies offline + is bound to the transfer decision (id+hash)", verifyOutcomeReceipt(sessU.outcomes[1], { verification: sessU.keyring, expectedDecisionReceipt: decU[1] }).ok === true);
+  const vU = verifyChain(b(sessU.receipts), { keyring: b(sessU.keyring) });
   ok(`(u) the DECISION chain still verifies VALID (outcomes are NOT chained in) — count=${vU.count}`, vU.status === "VALID" && vU.count === 3);
-  ok("(u) an outcome checked against the WRONG decision is rejected (binding enforced)", verifyOutcomeReceipt(sessU.outcomes[0], { keyring: sessU.keyring, expectedDecisionReceipt: decU[1] }).ok === false);
+  ok("(u) an outcome checked against the WRONG decision is rejected (binding enforced)", verifyOutcomeReceipt(sessU.outcomes[0], { verification: sessU.keyring, expectedDecisionReceipt: decU[1] }).ok === false);
   const tamperedU = JSON.parse(JSON.stringify(sessU.outcomes[0]));
   tamperedU.outcome.status = "error";
-  ok("(u) a status-tampered outcome fails signature verification", verifyOutcomeReceipt(tamperedU, { keyring: sessU.keyring }).ok === false);
+  ok("(u) a status-tampered outcome fails signature verification", verifyOutcomeReceipt(tamperedU, { verification: sessU.keyring }).ok === false);
   ok("(u) the DENIED transfer never reached downstream (transfer count is 1 = only the small ALLOW)", readCounts(countsU).transfer_funds === 1);
   await sessU.close();
 
@@ -1182,8 +1208,8 @@ async function main() {
   const errOutcomeV = outcomesV.find((o) => o.outcome.status === "error");
   ok("(v) an ERROR outcome receipt was emitted for the failed tool, naming it", Boolean(errOutcomeV) && errOutcomeV.action.id === "boom");
   ok("(v) the error outcome captured the downstream error message", /boom/.test(errOutcomeV?.outcome.error ?? ""));
-  ok("(v) every outcome receipt (success + error) verifies offline", outcomesV.length >= 1 && outcomesV.every((o) => verifyOutcomeReceipt(o, { keyring: keyringV }).ok === true));
-  const vV = verifyChain(receiptsV, { keyring: keyringV });
+  ok("(v) every outcome receipt (success + error) verifies offline", outcomesV.length >= 1 && outcomesV.every((o) => verifyOutcomeReceipt(o, { verification: keyringV }).ok === true));
+  const vV = verifyChain(b(receiptsV), { keyring: b(keyringV) });
   ok(`(v) the decision chain (slow_task, add_tool, boom — all ALLOW) verifies VALID — status=${vV.status}, count=${vV.count}`, vV.status === "VALID" && vV.count === 3);
   await clientV.close();
 
@@ -1222,12 +1248,12 @@ async function main() {
   ok("(w) transfer_funds (huge) over HTTP → DENY, MCP error surfaced (fail-closed, identical to stdio)", denyW.denied && denyW.code === -32600);
   ok("(w) the HTTP DENY never reached the downstream handler (transfer count 0)", readCounts(countsW).transfer_funds === 0);
   ok("(w) 2 decision receipts over HTTP (echo ALLOW + transfer DENY)", receiptsW.length === 2);
-  ok("(w) HTTP decision verdicts [EXECUTED, BLOCKED]", JSON.stringify(receiptsW.map((r) => r.governance.verdict)) === JSON.stringify(["EXECUTED", "BLOCKED"]));
-  const vW = verifyChain(receiptsW, { keyring: keyringW });
+  ok("(w) HTTP decision verdicts [ALLOWED, BLOCKED]", JSON.stringify(receiptsW.map((r) => r.governance.verdict)) === JSON.stringify(["ALLOWED", "BLOCKED"]));
+  const vW = verifyChain(b(receiptsW), { keyring: b(keyringW) });
   ok(`(w) the HTTP session's decision chain verifies VALID offline — count=${vW.count}`, vW.status === "VALID" && vW.count === 2);
   ok(
     "(w) exactly 1 outcome receipt over HTTP (only the executed echo, not the DENY) + it verifies & binds",
-    outcomesW.length === 1 && verifyOutcomeReceipt(outcomesW[0], { keyring: keyringW, expectedDecisionReceipt: receiptsW[0] }).ok === true,
+    outcomesW.length === 1 && verifyOutcomeReceipt(outcomesW[0], { verification: keyringW, expectedDecisionReceipt: receiptsW[0] }).ok === true,
   );
   ok("(w) the HTTP proxy tracked exactly 1 active session while open", httpW.activeSessions() === 1);
   await clientW.close();
@@ -1241,15 +1267,130 @@ async function main() {
   // keyring verifies both; the new segment does NOT verify under the old kid alone (proving the swap
   // is real, not cosmetic).
   // ---------------------------------------------------------------------------------------
-  section("Scenario X (R2) — signing-key rotation: old kid verifies history, new kid signs new segments");
+  section("Scenario X (R2) — signing-key rotation: retired history is refused, new kid signs new segments");
+  const poisonNowMsX = Date.UTC(2026, 6, 15, 0, 0, 0, 0);
+  const rotateRoundTripErrorX = "rotate: clock/formatter produced an instant that does not represent `now()`; rotation was not recorded";
+  const originalDateNowX = Date.now;
+  const originalToISOStringX = Date.prototype.toISOString;
+  try {
+    const garbageOldX = generateKeyPair("smoke:session-X:garbage-old");
+    const garbageNewX = generateKeyPair("smoke:session-X:garbage-new");
+    const garbageRotX = createRotatableSigner(garbageOldX, { now: () => poisonNowMsX });
+    const garbageRetiredBeforeX = JSON.stringify(garbageRotX.retiredKids());
+    let garbageErrorX;
+    Date.prototype.toISOString = () => "NOT-A-TIMESTAMP";
+    try {
+      garbageRotX.rotate(garbageNewX);
+    } catch (error) {
+      garbageErrorX = error;
+    }
+    ok(
+      "(x) attack A: garbage Date formatter output makes rotate throw and records nothing",
+      garbageErrorX?.message === rotateRoundTripErrorX
+        && JSON.stringify(garbageRotX.retiredKids()) === garbageRetiredBeforeX
+        && garbageRotX.verificationLifecycle().keys[garbageOldX.kid].retiredAt === null
+        && garbageRotX.verificationLifecycle().keys[garbageNewX.kid] === undefined
+        && garbageRotX.currentKid === garbageOldX.kid,
+    );
+
+    const futureOldX = generateKeyPair("smoke:session-X:future-old");
+    const futureNewX = generateKeyPair("smoke:session-X:future-new");
+    const futureRotX = createRotatableSigner(futureOldX, { now: () => poisonNowMsX });
+    const futureRetiredBeforeX = JSON.stringify(futureRotX.retiredKids());
+    let futureErrorX;
+    Date.prototype.toISOString = () => "2099-01-01T00:00:00.000Z";
+    try {
+      futureRotX.rotate(futureNewX);
+    } catch (error) {
+      futureErrorX = error;
+    }
+    ok(
+      "(x) attack B: canonical FAR-FUTURE formatter output makes rotate throw and cannot move the retirement bound",
+      futureErrorX?.message === rotateRoundTripErrorX
+        && JSON.stringify(futureRotX.retiredKids()) === futureRetiredBeforeX
+        && futureRotX.verificationLifecycle().keys[futureOldX.kid].retiredAt === null
+        && futureRotX.verificationLifecycle().keys[futureNewX.kid] === undefined
+        && futureRotX.currentKid === futureOldX.kid,
+    );
+
+    Date.prototype.toISOString = originalToISOStringX;
+    const defaultClockOldX = generateKeyPair("smoke:session-X:default-clock-old");
+    const defaultClockNewX = generateKeyPair("smoke:session-X:default-clock-new");
+    const beforeDefaultRotateX = originalDateNowX();
+    Date.now = () => Date.UTC(2100, 0, 1, 0, 0, 0, 0);
+    const defaultClockRotX = createRotatableSigner(defaultClockOldX);
+    defaultClockRotX.rotate(defaultClockNewX);
+    const afterDefaultRotateX = originalDateNowX();
+    Date.now = originalDateNowX;
+    const recordedDefaultRetirementX = Date.parse(defaultClockRotX.verificationLifecycle().keys[defaultClockOldX.kid].retiredAt);
+    ok(
+      "(x) attack C: post-load Date.now poison cannot move the default retirement bound",
+      recordedDefaultRetirementX >= beforeDefaultRotateX
+        && recordedDefaultRetirementX <= afterDefaultRotateX
+        && recordedDefaultRetirementX !== Date.UTC(2100, 0, 1, 0, 0, 0, 0),
+    );
+
+    const controlOldX = generateKeyPair("smoke:session-X:formatter-control-old");
+    const controlNewX = generateKeyPair("smoke:session-X:formatter-control-new");
+    const controlRotX = createRotatableSigner(controlOldX, { now: () => poisonNowMsX });
+    controlRotX.rotate(controlNewX);
+    ok(
+      "(x) control: unpoisoned rotate records the exact injected retirement instant",
+      controlRotX.verificationLifecycle().keys[controlOldX.kid].retiredAt === "2026-07-15T00:00:00.000Z"
+        && controlRotX.currentKid === controlNewX.kid,
+    );
+
+    const protoOldX = generateKeyPair("__proto__");
+    const protoNewX = generateKeyPair("smoke:session-X:proto-new");
+    const protoRotX = createRotatableSigner(protoOldX, { now: () => poisonNowMsX });
+    protoRotX.rotate(protoNewX);
+    const protoLifecycleX = protoRotX.verificationLifecycle();
+    ok(
+      "(x) control: kid __proto__ remains an own key in the lifecycle output",
+      Object.prototype.hasOwnProperty.call(protoLifecycleX.keys, "__proto__")
+        && protoLifecycleX.keys.__proto__.publicKey === protoOldX.publicKey,
+    );
+
+    const fractionalOldX = generateKeyPair("smoke:session-X:fractional-old");
+    const fractionalNewX = generateKeyPair("smoke:session-X:fractional-new");
+    const fractionalRotX = createRotatableSigner(fractionalOldX, { now: () => poisonNowMsX + 0.5 });
+    let fractionalErrorX;
+    try {
+      fractionalRotX.rotate(fractionalNewX);
+    } catch (error) {
+      fractionalErrorX = error;
+    }
+    ok(
+      "(x) control: a non-integer now() is refused with the integer-milliseconds reason and records nothing",
+      fractionalErrorX?.message === "rotate: clock `now()` must return integer epoch milliseconds"
+        && fractionalRotX.retiredKids().length === 0
+        && fractionalRotX.verificationLifecycle().keys[fractionalOldX.kid].retiredAt === null
+        && fractionalRotX.verificationLifecycle().keys[fractionalNewX.kid] === undefined
+        && fractionalRotX.currentKid === fractionalOldX.kid,
+    );
+  } finally {
+    Date.now = originalDateNowX;
+    Date.prototype.toISOString = originalToISOStringX;
+  }
+
   const storeX = createChainSessionStore();
   const kpXa = generateKeyPair("smoke:session-X:kidA");
-  const rotX = createRotatableSigner(kpXa);
+  let retirementNowMsX = 0;
+  const rotX = createRotatableSigner(kpXa, { now: () => retirementNowMsX });
   const sessXa = await makeSession({ sessionId: "session-Xa", store: storeX, signer: rotX });
   await sessXa.client.callTool({ name: "echo", arguments: { text: "xa1" } });
   await sessXa.client.callTool({ name: "echo", arguments: { text: "xa2" } });
   const segX_A = [...sessXa.receipts];
   await sessXa.close();
+
+  retirementNowMsX = Math.max(...segX_A.map((receipt) => Date.parse(receipt.ts))) + 1;
+  const retirementInstantX = new Date(retirementNowMsX).toISOString();
+  const lifecycleBeforeRotationX = rotX.verificationLifecycle();
+  const oldOutcomeSignerX = { kid: kpXa.kid, privateKey: kpXa.privateKey };
+  const historicalOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_A[0], tool: "echo", outcome: "success", ts: new Date(retirementNowMsX - 1).toISOString() },
+    oldOutcomeSignerX,
+  );
 
   const kpXb = generateKeyPair("smoke:session-X:kidB");
   rotX.rotate(kpXb);
@@ -1259,19 +1400,121 @@ async function main() {
   const segX_B = [...sessXb.receipts];
   await sessXb.close();
 
+  const lifecycleX = rotX.verificationLifecycle();
+  const currentOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_B[0], tool: "echo", outcome: "success", ts: new Date(retirementNowMsX + 1).toISOString() },
+    rotX,
+  );
+  const postRetirementOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_A[0], tool: "echo", outcome: "success", ts: new Date(retirementNowMsX + 1).toISOString() },
+    oldOutcomeSignerX,
+  );
+  const backdatedOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_A[0], tool: "echo", outcome: "success", ts: new Date(retirementNowMsX - 1).toISOString() },
+    oldOutcomeSignerX,
+  );
+  const kpXStranger = generateKeyPair("smoke:session-X:stranger");
+  const unknownOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_A[0], tool: "echo", outcome: "success", ts: new Date(retirementNowMsX + 1).toISOString() },
+    kpXStranger,
+  );
+  const kpXKeys = generateKeyPair("keys");
+  const staticKeysOutcomeX = buildOutcomeReceipt(
+    { decisionReceipt: segX_B[0], tool: "echo", outcome: "success", ts: new Date(retirementNowMsX + 1).toISOString() },
+    kpXKeys,
+  );
+
   ok("(x) segment A (2 receipts) all signed by the OLD kid", segX_A.length === 2 && segX_A.every((r) => r.sig.kid === kpXa.kid));
   ok("(x) segment B (2 receipts) all signed by the NEW kid — the new key is genuinely in use", segX_B.length === 2 && segX_B.every((r) => r.sig.kid === kpXb.kid));
-  ok("(x) rotatable keyring carries BOTH the retired + current kid", rotX.keyring()[kpXa.kid] === kpXa.publicKey && rotX.keyring()[kpXb.kid] === kpXb.publicKey && rotX.retiredKids().join() === kpXa.kid);
-  ok("(x) historical segment A still verifies under the OLD kid ALONE", verifyChain(segX_A, { keyring: { [kpXa.kid]: kpXa.publicKey } }).status === "VALID");
-  ok("(x) segment B verifies under the NEW kid alone", verifyChain(segX_B, { keyring: { [kpXb.kid]: kpXb.publicKey } }).status === "VALID");
+  ok("(x) rotatable verification surface removed separate keyring + retirement accessors", rotX.keyring === undefined && rotX.retirements === undefined);
+  ok("(x) one lifecycle snapshot carries BOTH keys and the retirement state", lifecycleX.spec === SIGNING_KEY_LIFECYCLE_SPEC && lifecycleX.keys[kpXa.kid].publicKey === kpXa.publicKey && lifecycleX.keys[kpXa.kid].retiredAt === retirementInstantX && lifecycleX.keys[kpXb.kid].publicKey === kpXb.publicKey && lifecycleX.keys[kpXb.kid].retiredAt === null && rotX.retiredKids().join() === kpXa.kid);
+  ok("(x) a cached lifecycle handle resolves the latest post-rotation state", Object.isFrozen(lifecycleBeforeRotationX) && Object.isFrozen(lifecycleBeforeRotationX.keys) && lifecycleBeforeRotationX.keys[kpXa.kid].retiredAt === retirementInstantX && lifecycleBeforeRotationX.keys[kpXb.kid].retiredAt === null);
+  ok("(x) no API exports retired keys with lifecycle state stripped", rotX.historicalKeyring === undefined);
+  ok("(x) segment B verifies under the NEW kid alone", verifyChain(b(segX_B), { keyring: b({ [kpXb.kid]: kpXb.publicKey }) }).status === "VALID");
   ok(
-    "(x) the combined keyring verifies BOTH segments",
-    verifyChain(segX_A, { keyring: rotX.keyring() }).status === "VALID" && verifyChain(segX_B, { keyring: rotX.keyring() }).status === "VALID",
+    "(x) the atomic lifecycle refuses retired history and verifies the current-key segment",
+    verifyChain(b(segX_A), { keyring: b(lifecycleX) }).status === "TAMPERED" && verifyChain(b(segX_B), { keyring: b(lifecycleX) }).status === "VALID",
   );
-  const segBOldOnlyX = verifyChain(segX_B, { keyring: { [kpXa.kid]: kpXa.publicKey } });
+  const segBOldOnlyX = verifyChain(b(segX_B), { keyring: b({ [kpXa.kid]: kpXa.publicKey }) });
   ok(
     `(x) segment B does NOT verify under the OLD-kid-only keyring (new kid unknown there) — proves the swap is real, not cosmetic (status=${segBOldOnlyX.status})`,
     segBOldOnlyX.status !== "VALID" && segBOldOnlyX.signaturesVerified === false && /kidB|not in keyring/i.test(segBOldOnlyX.reason ?? ""),
+  );
+  const genuineHistoricalResultX = verifyOutcomeReceipt(historicalOutcomeX, { verification: lifecycleX });
+  ok(
+    "(x) a genuine but independently-unwitnessed historical outcome is refused after its key retires",
+    genuineHistoricalResultX.ok === false && /retired.*independent witness/i.test(genuineHistoricalResultX.reason ?? ""),
+  );
+  const originalMapIteratorX = Map.prototype[Symbol.iterator];
+  let poisonedHistoricalResultX;
+  Map.prototype[Symbol.iterator] = function* forgedRetirementIterator() {
+    yield [kpXa.kid, { publicKey: kpXa.publicKey, retiredAt: null }];
+  };
+  try {
+    poisonedHistoricalResultX = verifyOutcomeReceipt(historicalOutcomeX, { verification: lifecycleX });
+  } finally {
+    Map.prototype[Symbol.iterator] = originalMapIteratorX;
+  }
+  ok(
+    "(x) post-load Map iterator poison cannot relabel a retired lifecycle entry as current",
+    poisonedHistoricalResultX.ok === false && /retired.*independent witness/i.test(poisonedHistoricalResultX.reason ?? ""),
+  );
+  ok(
+    "(x) current kid outcome verifies under the atomic lifecycle",
+    verifyOutcomeReceipt(currentOutcomeX, { verification: lifecycleX }).ok === true,
+  );
+  ok(
+    "(x) static non-rotating outcome kid named keys is not misclassified as a lifecycle wrapper",
+    verifyOutcomeReceipt(staticKeysOutcomeX, { verification: { [kpXKeys.kid]: kpXKeys.publicKey } }).ok === true,
+  );
+  ok(
+    "(x) multiple independent simultaneously-current static signers remain representable",
+    verifyOutcomeReceipt(currentOutcomeX, { verification: { [kpXb.kid]: kpXb.publicKey, [kpXKeys.kid]: kpXKeys.publicKey } }).ok === true
+      && verifyOutcomeReceipt(staticKeysOutcomeX, { verification: { [kpXb.kid]: kpXb.publicKey, [kpXKeys.kid]: kpXKeys.publicKey } }).ok === true,
+  );
+  const unknownOutcomeResultX = verifyOutcomeReceipt(unknownOutcomeX, { verification: lifecycleX });
+  ok(
+    "(x) unknown kid keeps the existing byte-identical refusal reason",
+    unknownOutcomeResultX.ok === false && unknownOutcomeResultX.reason === `signing key ${JSON.stringify(kpXStranger.kid)} not in keyring`,
+  );
+  const retiredAttackResultX = verifyOutcomeReceipt(postRetirementOutcomeX, { verification: lifecycleX });
+  ok(
+    "(x) retired kid outcome dated after retirement is refused",
+    retiredAttackResultX.ok === false && /retired.*independent witness/i.test(retiredAttackResultX.reason ?? ""),
+  );
+  const backdatedAttackResultX = verifyOutcomeReceipt(backdatedOutcomeX, { verification: lifecycleX });
+  ok(
+    "(x) retired kid outcome remains refused when the attacker backdates its signed timestamp",
+    backdatedAttackResultX.ok === false && /retired.*independent witness/i.test(backdatedAttackResultX.reason ?? ""),
+  );
+  const malformedLifecycleResultX = verifyOutcomeReceipt(currentOutcomeX, {
+    verification: {
+      spec: SIGNING_KEY_LIFECYCLE_SPEC,
+      keys: {
+        [kpXa.kid]: lifecycleX.keys[kpXa.kid],
+        [kpXb.kid]: { publicKey: kpXb.publicKey },
+      },
+    },
+  });
+  ok(
+    "(x) a lifecycle entry missing retiredAt is refused",
+    malformedLifecycleResultX.ok === false && /must contain exactly publicKey \+ retiredAt/.test(malformedLifecycleResultX.reason ?? ""),
+  );
+
+  const originalFreezeX = Object.freeze;
+  const poisonOldX = generateKeyPair("smoke:session-X:freeze-old");
+  let poisonRotX;
+  let poisonLifecycleX;
+  try {
+    Object.freeze = (value) => value;
+    poisonRotX = createRotatableSigner(poisonOldX, { now: () => retirementNowMsX });
+    poisonLifecycleX = poisonRotX.verificationLifecycle();
+  } finally {
+    Object.freeze = originalFreezeX;
+  }
+  ok(
+    "(x) lifecycle freezing uses the module-load capture, not a post-load poisoned Object.freeze",
+    Object.isFrozen(poisonLifecycleX) && Object.isFrozen(poisonLifecycleX.keys) && Object.isFrozen(poisonLifecycleX.keys[poisonOldX.kid]),
   );
 
   // ---------------------------------------------------------------------------------------
@@ -1341,7 +1584,7 @@ async function main() {
   ok("(z) remote-signer path: 1 decision receipt signed by the remote kid", receiptsZ.length === 1 && receiptsZ[0].sig.kid === kpZ.kid);
   ok(
     "(z) remote-signer path: 1 outcome receipt emitted via the async sign, offline-verifiable + bound to the decision",
-    outcomesZ.length === 1 && outcomesZ[0].sig.kid === kpZ.kid && verifyOutcomeReceipt(outcomesZ[0], { keyring: keyringZ, expectedDecisionReceipt: receiptsZ[0] }).ok === true,
+    outcomesZ.length === 1 && outcomesZ[0].sig.kid === kpZ.kid && verifyOutcomeReceipt(outcomesZ[0], { verification: keyringZ, expectedDecisionReceipt: receiptsZ[0] }).ok === true,
   );
   await clientZ.close();
 
@@ -1356,8 +1599,9 @@ async function main() {
       "offline-verifiable receipt; DENY never reached the downstream; tools/list is a live passthrough; " +
       "concurrent sessions stay isolated; the literal host-config CLI path works end-to-end. R2: HTTP+SSE " +
       "carries a full call with the SAME fail-closed guarantee as stdio; post-execution outcome receipts " +
-      "are emitted, bound and offline-verifiable; tools/list_changed + streaming progress are forwarded; " +
-      "signing-key rotation keeps history verifiable under the retired kid.",
+      "are emitted, bound and offline-verifiable for current/static keys; tools/list_changed + streaming " +
+      "progress are forwarded; rotation lifecycle verification refuses every retired-key artifact " +
+      "without an independent time witness and accepts current/static controls.",
   );
   process.exit(0);
 }

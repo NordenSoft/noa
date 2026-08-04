@@ -11,6 +11,7 @@
 import { signArtifact, refHash, receiptRefHash } from "noa-approval-artifacts";
 import type { GateKeyPair } from "./trust.js";
 import type { HoldEnvelope, HoldResolution, Receipt } from "./types.js";
+import { encodeDocument } from "./bytes.js";
 
 export function buildHoldResolution(args: {
   holdId: string;
@@ -38,5 +39,5 @@ export function buildHoldResolution(args: {
     keyManifestVersion: args.keyManifestVersion,
     keyManifestHash: args.keyManifestHash,
   };
-  return signArtifact(doc, "NOA-HoldResolution-v0.1-sig", { kid: args.gate.kid, privateKey: args.gate.privateKey }) as HoldResolution;
+  return signArtifact<typeof doc>(encodeDocument(doc), "NOA-HoldResolution-v0.1-sig", { kid: args.gate.kid, privateKey: args.gate.privateKey }) as HoldResolution;
 }

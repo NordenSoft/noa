@@ -23,6 +23,10 @@ export type HoldStatus =
 /** Machine-readable terminal reason (never free text / never PII). */
 export type HoldReasonCode =
   | "HUMAN_APPROVED"
+  /** RAW (UNENFORCED) acknowledgement. A key-holder acknowledged a display the boundary did NOT
+   *  derive, so this is NOT authorization and NOT execution evidence (owner decision 2026-07-30).
+   *  It exists so an unenforced acknowledgement can never be mistaken for HUMAN_APPROVED. */
+  | "HUMAN_ACK_UNENFORCED"
   | "HUMAN_DENIED"
   | "APPROVAL_TIMEOUT"
   | "LOCAL_STATE_LOST";
@@ -150,6 +154,17 @@ export interface GrantRecord {
   reportedAt: number | null;
   /** an UNKNOWN hint was seen (triggers targeted corroboration); NOT terminal. */
   unknownHintAt: number | null;
+  /**
+   * C-04 — an outcome the EXECUTING PARTY asserted that the gate cannot verify, kept as an
+   * ATTRIBUTED CLAIM and never promoted to a signed determinate outcome. Recorded so the claim is
+   * not lost (an operator still wants to know what the caller said), and attributed so it reads as
+   * "X said this" rather than as "this is what happened". Deliberately gate-local state: it is not
+   * a member of any signed artifact, so no wire format widens to carry it.
+   */
+  claimedResult: "FAILED_BEFORE_DISPATCH" | null;
+  /** identity of the party that made `claimedResult`. A claim without a claimant is a fact. */
+  claimedBy: string | null;
+  claimedAt: number | null;
   consumption: ExecutionConsumption | null;
   uncertainty: ExecutionUncertainty | null;
   createdAt: number;

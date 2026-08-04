@@ -12,6 +12,30 @@
  * `verifyArtifact`, not re-declared here (Red Line 5: never re-invent a frozen shape).
  */
 
+import { frozenSet, frozenTable, type FrozenSet } from "noa-receipt";
+
+/**
+ * POLICY STATE IS FROZEN BY CONSTRUCTION (review #6, C3).
+ *
+ * Review #5 found a runtime-mutable `Set` in a frozen policy table and it was fixed IN ONE FILE.
+ * Every table in THIS file stayed a `Set` — and `Object.freeze` does not disable `Set.prototype.add`,
+ * so `NEGATIVE_OUTCOMES.delete("CANCELLED_LOCAL_STATE_LOST")` +
+ * `POSITIVE_OUTCOMES.add("CANCELLED_LOCAL_STATE_LOST")` turned `step15-laundering-no-anchor.json`
+ * from INCONCLUSIVE / E_INCONCLUSIVE_NO_CHECKPOINT into VALID_SEGMENT_ONLY, and
+ * `OPTIONAL_ARTIFACT_FIELDS.push(...)` simply worked.
+ *
+ * Hand-freezing the tables a review happens to name does not close this: the NEXT table is mutable
+ * again. Two mechanisms replace the discipline:
+ *
+ *   1. `frozenSet` / `frozenTable` (noa-receipt) — a membership table with no `Set` inside it, and a
+ *      deep-freeze that THROWS at construction on a `Set`/`Map`/`Date`/accessor/class instance and
+ *      re-roots every array onto the inert prototype. A mutable policy table cannot be built; the
+ *      module fails to evaluate, in every process including the build.
+ *   2. `test/security/policy-tables-inert.test.ts` — walks EVERY exported value of EVERY package
+ *      entry point and requires the same invariant of tables that never came through (1). A new table
+ *      in a new file is covered without anyone remembering this comment.
+ */
+
 export const EVIDENCE_SPEC = "noa.approval-evidence/0.1" as const;
 
 /**
@@ -31,13 +55,13 @@ export type EvidenceOutcome =
   | "CANCELLED_LOCAL_STATE_LOST";
 
 /** The two fully-proven positive outcomes — everything else is a step-15 non-executed outcome. */
-export const POSITIVE_OUTCOMES: ReadonlySet<EvidenceOutcome> = new Set<EvidenceOutcome>([
+export const POSITIVE_OUTCOMES: FrozenSet<EvidenceOutcome> = frozenSet<EvidenceOutcome>([
   "EXECUTED",
   "EXECUTION_FAILED",
 ]);
 
 /** The six non-executed outcomes subject to the step-15 fresh-checkpoint rule (F3/F5/G1). */
-export const NEGATIVE_OUTCOMES: ReadonlySet<EvidenceOutcome> = new Set<EvidenceOutcome>([
+export const NEGATIVE_OUTCOMES: FrozenSet<EvidenceOutcome> = frozenSet<EvidenceOutcome>([
   "DENIED",
   "EXPIRED",
   "APPROVED_NO_EXECUTION_EVIDENCE",
@@ -88,7 +112,10 @@ export type EvidenceVerdict =
   | "INCONCLUSIVE" // a non-executed outcome without a fresh trusted checkpoint (F3/F5/G1)
   | "INVALID"; // fail-closed hard rejection at a named step
 
-/** The 19 named verifier steps (step 0 = the F7b tenant-equality pre-rule; steps 1-18 = §13). */
+/**
+ * The 20 named verifier steps (step 0 = the F7b tenant-equality pre-rule; steps 1-18 = §13;
+ * step 19 = the receipt-role integrity boundary, verifier-owned).
+ */
 export type StepName =
   | "STEP_0_TENANT_EQUALITY"
   | "STEP_1_HOLD_ENVELOPE"
@@ -108,7 +135,9 @@ export type StepName =
   | "STEP_15_NEGATIVE_OUTCOME_PRINCIPLE"
   | "STEP_16_CHECKPOINT_FRESHNESS"
   | "STEP_17_CHECKPOINT_RECONCILE"
-  | "STEP_18_TEMPORAL_AUTHORIZATION";
+  | "STEP_18_TEMPORAL_AUTHORIZATION"
+  /** Verifier-owned (not §13), like step 0: BOUNDARY 1's receipt-role integrity + coverage rule. */
+  | "STEP_19_RECEIPT_ROLE_INTEGRITY";
 
 /** A per-step machine-readable error code (one per failure class, distinct from the step name). */
 export type StepCode =
@@ -133,7 +162,76 @@ export type StepCode =
   | "E_CHECKPOINT_RECONCILE"
   | "E_TEMPORAL_AUTH"
   | "E_BUNDLE_SHAPE"
+  | "E_OUTCOME_ARTIFACT_SET"
+  | "E_RECEIPT_ROLE"
+  | "E_AUTHORIZATION_WINDOW"
   | "E_NO_TRUST_ROOT";
+
+/**
+ * The §13 outcome-keyed union, MADE MECHANICAL. The container is documented as "each outcome carries
+ * ONLY the artifacts that exist for it", but nothing enforced it: the container schema marks every
+ * optional artifact `type: object` for every outcome, and each step only reads the artifacts IT
+ * expects. So an artifact outside an outcome's union rode along completely unverified and the
+ * verifier still returned VALID_FULL_CHAIN — a positive verdict over bytes no step ever looked at.
+ *
+ * This table is the union, in one place, so a NEW outcome cannot silently inherit "anything goes":
+ * an outcome absent from the table has an EMPTY optional set and every optional artifact is refused.
+ *
+ * Scope note: this closes PRESENT-but-not-in-union only. "Required artifact missing" is deliberately
+ * left to the step that OWNS the artifact (step 10 owns the grant/consumption for EXECUTED, step 3
+ * owns the Decision Artifact, …), so a missing artifact is still attributed to its own step rather
+ * than collapsing onto this pre-rule.
+ */
+export const OUTCOME_ARTIFACT_UNION: Readonly<Record<EvidenceOutcome, FrozenSet<string>>> = frozenTable({
+  EXECUTED: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "executedReceipt"]),
+  EXECUTION_FAILED: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "failedReceipt"]),
+  DENIED: frozenSet(["decisionArtifact", "blockedReceipt"]),
+  EXPIRED: frozenSet(["timeoutReceipt"]),
+  APPROVED_NO_EXECUTION_EVIDENCE: frozenSet(["decisionArtifact", "allowedReceipt"]),
+  GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant"]),
+  UNKNOWN_AFTER_DISPATCH: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant", "executionUncertainty"]),
+  // CANCELLED (crash before the gate durably recorded the outcome) MAY carry a pre-crash ALLOWED
+  // receipt + the decision that produced it; it may never carry execution artifacts (step 9).
+  CANCELLED_LOCAL_STATE_LOST: frozenSet(["decisionArtifact", "allowedReceipt"]),
+});
+
+/**
+ * The execution-artifact triple whose ABSENCE four outcomes already assert in their OWN step:
+ * step 9 (CANCELLED), step 12 (UNKNOWN), step 13 (GRANT_EXPIRED), step 14 (APPROVED_NO_EXECUTION).
+ *
+ * Those are SEMANTIC rules — "an absence-claim contradicted by an execution artifact" — and each
+ * owns its step's attribution. The union pre-rule above deliberately does NOT also report them, so a
+ * defect keeps tripping the step that owns it (the anti-cheat property: never an earlier accidental
+ * one). Nothing is weakened by the hand-off: every field here is still rejected, by its own step.
+ * What the union rule adds is everything NO step examines — a grant on a DENIED bundle, an
+ * uncertainty on a CANCELLED one, a timeout receipt on an EXECUTED one.
+ */
+const STEP_OWNED_EXECUTION_ABSENCE: FrozenSet<string> = frozenSet([
+  "executionConsumption",
+  "executedReceipt",
+  "failedReceipt",
+]);
+
+/** Per-outcome fields the outcome's own step already refuses (see STEP_OWNED_EXECUTION_ABSENCE). */
+export const STEP_OWNED_ABSENCE: Readonly<Partial<Record<EvidenceOutcome, FrozenSet<string>>>> = frozenTable({
+  CANCELLED_LOCAL_STATE_LOST: STEP_OWNED_EXECUTION_ABSENCE, // step 9
+  UNKNOWN_AFTER_DISPATCH: STEP_OWNED_EXECUTION_ABSENCE, // step 12
+  GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE: STEP_OWNED_EXECUTION_ABSENCE, // step 13
+  APPROVED_NO_EXECUTION_EVIDENCE: STEP_OWNED_EXECUTION_ABSENCE, // step 14
+});
+
+/** Every optional (outcome-conditional) artifact field the container defines. */
+export const OPTIONAL_ARTIFACT_FIELDS: readonly string[] = frozenTable([
+  "decisionArtifact",
+  "allowedReceipt",
+  "blockedReceipt",
+  "timeoutReceipt",
+  "executionGrant",
+  "executionConsumption",
+  "executionUncertainty",
+  "executedReceipt",
+  "failedReceipt",
+]);
 
 /** The outcome of running a single named step. */
 export interface StepResult {
@@ -142,6 +240,63 @@ export interface StepResult {
   code?: StepCode;
   reason?: string;
 }
+
+/**
+ * DESIGN 2 — the two INDEPENDENT dimensions of a verdict.
+ *
+ * `verdict` used to answer two different questions with one word, and the answers can legitimately
+ * disagree. "Every signature and hash in this bundle is intact" is a permanent fact about bytes: it
+ * was true yesterday and will be true in ten years. "The authority that signed it is valid" is a
+ * statement about a POLICY WINDOW and is true only until the delegation lapses. Collapsing them
+ * means an auditor reading a five-year-old bundle either gets INVALID for evidence that is
+ * cryptographically perfect (and learns to ignore the verdict), or gets VALID for a trust chain that
+ * expired years ago (and cannot tell whether it may act on it).
+ *
+ * They are reported separately, but authority still gates an intact verdict: without an independent
+ * historical time witness, a lapsed delegated signer cannot produce verifiable historical evidence.
+ */
+export interface VerdictDimensions {
+  /** Bytes: signatures, hashes, chain contiguity, checkpoint reconciliation. Permanent. */
+  integrity: "INTACT" | "BROKEN";
+  /**
+   * Authority, as a policy window:
+   *   VALID_NOW              — the root-signed delegation and the manifest's reject-only window
+   *                            both contain verifier-controlled `now`.
+   *   EXPIRED_NOW            — at least one required window has closed at verifier-controlled now.
+   *   NOT_YET_VALID_NOW      — the window opens in the future relative to `now`.
+   *   UNCHECKED              — the pipeline failed before authorization could be evaluated.
+   */
+  authorization: "VALID_NOW" | "EXPIRED_NOW" | "NOT_YET_VALID_NOW" | "UNCHECKED";
+}
+
+/**
+ * What the caller is asking the verifier FOR.
+ *
+ *   "audit"     — DEFAULT; applies audit-oriented envelope policy, but still requires the delegated
+ *                 signer to be authorized at verifier-controlled `now`.
+ *   "authorize" — a current authorization decision; reports a closed delegation/manifest window as
+ *                 `E_AUTHORIZATION_WINDOW`.
+ *
+ * A caller may set `now` to a historical instant only when it has an independent time witness.
+ * Signer-chosen manifest.issuedAt and dependent holdResolution.receivedAt may reject contradictions
+ * but can never establish that historical instant.
+ */
+export type VerificationPurpose = "audit" | "authorize";
+
+/**
+ * The policy identity a verdict is bound to. A verdict that does not say WHICH rules produced it
+ * cannot be compared across versions — and this branch changes rules, so "VALID" from two different
+ * builds is not the same claim.
+ */
+export interface VerdictPolicy {
+  /** The verifier's own rule-set version (bumped when a rule changes what a bundle verifies to). */
+  verifierVersion: string;
+  /** Which purpose produced this verdict. */
+  purpose: VerificationPurpose;
+}
+
+/** The rule-set version of this verifier. BUMP when a change can flip a bundle's verdict. */
+export const VERIFIER_POLICY_VERSION = "noa.verify-evidence/2026-08-01" as const;
 
 /** The full `verify-evidence` result. */
 export interface VerifyEvidenceResult {
@@ -153,6 +308,17 @@ export interface VerifyEvidenceResult {
   reason?: string;
   /** Every step that ran, in order (the audit trail). */
   steps: StepResult[];
+  /**
+   * BOUNDARY 1 evidence: every receipt role routed through the role chokepoint during this run, in
+   * assertion order. Present so the enumeration test can assert — mechanically, per outcome — that
+   * the set of roles the bundle CARRIES and the set the verifier ASSERTED are the same set. A role
+   * the verifier never asserted is a receipt whose meaning nothing checked.
+   */
+  rolesAsserted: string[];
+  /** DESIGN 2: integrity and authorization, reported separately (they can legitimately disagree). */
+  dimensions: VerdictDimensions;
+  /** DESIGN 2: the rule-set + purpose this verdict was produced under. */
+  policy: VerdictPolicy;
   /** Non-fatal, honest caveats (e.g. F6 opener-scoped residual, tail-truncation caveat). */
   warnings: string[];
 }

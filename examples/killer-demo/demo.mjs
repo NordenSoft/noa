@@ -12,6 +12,14 @@
 import { buildReceipt, buildCheckpoint, verifyChain, generateKeyPair } from "../../dist/src/index.js";
 import { sha256Prefixed } from "../../dist/src/hash.js";
 
+
+/**
+ * Documents are BYTES at every security-sensitive entry point (ADR §3.1). An example is the first
+ * thing a new caller copies, so it shows the byte form rather than a convenience wrapper.
+ */
+const enc = new TextEncoder();
+const b = (v) => enc.encode(JSON.stringify(v));
+
 const kp = generateKeyPair("demo-key-2026");
 const signer = { kid: kp.kid, privateKey: kp.privateKey };
 const keyring = { [kp.kid]: kp.publicKey };
@@ -91,7 +99,7 @@ console.log("2. Human rejected it                       ->  verdict:", chain[1].
 console.log("3. Legit 42.00 DKK refund                  ->  verdict:", chain[2].governance.verdict);
 
 console.log("\n=== Anyone can verify this offline ===");
-const result = verifyChain(chain, { keyring, checkpoint });
+const result = verifyChain(b(chain), { keyring: b(keyring), checkpoint: b(checkpoint) });
 console.log(JSON.stringify(result, null, 2));
 
 if (result.status !== "VALID") {

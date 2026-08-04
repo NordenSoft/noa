@@ -1,0 +1,39 @@
+{
+  "id": "reject_v2_unbound_leaf_proof_valid",
+  "description": "v2 anchor whose inclusion proof reconstructs the declared root EXACTLY, but whose leaf is not this receipt payload. Signature valid, proof valid, binding absent — isolates anchor-leaf-not-bound-to-payload from log-proof-broken.",
+  "expect": {
+    "valid": false
+  },
+  "reason": "anchor_leaf_unbound",
+  "contributed_by": "NordenSoft/noa (noa-receipt) — contributed to the EP-RECEIPT-v1 corpus",
+  "isolates": {
+    "axis": "anchor-leaf-not-bound-to-payload",
+    "distinct_from": "log-proof-broken",
+    "leaf_bound_to_payload": false,
+    "inclusion_proof_reconstructs_root": true,
+    "note": "The borrowed leaf/sibling/root are the published values of accept_with_merkle_anchor_v2, so the proof is a genuine proof about a genuine leaf in a genuine tree — just not this receipt payload."
+  },
+  "public_key": "MCowBQYDK2VwAyEA1w8lZQm5-N2q0jILWoDsag8DyU42FMhh6wZU-bWTuh8",
+  "document": {
+    "@version": "EP-RECEIPT-v1",
+    "payload": {
+      "receipt_id": "tr_v2_unbound_proof_valid",
+      "issuer": "ep:demo"
+    },
+    "signature": {
+      "algorithm": "Ed25519",
+      "value": "H5tkKU4cIWY-wAHEOIVExvAr3-HVTK_bPWiTe1ObOi9oBhyQhEeOiJsfWWNvvWN8xIVCw7OAHyXeD0CFZhhYAg"
+    },
+    "anchor": {
+      "alg": "EP-MERKLE-v2",
+      "leaf_hash": "49e4fa6eec990de1897dfcdd3b7a7cb6af458bf8d8a2aaddb9c61837bb26f804",
+      "merkle_proof": [
+        {
+          "hash": "52ab2e6d1cf6ebb89e4d01bb94ca71b5df78f609154b2735251abbeb37274038",
+          "position": "right"
+        }
+      ],
+      "merkle_root": "388fbc92013502492595c9092b268c1ec0ab562ae2bec40602e83a9cca0239c3"
+    }
+  }
+}

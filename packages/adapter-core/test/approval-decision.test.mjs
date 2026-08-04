@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { generateKeyPair, verifyChain, buildReceipt } from "noa-receipt";
+import { generateKeyPair, verifyChain, buildReceipt, receiptHashInput, sha256Digest, sha256Prefixed } from "noa-receipt";
+
+// approval-decision.mjs keeps this module-private; the redteam Buffer probe below must rebuild
+// the exact signed message, so the value is mirrored here. If they ever diverge the probe stops
+// reproducing and its control fails loudly rather than passing vacuously.
+const RECEIPT_SIG_DOMAIN_FOR_TEST = "NOA-Receipt-v0.1-sig";
+import { b } from "./helpers/bytes.mjs";
 import { preCheck } from "../src/pre-check.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
 import { buildApprovalReceipt, buildDenialReceipt, verifyApprovalReceipt } from "../src/approval-decision.mjs";
@@ -35,7 +41,7 @@ test("buildApprovalReceipt: verdict ALLOWED, governance.approval filled, chained
   assert.equal(allowed.chain.prevHash, deferred.chain.hash);
   assert.ok(ticket.length > 0);
   assert.ok(Date.parse(ticketExpiresAt) > Date.parse("2026-07-11T10:05:00.000Z"));
-  assert.equal(verifyChain([deferred, allowed], { keyring }).status, "VALID");
+  assert.equal(verifyChain(b([deferred, allowed]), { keyring: b(keyring) }).status, "VALID");
 });
 
 test("buildDenialReceipt: verdict BLOCKED, ruleId is the FIXED code 'human-denied' (D8: free-text reason NEVER folded into signed ruleId), approval filled, chained onto DEFERRED", () => {
@@ -51,7 +57,7 @@ test("buildDenialReceipt: verdict BLOCKED, ruleId is the FIXED code 'human-denie
   assert.equal(denied.governance.ruleId, "human-denied");
   assert.ok(!JSON.stringify(denied).includes("looks-fraudulent"), "free-text reason must never appear in the signed denial receipt");
   assert.deepEqual(denied.governance.approval, { by: "HUMAN:hmac-sha256:" + "a".repeat(64), at: "2026-07-11T10:05:00.000Z" });
-  assert.equal(verifyChain([deferred, denied], { keyring }).status, "VALID");
+  assert.equal(verifyChain(b([deferred, denied]), { keyring: b(keyring) }).status, "VALID");
 });
 
 test("THE MONEY TEST: DEFERRED -> ALLOWED -> EXECUTED, three receipts, ONE scope.chain, verifyChain VALID end-to-end", () => {
@@ -90,7 +96,7 @@ test("THE MONEY TEST: DEFERRED -> ALLOWED -> EXECUTED, three receipts, ONE scope
     "mcp-agent": [agentSigner.kid],
     "human-approval-cli": [approverSigner.kid],
   };
-  const v = verifyChain(chain, { keyring, identityManifest });
+  const v = verifyChain(b(chain), { keyring: b(keyring), identityManifest: b(identityManifest) });
   assert.equal(v.status, "VALID");
   assert.equal(v.count, 3);
   assert.deepEqual(chain.map((r) => r.governance.verdict), ["DEFERRED", "ALLOWED", "EXECUTED"]);
@@ -103,7 +109,7 @@ test("THE MONEY TEST: DEFERRED -> ALLOWED -> EXECUTED, three receipts, ONE scope
     "human-approval-cli": [agentSigner.kid],
   };
   assert.equal(
-    verifyChain(chain, { keyring, identityManifest: forgedManifest }).status,
+    verifyChain(b(chain), { keyring: b(keyring), identityManifest: b(forgedManifest) }).status,
     "UNTRUSTED",
     "the ALLOWED receipt's (agent.id, kid) pairing must be enforced — an unauthorized pairing can never verify VALID",
   );
@@ -121,6 +127,38 @@ function makeApprovedFixture(tag) {
 test("verifyApprovalReceipt: a REAL buildApprovalReceipt output verifies ok against the trusted approver keyring (signing-message reconstruction matches noa-receipt's own signer)", () => {
   const { allowed, approverKeyring, deferred } = makeApprovedFixture("v-ok");
   assert.deepEqual(verifyApprovalReceipt(allowed, { approverKeyring, expectedChain: deferred.scope.chain }), { ok: true });
+});
+
+test("P0-14: approval verification accepts multiple current keys and refuses a lifecycle-retired approver", () => {
+  const { allowed, approverKp, deferred } = makeApprovedFixture("v-lifecycle");
+  const otherCurrent = generateKeyPair("v-lifecycle-other-current");
+  const currentLifecycle = {
+    spec: "noa.signing-key-lifecycle/0.1",
+    keys: {
+      [approverKp.kid]: { publicKey: approverKp.publicKey, retiredAt: null },
+      [otherCurrent.kid]: { publicKey: otherCurrent.publicKey, retiredAt: null },
+    },
+  };
+  const retiredLifecycle = {
+    spec: currentLifecycle.spec,
+    keys: {
+      ...currentLifecycle.keys,
+      [approverKp.kid]: { publicKey: approverKp.publicKey, retiredAt: "2026-08-01T08:36:12.643Z" },
+    },
+  };
+
+  const control = verifyApprovalReceipt(allowed, {
+    approverKeyring: currentLifecycle,
+    expectedChain: deferred.scope.chain,
+  });
+  assert.equal(control.ok, true, control.reason);
+
+  const attack = verifyApprovalReceipt(allowed, {
+    approverKeyring: retiredLifecycle,
+    expectedChain: deferred.scope.chain,
+  });
+  assert.equal(attack.ok, false, "approval verifier accepted a lifecycle-retired signer");
+  assert.match(attack.reason, /retired/i);
 });
 
 test("verifyApprovalReceipt: fails closed on an UNTRUSTED signer (kid not in the approver keyring) — the core forgery defense", () => {
@@ -180,6 +218,137 @@ test("verifyApprovalReceipt: identityManifest binds the approver seat — an aut
   const r = verifyApprovalReceipt(allowed, { approverKeyring, identityManifest: { "human-approval-cli": [otherKp.kid] } });
   assert.equal(r.ok, false);
   assert.match(r.reason, /identity manifest/);
+});
+
+// REDTEAM 2026-08-02, reproduced by the lead before any fix was written.
+//
+// The identity manifest is the control that stops a CO-TRUSTED key — one legitimately in
+// approverKeyring for some other seat — from signing in the human-approval seat. Its decision was
+// `authorizedKids.includes(sig.kid)`, a live read of Array.prototype. An attacker who can run any
+// code in the process before this call replaces that method and every membership test answers yes.
+//
+// The signature stays genuine, the key stays trusted, the receipt stays untampered — so nothing
+// upstream fires. Only the seat binding breaks, which is exactly the guarantee the product sells:
+// evidence that THAT human approved THAT action. `create-proxy-server.mjs:345` consumes this result
+// immediately before adopting the approval and executing the held call, so the bypass is reachable.
+test("verifyApprovalReceipt: a poisoned Array.prototype.includes cannot authorize a co-trusted key into the approval seat", () => {
+  const { allowed, approverKp, approverKeyring } = makeApprovedFixture("v-manifest-poison");
+  const otherKp = generateKeyPair("v-manifest-poison-other");
+  const manifest = { "human-approval-cli": [otherKp.kid] };   // does NOT authorize the signing key
+
+  // CONTROL 1 — the harness can produce an acceptance, so a later refusal means something.
+  assert.equal(
+    verifyApprovalReceipt(allowed, { approverKeyring, identityManifest: { "human-approval-cli": [approverKp.kid] } }).ok,
+    true, "control: an AUTHORIZED kid must pass, or this test cannot distinguish refusal from breakage");
+
+  // CONTROL 2 — the check under test genuinely runs on this input, unpoisoned.
+  const clean = verifyApprovalReceipt(allowed, { approverKeyring, identityManifest: manifest });
+  assert.equal(clean.ok, false, "control: the unauthorized kid must be refused before poisoning");
+  assert.match(clean.reason, /identity manifest/);
+
+  // ATTACK — one method, replaced post-load, restored in `finally`.
+  const realIncludes = Array.prototype.includes;
+  let poisoned;
+  try {
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.includes = () => true;
+    poisoned = verifyApprovalReceipt(allowed, { approverKeyring, identityManifest: manifest });
+  } finally {
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.includes = realIncludes;
+  }
+  assert.equal(poisoned.ok, false,
+    "a poisoned Array.prototype.includes authorized a key the identity manifest does not list — the " +
+    "approval seat is no longer bound to the human it names, which is the product's core guarantee");
+  assert.match(poisoned.reason, /identity manifest/);
+
+  // CONTROL 3 — the poison really was removed; a leaked poison would make every later test lie.
+  assert.equal(Array.prototype.includes, realIncludes, "control: Array.prototype.includes was not restored");
+});
+
+// REDTEAM round 2. The commit above hardened the two METHODS on this decision and left the PROPERTY
+// READ: `identityManifest[r.agent.id]` walks the prototype chain. `agent.id` is attacker-chosen — it
+// sits inside the attacker's OWN signed content — so the attacker names a seat, pollutes that one key
+// on Object.prototype, and the manifest answers for a seat it never listed. The manifest here is
+// COMPLETE for every real seat; nothing about it is misconfigured.
+//
+// Fixing the methods and leaving the lookup is the shape of an incomplete fix: the reachable
+// capability is identical and the previous test still passes, so the suite reads as covered.
+test("verifyApprovalReceipt: a polluted Object.prototype cannot invent an identity-manifest entry for an attacker-named seat", () => {
+  const { deferred, approverKp } = makeApprovedFixture("v-proto");
+  const robotKp = generateKeyPair("v-proto-robot");
+  const seat = "attacker-named-seat";
+  // The attacker holds a CO-TRUSTED key and signs its own approval naming a seat of its choosing.
+  const { receipt: forged } = buildApprovalReceipt({
+    deferredReceipt: deferred, by: OPAQUE_BY, ts: "2026-07-11T10:05:00.000Z",
+    signer: { kid: robotKp.kid, privateKey: robotKp.privateKey }, agentId: seat,
+  });
+  const approverKeyring = { [approverKp.kid]: approverKp.publicKey, [robotKp.kid]: robotKp.publicKey };
+  const manifest = { "human-approval-cli": [approverKp.kid] };   // complete for every REAL seat
+
+  const clean = verifyApprovalReceipt(forged, { approverKeyring, identityManifest: manifest });
+  assert.equal(clean.ok, false, "control: the attacker-named seat must be refused unpoisoned");
+  assert.match(clean.reason, /identity manifest/);
+
+  const realProto = Object.getOwnPropertyDescriptor(Object.prototype, seat);
+  let poisoned;
+  try {
+    // eslint-disable-next-line no-extend-native
+    Object.prototype[seat] = [robotKp.kid];
+    poisoned = verifyApprovalReceipt(forged, { approverKeyring, identityManifest: manifest });
+  } finally {
+    if (realProto) Object.defineProperty(Object.prototype, seat, realProto);
+    else delete Object.prototype[seat];
+  }
+  assert.equal(poisoned.ok, false,
+    "a polluted Object.prototype supplied an authorization list the manifest never contained — the " +
+    "seat binding is decided by a lookup that reads inherited properties");
+  assert.match(poisoned.reason, /identity manifest/);
+  assert.equal(seat in Object.prototype, false, "control: Object.prototype was not restored");
+});
+
+// REDTEAM round 2. `Buffer` was a LIVE GLOBAL on the signature-verification path — the one line the
+// method-level fix above did not touch, in the same function. Replace `Buffer.concat` and every
+// receipt is verified against a message of the attacker's choosing, so ONE genuine human signature
+// authorizes any action.
+//
+// This is the finding the repo's own L8 gate had ALREADY reported at this exact line, and which was
+// accepted into the `L8-adapter-core` budget of 246. The budget was set by counting, not by triage,
+// and it contained a forgery vector.
+test("verifyApprovalReceipt: a poisoned Buffer.concat cannot replay one genuine signature onto another action", () => {
+  const a = makeApprovedFixture("v-buf-a");
+  const b2 = makeApprovedFixture("v-buf-b");
+  const approverKeyring = { [a.approverKp.kid]: a.approverKp.publicKey, [b2.approverKp.kid]: b2.approverKp.publicKey };
+
+  assert.equal(verifyApprovalReceipt(a.allowed, { approverKeyring }).ok, true,
+    "control: the honest approval verifies against its OWN action");
+
+  // b's content carrying a's signature, with chain.hash RECOMPUTED so the receipt is self-consistent.
+  // Without the recompute the hash check refuses it first and the signature check is never reached —
+  // the lead's first version of this probe did exactly that and passed for the wrong reason.
+  let forged = { ...b2.allowed, sig: { ...b2.allowed.sig, kid: a.allowed.sig.kid, value: a.allowed.sig.value } };
+  forged = { ...forged, chain: { ...forged.chain, hash: sha256Prefixed(receiptHashInput(forged)) } };
+  forged.chain.hash = sha256Prefixed(receiptHashInput(forged));
+
+  const clean = verifyApprovalReceipt(forged, { approverKeyring });
+  assert.equal(clean.ok, false, "control: the replayed signature must be refused unpoisoned");
+  assert.match(clean.reason, /invalid approver signature/,
+    "control: the refusal must come from the SIGNATURE check — any other reason means this probe " +
+    "never reached the code under test");
+
+  const realConcat = Buffer.concat;
+  let poisoned;
+  try {
+    const genuineMessage = realConcat.call(Buffer, [Buffer.from(RECEIPT_SIG_DOMAIN_FOR_TEST + ":", "utf8"), sha256Digest(receiptHashInput(a.allowed))]);
+    Buffer.concat = () => genuineMessage;
+    poisoned = verifyApprovalReceipt(forged, { approverKeyring });
+  } finally {
+    Buffer.concat = realConcat;
+  }
+  assert.equal(poisoned.ok, false,
+    "a poisoned Buffer.concat let one genuine human signature authorize a DIFFERENT action — the " +
+    "signature is verified over bytes the attacker controls, so consent is no longer bound to content");
+  assert.equal(Buffer.concat, realConcat, "control: Buffer.concat was not restored");
 });
 
 test("verifyApprovalReceipt (G1): expectedAction binds the approval to the EXACT held action — a genuine signed approval for a DIFFERENT action.paramsHash (or a different action.id) is refused, the matching one passes", () => {

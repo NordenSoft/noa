@@ -66,7 +66,7 @@ test("malformed action fields are rejected (bad paramsHash / bad riskClass)", ()
 test("exact-action binding: a decision for a DIFFERENT paramsHash is rejected", () => {
   const h = makeHarness();
   const { agent } = makeAgent(h);
-  const d = makeDevice(h);
+  const d = makeDevice(h, agent);
   const { holdId } = bodyOf<{ holdId: string }>(h.engine.createHold(agent, "k1", { action: ACTION }));
   const wrong = signDecisionReceipt({
     kid: d.kid,

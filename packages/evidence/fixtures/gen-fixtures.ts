@@ -18,8 +18,10 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACTS, signArtifact, refHash, receiptRefHash, type Signer as SideSigner } from "noa-approval-artifacts";
-import { buildReceipt, buildCheckpoint, type BuildInput, type Receipt, type Checkpoint, type Signer as ReceiptSigner } from "noa-receipt";
+import { buildReceipt, buildCheckpoint, type BuildInput, type Receipt, type Checkpoint, type Signer as ReceiptSigner, type Verdict } from "noa-receipt";
 import type { EvidenceBundle, EvidenceOutcome } from "../src/types.js";
+import type { ReceiptRole } from "../src/receipt-roles.js";
+import { encodeDocument } from "../src/bytes.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const OUT = join(__dirname, "..", "..", "conformance");
@@ -45,7 +47,10 @@ function sideDomain(spec: string): string {
   return ARTIFACTS[spec]!.domain!;
 }
 function sign(core: J, spec: string, kid: string): J {
-  return signArtifact(structuredClone(core), sideDomain(spec), sSign(kid)) as unknown as J;
+  // BYTES-IN: `signArtifact` takes the document as bytes now, so the `structuredClone` that used to
+  // stand here is redundant — serializing already produces a value the signer cannot share with this
+  // generator. The producer holds its own literal fixture objects, so this is a pure serialization.
+  return signArtifact(encodeDocument(core), sideDomain(spec), sSign(kid)) as unknown as J;
 }
 
 // ─── fixed clock / tenant / chain ────────────────────────────────────────────────────────────────
@@ -67,7 +72,13 @@ const T_CHECKPOINT = "2026-07-14T11:59:00.000Z"; // fresh (within 24h of NOW)
 const T_CHECKPOINT_STALE = "2026-07-08T12:00:00.000Z"; // > 24h before NOW
 const DELEG_FROM = "2026-07-14T10:00:00.000Z";
 const DELEG_EXP = "2026-07-20T10:00:00.000Z";
-const MAN_ISSUED = "2026-07-14T09:30:00.000Z";
+// FIXTURE DEFECT, CORRECTED: this was 09:30 — THIRTY MINUTES BEFORE the delegation that authorizes
+// the manifest signer opens (DELEG_FROM 10:00). A manifest cannot be issued before the delegation
+// permitting its signer exists. issuedAt is signer-chosen and therefore cannot authorize the key,
+// but it remains a reject-only consistency claim: an artifact admitting it predates its authority
+// must be refused. Delegation opens 10:00, manifest is stamped 10:30, and both precede every
+// receipt/decision/resolution time below.
+const MAN_ISSUED = "2026-07-14T10:30:00.000Z";
 const MAN_EXP = "2026-07-15T09:30:00.000Z";
 const PARAMS_HASH = "sha256:" + "a".repeat(64);
 
@@ -78,11 +89,17 @@ const CHECKPOINT_KEYRING: J = { "gate-prod-1": KEYS["gate-prod-1"]!.publicKey };
 const CHECKPOINT_KEYRING_WRONG: J = { "some-other-witness": KEYS["approver-crit-5"]!.publicKey };
 
 // ─── manifest keys (constant) + delegation + manifest ────────────────────────────────────────────
-function manifestKeys(approverRevokedAt: string | null = null): J[] {
+function manifestKeys(
+  approverRevokedAt: string | null = null,
+  approverValidFrom: string = DELEG_FROM,
+  critRevokedAt: string | null = null,
+  gateValidFrom: string = DELEG_FROM,
+  critValidFrom: string = DELEG_FROM,
+): J[] {
   return [
-    { kid: "gate-prod-1", type: "GATE", roles: ["hold-signer", "execution-signer"], publicKey: KEYS["gate-prod-1"]!.publicKey, validFrom: DELEG_FROM, revokedAt: null },
-    { kid: "approver-1-device-2", type: "APPROVER", roles: ["approve-high"], publicKey: KEYS["approver-1-device-2"]!.publicKey, hpkePublicKey: HPKE["approver-1-device-2"], validFrom: DELEG_FROM, revokedAt: approverRevokedAt },
-    { kid: "approver-crit-5", type: "APPROVER", roles: ["approve-critical"], publicKey: KEYS["approver-crit-5"]!.publicKey, hpkePublicKey: HPKE["approver-crit-5"], validFrom: DELEG_FROM, revokedAt: null },
+    { kid: "gate-prod-1", type: "GATE", roles: ["hold-signer", "execution-signer"], publicKey: KEYS["gate-prod-1"]!.publicKey, validFrom: gateValidFrom, revokedAt: null },
+    { kid: "approver-1-device-2", type: "APPROVER", roles: ["approve-high"], publicKey: KEYS["approver-1-device-2"]!.publicKey, hpkePublicKey: HPKE["approver-1-device-2"], validFrom: approverValidFrom, revokedAt: approverRevokedAt },
+    { kid: "approver-crit-5", type: "APPROVER", roles: ["approve-critical"], publicKey: KEYS["approver-crit-5"]!.publicKey, hpkePublicKey: HPKE["approver-crit-5"], validFrom: critValidFrom, revokedAt: critRevokedAt },
     { kid: "audit-1", type: "AUDIT", roles: ["audit-decrypt"], hpkePublicKey: HPKE["audit-1"], validFrom: DELEG_FROM, revokedAt: null },
   ];
 }
@@ -91,9 +108,9 @@ const DELEGATION = sign(
   "noa.key-delegation/0.1", "tenant-authority-1",
 );
 
-function makeManifest(keys: J[]): J {
+function makeManifest(keys: J[], issuedAt: string = MAN_ISSUED): J {
   return sign(
-    { spec: "noa.key-manifest/0.1", tenant: TENANT, version: 2, issuedAt: MAN_ISSUED, expiresAt: MAN_EXP, previousManifestHash: null, keys },
+    { spec: "noa.key-manifest/0.1", tenant: TENANT, version: 2, issuedAt, expiresAt: MAN_EXP, previousManifestHash: null, keys },
     "noa.key-manifest/0.1", "manifest-signer-3",
   );
 }
@@ -102,11 +119,11 @@ function makeManifest(keys: J[]): J {
 function action(riskClass: "HIGH" | "CRITICAL", paramsHash = PARAMS_HASH): BuildInput["action"] {
   return { id: "deploy.apply", canonical: "deploy.apply", riskClass, paramsHash, reversible: false, rollbackRef: null };
 }
-function deferredInput(riskClass: "HIGH" | "CRITICAL"): BuildInput {
+function deferredInput(riskClass: "HIGH" | "CRITICAL", verdict: Verdict = "DEFERRED"): BuildInput {
   return {
     id: "rcpt_deferred", ts: T_DEFERRED, scope: { tenant: TENANT, chain: CHAIN },
     agent: { id: "agent-a", model: null, principal: "SERVICE" },
-    action: action(riskClass), governance: { mode: "on", verdict: "DEFERRED", sandboxed: false },
+    action: action(riskClass), governance: { mode: "on", verdict, sandboxed: false },
   };
 }
 
@@ -121,11 +138,38 @@ interface BuildOpts {
   riskClass?: "HIGH" | "CRITICAL";
   approverKid?: string; // signs the ALLOWED/BLOCKED receipt + decision
   approverRevokedAt?: string | null; // manifest revocation for the approver key
+  approverValidFrom?: string; // manifest ACTIVATION for the approver key (pre-activation signing)
+  critRevokedAt?: string | null; // manifest revocation for approver-crit-5 (used as a checkpoint signer)
+  critValidFrom?: string; // manifest activation for approver-crit-5 (used as a checkpoint signer)
+  checkpointKid?: string; // who signs the checkpoint (default gate-prod-1)
+  omitDecision?: boolean; // drop the Decision Artifact entirely (gate self-approval)
+  grantApprovalReceiptHash?: string; // override the grant's binding to the approval
   checkpointTs?: string;
   checkpointKeyring?: J;
   tenantRoot?: J;
   allowedParamsHash?: string; // to break step-6 action binding (approve a different action)
   grantExpiresAt?: string;
+  // ── 2026-07-27 cross-family review round 3 ────────────────────────────────────────────────────
+  grantParamsHash?: string; // grant authorizes a DIFFERENT action than the one approved (G12)
+  grantHoldId?: string; // grant names a DIFFERENT hold than the envelope (G12)
+  grantHoldEnvelopeHash?: string; // grant points at an envelope that is not in this bundle
+  gateValidFrom?: string; // manifest ACTIVATION for the gate key (pre-activation receipt signing)
+  manifestIssuedAt?: string; // manifest issuance stamp (delegation-window chronology)
+  cancelledWithGateAllowed?: boolean; // CANCELLED + a GATE-signed ALLOWED receipt and NO decision
+  /** CANCELLED + a legitimate pre-crash APPROVER-signed ALLOWED receipt AND its Decision Artifact —
+   *  the §13-union-legal shape (the gate crashed after the human decided, before it recorded the
+   *  outcome). Valid on its own; used as the positive control for the CANCELLED role fixture. */
+  cancelledWithApproverAllowed?: boolean;
+  // ── 2026-07-27 cross-family review round 4 (BOUNDARY 1) ───────────────────────────────────────
+  /**
+   * Per-ROLE `governance.verdict` override, applied at RECEIPT-CONSTRUCTION time so the whole world
+   * is rebuilt around it: the receipt is genuinely signed by its normal signer, the chain re-links,
+   * every dependent hash (envelope→deferred, holdResolution→verdict receipt, consumption→attempt)
+   * is recomputed and the checkpoint is re-anchored. The result is a bundle in which EVERY
+   * signature is valid and EVERY hash binds, and the ONLY thing wrong is what the signer attested —
+   * which is exactly the attack the four earlier review rounds could not see.
+   */
+  roleVerdicts?: Partial<Record<ReceiptRole, Verdict>>;
 }
 
 /**
@@ -135,10 +179,20 @@ interface BuildOpts {
 function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
   const riskClass = opts.riskClass ?? "HIGH";
   const approverKid = opts.approverKid ?? "approver-1-device-2";
-  const manifest = makeManifest(manifestKeys(opts.approverRevokedAt ?? null));
+  const manifest = makeManifest(
+    manifestKeys(
+      opts.approverRevokedAt ?? null,
+      opts.approverValidFrom ?? DELEG_FROM,
+      opts.critRevokedAt ?? null,
+      opts.gateValidFrom ?? DELEG_FROM,
+      opts.critValidFrom ?? DELEG_FROM,
+    ),
+    opts.manifestIssuedAt ?? MAN_ISSUED,
+  );
   const MAN_HASH = refHash(manifest);
 
-  const deferred = buildReceipt(deferredInput(riskClass), null, rSign("gate-prod-1"));
+  const rv = opts.roleVerdicts ?? {};
+  const deferred = buildReceipt(deferredInput(riskClass, rv.deferredReceipt ?? "DEFERRED"), null, rSign("gate-prod-1"));
   const DEF_HASH = deferred.chain.hash;
 
   const envelopeCore: J = {
@@ -168,14 +222,20 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
 
   function allowedReceipt(): Receipt {
     return buildReceipt(
-      { id: "rcpt_allowed", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "approver-a", model: null, principal: "HUMAN" }, action: verdictAction, governance: { mode: "on", verdict: "ALLOWED", ruleId: "human-approved", approval: { by: approverKid, at: T_ALLOWED }, sandboxed: false } },
+      { id: "rcpt_allowed", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "approver-a", model: null, principal: "HUMAN" }, action: verdictAction, governance: { mode: "on", verdict: rv.allowedReceipt ?? "ALLOWED", ruleId: "human-approved", approval: { by: approverKid, at: T_ALLOWED }, sandboxed: false } },
       deferred, rSign(approverKid),
     );
   }
 
   function grant(expiresAt: string, approvalHash: string): J {
     return sign(
-      { spec: "noa.execution-grant/0.1", grantId: "grant-001", holdId: "hold-001", paramsHash: PARAMS_HASH, holdEnvelopeHash: ENV_HASH, approvalReceiptHash: approvalHash, issuedAt: T_GRANT_ISSUE, expiresAt, maxUses: 1, nonce: "grant-nonce-01" },
+      {
+        spec: "noa.execution-grant/0.1", grantId: "grant-001",
+        holdId: opts.grantHoldId ?? "hold-001",
+        paramsHash: opts.grantParamsHash ?? PARAMS_HASH,
+        holdEnvelopeHash: opts.grantHoldEnvelopeHash ?? ENV_HASH,
+        approvalReceiptHash: approvalHash, issuedAt: T_GRANT_ISSUE, expiresAt, maxUses: 1, nonce: "grant-nonce-01",
+      },
       "noa.execution-grant/0.1", "gate-prod-1",
     );
   }
@@ -196,7 +256,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     spec: "noa.approval-evidence/0.1", outcome, holdEnvelope: envelope, deferredReceipt: deferred,
     keyManifest: manifest, keyDelegation: DELEGATION,
   };
-  const cpKid = "gate-prod-1";
+  const cpKid = opts.checkpointKid ?? "gate-prod-1";
   const cpTs = opts.checkpointTs ?? T_CHECKPOINT;
   function checkpointOver(head: Receipt): Checkpoint {
     return buildCheckpoint(head, cpTs, rSign(cpKid));
@@ -208,21 +268,22 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     const allowed = allowedReceipt();
     const isFail = outcome === "EXECUTION_FAILED";
     const terminal = buildReceipt(
-      { id: isFail ? "rcpt_failed" : "rcpt_exec", ts: T_EXECUTED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: action(riskClass), governance: { mode: "on", verdict: isFail ? "FAILED" : "EXECUTED", sandboxed: false } },
+      { id: isFail ? "rcpt_failed" : "rcpt_exec", ts: T_EXECUTED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: action(riskClass), governance: { mode: "on", verdict: (isFail ? rv.failedReceipt : rv.executedReceipt) ?? (isFail ? "FAILED" : "EXECUTED"), sandboxed: false } },
       allowed, rSign("gate-prod-1"),
     );
-    const decision = makeDecision("APPROVE", approverKid);
-    const g = grant(opts.grantExpiresAt ?? T_GRANT_EXP, allowed.chain.hash);
+    const decision = opts.omitDecision ? null : makeDecision("APPROVE", approverKid);
+    const g = grant(opts.grantExpiresAt ?? T_GRANT_EXP, opts.grantApprovalReceiptHash ?? allowed.chain.hash);
     const cons = consumption(g, terminal.chain.hash, "DISPATCHED");
-    const hr = holdResolution("APPROVED", { decisionHash: refHash(decision), verdictHash: allowed.chain.hash });
+    const hr = holdResolution("APPROVED", { decisionHash: decision ? refHash(decision) : null, verdictHash: allowed.chain.hash });
     bundle = {
-      ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed, decisionArtifact: decision,
+      ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed,
+      ...(decision ? { decisionArtifact: decision } : {}),
       executionGrant: g, executionConsumption: cons, checkpoint: checkpointOver(terminal),
       ...(isFail ? { failedReceipt: terminal } : { executedReceipt: terminal }),
     };
   } else if (outcome === "DENIED") {
     const blocked = buildReceipt(
-      { id: "rcpt_blocked", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "approver-a", model: null, principal: "HUMAN" }, action: verdictAction, governance: { mode: "on", verdict: "BLOCKED", ruleId: "human-denied", approval: { by: approverKid, at: T_ALLOWED }, sandboxed: false } },
+      { id: "rcpt_blocked", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "approver-a", model: null, principal: "HUMAN" }, action: verdictAction, governance: { mode: "on", verdict: rv.blockedReceipt ?? "BLOCKED", ruleId: "human-denied", approval: { by: approverKid, at: T_ALLOWED }, sandboxed: false } },
       deferred, rSign(approverKid),
     );
     const decision = makeDecision("DENY", approverKid);
@@ -230,7 +291,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     bundle = { ...(base as EvidenceBundle), holdResolution: hr, blockedReceipt: blocked, decisionArtifact: decision, checkpoint: checkpointOver(blocked) };
   } else if (outcome === "EXPIRED") {
     const timeout = buildReceipt(
-      { id: "rcpt_timeout", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "gate-policy", model: null, principal: "POLICY" }, action: verdictAction, governance: { mode: "on", verdict: "BLOCKED", ruleId: "approval-timeout", sandboxed: false } },
+      { id: "rcpt_timeout", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "gate-policy", model: null, principal: "POLICY" }, action: verdictAction, governance: { mode: "on", verdict: rv.timeoutReceipt ?? "BLOCKED", ruleId: "approval-timeout", sandboxed: false } },
       deferred, rSign("gate-prod-1"),
     );
     const hr = holdResolution("EXPIRED", { decisionHash: null, verdictHash: timeout.chain.hash });
@@ -256,13 +317,32 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     );
     const hr = holdResolution("APPROVED", { decisionHash: refHash(decision), verdictHash: allowed.chain.hash });
     bundle = { ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed, decisionArtifact: decision, executionGrant: g, executionUncertainty: uncertainty, checkpoint: checkpointOver(allowed) };
+  } else if (outcome === "CANCELLED_LOCAL_STATE_LOST" && opts.cancelledWithApproverAllowed) {
+    // The human decided; the gate crashed before durably recording the outcome. §13 permits the
+    // pre-crash ALLOWED receipt + the decision that produced it, and step 3's F19-HUMAN rule is
+    // satisfied because the Decision Artifact IS present.
+    const allowed = allowedReceipt();
+    const decision = makeDecision("APPROVE", approverKid);
+    const hr = holdResolution("CANCELLED", { decisionHash: refHash(decision), verdictHash: allowed.chain.hash, reasonCode: "LOCAL_STATE_LOST" });
+    bundle = { ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed, decisionArtifact: decision, checkpoint: checkpointOver(allowed) };
+  } else if (outcome === "CANCELLED_LOCAL_STATE_LOST" && opts.cancelledWithGateAllowed) {
+    // CANCELLED carrying a pre-crash ALLOWED receipt that the GATE minted with its OWN key, and NO
+    // Decision Artifact — the F19-HUMAN rule used to key on holdResolution.status, which excludes
+    // CANCELLED, so this reached VALID_FULL_CHAIN with no human anywhere in the bundle.
+    const gateAllowed = buildReceipt(
+      { id: "rcpt_allowed", ts: T_ALLOWED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: verdictAction, governance: { mode: "on", verdict: "ALLOWED", ruleId: "human-approved", approval: null, sandboxed: false } },
+      deferred, rSign("gate-prod-1"),
+    );
+    const hr = holdResolution("CANCELLED", { decisionHash: null, verdictHash: gateAllowed.chain.hash, reasonCode: "LOCAL_STATE_LOST" });
+    bundle = { ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: gateAllowed, checkpoint: checkpointOver(gateAllowed) };
   } else {
     // CANCELLED_LOCAL_STATE_LOST — crash before approval; head is the DEFERRED receipt (seq 0).
     const hr = holdResolution("CANCELLED", { decisionHash: null, verdictHash: null, reasonCode: "LOCAL_STATE_LOST" });
     bundle = { ...(base as EvidenceBundle), holdResolution: hr, checkpoint: checkpointOver(deferred) };
   }
 
-  return { bundle, tenantRoot: opts.tenantRoot ?? TENANT_ROOT, checkpointKeyring: opts.checkpointKeyring ?? CHECKPOINT_KEYRING };
+  const defaultCpKeyring: J = { [cpKid]: KEYS[cpKid]!.publicKey };
+  return { bundle, tenantRoot: opts.tenantRoot ?? TENANT_ROOT, checkpointKeyring: opts.checkpointKeyring ?? defaultCpKeyring };
 }
 
 // ─── fixture emit ────────────────────────────────────────────────────────────────────────────────
@@ -406,7 +486,14 @@ for (const oc of OUTCOMES) {
   const w = buildWorld("EXECUTED", { allowedParamsHash: "sha256:" + "f".repeat(64) });
   emit("reject", "step06-verdict-action-mismatch", fixtureFrom(w, { description: "STEP_6: the ALLOWED verdict receipt binds a different action.paramsHash than the DEFERRED receipt (approve-different-action)", expectVerdict: "INVALID", expectStep: "STEP_6_VERDICT_RECEIPT_BINDING", expectCode: "E_VERDICT_BINDING", bundle: w.bundle }));
 }
-// STEP 7 — DENIED with blockedReceipt.governance.verdict != BLOCKED.
+// STEP 19 (was STEP 7) — DENIED with blockedReceipt.governance.verdict != BLOCKED.
+//
+// RE-ATTRIBUTED 2026-07-27, not weakened: "a receipt in role R attested a verdict fit for R" used to
+// be written out four times (steps 7/8/10/11) and NOT AT ALL for the allowedReceipt and
+// deferredReceipt roles. It is now ONE rule with ONE enforcement point (src/receipt-roles.ts), so
+// every role-verdict defect — including the two nobody had reproduced — is caught by the boundary
+// that owns the invariant instead of by whichever step happened to read the receipt. Same bundle,
+// same INVALID verdict, same reason; the owning step is now the honest one.
 {
   const w = buildWorld("DENIED");
   const bundle = clone(w.bundle);
@@ -420,7 +507,7 @@ for (const oc of OUTCOMES) {
   const hr = clone(w.bundle.holdResolution) as J; delete hr.sig; hr.verdictReceiptHash = badBlocked.chain.hash;
   bundle.holdResolution = sign(hr, "noa.hold-resolution/0.1", "gate-prod-1");
   bundle.checkpoint = buildCheckpoint(badBlocked, T_CHECKPOINT, rSign("gate-prod-1"));
-  emit("reject", "step07-denied-verdict", fixtureFrom(w, { description: "STEP_7/F18: DENIED but blockedReceipt.governance.verdict != BLOCKED", expectVerdict: "INVALID", expectStep: "STEP_7_DENIED", expectCode: "E_DENIED", bundle }));
+  emit("reject", "step19-role-blocked-verdict", fixtureFrom(w, { description: "STEP_19/BOUNDARY-1: DENIED but blockedReceipt.governance.verdict != BLOCKED (fully re-signed, every hash binds)", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle }));
 }
 // STEP 8 — EXPIRED with timeoutReceipt.governance.ruleId != approval-timeout.
 {
@@ -453,7 +540,8 @@ for (const oc of OUTCOMES) {
   bundle.executionConsumption = sign(cons, "noa.execution-consumption/0.1", "gate-prod-1");
   emit("reject", "step10-executed-result", fixtureFrom(w, { description: "STEP_10: EXECUTED but consumption.result != DISPATCHED", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_EXECUTED", bundle }));
 }
-// STEP 11 — EXECUTION_FAILED but the failedReceipt verdict is not FAILED.
+// STEP 19 (was STEP 11) — EXECUTION_FAILED but the failedReceipt verdict is not FAILED. Re-attributed
+// with step07-denied-verdict above: the role→verdict rule now has exactly one enforcement point.
 {
   const w = buildWorld("EXECUTION_FAILED");
   const bundle = clone(w.bundle);
@@ -466,7 +554,7 @@ for (const oc of OUTCOMES) {
   const cons = clone(w.bundle.executionConsumption) as J; delete cons.sig; cons.attemptReceiptHash = notFailed.chain.hash;
   bundle.executionConsumption = sign(cons, "noa.execution-consumption/0.1", "gate-prod-1");
   bundle.checkpoint = buildCheckpoint(notFailed, T_CHECKPOINT, rSign("gate-prod-1"));
-  emit("reject", "step11-failed-verdict", fixtureFrom(w, { description: "STEP_11: EXECUTION_FAILED but failedReceipt.governance.verdict != FAILED", expectVerdict: "INVALID", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_EXECUTION_FAILED", bundle }));
+  emit("reject", "step19-role-failed-verdict", fixtureFrom(w, { description: "STEP_19/BOUNDARY-1: EXECUTION_FAILED but failedReceipt.governance.verdict != FAILED (re-signed + re-chained)", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle }));
 }
 // STEP 12 — UNKNOWN_AFTER_DISPATCH with detectedAt before uptimeResetAt (G3 liveness inconsistent).
 {
@@ -518,10 +606,186 @@ for (const oc of OUTCOMES) {
   bundle.checkpoint = buildCheckpoint(clone(w.bundle.allowedReceipt) as Receipt, T_CHECKPOINT, rSign("gate-prod-1"));
   emit("reject", "step17-checkpoint-wrong-head", fixtureFrom(w, { description: "STEP_17: an authenticated checkpoint pinned to the ALLOWED receipt while the chain head is the EXECUTED receipt (tail truncated/extended)", expectVerdict: "INVALID", expectStep: "STEP_17_CHECKPOINT_RECONCILE", expectCode: "E_CHECKPOINT_RECONCILE", bundle }));
 }
-// STEP 18 — an approver key revoked BETWEEN decidedAt and the trusted receivedAt (F10 backdating defense).
+// STEP 4 — a retired approver key is refused outright. The phone-written decidedAt and the
+// gate-written receivedAt are both irrelevant to retirement: neither is an independent time witness
+// for this signature, so a non-null revokedAt makes the artifact unverifiable at its own verifier.
 {
   const w = buildWorld("EXECUTED", { approverRevokedAt: "2026-07-14T11:56:15.000Z" }); // after decidedAt 11:56:00, before receivedAt 11:56:30
-  emit("reject", "step18-revoked-at-received", fixtureFrom(w, { description: "STEP_18/F10: the approver key was revoked at 11:56:15 — after the phone-written decidedAt (11:56:00) but BEFORE the gate's trusted receivedAt (11:56:30); the authorization-time check uses receivedAt → rejected", expectVerdict: "INVALID", expectStep: "STEP_18_TEMPORAL_AUTHORIZATION", expectCode: "E_TEMPORAL_AUTH", bundle: w.bundle }));
+  emit("reject", "step04-retired-approver-refused-outright", fixtureFrom(w, { description: "STEP_4/P0-14: the approver key has a non-null revokedAt. The decision artifact is refused outright without comparing retirement to decidedAt, receivedAt, or any other artifact timestamp", expectVerdict: "INVALID", expectStep: "STEP_4_DECISION_ARTIFACT", expectCode: "E_DECISION", bundle: w.bundle }));
+}
+
+// ═══ 3b. CROSS-FAMILY REVIEW REGRESSIONS (2026-07-27) ═════════════════════════════════════════════
+// Five attacks an independent review reproduced against the pre-fix verifier, each of which reached
+// VALID_FULL_CHAIN. They are permanent fixtures so the holes cannot silently reopen.
+
+// STEP 3 — GATE SELF-APPROVAL (CRITICAL). No Decision Artifact at all; the GATE key signs the ALLOWED
+// receipt. Steps 4 and 5 both return ok() early when the decision is absent, so the decision
+// signature, the approver identity and the whole F15 tier check were SKIPPED rather than failed — a
+// compromised gate could manufacture a complete EXECUTED bundle with no human anywhere in it.
+{
+  const w = buildWorld("EXECUTED", { omitDecision: true, approverKid: "gate-prod-1" });
+  emit("reject", "step03-gate-self-approval-no-decision", fixtureFrom(w, { description: "STEP_3/F19: an APPROVED outcome with NO Decision Artifact and the GATE key signing the ALLOWED receipt — a human-decided outcome cannot be proven without the human's signed decision (gate self-approval)", expectVerdict: "INVALID", expectStep: "STEP_3_HOLD_RESOLUTION", expectCode: "E_HOLD_RESOLUTION", bundle: w.bundle }));
+}
+
+// STEP 10 — GRANT NOT BOUND TO THE APPROVAL (CRITICAL, same family). The grant's signature proves the
+// gate issued it; it does NOT prove the gate issued it FOR THIS approval. With a real decision
+// present (so step 3 passes) the grant's approvalReceiptHash was never compared to anything.
+{
+  const w = buildWorld("EXECUTED", { grantApprovalReceiptHash: "sha256:" + "f".repeat(64) });
+  emit("reject", "step10-grant-approval-hash-unbound", fixtureFrom(w, { description: "STEP_10/G12: executionGrant.approvalReceiptHash does not match the ALLOWED receipt in the bundle — a validly-signed grant bound to no approval in evidence", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_EXECUTED", bundle: w.bundle }));
+}
+
+// STEP 4 — TRUSTED ACCEPTANCE BEFORE KEY ACTIVATION (HIGH). The gate's authenticated receivedAt is
+// independent of the phone signer. Here the approver's activation is moved after that trusted time;
+// phone-written decidedAt is not used to establish activation in either direction.
+{
+  const w = buildWorld("EXECUTED", { approverValidFrom: "2026-07-14T11:57:00.000Z" }); // after decidedAt 11:56:00 and the ALLOWED receipt 11:56:30
+  emit("reject", "step04-signed-before-validfrom", fixtureFrom(w, { description: "STEP_4/P0-14: trusted gate receivedAt is 11:56:30 but the approver key activates at 11:57; refuse without consulting the phone-written decidedAt", expectVerdict: "INVALID", expectStep: "STEP_4_DECISION_ARTIFACT", expectCode: "E_DECISION", bundle: w.bundle }));
+}
+
+// STEP 18 — CHECKPOINT SIGNER RETIRED. The current-key world is the same-run control: same signer,
+// checkpoint time, bundle shape and external keyring, with only the manifest retirement state changed.
+// Retirement is refused outright; no signer-chosen checkpoint timestamp proves historical validity.
+{
+  const control = buildWorld("EXECUTED", { checkpointKid: "approver-crit-5", critRevokedAt: null, checkpointTs: "2026-07-14T11:59:00.000Z" });
+  emit("control", "step18-checkpoint-signer-current", fixtureFrom(control, { description: "CONTROL for STEP_18 retired-checkpoint attack: approver-crit-5 signs the same 11:59 checkpoint while its manifest entry is current", bundle: control.bundle }));
+
+  const w = buildWorld("EXECUTED", { checkpointKid: "approver-crit-5", critRevokedAt: "2026-07-14T11:58:30.000Z", checkpointTs: "2026-07-14T11:59:00.000Z" });
+  emit("reject", "step18-checkpoint-signer-revoked-at-cp-ts", fixtureFrom(w, { description: "STEP_18/P0-14: the checkpoint signer has non-null revokedAt; refuse it outright without treating checkpoint.ts or holdResolution.receivedAt as an independent time witness", expectVerdict: "INVALID", expectStep: "STEP_18_TEMPORAL_AUTHORIZATION", expectCode: "E_TEMPORAL_AUTH", bundle: w.bundle }));
+}
+
+// STEP 16 — FORWARD-DATED CHECKPOINT (HIGH, same family). Freshness treated ANY future timestamp as
+// not-stale, so a checkpoint stamped 2099 verified as fresh in 2026 and would stay "fresh" for
+// seventy years — replayable against the negative-outcome gate indefinitely.
+{
+  const w = buildWorld("EXECUTED", { checkpointTs: "2099-01-01T00:00:00.000Z" });
+  emit("reject", "step16-checkpoint-future-dated", fixtureFrom(w, { description: "STEP_16/F5: the checkpoint is dated 2099 — beyond any credible clock skew. A forward-dated anchor is not 'fresh', and unlike staleness that judgement does not depend on the outcome", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_16_CHECKPOINT_FRESHNESS", expectCode: "E_STALE_CHECKPOINT", bundle: w.bundle }));
+}
+
+// ═══ 3c. CROSS-FAMILY REVIEW ROUND 3 REGRESSIONS (2026-07-27) ═════════════════════════════════════
+// The previous round fixed the exact path each proof-of-concept exercised, not the CLASS it belonged
+// to. These fixtures pin the class: the same rule, on every sibling that carries the same artifact.
+
+// STEP 11/12/13 — G12 GRANT BINDING ON THE THREE NON-EXECUTED GRANT-BEARING OUTCOMES (CRITICAL).
+// `approvalReceiptHash`, `paramsHash` and `holdId` were bound in step 10 ONLY. Mutating one field
+// and re-signing the grant with the gate key returned VALID_FULL_CHAIN on all three siblings, so
+// evidence could claim a failure, a dispatch uncertainty, or an expired grant derived from an
+// approval, an action or a hold that never authorized it. One fixture per (outcome × field-class).
+{
+  const w = buildWorld("EXECUTION_FAILED", { grantApprovalReceiptHash: "sha256:" + "f".repeat(64) });
+  emit("reject", "step11-grant-approval-hash-unbound", fixtureFrom(w, { description: "STEP_11/G12: EXECUTION_FAILED whose executionGrant.approvalReceiptHash matches no approval in the bundle — the same unbound-grant defect step 10 already rejected, on the sibling outcome that carries the same artifact", expectVerdict: "INVALID", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_EXECUTION_FAILED", bundle: w.bundle }));
+}
+{
+  const w = buildWorld("UNKNOWN_AFTER_DISPATCH", { grantParamsHash: "sha256:" + "e".repeat(64) });
+  emit("reject", "step12-grant-params-unbound", fixtureFrom(w, { description: "STEP_12/G12/D14: UNKNOWN_AFTER_DISPATCH whose executionGrant.paramsHash authorizes a DIFFERENT action than the one approved (approve-A/execute-B), on a path that previously ran no grant check at all", expectVerdict: "INVALID", expectStep: "STEP_12_UNKNOWN_AFTER_DISPATCH", expectCode: "E_UNKNOWN", bundle: w.bundle }));
+}
+{
+  const w = buildWorld("GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE", { grantHoldId: "hold-ATTACKER" });
+  emit("reject", "step13-grant-holdid-unbound", fixtureFrom(w, { description: "STEP_13/G12: GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE whose executionGrant.holdId names a different hold than the Hold Envelope this evidence is about", expectVerdict: "INVALID", expectStep: "STEP_13_GRANT_EXPIRED", expectCode: "E_GRANT_EXPIRED", bundle: w.bundle }));
+}
+// STEP 12 — the grant was never verified as an ARTIFACT on this path (no schema, no signature, no
+// F15 signer type/role, no revocation, no envelope binding): only `uncertainty.grantHash` covered it.
+{
+  const w = buildWorld("UNKNOWN_AFTER_DISPATCH", { grantHoldEnvelopeHash: "sha256:" + "7".repeat(64) });
+  emit("reject", "step12-grant-foreign-envelope", fixtureFrom(w, { description: "STEP_12: UNKNOWN_AFTER_DISPATCH whose executionGrant.holdEnvelopeHash resolves to no envelope in this bundle — step 12 previously never ran verifyArtifact on the grant, so its schema/signature/F15 role/revocation/envelope-binding were all unchecked", expectVerdict: "INVALID", expectStep: "STEP_12_UNKNOWN_AFTER_DISPATCH", expectCode: "E_UNKNOWN", bundle: w.bundle }));
+}
+// STEP 11 — G5 (grant unexpired at consumedAt) was likewise step-10-only, although EXECUTION_FAILED
+// carries the identical grant+consumption pair. Grant expires 11:57:30, consumption is 11:58:00.
+{
+  const w = buildWorld("EXECUTION_FAILED", { grantExpiresAt: "2026-07-14T11:57:30.000Z" });
+  emit("reject", "step11-grant-expired-before-consumption", fixtureFrom(w, { description: "STEP_11/G5: EXECUTION_FAILED consuming a grant that had already expired (grant.expiresAt 11:57:30 < consumption.consumedAt 11:58:00) — step 10 rejected this; its sibling did not", expectVerdict: "INVALID", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_EXECUTION_FAILED", bundle: w.bundle }));
+}
+
+// STEP 0 — THE §13 OUTCOME UNION IS EXHAUSTIVE. An artifact outside an outcome's union was never
+// examined by any step, and the bundle still verified VALID_FULL_CHAIN — a positive verdict covering
+// bytes nothing looked at. A DENIED bundle carrying a gate-signed execution grant is the sharpest
+// case: either the gate issued a grant against a denial, or the bundle is a splice.
+{
+  const w = buildWorld("DENIED");
+  const wExec = buildWorld("EXECUTED");
+  const bundle = clone(w.bundle);
+  bundle.executionGrant = clone(wExec.bundle.executionGrant);
+  emit("reject", "step00-stray-grant-on-denied", fixtureFrom(w, { description: "STEP_0/§13: a DENIED bundle carrying an executionGrant, which the DENIED union does not define. The artifact is fully signed and completely unverified — no step reads it — yet the bundle verified VALID_FULL_CHAIN before this rule", expectVerdict: "INVALID", expectStep: "STEP_0_TENANT_EQUALITY", expectCode: "E_OUTCOME_ARTIFACT_SET", bundle }));
+}
+
+// STEP 3 — F19-HUMAN KEYED ON THE ARTIFACT, NOT THE STATUS (CRITICAL). §13 lets CANCELLED carry a
+// pre-crash ALLOWED receipt, and the decision requirement keyed on holdResolution.status — which
+// excludes CANCELLED. So the gate minted CANCELLED + an ALLOWED receipt signed with its OWN key + a
+// checkpoint over it, with no Decision Artifact anywhere, and got VALID_FULL_CHAIN: the exact
+// gate-self-approval the previous round closed for APPROVED, reached through the sibling outcome.
+{
+  const w = buildWorld("CANCELLED_LOCAL_STATE_LOST", { cancelledWithGateAllowed: true });
+  emit("reject", "step03-cancelled-gate-allowed-no-decision", fixtureFrom(w, { description: "STEP_3/F19: CANCELLED_LOCAL_STATE_LOST carrying a GATE-signed ALLOWED receipt and NO Decision Artifact. An ALLOWED/BLOCKED receipt IS a human verdict (§8), so the decision requirement keys on the ARTIFACT, not on the outcome label — otherwise gate self-approval simply relabels itself CANCELLED", expectVerdict: "INVALID", expectStep: "STEP_3_HOLD_RESOLUTION", expectCode: "E_HOLD_RESOLUTION", bundle: w.bundle }));
+}
+
+// STEP 18 — ACTIVATION MIRROR AT THE CHECKPOINT SURFACE. The checkpoint is signed with a key that
+// activates 15 seconds after verifier-owned `now`, but the compromised key future-dates the signed
+// checkpoint by 30 seconds (inside the permitted freshness skew). The sibling fixture is the same
+// signer/time/bundle shape with a key already active at `now`.
+{
+  const control = buildWorld("EXECUTED", { checkpointKid: "approver-crit-5", critValidFrom: "2026-07-14T11:59:45.000Z", checkpointTs: "2026-07-14T12:00:30.000Z" });
+  emit("control", "step18-checkpoint-key-active-at-trusted-now", fixtureFrom(control, { description: "CONTROL for STEP_18 activation mirror: approver-crit-5 signs the same future-skew checkpoint while already active at verifier-owned now" }));
+
+  const attack = buildWorld("EXECUTED", { checkpointKid: "approver-crit-5", critValidFrom: "2026-07-14T12:00:15.000Z", checkpointTs: "2026-07-14T12:00:30.000Z" });
+  emit("reject", "step18-checkpoint-future-date-cannot-activate-key", fixtureFrom(attack, { description: "STEP_18/P0-14 activation mirror: verifier now is 12:00:00 and the checkpoint key activates at 12:00:15; its signer-chosen 12:00:30 timestamp must not activate it", expectVerdict: "INVALID", expectStep: "STEP_18_TEMPORAL_AUTHORIZATION", expectCode: "E_TEMPORAL_AUTH" }));
+}
+
+// STEP 1 — REJECT-ONLY MANIFEST CLAIM OUTSIDE ITS DELEGATION WINDOW. issuedAt cannot authorize the
+// signer, but a claim before validFrom is self-contradicting and must refuse at a named step.
+{
+  const w = buildWorld("EXECUTED", { manifestIssuedAt: "2026-07-14T09:30:00.000Z" }); // before DELEG_FROM 10:00
+  emit("reject", "step01-manifest-issued-before-delegation", fixtureFrom(w, { description: "STEP_1: signer-claimed keyManifest.issuedAt (09:30) precedes keyDelegation.validFrom (10:00). The claim is reject-only: it cannot authorize the signer, but this self-contradiction must refuse", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_DELEGATION_CHAIN", bundle: w.bundle }));
+}
+
+// ═══ 3b. BOUNDARY 1 — RECEIPT SEMANTIC INTEGRITY, ONE FIXTURE PER ROLE (2026-07-27) ═══════════════
+// Round 4 reported ONE of these (allowedReceipt never checked to attest ALLOWED). It is a CLASS, and
+// the class is enumerated here: every role the verifier consumes gets a bundle in which that role's
+// receipt is REBUILT and REALLY SIGNED with a verdict belonging to a different role, with the whole
+// world re-derived around it (chain re-linked, holdResolution re-bound + gate-signed, checkpoint
+// re-anchored). Every signature verifies. Every hash binds. Only the meaning is wrong. If a role is
+// ever added without routing through the chokepoint, step 19's coverage half fails on that outcome's
+// VALID fixture — the enumeration below is the proof of TODAY's roles, the coverage rule is the
+// proof for tomorrow's.
+{
+  // allowedReceipt — the role round 4 found, and the one everything else rests on. Two outcomes, so
+  // the fixture proves it on the pure-approval path AND on the path that also carries an execution.
+  const wA = buildWorld("APPROVED_NO_EXECUTION_EVIDENCE", { roleVerdicts: { allowedReceipt: "BLOCKED" } });
+  emit("reject", "step19-role-allowed-verdict", fixtureFrom(wA, { description: "STEP_19/BOUNDARY-1: the approver signed a receipt that says BLOCKED and the bundle presents it as the APPROVAL. Cryptographically flawless, semantically the opposite of what it is used for — VALID_FULL_CHAIN before this boundary existed", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wA.bundle }));
+
+  const wE = buildWorld("EXECUTED", { roleVerdicts: { allowedReceipt: "FAILED" } });
+  emit("reject", "step19-role-allowed-verdict-executed", fixtureFrom(wE, { description: "STEP_19/BOUNDARY-1: an EXECUTED bundle whose execution grant is bound by hash to an 'approval' receipt attesting FAILED — the grant binding (G12) proves WHICH receipt, never WHAT it said", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wE.bundle }));
+
+  // deferredReceipt — the second role nobody had reproduced: the chain root the Hold Envelope binds.
+  const wD = buildWorld("APPROVED_NO_EXECUTION_EVIDENCE", { roleVerdicts: { deferredReceipt: "ALLOWED" } });
+  emit("reject", "step19-role-deferred-verdict", fixtureFrom(wD, { description: "STEP_19/BOUNDARY-1: the receipt the Hold Envelope freezes attests ALLOWED, not DEFERRED — an envelope 'freezing' an action its own root receipt says was already approved", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wD.bundle }));
+
+  // timeoutReceipt — role check only; step 8 still owns principal POLICY + ruleId approval-timeout.
+  const wT = buildWorld("EXPIRED", { roleVerdicts: { timeoutReceipt: "ALLOWED" } });
+  emit("reject", "step19-role-timeout-verdict", fixtureFrom(wT, { description: "STEP_19/BOUNDARY-1: an EXPIRED bundle whose POLICY-signed timeout receipt attests ALLOWED", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wT.bundle }));
+
+  // executedReceipt — the terminal success attestation.
+  const wX = buildWorld("EXECUTED", { roleVerdicts: { executedReceipt: "ALLOWED" } });
+  emit("reject", "step19-role-executed-verdict", fixtureFrom(wX, { description: "STEP_19/BOUNDARY-1: an EXECUTED bundle whose terminal receipt attests ALLOWED — 'it ran' asserted by a receipt that only says it was permitted to", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wX.bundle }));
+
+  // CANCELLED may carry a pre-crash ALLOWED receipt (§13 union). Optional is not unexamined.
+  // Positive control FIRST: the same §13-legal CANCELLED shape with an honest ALLOWED verdict must
+  // still verify, so the rejection below is attributable to the verdict and to nothing else.
+  const wCok = buildWorld("CANCELLED_LOCAL_STATE_LOST", { cancelledWithApproverAllowed: true });
+  emit("verdict", "cancelled-with-approver-allowed-valid", fixtureFrom(wCok, { description: "POSITIVE CONTROL for step19-role-cancelled-allowed-verdict: CANCELLED carrying the §13-legal pre-crash approver-signed ALLOWED receipt + its Decision Artifact verifies", expectVerdict: "VALID_FULL_CHAIN", bundle: wCok.bundle }));
+
+  const wC = buildWorld("CANCELLED_LOCAL_STATE_LOST", { cancelledWithApproverAllowed: true, roleVerdicts: { allowedReceipt: "EXECUTED" } });
+  emit("reject", "step19-role-cancelled-allowed-verdict", fixtureFrom(wC, { description: "STEP_19/BOUNDARY-1: CANCELLED carrying a pre-crash receipt in the allowedReceipt role that attests EXECUTED — the outcome claims nothing is known about execution while the receipt it carries says it ran", expectVerdict: "INVALID", expectStep: "STEP_19_RECEIPT_ROLE_INTEGRITY", expectCode: "E_RECEIPT_ROLE", bundle: wC.bundle }));
+}
+
+// STEP 7 — DENIED with NO blockedReceipt at all. Step 7's own rule, kept covered now that the
+// role→verdict rule moved to the boundary that owns it: a denial with no signed denial receipt.
+{
+  const w = buildWorld("DENIED");
+  const bundle = clone(w.bundle);
+  delete (bundle as Partial<EvidenceBundle>).blockedReceipt;
+  const hr = clone(w.bundle.holdResolution) as J; delete hr.sig; hr.verdictReceiptHash = null;
+  bundle.holdResolution = sign(hr, "noa.hold-resolution/0.1", "gate-prod-1");
+  emit("reject", "step07-denied-missing-blocked", fixtureFrom(w, { description: "STEP_7/F18: a DENIED outcome with no blockedReceipt — the denial is asserted by the container, not by anything the approver signed", expectVerdict: "INVALID", expectStep: "STEP_7_DENIED", expectCode: "E_DENIED", bundle }));
 }
 
 // ═══ 4. envelope-expiry FRESHNESS: late-audit of terminal-negative outcomes (EXPIRED/DENIED) ═══════

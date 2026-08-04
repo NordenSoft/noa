@@ -166,3 +166,158 @@ test("canonicalizeApprovalRules: order- and key-order-independent; buildPolicyCh
 function pick(cls) {
   return { changed: cls.changed, weakens: cls.weakens };
 }
+
+
+// REDTEAM 2026-08-03, reproduced by the lead before the fix.
+//
+// `classifyPolicyChange` decided "did the ruleset change?" with a LIVE `JSON.stringify`, and
+// "not changed" is the branch that applies a proposal WITHOUT an approval. A single assignment
+// collapsed every comparison to equal, and a rule weakened from a 4000 threshold to 99_999_999 —
+// after which nothing ever requires human approval again — applied silently:
+//
+//     CONTROL unpoisoned  { ok:false, changed:true,  code:"approval-required" }
+//     ATTACK  poisoned    { ok:true,  changed:false }   applied threshold 99999999
+//
+// Changing the policy is the strongest bypass in the product: it does not forge one approval, it
+// removes the requirement for all of them. `weakens` had the same shape via Array.prototype.every
+// and .some, so both are asserted here.
+test("applyPolicyChange: poisoned builtins cannot make a weakening look like a no-op change", () => {
+  const strict = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
+  const weakened = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 99999999 } }];
+  const call = () => applyPolicyChange({ currentRules: strict, proposedRules: weakened });
+
+  const clean = call();
+  assert.equal(clean.ok, false, "control: a real weakening must be refused unpoisoned");
+  assert.equal(clean.changed, true);
+  assert.equal(clean.code, "approval-required");
+
+  const realJson = JSON.stringify;
+  let viaJson;
+  try {
+    JSON.stringify = () => "SAME";
+    viaJson = call();
+  } finally {
+    JSON.stringify = realJson;
+  }
+  assert.equal(viaJson.ok, false,
+    "a poisoned JSON.stringify made a weakened ruleset look unchanged, so it applied with NO approval");
+  assert.equal(viaJson.changed, true);
+
+  const realEvery = Array.prototype.every;
+  const realSome = Array.prototype.some;
+  let viaArray;
+  try {
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.every = () => true;
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.some = () => true;
+    viaArray = call();
+  } finally {
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.every = realEvery;
+    // eslint-disable-next-line no-extend-native
+    Array.prototype.some = realSome;
+  }
+  assert.equal(viaArray.ok, false, "a poisoned Array.prototype.every/some must not hide a weakening");
+
+  assert.equal(JSON.stringify, realJson, "control: JSON.stringify was not restored");
+  assert.equal(Array.prototype.every, realEvery, "control: Array.prototype.every was not restored");
+});
+
+
+// ROUND 3 — CLASS-LEVEL, deliberately not poison-by-name.
+//
+// Rounds 1-3 each hardened the builtins the previous round had NAMED, and each time the next round
+// found more in the same function: `Array.prototype.includes`, then `Buffer.concat` and the manifest
+// property read, then `Object.keys` / `Array.prototype.map` / the array ITERATOR. A test that pins
+// the poisons already found stays green while the class stays open — which is exactly what happened
+// twice.
+//
+// So this table is the CLASS. Adding a row is how the next reviewer extends it; every row asserts the
+// same invariant, which is that no replaceable builtin may move a verdict toward "no approval needed".
+const POISONS = [
+  ["Object.keys", () => { const r = Object.keys; Object.keys = () => []; return () => { Object.keys = r; }; }],
+  ["Array.prototype.map", () => { const r = Array.prototype.map; Array.prototype.map = () => []; return () => { Array.prototype.map = r; }; }],
+  ["Array.prototype.sort", () => { const r = Array.prototype.sort; Array.prototype.sort = function () { return this; }; return () => { Array.prototype.sort = r; }; }],
+  ["Array.prototype.forEach", () => { const r = Array.prototype.forEach; Array.prototype.forEach = () => {}; return () => { Array.prototype.forEach = r; }; }],
+  ["Array.prototype.push", () => { const r = Array.prototype.push; Array.prototype.push = function () { return this.length; }; return () => { Array.prototype.push = r; }; }],
+  ["Array.prototype.filter", () => { const r = Array.prototype.filter; Array.prototype.filter = () => []; return () => { Array.prototype.filter = r; }; }],
+  ["Array iterator", () => { const r = Array.prototype[Symbol.iterator]; Array.prototype[Symbol.iterator] = function* () {}; return () => { Array.prototype[Symbol.iterator] = r; }; }],
+  ["JSON.stringify", () => { const r = JSON.stringify; JSON.stringify = () => "SAME"; return () => { JSON.stringify = r; }; }],
+];
+
+// NAME CORRECTED after round 4. This read "NO replaceable builtin can make a weakening apply without
+// approval" — a CLASS claim asserted by an eight-row list. Round 4 defeated the claim in its own
+// title without replacing a builtin at all, by installing a prototype ACCESSOR (see the write-class
+// test below). A table certifies its rows; naming it after the class is how the next reader stops
+// looking for row nine.
+test("applyPolicyChange: these eight replaceable builtins cannot make a weakening apply without approval", () => {
+  const strict = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
+  const weakened = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 99999999 } }];
+  const call = () => applyPolicyChange({ currentRules: strict, proposedRules: weakened });
+
+  const clean = call();
+  assert.equal(clean.ok, false, "control: the weakening must be refused unpoisoned");
+  assert.equal(clean.changed, true);
+
+  for (const [name, arm] of POISONS) {
+    let out;
+    const restore = arm();
+    try {
+      out = call();
+    } finally {
+      restore();
+    }
+    assert.equal(out.ok, false, `a poisoned ${name} let a policy weakening apply with NO approval`);
+    assert.equal(out.changed, true, `a poisoned ${name} made a changed ruleset report changed:false`);
+  }
+
+  const after = call();
+  assert.equal(after.ok, false, "control: every poison was restored — a leaked one makes later tests lie");
+  assert.equal(after.changed, true);
+});
+
+
+// ROUND 4 — the WRITE class, which the previous table could not express.
+//
+// Rounds 1-3 were all builtin READS or CALLS, so the POISONS table above replaces methods. Round 4's
+// exploit replaced NOTHING: it defined an accessor on Object.prototype, and because `out[k] = v`
+// performs `[[Set]]` — which walks the prototype chain — the write was swallowed and the canonical
+// copy silently lost a field. A weakening from 4000 to 99,999,999 then applied with no approval.
+//
+// This is also the class the L2/L8 gates cannot name: they model dispatch as a call or a read, so
+// `policy-change-guard.mjs:93` appeared in NONE of the 298 budgeted findings while being exploitable.
+// 37 such sites were measured across the two published packages.
+const PROTOTYPE_WRITE_TARGETS = ["threshold", "match", "id", "value", "path", "op", "0", "1"];
+
+test("applyPolicyChange: a prototype ACCESSOR cannot swallow a write and hide a weakening", () => {
+  const strict = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
+  const weakened = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 99999999 } }];
+  const call = () => applyPolicyChange({ currentRules: strict, proposedRules: weakened });
+
+  assert.equal(call().ok, false, "control: the weakening must be refused unpoisoned");
+
+  for (const key of PROTOTYPE_WRITE_TARGETS) {
+    const had = Object.getOwnPropertyDescriptor(Object.prototype, key);
+    let swallowed = 0;
+    let out;
+    try {
+      Object.defineProperty(Object.prototype, key, {
+        configurable: true,
+        set() { swallowed += 1; },
+        get() { return undefined; },
+      });
+      out = call();
+    } finally {
+      if (had) Object.defineProperty(Object.prototype, key, had);
+      else delete Object.prototype[key];
+    }
+    assert.equal(out.ok, false,
+      `an accessor on Object.prototype.${key} swallowed a write and let a policy weakening apply ` +
+      `with NO approval — and no builtin was replaced, so no call/read gate can see it`);
+    assert.equal(out.changed, true, `Object.prototype.${key} made a changed ruleset report changed:false`);
+    assert.equal(key in Object.prototype, false, `control: Object.prototype.${key} was not restored`);
+  }
+
+  assert.equal(call().ok, false, "control: every accessor was removed");
+});

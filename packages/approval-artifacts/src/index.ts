@@ -20,3 +20,5 @@ export { signArtifact } from "./sign.js";
 export type { Signer } from "./sign.js";
 export { verifyArtifact } from "./verify.js";
 export type { VerifyContext, VerifyOutcome, KeyEntry } from "./verify.js";
+export { parseDocument } from "./parse-document.js";
+export { frozenTable } from "./inert-core/inert.js";

@@ -21,6 +21,22 @@ import { loadPendingIndex, recordApproved, recordDenied, PendingStoreError } fro
 import { buildApprovalReceipt, buildDenialReceipt, DEFAULT_APPROVAL_TICKET_TTL_MS } from "./approval-decision.mjs";
 import { opaqueApproverId } from "./opaque-id.mjs";
 import { loadOrCreateKeyFile } from "./key-file.mjs";
+import { describeThrown } from "./safe-throw.mjs";
+
+import { intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths. Four CRITICALs came out of
+// this package in two days, every one of them a LIVE builtin read that an attacker could replace
+// after module load: an approval seat bound by `Array.prototype.includes`, a signature verified over
+// bytes from `Buffer.concat`, a policy weakening hidden by `JSON.stringify`, an approval rule made
+// invisible by `Array.isArray`. Auditing the remaining ~300 flagged reads one at a time is not a
+// control — it is a race against the next person who adds one.
+//
+// So the builtins are taken from the kernel's module-load capture here too, whether or not each
+// individual site is reachable today. Reachability is a property of the surrounding code, and the
+// surrounding code changes.
+const { jsonStringify } = intrinsics;
+
 
 function loadOrCreateApproverSigner(keyFile) {
   return loadOrCreateKeyFile({
@@ -55,7 +71,7 @@ function parseArgs(argv) {
 }
 
 function appendReceiptLog(path, receipt) {
-  if (path) appendFileSync(path, JSON.stringify(receipt) + "\n", "utf8");
+  if (path) appendFileSync(path, jsonStringify(receipt) + "\n", "utf8");
 }
 
 /**
@@ -68,7 +84,7 @@ export function runApproveCli(argv) {
   try {
     ({ command, opts } = parseArgs(argv));
   } catch (err) {
-    process.stderr.write(`${err.message}\n`);
+    process.stderr.write(`${describeThrown(err)}\n`);
     return 1;
   }
 
@@ -85,7 +101,7 @@ export function runApproveCli(argv) {
     record = matches[0];
     if (record.status !== "pending") throw new PendingStoreError(`id "${opts.id}" is not awaiting a decision (status "${record.status}")`);
   } catch (err) {
-    process.stderr.write(`noa-approve: ${err.message}\n`);
+    process.stderr.write(`noa-approve: ${describeThrown(err)}\n`);
     return 1;
   }
 
@@ -94,7 +110,7 @@ export function runApproveCli(argv) {
     const kp = loadOrCreateApproverSigner(opts.keyFile);
     signer = { kid: kp.kid, privateKey: kp.privateKey };
   } catch (err) {
-    process.stderr.write(`noa-approve: ${err.message}\n`);
+    process.stderr.write(`noa-approve: ${describeThrown(err)}\n`);
     return 1;
   }
 
@@ -126,7 +142,7 @@ export function runApproveCli(argv) {
     }
     return 0;
   } catch (err) {
-    process.stderr.write(`noa-approve: ${err.message}\n`);
+    process.stderr.write(`noa-approve: ${describeThrown(err)}\n`);
     return 1;
   }
 }

@@ -166,6 +166,48 @@ const otherGenesis = buildReceipt(
 );
 write("attack/cross-chain-splice.json", [clone(chain[0]!), otherGenesis]);
 
+// 5d. CROSS-TENANT SPLICE LAUNDERED THROUGH AN OMISSION (cross-family review, 2026-07-27).
+//     `scope.tenant` is OPTIONAL, so absent<->present drift is reported and not fatal — a producer
+//     that starts or stops emitting the field is a version change, not a forgery. But when the
+//     comparison was ADJACENT, that tolerance became a laundering step: `acme -> globex` was
+//     TAMPERED in all five verifiers, while `acme -> absent -> globex` — the SAME splice with one
+//     optional field left out of the receipt in between — was VALID in all five. Omitting an
+//     optional field is not a capability an attacker lacks.
+//
+//     The verifiers now carry the last PRESENT tenant across absences, so both are TAMPERED. The
+//     companion "legit" vector below pins the other half of the rule: the relaxation itself must
+//     SURVIVE — an omission that never contradicts the committed tenant stays VALID.
+function tenantChain(tenants: Array<string | undefined>, idPrefix: string): ReturnType<typeof buildReceipt>[] {
+  const out: ReturnType<typeof buildReceipt>[] = [];
+  let prev: ReturnType<typeof buildReceipt> | null = null;
+  tenants.forEach((t, i) => {
+    const base = inputs[0]!;
+    const r = buildReceipt(
+      {
+        ...base,
+        id: `${idPrefix}_${i}`,
+        ts: `2026-06-20T09:0${i}:00.000Z`,
+        scope: t === undefined ? { chain: "tenant-boundary-chain" } : { chain: "tenant-boundary-chain", tenant: t },
+      },
+      prev,
+      signer,
+    );
+    out.push(r);
+    prev = r;
+  });
+  return out;
+}
+// TAMPERED: the splice is hidden behind one tenant-less receipt.
+write("attack/tenant-splice-via-absent.json", tenantChain(["acme", undefined, "globex"], "tsa"));
+// TAMPERED: hiding it behind MORE omissions must not help either.
+write("attack/tenant-splice-via-absent-long.json", tenantChain(["acme", undefined, undefined, "globex"], "tsal"));
+// VALID: an optional field stops being emitted and the same tenant later resumes — the legitimate
+// producer-version change the relaxation exists to protect. A verifier that "fixed" the attack by
+// re-banning absence would fail THIS vector.
+write("tenant-omission-then-same-tenant.json", tenantChain(["acme", undefined, "acme"], "tos"));
+// VALID: a producer that only STARTS emitting the field mid-chain (enrichment).
+write("tenant-enrichment-absent-first.json", tenantChain([undefined, undefined, "acme"], "ten"));
+
 // 6. duplicate seq
 const dupseq = clone(chain);
 dupseq[2]!.chain.seq = 1;

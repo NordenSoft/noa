@@ -27,7 +27,7 @@
       },
       "canonicalization": "JCS-RFC8785",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:605bb9f25d1734806449bed76c74dbc2858627f0246552fab811edae16f9ade3",
+      "keyManifestHash": "sha256:a1e642db664dd1365cfec19677658c8afb57f94caa6579679d6738f4e0cbe6e3",
       "tenant": "tenant-acme",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "nonce": "envelope-nonce-01",
@@ -35,7 +35,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "r17IGrgcH2LwrEeXL/kf1fDVjkDjVOiBw3cWekCwlQVL9kkKsdp5+cHIo3BJprCda+vcBTW3qnWgc6dPg6BpAg=="
+        "value": "KBP1L+PBfXvMiwjBkvCaCVQwB852/kI7aSMo+sFMcI4rZp8tU/+CoqmabtilXiVdWDyryrcY7fwDy7l117CgAQ=="
       }
     },
     "deferredReceipt": {
@@ -79,7 +79,7 @@
       "spec": "noa.key-manifest/0.1",
       "tenant": "tenant-acme",
       "version": 2,
-      "issuedAt": "2026-07-14T09:30:00.000Z",
+      "issuedAt": "2026-07-14T10:30:00.000Z",
       "expiresAt": "2026-07-15T09:30:00.000Z",
       "previousManifestHash": null,
       "keys": [
@@ -130,7 +130,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "1nvPEFb300nIHgJjt37NEsG/GfZAMmtopaPRxozHcoGQB6x9w3SF6jbP7Wl/tuIn/vTIeZifjLoJHCWeA9GwBw=="
+        "value": "ffj//qz1TRSFpdnuyJvN3X9MtkC05CQkLrvGWMfMPM6ig7mO3TbisYhhhNSRfEWIpYTceAt4v9lEW+mDbMWSAw=="
       }
     },
     "keyDelegation": {
@@ -152,18 +152,18 @@
     "holdResolution": {
       "spec": "noa.hold-resolution/0.1",
       "holdId": "hold-001",
-      "holdEnvelopeHash": "sha256:76053a83fff080cf8eed7a9a7d998618c0f4180a9f6fde9301bb805c44b8c40c",
-      "decisionArtifactHash": "sha256:f5fbfc86adb143cdf99c4475f0c59491607222a4750e00770bf17f629375b678",
+      "holdEnvelopeHash": "sha256:cfd1654df9968fec9f97a9dabcaeef7993f613d88a5c64ce8605cd6a4998c943",
+      "decisionArtifactHash": "sha256:a7db5dcfeb9490dfd6527e3cc90202c2566ec0cf4662fcecd8984b51c841439c",
       "verdictReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
       "status": "APPROVED",
       "reasonCode": null,
       "receivedAt": "2026-07-14T11:56:30.000Z",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:605bb9f25d1734806449bed76c74dbc2858627f0246552fab811edae16f9ade3",
+      "keyManifestHash": "sha256:a1e642db664dd1365cfec19677658c8afb57f94caa6579679d6738f4e0cbe6e3",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "lhAFoHsjSDWSyeUQR6+3gXNc3CV1i+jj3j2qaDd13LgNAiEUwsKauG/zPDADy0laQ4ACL4TohVi3aHCa3a2CAw=="
+        "value": "F/pfCih37J9yE/Va3dImnnzwBP6flaJCPTh0D/BcBSQhhO9GfRy4tV/h33eDXGzRcfPz9gL1FoxK+zROs12cCw=="
       }
     },
     "allowedReceipt": {
@@ -210,7 +210,7 @@
     },
     "decisionArtifact": {
       "spec": "noa.decision/0.1",
-      "holdEnvelopeHash": "sha256:76053a83fff080cf8eed7a9a7d998618c0f4180a9f6fde9301bb805c44b8c40c",
+      "holdEnvelopeHash": "sha256:cfd1654df9968fec9f97a9dabcaeef7993f613d88a5c64ce8605cd6a4998c943",
       "decision": "APPROVE",
       "reasonCode": "vendor-verified",
       "reasonEncryption": {
@@ -230,7 +230,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "approver-1-device-2",
-        "value": "8byITCEd+poT3kRZRAFrO9KopU7VFZAyGb34iRV0aXGuYM/L/nLyPfzKcck+VX7Gn0DTddIMiVVoeGMpFe76BA=="
+        "value": "OQpGyXAjSsCwM0BDCZ+Bv0bw3wGpZt/UWaHn5aMFi8vBnJLo6TdNYr4cIog4ybpulW8n7oniGAGUGIFqDGz5CQ=="
       }
     },
     "executionGrant": {
@@ -238,7 +238,7 @@
       "grantId": "grant-001",
       "holdId": "hold-001",
       "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "holdEnvelopeHash": "sha256:76053a83fff080cf8eed7a9a7d998618c0f4180a9f6fde9301bb805c44b8c40c",
+      "holdEnvelopeHash": "sha256:cfd1654df9968fec9f97a9dabcaeef7993f613d88a5c64ce8605cd6a4998c943",
       "approvalReceiptHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T12:30:00.000Z",
@@ -247,19 +247,19 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "gZHNlqswwoLds5EwFEEobsn55iebImb29GpWvXL1oUU0TXDEgQFSBVnmKlRKMXOjZRoCDmFzIThNoZZOz7CzAQ=="
+        "value": "yw3Jbmq/6GHQOIbmO6JF5FX+jWpuioyXDQWJXiuaJ2aq3HclqQ6VfjSMq7/Q8SglxXxiJCcZer/LAO3t5hduDw=="
       }
     },
     "executionConsumption": {
       "spec": "noa.execution-consumption/0.1",
-      "grantHash": "sha256:f35ae6cb80a6db1e66025e5ea8f858e0b6174acab3b49f1aa09280577502a4bc",
+      "grantHash": "sha256:def1eb1b103e68da9c9fb34968f42dcbfc537dcb3da35b4e5c8152b7e2fa06ba",
       "consumedAt": "2026-07-14T11:58:00.000Z",
       "attemptReceiptHash": "sha256:c1eedfbe6e5526e3925ba1195d6d63a44e7cb9bbde66cb400fc1fe33c8d217ba",
       "result": "DISPATCHED",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "ZFX44o1gSe83ZYQirs052A/nLhDIDnQTT0+8yFZW/6FZ/8WcMqT1G+nmDJTr990OYm9QNNmPPnwzM/dCaAX5Aw=="
+        "value": "tYJB1wvYJam001C3YWg1uuE06QTSKK3NckQyxaV1G5+lmrAnzSvSMJAum06lFpwtbnk0C/8iB0nCbefFgf1hCQ=="
       }
     },
     "checkpoint": {

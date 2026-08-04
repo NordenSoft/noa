@@ -16,6 +16,7 @@
  */
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from 'noa-approval-artifacts';
 import type { GateTrust, GateKeyPair } from 'noa-gate';
+import { SIGNING_KEY_LIFECYCLE_SPEC, type SigningKeyLifecycle } from 'noa-receipt';
 import { deriveSas, sasEquals, buildPairingTranscript } from './mobile.js';
 import type {
   PairingChallenge,
@@ -28,6 +29,7 @@ import type {
 } from './mobile.js';
 import type { Clock } from './support.js';
 import { DemoError } from './errors.js';
+import { encodeDocument } from './bytes.js';
 
 const PAIRING_DOMAIN = 'NOA-Pairing-v0.1-sig';
 const PAIRING_CONFIRM_DOMAIN = 'NOA-PairingConfirm-v0.1-sig';
@@ -58,6 +60,7 @@ export interface DemoAuthority {
   root: KP;
   authority: KP; // the root-DELEGATED manifest signer
   gate: KP;
+  auditKid: string;
   auditHpkePublicKey: string;
   keyDelegation: KeyDelegation; // root-signed root → authority
   bootstrapManifest: KeyManifest; // v1: gate + audit only (pre-approver) — its hash anchors the CHALLENGE
@@ -74,6 +77,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
   const gate = generateKeyPair('gate-prod-1') as KP;
   // A structurally-valid X25519 HPKE public key (hex) for the audit recipient. Real HPKE ops are
   // @noa/signer's injected job; this is a recipient identity, unused by §8 itself.
+  const auditKid = 'audit-1';
   const auditHpkePublicKey = 'a'.repeat(64);
 
   const t0 = clock.now();
@@ -82,7 +86,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
   const issuedAt = new Date(t0 - 60 * 60 * 1000).toISOString();
 
   const keyDelegation = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.key-delegation/0.1',
       tenant,
       delegatedKid: authority.kid,
@@ -90,13 +94,13 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
       permissions: ['key-manifest-sign'],
       validFrom,
       expiresAt,
-    },
+    }),
     KEY_DELEGATION_DOMAIN,
     signer(root),
   ) as unknown as KeyDelegation;
 
   const bootstrapManifest = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.key-manifest/0.1',
       tenant,
       version: 1,
@@ -105,9 +109,9 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
       previousManifestHash: null,
       keys: [
         { kid: gate.kid, type: 'GATE', roles: ['hold-signer', 'execution-signer'], publicKey: gate.publicKey, validFrom, revokedAt: null },
-        { kid: 'audit-1', type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auditHpkePublicKey, validFrom, revokedAt: null },
+        { kid: auditKid, type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auditHpkePublicKey, validFrom, revokedAt: null },
       ],
-    },
+    }),
     KEY_MANIFEST_DOMAIN,
     signer(authority),
   ) as unknown as KeyManifest;
@@ -117,6 +121,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
     root,
     authority,
     gate,
+    auditKid,
     auditHpkePublicKey,
     keyDelegation,
     bootstrapManifest,
@@ -131,7 +136,7 @@ export function createDemoAuthority(tenant: string, clock: Clock): DemoAuthority
 /** §3 step 1 — the gate issues a one-time, tenant+role-scoped, gate-signed CHALLENGE. */
 export function issueChallenge(auth: DemoAuthority, pairingId: string, clock: Clock): PairingChallenge {
   const challenge = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.pairing/0.1',
       type: 'CHALLENGE',
       pairingId,
@@ -147,7 +152,7 @@ export function issueChallenge(auth: DemoAuthority, pairingId: string, clock: Cl
       allowedRole: 'approver',
       expiresAt: new Date(clock.now() + 10 * 60 * 1000).toISOString(),
       challengeNonce: `nonce-${pairingId}`,
-    },
+    }),
     PAIRING_DOMAIN,
     signer(auth.gate),
   ) as unknown as PairingChallenge;
@@ -201,21 +206,21 @@ export function acceptPairing(
 
   // F12 — the LOCAL gate process records the operator's SAS match; manifest issuance requires it.
   const localConfirmation = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.pairing-confirmation/0.1',
       pairingId: confirmation.pairingId,
       transcriptHash,
       result: 'SAS_MATCH_CONFIRMED',
       confirmedAt: nowIso,
       gateKid: auth.gate.kid,
-    },
+    }),
     PAIRING_CONFIRM_DOMAIN,
     signer(auth.gate),
   ) as unknown as PairingLocalConfirmation;
 
   // v2 manifest — tenant-authority-signed, pins the phone approver (Red Line 16: not gate-signed).
   const manifest = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.key-manifest/0.1',
       tenant: auth.tenant,
       version: 2,
@@ -225,16 +230,16 @@ export function acceptPairing(
       keys: [
         { kid: auth.gate.kid, type: 'GATE', roles: ['hold-signer', 'execution-signer'], publicKey: auth.gate.publicKey, validFrom: auth.validFrom, revokedAt: null },
         { kid: phone.approverKid, type: 'APPROVER', roles: ['approve-high'], publicKey: phone.approverPublicKey, hpkePublicKey: phone.approverHpkePublicKey, validFrom: auth.validFrom, revokedAt: null },
-        { kid: 'audit-1', type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auth.auditHpkePublicKey, validFrom: auth.validFrom, revokedAt: null },
+        { kid: auth.auditKid, type: 'AUDIT', roles: ['audit-decrypt'], hpkePublicKey: auth.auditHpkePublicKey, validFrom: auth.validFrom, revokedAt: null },
       ],
-    },
+    }),
     KEY_MANIFEST_DOMAIN,
     signer(auth.authority),
   ) as unknown as KeyManifest;
   const manifestHash = refHash(manifest as unknown as object);
 
   const accepted = signArtifact(
-    {
+    encodeDocument({
       spec: 'noa.pairing/0.1',
       type: 'ACCEPTED',
       pairingId: confirmation.pairingId,
@@ -245,7 +250,7 @@ export function acceptPairing(
       keyDelegationHash: refHash(auth.keyDelegation as unknown as object),
       delegatedManifestSignerKid: auth.authority.kid,
       acceptedAt: nowIso,
-    },
+    }),
     PAIRING_DOMAIN,
     signer(auth.gate),
   ) as unknown as PairingAccepted;
@@ -270,15 +275,43 @@ export function assembleGateTrust(
   const gate: GateKeyPair = { kid: auth.gate.kid, publicKey: auth.gate.publicKey, privateKey: auth.gate.privateKey };
   const approver: GateKeyPair = { kid: phone.approverKid, publicKey: phone.approverPublicKey, privateKey: '' };
 
-  const keyring: Record<string, KeyEntry> = {
-    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], revokedAt: null },
-    [approver.kid]: { publicKey: approver.publicKey, type: 'APPROVER', roles: ['approve-high'], revokedAt: null },
-    [auth.authority.kid]: { publicKey: auth.authority.publicKey, type: 'DELEGATED', roles: ['key-manifest-sign'], revokedAt: null },
-    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], revokedAt: null },
+  // The manifest is the declaration for its GATE/APPROVER entries. Preserve the old auth-derived
+  // window only when a direct caller hands this private demo helper a manifest without that kid;
+  // first-party acceptPairing always declares both. A present declaration wins even when its value
+  // differs from auth — otherwise the live verifier would enforce a different window from the one
+  // the manifest states.
+  const manifestWindow = (kid: string): { validFrom: string | null; revokedAt: string | null } => {
+    const declared = manifest.keys.find((key) => key.kid === kid);
+    return declared === undefined
+      ? { validFrom: auth.validFrom, revokedAt: null }
+      : { validFrom: declared.validFrom, revokedAt: declared.revokedAt };
   };
-  const receiptKeyring: Record<string, string> = {
-    [gate.kid]: gate.publicKey,
-    [approver.kid]: approver.publicKey,
+  const gateWindow = manifestWindow(gate.kid);
+  const approverWindow = manifestWindow(approver.kid);
+
+  // ── P0-8 (2026-07-31): THIS WAS THE SEVENTH RESOLVER THAT DROPPED `validFrom` ────────────────
+  // The v2 manifest signed in `acceptPairing` above declares `validFrom` on every key; this keyring
+  // — the exact map the gate engine hands to `verifyArtifact` for LIVE Decision verification — was
+  // rebuilt from the same inputs with `revokedAt: null` but NO `validFrom`, so the declared
+  // activation window was open at one end on the golden live path. Identical drift to P0-5
+  // (`gate/src/trust.ts`) and P0-1 (`evidence/src/trust.ts`), found AFTER the resolver inventory
+  // had twice been declared complete. The GATE and APPROVER windows are now carried from their
+  // per-key manifest declarations, including a non-null revocation; the delegation and ROOT keep
+  // their separately-declared bootstrap window. [proof: RES-PAR-E2E-KEYRING]
+  // (test/keyring-resolver-parity.test.ts, RED before this fix); the resolver census is reconciled
+  // mechanically by scripts/lint-resolver-parity.mjs.
+  const keyring: Record<string, KeyEntry> = {
+    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], validFrom: gateWindow.validFrom, revokedAt: gateWindow.revokedAt },
+    [approver.kid]: { publicKey: approver.publicKey, type: 'APPROVER', roles: ['approve-high'], validFrom: approverWindow.validFrom, revokedAt: approverWindow.revokedAt },
+    [auth.authority.kid]: { publicKey: auth.authority.publicKey, type: 'DELEGATED', roles: ['key-manifest-sign'], validFrom: auth.validFrom, revokedAt: null },
+    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], validFrom: auth.validFrom, revokedAt: null },
+  };
+  const receiptKeyring: SigningKeyLifecycle = {
+    spec: SIGNING_KEY_LIFECYCLE_SPEC,
+    keys: {
+      [gate.kid]: { publicKey: gate.publicKey, retiredAt: gateWindow.revokedAt },
+      [approver.kid]: { publicKey: approver.publicKey, retiredAt: approverWindow.revokedAt },
+    },
   };
 
   const trust: GateTrust = {
@@ -288,6 +321,7 @@ export function assembleGateTrust(
     gate,
     approver,
     approverHpkePublicKey: phone.approverHpkePublicKey,
+    auditKid: auth.auditKid,
     auditHpkePublicKey: auth.auditHpkePublicKey,
     keyManifestVersion: 2,
     keyManifestHash: manifestHash,
@@ -302,7 +336,9 @@ export function assembleGateTrust(
   // The external tenant trust root the §13 verifier requires (F7a): the ROOT that signed the
   // delegation. Never lifted from the bundle.
   const tenantRoot: Record<string, KeyEntry> = {
-    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], revokedAt: null },
+    // P0-8, same change as the live keyring above: the external anchor carries the ROOT's declared
+    // activation, exactly as `gate/src/trust.ts` and the P0-1 fix do. [proof: RES-PAR-E2E-TENANTROOT]
+    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], validFrom: auth.validFrom, revokedAt: null },
   };
   return { trust, tenantRoot };
 }

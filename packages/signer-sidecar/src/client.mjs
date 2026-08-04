@@ -12,6 +12,10 @@
  * timeout budget without ever succeeding.
  */
 import { connect } from "node:net";
+// BOUNDARY 2 — caught values are described/branched through safe-throw, never a raw `.message`/
+// `.code`. The fifth review's H2: a socket `error` event carrying `null` made `err.code` throw and
+// escaped the retry classifier here.
+import { describeThrown, thrownCode } from "noa-mcp-adapter-core/safe-throw";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 2000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 5000;
@@ -49,7 +53,7 @@ function rpcOnce(socketPath, request, timeoutMs) {
         try {
           parsed = JSON.parse(buf.slice(0, nl));
         } catch (err) {
-          fail(new Error(`noa-signer-sidecar client: malformed response (${err.message})`));
+          fail(new Error(`noa-signer-sidecar client: malformed response (${describeThrown(err)})`));
           return;
         }
         if (parsed && typeof parsed.error === "string") {
@@ -77,7 +81,8 @@ async function rpcWithRetry(socketPath, request, { requestTimeoutMs }) {
       return await rpcOnce(socketPath, request, requestTimeoutMs);
     } catch (err) {
       lastErr = err;
-      const retryable = err.code === "ECONNREFUSED" || err.code === "ENOENT";
+      const code = thrownCode(err);
+      const retryable = code === "ECONNREFUSED" || code === "ENOENT";
       if (!retryable || attempt === RETRY_DELAYS_MS.length) break;
       await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt]));
     }

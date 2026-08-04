@@ -12,7 +12,9 @@
 
 import type { Policy, Condition, InputSnapshot, Verdict, Scalar } from "./dsl.js";
 import { DEFAULT_VERDICT } from "./dsl.js";
-import { validatePolicy } from "./validate.js";
+import { validatePolicyParsed } from "./validate.js";
+import { parseDocument } from "../bytes.js";
+import { hasOwn, objectKeys, isSafeInteger, arraySome, arrayEvery, arrayLength, isArray } from "../intrinsics.js";
 
 export const REF_EVAL_VERSION = "noa-refeval/0.2" as const;
 
@@ -34,14 +36,25 @@ function assertScalar(v: unknown, where: string): asserts v is Scalar {
   const t = typeof v;
   if (t === "string" || t === "boolean") return;
   if (t === "number") {
-    if (!Number.isSafeInteger(v as number)) throw new PolicyError(`non-integer/unsafe number at ${where}`);
+    if (!isSafeInteger(v as number)) throw new PolicyError(`non-integer/unsafe number at ${where}`);
     return;
   }
   throw new PolicyError(`non-scalar value at ${where}`);
 }
 
+/**
+ * Read one input path, own-properties only.
+ *
+ * The body was `Object.prototype.hasOwnProperty.call(inputs, path)`. `.call` is a writable property
+ * of `Function.prototype`, and `c02_fncall_eval.mjs` rewrote it so that the presence test for ONE
+ * path answered `false`: the `deny-blocked` rule stopped firing, the permissive rule below it fired
+ * instead, and `evaluate()` returned ALLOW over byte-identical policy and inputs — identical
+ * `policyHash`/`inputsHash`, opposite verdict, which is the worst possible shape for a replayable
+ * decision. `hasOwn` calls a `hasOwnProperty` captured at module load through a captured
+ * `Reflect.apply`; nothing is looked up at call time.
+ */
 function ownGet(inputs: InputSnapshot, path: string): Scalar | undefined {
-  return Object.prototype.hasOwnProperty.call(inputs, path) ? inputs[path] : undefined;
+  return hasOwn(inputs, path) ? inputs[path] : undefined;
 }
 
 /** -1 / 0 / 1; throws on type mismatch (a policy comparing string to number is a bug, not a silent false). */
@@ -59,10 +72,14 @@ function cmp(a: Scalar, b: Scalar): number {
 
 function match(c: Condition, inputs: InputSnapshot): boolean {
   switch (c.op) {
+    // CAPTURED (2026-07-29, round-2, R3-05). `c.clauses.every`/`.some` and `c.values.some` below
+    // dispatched through `Array.prototype.{every,some}`; forcing either to `true` made an ALLOW rule
+    // guarded by a false `and`/`or`/`in` fire, flipping the policy verdict DENY -> ALLOW over byte-
+    // identical policy and inputs. Membership/quantifiers now go through the captured wrappers.
     case "and":
-      return c.clauses.every((x) => match(x, inputs));
+      return arrayEvery(c.clauses, (x) => match(x, inputs));
     case "or":
-      return c.clauses.some((x) => match(x, inputs));
+      return arraySome(c.clauses, (x) => match(x, inputs));
     case "not":
       return !match(c.clause, inputs);
     case "exists":
@@ -72,7 +89,7 @@ function match(c: Condition, inputs: InputSnapshot): boolean {
     case "in": {
       const v = ownGet(inputs, c.path);
       if (v === undefined) return false;
-      return c.values.some((x) => {
+      return arraySome(c.values, (x) => {
         assertScalar(x, `rule.in.values`);
         return cmp(v, x) === 0;
       });
@@ -103,13 +120,32 @@ function match(c: Condition, inputs: InputSnapshot): boolean {
  * `then` is guaranteed ALLOW|DENY by the up-front validator, so a typo'd verdict can never
  * become a silent permit downstream (closes a default-DENY bypass).
  */
-export function evaluate(policy: Policy, inputs: InputSnapshot): EvalResult {
-  const pv = validatePolicy(policy);
+export function evaluate(policy: Uint8Array | string, inputs: Uint8Array | string): EvalResult {
+  // THE TWO DOCUMENTS ARE PARSED SEPARATELY so the existing `ruleFired` contract is preserved
+  // EXACTLY: an unusable POLICY is `policy-invalid` and an unusable INPUT SNAPSHOT is `eval-error`.
+  // Those labels are part of the cross-implementation determinism bar — five verifiers agree on
+  // them — so a security change must not move one. What used to produce them was a hostile getter
+  // throwing mid-walk; what produces them now is a document that will not parse. Same label, same
+  // verdict, narrower cause.
+  const pParsed = parseDocument(policy, "policy");
+  if (!pParsed.ok) return { verdict: "DENY", ruleFired: "policy-invalid", engine: REF_EVAL_VERSION };
+  const iParsed = parseDocument(inputs, "inputs");
+  if (!iParsed.ok) return { verdict: "DENY", ruleFired: "eval-error", engine: REF_EVAL_VERSION };
+  return evaluateParsed(pParsed.value as Policy, iParsed.value as InputSnapshot);
+}
+
+/**
+ * The evaluator over PARSED data — kernel-internal, NOT re-exported from `src/index.ts`.
+ * `complianceCommit` (a producer, holding its own policy object) and `verifyReceiptCompliance`
+ * (holding a policy it already parsed) both call this rather than re-serializing.
+ */
+export function evaluateParsed(policy: Policy, inputs: InputSnapshot): EvalResult {
+  const pv = validatePolicyParsed(policy);
   if (!pv.ok) {
     return { verdict: "DENY", ruleFired: "policy-invalid", engine: REF_EVAL_VERSION };
   }
   // input-shape guard: never throw on null/undefined/non-object/array inputs — fail-closed DENY
-  if (typeof inputs !== "object" || inputs === null || Array.isArray(inputs)) {
+  if (typeof inputs !== "object" || inputs === null || isArray(inputs)) {
     return { verdict: "DENY", ruleFired: "input-invalid", engine: REF_EVAL_VERSION };
   }
   try {
@@ -117,15 +153,23 @@ export function evaluate(policy: Policy, inputs: InputSnapshot): EvalResult {
     // then (2) input scalar well-formedness, then (3) rule matching. Presence is checked before
     // well-formedness so a missing required path always reports `required-input-absent`, never a
     // value-shape error from some other field.
-    for (const p of policy.requiredPaths) {
-      if (!Object.prototype.hasOwnProperty.call(inputs, p)) {
+    // Index walks (R3-05): a substituting/skipping `%ArrayIteratorPrototype%.next` could drop a required
+    // path or a rule; the captured `arrayLength` + index read has no iterator dispatch.
+    const rpn = arrayLength(policy.requiredPaths);
+    for (let rpi = 0; rpi < rpn; rpi++) {
+      const p = policy.requiredPaths[rpi]!;
+      if (!hasOwn(inputs, p)) {
         return { verdict: "DENY", ruleFired: `required-input-absent:${p}`, engine: REF_EVAL_VERSION };
       }
     }
     // integer-only scalars (no float leakage into the hashed surface)
-    for (const key of Object.keys(inputs)) assertScalar(inputs[key], `input.${key}`);
+    const ikeys = objectKeys(inputs);
+    const ikn = arrayLength(ikeys);
+    for (let iki = 0; iki < ikn; iki++) { const key = ikeys[iki]!; assertScalar(inputs[key], `input.${key}`); }
 
-    for (const rule of policy.rules) {
+    const rn = arrayLength(policy.rules);
+    for (let ri = 0; ri < rn; ri++) {
+      const rule = policy.rules[ri]!;
       if (match(rule.when, inputs)) {
         return { verdict: rule.then, ruleFired: rule.id, engine: REF_EVAL_VERSION };
       }

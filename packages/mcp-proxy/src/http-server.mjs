@@ -29,6 +29,16 @@ import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createProxyServer } from "./create-proxy-server.mjs";
+import { describeThrown } from "noa-mcp-adapter-core";
+
+import { intrinsics } from "noa-mcp-adapter-core";
+
+// REDTEAM 2026-08-03 — bulk hardening of the published decision paths, same rationale as
+// adapter-core: four CRITICALs in two days, every one a LIVE builtin an attacker replaces after
+// module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
+// who adds one, so the builtins come from the kernel's module-load capture whether or not each site
+// is reachable today. Reachability is a property of the surrounding code, and that changes.
+const { jsonParse, jsonStringify } = intrinsics;
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — fail closed on anything larger, never buffer unbounded
 
@@ -52,9 +62,9 @@ function readJsonBody(req) {
         return;
       }
       try {
-        resolve(JSON.parse(raw));
+        resolve(jsonParse(raw));
       } catch (err) {
-        reject(new Error(`invalid JSON body: ${err.message}`));
+        reject(new Error(`invalid JSON body: ${describeThrown(err)}`));
       }
     });
     req.on("error", reject);
@@ -64,7 +74,7 @@ function readJsonBody(req) {
 function writeJsonError(res, status, message, id = null) {
   if (res.headersSent) return;
   res.writeHead(status, { "content-type": "application/json" });
-  res.end(JSON.stringify({ jsonrpc: "2.0", error: { code: status === 400 ? -32000 : -32603, message }, id }));
+  res.end(jsonStringify({ jsonrpc: "2.0", error: { code: status === 400 ? -32000 : -32603, message }, id }));
 }
 
 /**
@@ -119,7 +129,7 @@ export async function startHttpProxy(config) {
     } catch (err) {
       // FAIL-CLOSED: downstream unreachable at session start — never register, never serve.
       await transport.close().catch(() => {});
-      writeJsonError(res, 502, `noa-mcp-proxy: downstream MCP connection failed at session start (${err.message})`);
+      writeJsonError(res, 502, `noa-mcp-proxy: downstream MCP connection failed at session start (${describeThrown(err)})`);
       return null;
     }
     const entry = { transport, proxy };
@@ -148,7 +158,7 @@ export async function startHttpProxy(config) {
         try {
           body = await readJsonBody(req);
         } catch (err) {
-          writeJsonError(res, 400, `noa-mcp-proxy: ${err.message}`);
+          writeJsonError(res, 400, `noa-mcp-proxy: ${describeThrown(err)}`);
           return;
         }
         let entry = mcpSessionId ? sessions.get(mcpSessionId) : undefined;
@@ -183,7 +193,10 @@ export async function startHttpProxy(config) {
 
       writeJsonError(res, 405, `noa-mcp-proxy: method ${req.method} not allowed`);
     } catch (err) {
-      writeJsonError(res, 500, `noa-mcp-proxy: ${err?.message ?? "internal error"}`);
+      // BOUNDARY 2: this is the LAST handler in the request path. `err?.message` here could throw a
+      // second time — out of the handler that exists to turn any failure into a 500 — leaving the
+      // HTTP request with no response at all until the socket timed out.
+      writeJsonError(res, 500, `noa-mcp-proxy: ${describeThrown(err)}`);
     }
   });
 

@@ -15,6 +15,14 @@
 import { buildReceipt, verifyChain, generateKeyPair, evaluate, policyHash, complianceCommit, verifyReceiptCompliance } from "../../dist/src/index.js";
 import { sha256Prefixed } from "../../dist/src/hash.js";
 
+
+/**
+ * Documents are BYTES at every security-sensitive entry point (ADR §3.1). An example is the first
+ * thing a new caller copies, so it shows the byte form rather than a convenience wrapper.
+ */
+const enc = new TextEncoder();
+const b = (v) => enc.encode(JSON.stringify(v));
+
 // A deterministic, integer-only policy (noa.policy/0.2): block >= 1,000,000.00 DKK (in oere),
 // allow smaller refunds, default-DENY everything else.
 const POLICY = {
@@ -37,7 +45,7 @@ const POLICY = {
 export function preCheck(toolCall, { signer, prev = null, seq = 0 }) {
   // The CLOSED-WORLD decision inputs (NOT the raw tool args) — only what the policy reads.
   const inputs = { action: toolCall.name, amountMinor: toolCall.args?.amountMinor };
-  const ev = evaluate(POLICY, inputs); // ALLOW | DENY, fail-closed, re-runnable
+  const ev = evaluate(b(POLICY), b(inputs)); // ALLOW | DENY, fail-closed, re-runnable
   const decision = ev.verdict === "ALLOW" ? "ALLOW" : "DENY";
   // Commit the policy+inputs ONLY when the inputs are canonicalizable. Malformed inputs (e.g. a float
   // amount) → fail-closed DENY with NO compliance block (there is nothing valid to commit/replay).
@@ -93,7 +101,7 @@ function main() {
   ok("call 3 float amount → DENY (fail-closed, no exception)", results[3].decision === "DENY");
 
   // Every emitted receipt chain is offline-verifiable.
-  const v = verifyChain(chain, { keyring });
+  const v = verifyChain(b(chain), { keyring: b(keyring) });
   ok(`receipt chain VALID (offline, ${v.count} receipts)`, v.status === "VALID");
 
   // THE MOAT (B4 on-receipt): each receipt COMMITS the policy + inputs by hash AND the recorded verdict;
@@ -101,7 +109,12 @@ function main() {
   // requires the re-run verdict to equal the committed one → the reproduced verdict matches the recorded
   // decision. Offline, no NOA service. (Decision-only competitors cannot do this.)
   for (let i = 0; i < results.length; i++) {
-    const cc = verifyReceiptCompliance(chain[i], POLICY, results[i].evidence.inputs);
+    // The keyring is REQUIRED. An L2 hash proof over an UNAUTHENTICATED receipt proves nothing,
+    // because that receipt's own `governance.compliance` block is attacker-mutable, so the kernel
+    // fail-closes without a trust root. This example omitted it and therefore demonstrated a call
+    // that cannot succeed — `examples/` is excluded from tsconfig and from `npm test`, so nothing
+    // ever ran it.
+    const cc = verifyReceiptCompliance(b(chain[i]), b(POLICY), b(results[i].evidence.inputs), { keyring: b(keyring) });
     const recorded = chain[i].governance.verdict === "EXECUTED" ? "ALLOW" : "DENY";
     if (chain[i].governance.compliance) {
       ok(`call ${i} ON-RECEIPT compliance proof ok + verdict matches (${recorded})`, cc.ok && cc.policyVerdict === recorded);
@@ -110,13 +123,26 @@ function main() {
     }
   }
   // Tamper: a verifier handed DIFFERENT inputs than were recorded must FAIL the inputsHash bind.
-  const tampered = verifyReceiptCompliance(chain[0], POLICY, { action: "payment.refund", amountMinor: 999_999 });
+  const tampered = verifyReceiptCompliance(b(chain[0]), b(POLICY), b({ action: "payment.refund", amountMinor: 999_999 }), { keyring: b(keyring) });
   ok("on-receipt compliance REJECTS substituted inputs (inputsHash bind)", tampered.ok === false);
 
   // Tamper: a receipt that COMMITS the OPPOSITE verdict (DENY) while its recorded inputs evaluate to
   // ALLOW must FAIL verdict reconciliation — the recorded decision itself must reproduce.
-  const forged = { ...chain[0], governance: { ...chain[0].governance, compliance: { ...chain[0].governance.compliance, verdict: "DENY" } } };
-  const vr = verifyReceiptCompliance(forged, POLICY, results[0].evidence.inputs);
+  // The forged receipt must be RE-SIGNED. Mutating `governance.compliance.verdict` in place changes
+  // the receipt hash, so carrier authentication rejects it FIRST ("carrier receipt hash mismatch")
+  // and the verdict-reconciliation branch is never reached — the assertion would pass while testing a
+  // different control. Re-signing makes the carrier authentic and leaves the COMMITTED VERDICT as the
+  // only thing that disagrees, which is what this assertion is about.
+  const c0 = chain[0];
+  const forged = buildReceipt(
+    {
+      id: c0.id, ts: c0.ts, scope: c0.scope, agent: c0.agent, action: c0.action,
+      governance: { ...c0.governance, compliance: { ...c0.governance.compliance, verdict: "DENY" } },
+    },
+    null,
+    { kid: kp.kid, privateKey: kp.privateKey },
+  );
+  const vr = verifyReceiptCompliance(b(forged), b(POLICY), b(results[0].evidence.inputs), { keyring: b(keyring) });
   ok("on-receipt compliance REJECTS a committed verdict that does not reproduce (verdict bind)", vr.ok === false && /verdict mismatch/.test(vr.reason ?? ""));
 
   if (fail) { console.error(`\nMCP PRE-FLIGHT REFERENCE FAILED: ${fail} assertion(s)`); process.exit(1); }

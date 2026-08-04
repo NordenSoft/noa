@@ -543,6 +543,40 @@ def verify_chain(receipts, keyring=None, identity_manifest=None, checkpoint=None
         seq = r["chain"].get("seq")
         if seq in by_seq: return "TAMPERED", f"duplicate seq {seq}"
         by_seq[seq] = r
+    # 3b. Chain-wide scope.tenant consistency (fail-closed, matching the TS reference's DEFAULT).
+    # scope.tenant is a sibling of scope.chain but, unlike scope.chain, was enforced nowhere: a chain
+    # mixing tenants -- or carrying the field on some receipts and not others -- verified clean, so a
+    # caller who assumed tenant isolation follows chain isolation got a silent pass. Tenant isolation
+    # is a security boundary; the same verdict class as the partition split above is correct.
+    # Walks in SEQ order (not input order) so the reported drift is chain order, matching TS.
+    def _tenant_label(rr):
+        t = rr.get("scope", {}).get("tenant")
+        return json.dumps(t) if isinstance(t, str) else "(none)"
+    # Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present is a
+    # producer-version change on an OPTIONAL field and is not tampering (see src/verify.ts).
+    #
+    # The comparison is NOT adjacent: comparing neighbours let an omission RESET the boundary, so
+    # `acme -> globex` was TAMPERED while `acme -> absent -> globex` -- the same splice with one
+    # optional field left out in between -- was VALID in all five implementations. The last PRESENT
+    # tenant is carried across absences instead. Absence stays non-fatal; it just no longer erases
+    # what the chain already committed to.
+    last_present = None
+    last_present_seq = None
+    for s in range(len(receipts)):
+        if s not in by_seq:
+            break  # a gap is reported by the walk below; do not pre-empt its message
+        cur_r = by_seq[s]
+        cur_t = cur_r.get("scope", {}).get("tenant")
+        if not isinstance(cur_t, str):
+            continue  # absence never resets the boundary, and is never fatal
+        if last_present is not None and cur_t != last_present:
+            return "TAMPERED", (
+                f'tenant-drift: seq {last_present_seq} {json.dumps(last_present)}'
+                f' -> seq {cur_r["chain"].get("seq")} {_tenant_label(cur_r)}'
+            )
+        last_present = cur_t
+        last_present_seq = cur_r["chain"].get("seq")
+
     pinned = {}
     prev = None
     for s in range(len(receipts)):

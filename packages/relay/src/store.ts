@@ -108,7 +108,13 @@ export interface Store {
    * source compatibility with pre-existing Store implementations; the engine also preflights the
    * write, while built-in stores enforce the invariant again at the mutation boundary.
    */
-  putManifest(rec: KeyManifestRecord): void;
+  /**
+   * `recovery: true` bypasses the monotonicity classification for the ONE case the engine can prove
+   * is unrecoverable otherwise: a stored version so large no conforming publish could have produced
+   * it (pre-bound residue), which would leave the tenant permanently unable to rotate keys. The
+   * engine decides and logs it; the store only honours the explicit instruction.
+   */
+  putManifest(rec: KeyManifestRecord, opts?: { recovery?: boolean }): void;
   getLatestManifest(tenant: string): KeyManifestRecord | undefined;
 
   /**
@@ -204,8 +210,12 @@ export class InMemoryStore implements Store {
     return n;
   }
 
-  putManifest(rec: KeyManifestRecord): void {
+  putManifest(rec: KeyManifestRecord, opts: { recovery?: boolean } = {}): void {
     const cur = this.manifests.get(rec.tenant);
+    if (opts.recovery) {
+      this.manifests.set(rec.tenant, rec);
+      return;
+    }
     const outcome = classifyManifestPut(cur, rec);
     if (outcome === "stored") {
       this.manifests.set(rec.tenant, rec);

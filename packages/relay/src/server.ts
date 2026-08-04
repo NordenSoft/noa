@@ -5,12 +5,12 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { resolveConfig, isLoopbackAddress, type RelayConfig } from "./config.js";
+import { resolveConfig, isLoopbackAddress, enrolmentRefusal, type RelayConfig } from "./config.js";
 import { InMemoryStore, type Store } from "./store.js";
 import { FileStore } from "./file-store.js";
 import { NoopLogPushProvider, type PushProvider } from "./push.js";
 import { RelayEngine, type EngineResult } from "./engine.js";
-import { parseBearer } from "./auth.js";
+import { parseBearer, hashSecret } from "./auth.js";
 import { RateLimiter } from "./ratelimit.js";
 
 export interface CreateRelayOptions {
@@ -44,8 +44,40 @@ export function createRelay(opts: CreateRelayOptions = {}): Relay {
 
   let sweepTimer: NodeJS.Timeout | null = null;
 
+  // R-1 shape (A) — EXPOSURE IS DECIDED FROM THE REAL SOCKET, NOT FROM `config.bindAddress`.
+  // `httpServer` is a public field on the returned `Relay`, so an embedder can call
+  // `httpServer.listen(port, "0.0.0.0")` directly: that bypasses the D20 bind guard in `listen()`
+  // entirely, while `config.bindAddress` still reads "127.0.0.1" and the enrolment gate happily
+  // concluded "loopback, therefore unreachable". Measured — an approver key registered anonymously
+  // through exactly that path.
+  //
+  // `null` until OUR `listen()` runs. A request arriving while it is still null means the socket was
+  // opened by someone other than this function, so we do not know the bind address and must not
+  // guess: the sentinel below is non-loopback, which fails CLOSED.
+  // A RECORDED address is not enough — it outlives the socket it describes. QA reproduced the
+  // bypass on the first version of this fix: `listen()` on loopback, then `close()`, then the
+  // embedder calls `httpServer.listen(0, "0.0.0.0")` — the recorded "127.0.0.1" survived and an
+  // approver key was minted anonymously through a world-facing socket. A second variant skipped our
+  // `close()` entirely and went straight through `httpServer.close()`. Resetting on `close()` would
+  // have fixed only the first, because the embedder owns the server object and need not call ours.
+  //
+  // So the invariant is not "did OUR listen run?" but "is the socket serving THIS request still the
+  // one our listen opened?" — which is a LIVE read, checked per request against what we recorded.
+  let ourSocket: { address: string; port: number } | null = null;
+  const effectiveConfig = (): RelayConfig => {
+    const live = httpServer.address();
+    // `null` = not listening · `string` = unix socket (our listen() always passes host+port, so a
+    // string here means someone else opened it) · object = TCP, compare the whole tuple.
+    // One sentinel for every untrusted case — never listened, re-listened, closed and reopened,
+    // unix socket. Non-loopback, so exposure classification fails CLOSED.
+    const UNTRUSTED = { ...config, bindAddress: "0.0.0.0" };
+    if (ourSocket === null || live === null || typeof live !== "object") return UNTRUSTED;
+    if (live.address !== ourSocket.address || live.port !== ourSocket.port) return UNTRUSTED;
+    return { ...config, bindAddress: ourSocket.address };
+  };
+
   const httpServer = createServer((req, res) => {
-    handle(req, res, engine, config, limiter).catch(() => {
+    handle(req, res, engine, effectiveConfig(), limiter).catch(() => {
       if (!res.headersSent) sendJson(res, 500, { error: "INTERNAL" });
       else res.end();
     });
@@ -78,8 +110,18 @@ export function createRelay(opts: CreateRelayOptions = {}): Relay {
           sweepTimer = setInterval(() => engine.sweepExpired(), config.expirySweepMs);
           if (typeof sweepTimer.unref === "function") sweepTimer.unref();
           const addr = httpServer.address();
-          if (addr && typeof addr === "object") resolve({ address: addr.address, port: addr.port });
-          else resolve({ address: config.bindAddress, port: config.port });
+          // Record what the OS actually bound, not what we asked for. This is the value the
+          // enrolment gate classifies against; see `actualBindAddress` above.
+          if (addr && typeof addr === "object") {
+            // Record the WHOLE tuple. `effectiveConfig()` compares against it live on every request,
+            // so a socket that is closed and reopened elsewhere stops matching and fails closed.
+            ourSocket = { address: addr.address, port: addr.port };
+            resolve({ address: addr.address, port: addr.port });
+          } else {
+            // A non-object address means this is not the TCP socket we asked for. Leave `ourSocket`
+            // null rather than guessing — untrusted, and `effectiveConfig()` will use the sentinel.
+            resolve({ address: config.bindAddress, port: config.port });
+          }
         });
       });
     },
@@ -136,6 +178,22 @@ function resolveStoreFromEnv(log?: (event: string, fields: Record<string, unknow
   throw new Error(`unknown NOA_RELAY_STORE "${mode}" (expected "memory" or "file")`);
 }
 
+/**
+ * `/v1/devices/<id>/claim` WITHOUT a regex literal. `RegExp.prototype.test` performs a dynamic lookup
+ * of `exec` on the receiver, which is why L10 counts regex literals on a relay decision path — and
+ * adding two new ones for this route pushed the gate over its budget. A segment comparison decides
+ * the same thing and dispatches through nothing. Returns the device id, or null when it does not match.
+ */
+function claimTarget(method: string, path: string): string | null {
+  if (method !== "POST") return null;
+  const parts = path.split("/");
+  // ["", "v1", "devices", "<id>", "claim"]
+  if (parts.length !== 5) return null;
+  if (parts[0] !== "" || parts[1] !== "v1" || parts[2] !== "devices" || parts[4] !== "claim") return null;
+  const id = parts[3];
+  return id !== undefined && id.length > 0 ? id : null;
+}
+
 // ── request handling ─────────────────────────────────────────────────────────
 
 type Body = { ok: true; value: unknown } | { ok: false };
@@ -155,15 +213,51 @@ async function handle(
     return sendJson(res, 200, { ok: true, service: "noa-relay", role: "untrusted-transport" });
   }
 
-  const bearer = parseBearer(req.headers["authorization"]);
-  const rateKey = bearer ? `k:${bearer.secret}` : `ip:${req.socket.remoteAddress ?? "unknown"}`;
-  const rl = limiter.take(rateKey);
-  if (!rl.ok) {
-    res.setHeader("Retry-After", String(rl.retryAfterSec));
-    return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: rl.retryAfterSec });
+  // ── R8-13 (2026-07-31): THE PEER ALWAYS PAYS FIRST ────────────────────────────────────────────
+  // This used to read `bearer ? k:${bearer.secret} : ip:${addr}` — the bucket key was the caller's
+  // OWN token string, taken off the wire before any credential resolution. So an unauthenticated
+  // stranger escaped the limiter by changing a header: measured, 400 requests under 400 distinct
+  // invalid bearers were throttled ZERO times, and `POST /v1/devices` minted 200 device credentials
+  // with no 429 at all. The token bucket cannot be keyed on something the untrusted side chooses.
+  //
+  // The peer address is spent UNCONDITIONALLY and FIRST, so rotating a header cannot buy a fresh
+  // allowance. The per-credential bucket below is retained on top — it is the tighter of the two for
+  // an honest caller, and it now costs a SECOND token rather than replacing the first.
+  const peerKey = `ip:${req.socket.remoteAddress ?? "unknown"}`;
+  const peerRl = limiter.take(peerKey);
+  if (!peerRl.ok) {
+    res.setHeader("Retry-After", String(peerRl.retryAfterSec));
+    return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: peerRl.retryAfterSec });
   }
 
-  // ── open (no-auth) routes ──
+  const bearer = parseBearer(req.headers["authorization"]);
+  if (bearer) {
+    // Still keyed on the presented secret's HASH rather than the secret, so the limiter never holds
+    // credential material, and a wrong guess cannot mine the bucket table for a right one.
+    const rl = limiter.take(`k:${hashSecret(bearer.secret)}`);
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: rl.retryAfterSec });
+    }
+  }
+
+  // ── ENROLMENT routes (R-1) ──
+  // These three MINT CREDENTIALS: a pairing token becomes an agent key, and `/v1/devices` registers
+  // an approver key whose signatures the relay will then accept. They used to sit above every auth
+  // block with no gate at all, which is why the relay's keyring has no root — anyone who could reach
+  // the server could become an approver.
+  //
+  // `enrolmentRefusal` permits anonymous enrolment ONLY while the relay is bound to loopback and
+  // therefore unreachable from outside; off loopback it fails closed unless an operator secret is
+  // configured. See `RelayConfig.enrolmentSecret` for why the default is tied to exposure rather than
+  // to convenience.
+  const isEnrolmentRoute =
+    method === "POST" && (path === "/v1/pairings" || path === "/v1/pair" || path === "/v1/devices");
+  if (isEnrolmentRoute) {
+    const refusal = enrolmentRefusal(config, header(req, "x-noa-enrolment-secret"));
+    if (refusal) return sendJson(res, refusal.status, refusal.body);
+  }
+
   if (method === "POST" && path === "/v1/pairings") {
     const b = await readBody(req, res, config);
     if (!b.ok) return;
@@ -218,13 +312,13 @@ async function handle(
       return respond(res, engine.registerPush(device.id, b.value));
     }
     if (path === "/v1/holds") {
-      return respond(res, engine.listPending());
+      return respond(res, engine.listPending(device));
     }
     if (path.endsWith("/display")) {
-      return respond(res, engine.getDisplay(holdIdFrom(path)));
+      return respond(res, engine.getDisplay(device, holdIdFrom(path)));
     }
     if (path.endsWith("/context")) {
-      return respond(res, engine.getHoldContext(holdIdFrom(path)));
+      return respond(res, engine.getHoldContext(device, holdIdFrom(path)));
     }
     if (path.endsWith("/decision")) {
       const b = await readBody(req, res, config);
@@ -238,7 +332,11 @@ async function handle(
     (method === "POST" && path === "/v1/holds") ||
     (method === "POST" && path === "/v1/manifest") ||
     (method === "GET" && /^\/v1\/holds\/[^/]+\/wait$/.test(path)) ||
-    (method === "GET" && /^\/v1\/holds\/[^/]+$/.test(path));
+    (method === "GET" && /^\/v1\/holds\/[^/]+$/.test(path)) ||
+    // An agent CLAIMS a device, binding it to that agent's holds. Agent-authenticated on purpose:
+    // the agent already holds this credential and is the only party that can say which device
+    // speaks for it, so no new trusted party and no key custody is introduced.
+    claimTarget(method, path) !== null;
 
   if (isAgentRoute) {
     if (!bearer || bearer.scheme !== "agent") return sendJson(res, 401, { error: "AGENT_AUTH_REQUIRED" });
@@ -251,17 +349,24 @@ async function handle(
       if (!b.ok) return;
       return respond(res, engine.createHold(agent, idem, b.value));
     }
+    const claimId = claimTarget(method, path);
+    if (claimId !== null) {
+      return respond(res, engine.claimDevice(agent, claimId));
+    }
     if (method === "POST" && path === "/v1/manifest") {
       const b = await readBody(req, res, config);
       if (!b.ok) return;
-      return respond(res, engine.putManifest(b.value));
+      return respond(res, engine.putManifest(agent, b.value));
     }
+    // E-3: both read routes are now scoped to the OWNING agent. `agent` is already resolved above at
+    // the top of this block, so this costs one argument and no new lookup. A foreign hold answers
+    // `404 UNKNOWN_HOLD`, identical to an absent one — see `ownsHold`.
     if (path.endsWith("/wait")) {
       const timeoutSec = clampInt(url.searchParams.get("timeout"), 25, 0, 25);
-      return respond(res, await engine.wait(holdIdFrom(path), timeoutSec * 1000));
+      return respond(res, await engine.wait(agent, holdIdFrom(path), timeoutSec * 1000));
     }
     // GET /v1/holds/:id
-    return respond(res, engine.getHold(holdIdFrom(path)));
+    return respond(res, engine.getHold(agent, holdIdFrom(path)));
   }
 
   return sendJson(res, 404, { error: "NOT_FOUND" });

@@ -1,0 +1,7 @@
+#!/bin/sh
+# NOA pre-push gate. Wired with:  git config core.hooksPath scripts/hooks
+# Rollback, one command:          git config --unset core.hooksPath
+#
+# The hook is committed (unlike .git/hooks, which is per-clone and invisible to review), so the gate
+# that guards the repository is itself reviewable in the repository.
+exec node "$(git rev-parse --show-toplevel)/scripts/pre-push-gate.mjs" "$@"

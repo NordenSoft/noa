@@ -407,6 +407,37 @@ func verifyChain(receipts, keyring, identity, checkpoint *Value) string {
 		bySeq[seq] = r
 	}
 
+	// Chain-wide scope.tenant consistency (fail-closed; matches the TS reference DEFAULT and
+	// impl-py). scope.tenant sits beside scope.chain but was enforced nowhere, so a chain mixing
+	// tenants verified clean in every implementation. Tenant isolation is a security boundary; the
+	// same verdict class as the partition split above is the right one. Walked in SEQ order.
+	// Only a present->DIFFERENT-present drift is a cross-tenant splice. absent<->present is a
+	// producer-version change on an OPTIONAL field and is not tampering (see src/verify.ts).
+	//
+	// The comparison is NOT adjacent: comparing neighbours let an omission RESET the boundary, so
+	// `acme -> globex` was TAMPERED while `acme -> absent -> globex` — the same splice with one
+	// optional field left out in between — was VALID in all five implementations. The last PRESENT
+	// tenant is carried across absences instead. Absence stays non-fatal; it just no longer erases
+	// what the chain already committed to.
+	nTenant := int64(len(receipts.Arr))
+	lastPresent := ""
+	haveLastPresent := false
+	for s := int64(0); s < nTenant; s++ {
+		cur, okCur := bySeq[s]
+		if !okCur {
+			break // a gap is reported by the seq-walk below; don't pre-empt it
+		}
+		if !cur.get("scope").has("tenant") {
+			continue // absence never resets the boundary, and is never fatal
+		}
+		curTenant := cur.get("scope").get("tenant").Str
+		if haveLastPresent && curTenant != lastPresent {
+			return statusTampered // cross-tenant splice
+		}
+		lastPresent = curTenant
+		haveLastPresent = true
+	}
+
 	pinned := make(map[string]string)
 	var prev *Value
 	n := int64(len(receipts.Arr))

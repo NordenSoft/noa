@@ -27,7 +27,7 @@
       },
       "canonicalization": "JCS-RFC8785",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:f0d96146653426b378236120d9f8c4a4077eed35b00ffd94083d12733f367a35",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "tenant": "tenant-acme",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "nonce": "envelope-nonce-01",
@@ -35,7 +35,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "4LCQBS5puTSnthiSIWxHK5Qbka5wFFSUEbdO2THc0DfsM8RDk3O0iLN4z+76s2tGCZpAPUOl8DZhXCpeWkMaBw=="
+        "value": "6vbQQWBk128a6xS8gHXFVi4L/CmK2rUzKAqXqE2k+oTIBH1RE3vZt9cUVxYZjmbzGlXCTEC1iN94AeRZfKlxBw=="
       }
     },
     "deferredReceipt": {
@@ -79,7 +79,7 @@
       "spec": "noa.key-manifest/0.1",
       "tenant": "tenant-acme",
       "version": 2,
-      "issuedAt": "2026-07-14T09:30:00.000Z",
+      "issuedAt": "2026-07-14T10:30:00.000Z",
       "expiresAt": "2026-07-15T09:30:00.000Z",
       "previousManifestHash": null,
       "keys": [
@@ -130,7 +130,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "manifest-signer-3",
-        "value": "qbcPdgnriRZEgkdS2vAYYX/RWJqIfzp0lYgj1z6niqLMpL2iZP3q872iKRb4jRjV89SXjVKQSy3PeYHvby9DBQ=="
+        "value": "49QimrPznzz9h17Bm4lyMyH9sprj+p1+7Ywt4I0OQhiwASoOrtRRL9TCziSlX+Ae8WUvoU/az1N9na+QXvRXAg=="
       }
     },
     "keyDelegation": {
@@ -152,18 +152,18 @@
     "holdResolution": {
       "spec": "noa.hold-resolution/0.1",
       "holdId": "hold-001",
-      "holdEnvelopeHash": "sha256:4e1b8610511b913e5a851904a3ca458ae64ff39cc32d7e5c6017e318af89593b",
-      "decisionArtifactHash": "sha256:e72dd42f197a615dd74a4f2f130f3edb48b3ace8c7ed6f9ccb178eb8305c90cc",
+      "holdEnvelopeHash": "sha256:aad96dcdc33d9e6bc2e51652c4a8ab1b33c6a9b5c7f9235d26c71679d689efb7",
+      "decisionArtifactHash": "sha256:a32accfe06fc5e3d32976eaf7a2fbf046301b2329d9255a6dcfe52995fe5e696",
       "verdictReceiptHash": "sha256:b363fca163028de47b4f19f3685dbb2513db6a66bb53be753ee36160ea66292b",
       "status": "APPROVED",
       "reasonCode": null,
       "receivedAt": "2026-07-14T11:56:30.000Z",
       "keyManifestVersion": 2,
-      "keyManifestHash": "sha256:f0d96146653426b378236120d9f8c4a4077eed35b00ffd94083d12733f367a35",
+      "keyManifestHash": "sha256:da1d8a9837a12e9a71e1606cb6a1c0afd40e01314ceb588ba63884a0fb99c40a",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "p0vmhCMUN1UZtrKJyueAJIjNIujVdemPfSiuIckoWqRRp9sNxMIGpDjDrylx6+sr3emhHASvLiIZ0Pqiuu2ECw=="
+        "value": "JY0bUxQRR/07X6ayincazmJyc7jfB7R7BM8+u0owwI/6AiNNZmeSgK0zybb+s9lDL7jC7QwPU3kjiB/BbO4tAw=="
       }
     },
     "allowedReceipt": {
@@ -210,7 +210,7 @@
     },
     "decisionArtifact": {
       "spec": "noa.decision/0.1",
-      "holdEnvelopeHash": "sha256:4e1b8610511b913e5a851904a3ca458ae64ff39cc32d7e5c6017e318af89593b",
+      "holdEnvelopeHash": "sha256:aad96dcdc33d9e6bc2e51652c4a8ab1b33c6a9b5c7f9235d26c71679d689efb7",
       "decision": "APPROVE",
       "reasonCode": "vendor-verified",
       "reasonEncryption": {
@@ -230,7 +230,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "approver-1-device-2",
-        "value": "s62RjFgH2zfAHp8bpTzOx0Mw7UNSjlQhZN+Xq7r2FvlRL65IHojufee30DV9lwTWsHAPeZvtfbr0m1KOP+eFCA=="
+        "value": "wB6OSmlBeRk0LTC65iiUyQafiA6z8ohmlkd8hCwHOtCcem1lgXdy/TGk0WFQhApkKvMLi2I9RbR0ehee+hkSCw=="
       }
     },
     "executionGrant": {
@@ -238,7 +238,7 @@
       "grantId": "grant-001",
       "holdId": "hold-001",
       "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "holdEnvelopeHash": "sha256:4e1b8610511b913e5a851904a3ca458ae64ff39cc32d7e5c6017e318af89593b",
+      "holdEnvelopeHash": "sha256:aad96dcdc33d9e6bc2e51652c4a8ab1b33c6a9b5c7f9235d26c71679d689efb7",
       "approvalReceiptHash": "sha256:b363fca163028de47b4f19f3685dbb2513db6a66bb53be753ee36160ea66292b",
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T12:30:00.000Z",
@@ -247,19 +247,19 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "DzjqRzhw8jZI7GvV0XgR72SC4nbBSpBQT4kZH8qQ210ZLF134GbvYeeUkb0YOHDlPFqkLGvNK+Nm+klf8WfZDg=="
+        "value": "wSuICxYqpDPpe6zqbY2y4qKZazO0hJJoaBcOCa2c4OQHaxfRq8v+gOcoVBRfxnQ5QWhTsyt9NjB1xcVi1oYQBA=="
       }
     },
     "executionConsumption": {
       "spec": "noa.execution-consumption/0.1",
-      "grantHash": "sha256:16d9d2265df057a183d2175c177abec6625798cc88d9731b814ae959515dddb4",
+      "grantHash": "sha256:2616c44c8f3eabcd8ece3cfab291103b1fe45351ad5642a4613a71e642949692",
       "consumedAt": "2026-07-14T11:58:00.000Z",
       "attemptReceiptHash": "sha256:d2b38ad48da9246c5f2bdf40683982aacf5952958e70516425459aa387e4d681",
       "result": "DISPATCHED",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "22I9/rBlV2RkXo7m7TV37e4pFqisXPZvQaXv2J5kyd/ptqnWqn2la10CnpzqoGLQnOpgPGvT6yFVJikymRZfAw=="
+        "value": "QWpGP3AInsKbIShKwdE/R6fOF8BYeZS83GIc11Z23qcWDQsHifzdoHI+FCVJe6NHgtDE87qrubPsduRiu90lBw=="
       }
     },
     "checkpoint": {

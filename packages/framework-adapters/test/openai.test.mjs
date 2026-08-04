@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair, verifyChain, REFUND_GUARD_POLICY } from "noa-mcp-adapter-core";
+import { b } from "./helpers/bytes.mjs";
 import { createToolGuard, GuardedToolDenied } from "../src/wrap-tool.mjs";
 import { wrapOpenAITool } from "../src/openai.mjs";
 
@@ -38,9 +39,11 @@ test("wrapOpenAITool: ALLOW calls execute and returns its result unchanged, rece
 
   assert.deepEqual(result, { refunded: 4200 });
   assert.equal(calls, 1, "execute must be called exactly once on ALLOW");
-  assert.equal(guard.receipts.length, 1);
-  assert.equal(guard.receipts[0].governance.verdict, "EXECUTED");
-  const v = verifyChain(guard.receipts, { keyring });
+  // TWO-RECEIPT LIFECYCLE: pre-execution decision (ALLOWED) + post-attempt terminal verdict.
+  assert.equal(guard.receipts.length, 2);
+  assert.equal(guard.receipts[0].governance.verdict, "ALLOWED");
+  assert.equal(guard.receipts[1].governance.verdict, "EXECUTED");
+  const v = verifyChain(b(guard.receipts), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
 });
 
@@ -76,10 +79,31 @@ test("wrapOpenAITool: N calls -> N receipts, offline-verifiable", async () => {
     }
   }
 
-  assert.equal(guard.receipts.length, amounts.length);
-  const v = verifyChain(guard.receipts, { keyring });
+  // THE EXPECTED COUNT IS INDEPENDENTLY KNOWN, NOT DERIVED FROM THE RECEIPTS.
+  // This block previously counted ALLOWED/BLOCKED receipts and then checked
+  // `receipts.length === allows * 2 + denies` — both sides read from the same array, so the
+  // arithmetic held under regressions the block exists to catch: an outcome receipt emitted BEFORE
+  // its decision, or carrying FAILED instead of EXECUTED, satisfied it unchanged.
+  //
+  // `amounts` is the ground truth: 3 ALLOW-eligible + 1 over-limit DENY, called sequentially, so
+  // the whole verdict sequence is deterministic and can simply be written down.
+  const EXPECTED_VERDICTS = ["ALLOWED", "EXECUTED", "BLOCKED", "ALLOWED", "EXECUTED", "ALLOWED", "EXECUTED"];
+  assert.equal(guard.receipts.length, EXPECTED_VERDICTS.length, "3 ALLOW (decision+outcome) + 1 DENY (decision only) = 7 receipts");
+  assert.deepEqual(
+    guard.receipts.map((r) => r.governance.verdict),
+    EXPECTED_VERDICTS,
+    "every terminal verdict AND its position: a decision always precedes its outcome, and a DENY has no outcome",
+  );
+  // Each outcome names the exact decision it settles (id `<decision-id>#outcome`).
+  for (let i = 0; i < guard.receipts.length - 1; i++) {
+    if (guard.receipts[i].governance.verdict !== "ALLOWED") continue;
+    const outcome = guard.receipts[i + 1];
+    assert.equal(outcome.id, `${guard.receipts[i].id}#outcome`, "the outcome must identify WHICH decision it settles");
+    assert.equal(outcome.action.paramsHash, guard.receipts[i].action.paramsHash);
+  }
+  const v = verifyChain(b(guard.receipts), { keyring: b(keyring) });
   assert.equal(v.status, "VALID");
-  assert.equal(v.count, amounts.length);
+  assert.equal(v.count, EXPECTED_VERDICTS.length);
 });
 
 test("wrapOpenAITool: also supports the flat local-runtime shape (tool.name, no tool.function)", async () => {

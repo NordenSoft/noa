@@ -10,7 +10,8 @@ import assert from "node:assert/strict";
 import { verifyChain } from "noa-receipt";
 import { verifyArtifact, refHash, receiptRefHash, virtualHash } from "noa-approval-artifacts";
 import { loadSchemas } from "../src/schemas.js";
-import { setupGate, signPhoneDecision, sampleCommandParams } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
+import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
 
@@ -19,12 +20,12 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
   const { engine, trust, store } = fx;
 
   // 1. Agent freezes a HIGH infra action (ENFORCED — the gate computes paramsHash + derives display).
-  const created = engine.createHold(fx.agent, "idem-1", {
+  const created = engine.createHold(fx.agent, "idem-1", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-A",
-  });
+  }));
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const holdId = (created.body as { holdId: string }).holdId;
   const holdEnvelope = (created.body as { holdEnvelope: Record<string, unknown> }).holdEnvelope;
@@ -38,7 +39,7 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
 
   // 2. Phone approves: signs the ALLOWED receipt + Decision Artifact (no ticket, D18).
   const { receipt: allowed, decisionArtifact } = signPhoneDecision({ trust, deferredReceipt: deferred, holdEnvelope: holdEnvelope as never, decision: "APPROVE" });
-  const decided = engine.decide(holdId, { receipt: allowed, decisionArtifact });
+  const decided = engine.decide(holdId, body({ receipt: allowed, decisionArtifact }));
   assert.equal(decided.status, 200, JSON.stringify(decided.body));
   const dv = decided.body as { status: string; executionGrant: Record<string, unknown>; grantId: string };
   assert.equal(dv.status, "APPROVED");
@@ -47,11 +48,11 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
   assert.ok(grant, "the GATE issued the Execution Grant (D13/D18), not the phone");
 
   // 3. Reserve (atomic, pre-dispatch) → execute → report DISPATCHED → gate signs the Consumption.
-  const reserved = engine.reserve(grantId);
+  const reserved = engine.reserve(grantId, fx.agent);
   assert.equal(reserved.status, 200);
   assert.equal((reserved.body as { status: string }).status, "RESERVED");
 
-  const reported = engine.report(grantId, { result: "DISPATCHED" });
+  const reported = engine.report(grantId, body({ result: "DISPATCHED" }), fx.agent);
   assert.equal(reported.status, 200, JSON.stringify(reported.body));
   const rb = reported.body as { consumption: Record<string, unknown>; attemptReceipt: Record<string, unknown> };
   const consumption = rb.consumption;
@@ -60,7 +61,7 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
 
   // 4. The full DEFERRED→ALLOWED→EXECUTED chain verifies VALID against the gate + approver keyring.
   const chain = [deferred, allowed, executed];
-  const vc = verifyChain(chain, { keyring: trust.receiptKeyring, requireTenantConsistency: true });
+  const vc = verifyChain(b(chain), { keyring: b(trust.receiptKeyring), requireTenantConsistency: true });
   assert.equal(vc.status, "VALID", `verifyChain: ${vc.status} ${vc.reason ?? ""}`);
   assert.equal(vc.count, 3);
 
@@ -69,10 +70,10 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
   const now = new Date(trust.now()).toISOString();
   const keyring = trust.keyring;
 
-  const envCheck = verifyArtifact(holdEnvelope, { schemas, keyring, now });
+  const envCheck = verifyArtifact(b(holdEnvelope), b({ schemas, keyring, now }));
   assert.ok(envCheck.ok, `holdEnvelope: ${envCheck.reason}`);
 
-  const grantCheck = verifyArtifact(grant, {
+  const grantCheck = verifyArtifact(b(grant), b({
     schemas,
     keyring,
     now,
@@ -80,10 +81,10 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
       { path: "holdEnvelopeHash", rule: "side", artifact: holdEnvelope },
       { path: "approvalReceiptHash", rule: "receipt", artifact: allowed },
     ],
-  });
+  }));
   assert.ok(grantCheck.ok, `grant: ${grantCheck.reason}`);
 
-  const consCheck = verifyArtifact(consumption, {
+  const consCheck = verifyArtifact(b(consumption), b({
     schemas,
     keyring,
     now,
@@ -91,11 +92,11 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
       { path: "grantHash", rule: "side", artifact: grant },
       { path: "attemptReceiptHash", rule: "receipt", artifact: executed },
     ],
-  });
+  }));
   assert.ok(consCheck.ok, `consumption: ${consCheck.reason}`);
 
   const resolution = hold.holdResolution!;
-  const resCheck = verifyArtifact(resolution as unknown as Record<string, unknown>, {
+  const resCheck = verifyArtifact(b(resolution as unknown as Record<string, unknown>), b({
     schemas,
     keyring,
     now,
@@ -104,7 +105,7 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
       { path: "verdictReceiptHash", rule: "receipt", artifact: allowed },
       { path: "decisionArtifactHash", rule: "side", artifact: decisionArtifact },
     ],
-  });
+  }));
   assert.ok(resCheck.ok, `holdResolution: ${resCheck.reason}`);
   // F10 — the resolution carries the gate's trusted receivedAt, and status maps 1:1 to APPROVED.
   assert.equal(resolution.status, "APPROVED");
@@ -112,35 +113,64 @@ test("ENFORCED golden chain: hold→decision→reserve→execute→consumption�
   assert.equal(resolution.verdictReceiptHash, receiptRefHash(allowed as unknown as Record<string, unknown>));
 });
 
-test("RAW mode: caller supplies paramsHash + display; envelope labels it RAW with null projection", () => {
+/** BEHAVIOUR CHANGE, 2026-07-30 (owner decision B-1's migration clause, now implemented) —
+ *  CONVERTED, NOT DELETED.
+ *
+ *  This test used to assert that RAW mode SUCCEEDS with 201: an unregistered action, a caller-supplied
+ *  `paramsHash` and a caller-authored `display`, labelled RAW with a null projection.
+ *
+ *  B-1 states verbatim: "An unmatched action must classify to the HIGHEST tier and fail closed —
+ *  otherwise the default is the vulnerability." The old code tested only the CALLER's `riskClass` and
+ *  refused when the caller VOLUNTEERED CRITICAL/IRREVERSIBLE, so the fail-closed branch was reachable
+ *  only by an honest caller. This request — `riskClass: "MEDIUM"` on an unregistered action — walked
+ *  straight past it, and `effectiveRisk` then defaulted to that same hint. Since
+ *  `verify.ts:133-138` turns `riskClass` into `requiredApproverRole`, the caller was choosing its own
+ *  approver tier on precisely the path with no derivation to check it against.
+ *
+ *  The assertion is INVERTED, not relaxed: the same request that used to get a 201 now gets a 422, so
+ *  the refused set is strictly larger. RAW remains what its own comment always claimed — diagnostic,
+ *  never authorization — but it is no longer a hold-creation path. The `mode`/`actionSchema`/
+ *  `displayProjection` envelope shape this test used to pin is now unreachable through a caller and is
+ *  covered for the ENFORCED path by the tests above. */
+test("RAW mode is refused outright: an unmatched action fails closed at the highest tier (B-1)", () => {
   const fx = setupGate();
   const paramsHash = "sha256:" + "b".repeat(64);
-  const created = fx.engine.createHold(fx.agent, "idem-raw", {
+  const created = fx.engine.createHold(fx.agent, "idem-raw", body({
     mode: "RAW",
     action: { canonical: "vendor.custom.op", riskClass: "MEDIUM", reversible: true, paramsHash },
     display: { Amount: "$500", To: "Mercury Treasury" },
     chain: "chain-raw",
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-  const env = (created.body as { holdEnvelope: Record<string, unknown> }).holdEnvelope;
-  assert.equal(env["mode"], "RAW");
-  assert.equal(env["actionSchema"], null);
-  assert.equal(env["displayProjection"], null);
-  assert.equal(env["gateKid"], fx.trust.gate.kid);
+  }));
+  assert.equal(created.status, 422, JSON.stringify(created.body));
+  assert.equal((created.body as { error: string }).error, "UNREGISTERED_CRITICAL_ACTION");
+  assert.match(String((created.body as { detail?: string }).detail), /highest tier and fails closed/,
+    "the refusal must name the rule it is enforcing, so a caller can act on it");
+  // No hold may exist: a refused request must not leave state behind for a later route to find.
+  assert.equal(fx.store.getHold("chain-raw"), undefined, "a refused RAW request must create no hold");
+
+  // ANTI-VACUITY: the ENFORCED path on a REGISTERED action still succeeds in this same run, so the
+  // 422 above is the unmatched-action rule biting — not the fixture being broken.
+  const ok = fx.engine.createHold(fx.agent, "idem-raw-control", body({
+    mode: "ENFORCED",
+    action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
+    params: sampleCommandParams(),
+    chain: "chain-raw-control",
+  }));
+  assert.equal(ok.status, 201, `the registered control must still be accepted: ${JSON.stringify(ok.body)}`);
 });
 
 test("DENY path: gate resolves DENIED with a BLOCKED verdict receipt, issues NO grant", () => {
   const fx = setupGate({ approverRole: "approve-critical" });
-  const created = fx.engine.createHold(fx.agent, "idem-deny", {
+  const created = fx.engine.createHold(fx.agent, "idem-deny", body({
     mode: "ENFORCED",
     action: { canonical: "noa.command.exec", riskClass: "CRITICAL", reversible: false },
     params: sampleCommandParams(),
     chain: "chain-deny",
-  });
+  }));
   const holdId = (created.body as { holdId: string }).holdId;
   const hold = fx.store.getHold(holdId)!;
   const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "DENY", reasonCode: "suspicious" });
-  const decided = fx.engine.decide(holdId, { receipt, decisionArtifact });
+  const decided = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   assert.equal(decided.status, 200);
   const dv = decided.body as { status: string; grantId: string | null; executionGrant: unknown };
   assert.equal(dv.status, "DENIED");
@@ -152,12 +182,12 @@ test("DENY path: gate resolves DENIED with a BLOCKED verdict receipt, issues NO 
 test("D17: a second hold on the same chain while one is unresolved → 409 HOLD_ALREADY_PENDING", () => {
   const fx = setupGate();
   const mk = (idem: string) =>
-    fx.engine.createHold(fx.agent, idem, {
+    fx.engine.createHold(fx.agent, idem, body({
       mode: "ENFORCED",
       action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
       params: sampleCommandParams(),
       chain: "chain-dup",
-    });
+    }));
   assert.equal(mk("a").status, 201);
   const second = mk("b");
   assert.equal(second.status, 409);
@@ -172,12 +202,12 @@ test("idempotency: same key+body → same hold (200 idempotent); same key+differ
     params: sampleCommandParams(),
     chain: "chain-idem",
   };
-  const first = fx.engine.createHold(fx.agent, "same-key", base);
+  const first = fx.engine.createHold(fx.agent, "same-key", body(base));
   assert.equal(first.status, 201);
-  const repeat = fx.engine.createHold(fx.agent, "same-key", base);
+  const repeat = fx.engine.createHold(fx.agent, "same-key", body(base));
   assert.equal(repeat.status, 200);
   assert.equal((repeat.body as { idempotent: boolean }).idempotent, true);
-  const conflict = fx.engine.createHold(fx.agent, "same-key", { ...base, chain: "chain-other" });
+  const conflict = fx.engine.createHold(fx.agent, "same-key", body({ ...base, chain: "chain-other" }));
   assert.equal(conflict.status, 409);
   assert.equal((conflict.body as { error: string }).error, "IDEMPOTENCY_CONFLICT");
 });

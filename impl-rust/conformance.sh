@@ -75,6 +75,12 @@ run_case attack      "seq-gap"                                   "$V/attack/seq-
 run_case attack      "head-truncated"                            "$V/attack/head-truncated.json" "$KR"
 run_case attack      "dup-seq"                                   "$V/attack/dup-seq.json" "$KR"
 run_case attack      "cross-chain-splice"                        "$V/attack/cross-chain-splice.json" "$KR"
+# Cross-tenant splice laundered through an OPTIONAL-field omission, and the two legitimate
+# absent<->present transitions that must STAY valid (see scripts/gen-vectors.ts 5d).
+run_case attack      "tenant-splice-via-absent"                  "$V/attack/tenant-splice-via-absent.json" "$KR"
+run_case attack      "tenant-splice-via-absent-long"             "$V/attack/tenant-splice-via-absent-long.json" "$KR"
+run_case valid       "tenant-omission-then-same-tenant"          "$V/tenant-omission-then-same-tenant.json" "$KR"
+run_case valid       "tenant-enrichment-absent-first"            "$V/tenant-enrichment-absent-first.json" "$KR"
 run_case attack      "relinked"                                  "$V/attack/relinked.json" "$KR"
 run_case attack      "forged-genesis"                            "$V/attack/forged-genesis.json" "$KR"
 run_case attack      "tail-truncated (+ checkpoint)"             "$V/attack/tail-truncated.json" "$KR" --checkpoint "$V/checkpoint.json"

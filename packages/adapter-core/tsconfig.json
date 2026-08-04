@@ -1,0 +1,28 @@
+{
+  // ADDED 2026-07-30 by scripts/typecheck-all.mjs's FIRST RUN, which is the point of that gate.
+  //
+  // `noa-adapter-core` is a PUBLISHED package whose three subpath exports each ship a `types:`
+  // declaration (`./safe-throw`, `./tool-outcome-not-recorded`, `./side-effect-state`). The
+  // implementation is plain `.mjs`, so the package had no tsconfig, so nothing in this repository
+  // ever typechecked those declarations — a malformed or drifted `.d.ts` would have shipped to every
+  // TypeScript consumer and no gate here would have said a word.
+  //
+  // `noEmit` because there is nothing to build: the shipped artifacts ARE the sources. This config
+  // exists only so the declarations are read by a compiler before they are published.
+  //
+  // KNOWN RESIDUAL, stated rather than implied: this checks that the declarations are WELL-FORMED.
+  // It does not check that they AGREE with the `.mjs` they describe — that needs `checkJs`, which is
+  // a larger change against JavaScript never written under a checker, and it is not smuggled in
+  // here. A declaration can still be internally valid and wrong about the implementation.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "strict": true,
+    "skipLibCheck": false,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src/**/*.d.ts"]
+}

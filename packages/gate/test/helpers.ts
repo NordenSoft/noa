@@ -13,6 +13,16 @@ import { InMemoryStore } from "../src/store.js";
 import { hashSecret } from "../src/auth.js";
 import { loadSchemas } from "../src/schemas.js";
 import type { AgentRecord, HoldEnvelope } from "../src/types.js";
+import { b } from "./helpers/bytes.js";
+
+/**
+ * A REQUEST BODY, as bytes (ADR-0005 Slice 1 — `createHold`/`decide`/`report` take `Uint8Array`).
+ *
+ * KURAL 5: this is the SAME encoder as `b()`, re-exported under the name a request body reads as. A
+ * second `TextEncoder` here would be a second answer to "what are these bytes", which is the whole
+ * class of defect this slice closes — so `body` and `b` are one function, not two.
+ */
+export { b, b as body } from "./helpers/bytes.js";
 
 /** A mutable clock so timeout + uncertainty-sweep windows are deterministically testable. */
 export interface Clock {
@@ -51,7 +61,14 @@ export interface GateFixture {
   apiKey: string;
 }
 
-export function setupGate(opts: { approverRole?: "approve-high" | "approve-critical"; config?: Partial<GateConfig> } = {}): GateFixture {
+export function setupGate(opts: {
+  approverRole?: "approve-high" | "approve-critical";
+  config?: Partial<GateConfig>;
+  /** ADR-0005 M5 / G5. The sealer is INJECTED in production, so a test must be able to inject a
+   *  wrong one — that is the whole threat: the gate asks for a display bound to THIS hold and signs
+   *  whatever comes back. Defaults to `testSealer`, so every existing call site is unchanged. */
+  sealer?: DisplaySealer;
+} = {}): GateFixture {
   const clock = makeClock();
   const now = () => clock.t;
   let seq = 0;
@@ -62,7 +79,7 @@ export function setupGate(opts: { approverRole?: "approve-high" | "approve-criti
   const agent: AgentRecord = { id: "agent-1", name: "test-agent", apiKeyHash: hashSecret(apiKey), createdAt: now() };
   store.putAgent(agent);
   const config = resolveGateConfig({ now, ...(opts.config ?? {}) });
-  const engine = new GateEngine({ store, config, trust, schemas: loadSchemas(), sealDisplay: testSealer });
+  const engine = new GateEngine({ store, config, trust, schemas: loadSchemas(), sealDisplay: opts.sealer ?? testSealer });
   return { clock, trust, store, engine, agent, apiKey };
 }
 
@@ -104,7 +121,7 @@ export function signPhoneDecision(args: {
   );
 
   const decisionArtifact = signArtifact(
-    {
+    b({
       spec: "noa.decision/0.1",
       holdEnvelopeHash: refHash(holdEnvelope),
       decision: args.decision,
@@ -112,7 +129,7 @@ export function signPhoneDecision(args: {
       reasonEncryption: null,
       decidedAt: at,
       approverKid: trust.approver.kid,
-    },
+    }),
     "NOA-Decision-v0.1-sig",
     { kid: trust.approver.kid, privateKey: trust.approver.privateKey },
   ) as unknown as Record<string, unknown>;

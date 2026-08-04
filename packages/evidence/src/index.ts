@@ -1,6 +1,7 @@
 /**
  * `noa-approval-evidence` — the §13 Approval Evidence Bundle (`noa.approval-evidence/0.1`, D11-v2) +
- * the offline `noa verify-evidence` 18-step verifier.
+ * the offline `noa verify-evidence` 18-step verifier + the two verifier-owned boundary steps
+ * (step 0 tenant-equality, step 19 receipt-role integrity).
  *
  * Public surface: the bundle/outcome/verdict types, the `verifyEvidence` entry point (pure, offline,
  * fail-closed), and the individual named step functions (exported for conformance + downstream
@@ -18,6 +19,12 @@ export {
   type StepCode,
   type StepResult,
   type VerifyEvidenceResult,
+  // DESIGN 2 — integrity and authorization as separate verdict dimensions, and the rule-set version
+  // a verdict is bound to.
+  VERIFIER_POLICY_VERSION,
+  type VerdictDimensions,
+  type VerdictPolicy,
+  type VerificationPurpose,
 } from "./types.js";
 
 export {
@@ -39,3 +46,14 @@ export {
 } from "./trust.js";
 
 export { type Ctx } from "./steps.js";
+
+// BOUNDARY 1 — the receipt-role table + chokepoint (exported so a downstream verifier can hold
+// itself to the SAME role→verdict rule instead of re-deriving one).
+export {
+  RECEIPT_ROLES,
+  RECEIPT_ROLE_VERDICTS,
+  MANDATORY_RECEIPT_ROLES,
+  assertReceiptRole,
+  type ReceiptRole,
+  type RoleAssertion,
+} from "./receipt-roles.js";

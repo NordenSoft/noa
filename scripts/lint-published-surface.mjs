@@ -158,7 +158,36 @@ const K5_PATTERNS = [
   { name: "unhackable", re: /unhackable/i },
   { name: "unbreakable", re: /unbreakable/i },
   { name: "impossible to tamper", re: /impossible to tamper/i },
+  // Added 2026-08-04. Pure marketing absolute with no honest technical use — same class as
+  // `unhackable`/`unbreakable` beside it. The ONLY safe addition of the eight words the plan's P1-10
+  // row named; the rejections for the other four are recorded below, with their reasons, so nobody
+  // re-proposes them from that row.
+  { name: "undefeatable", re: /undefeatable/i },
 ];
+
+/**
+ * ⚠ BEFORE ADDING A K5 TERM: CHECK IT AGAINST THIS REGEX FIRST.
+ *
+ * `scanK5` skips any SENTENCE matching this, as an honest-negative allowlist. So **a candidate term
+ * that also appears here is self-allowlisted and can never fire** — every sentence containing it
+ * exempts itself, and the result is a pattern that is green by construction. A control that cannot
+ * fail is not a control, and this repository deletes them on sight.
+ *
+ * MEASURED INSTANCE: the plan's P1-10 row proposed banning **`never`**, which is right there in
+ * `\bnever\b` below. Adding it would have shipped a tautology that looked like coverage.
+ *
+ * The other three rejections from that row, recorded so the reasons travel with the decision:
+ *   • `cannot`  — NOT self-allowlisted (`\bnot\b` needs a word boundary, "cannot" gives none), so it
+ *                 WOULD fire — on this repo's most common honest construction, *"a caller cannot
+ *                 mutate what it receives"*. Mass false positives.
+ *   • `always`  — load-bearing honest usage: *"the audit key is always a recipient"*.
+ *   • `proves`  — load-bearing honest usage: *"the knockout proves the control is load-bearing"*. The
+ *                 narrow `proof-of-action` above already covers the marketing form.
+ *
+ * `constant-time` and `atomic` are genuine overclaim risks AND genuine true claims here
+ * (`constantTimeEqualHex`; the gate's real atomic CAS). Telling an asserted guarantee from a named
+ * mechanism needs a written scope, so they are a separate task, not a quiet addition.
+ */
 const NEGATION_RE = /\bnot\b|\bnever\b|n't|\bwithout\b/i;
 const LIST_MARKER_RE = /^(?:[-*+]|\d+\.)\s+/;
 
@@ -166,6 +195,16 @@ const LIST_MARKER_RE = /^(?:[-*+]|\d+\.)\s+/;
 // 1. Resolve the published file list from npm itself (single source of truth, hermetic).
 //    `cwd` is the package directory being linted — the repo root by default, or whatever
 //    `--dir` resolved to.
+//
+// ⚠ TESTING THIS GATE: PLANT YOUR VIOLATION IN A PACKED FILE, NOT IN `src/`.
+//    The set comes from `npm pack`, so it is whatever `files[]` ships — and several workspaces ship
+//    `dist/src`, NOT `src`. MEASURED 2026-08-04: a violation appended to
+//    `packages/approval-artifacts/src/index.ts` produced ZERO findings and read as "the gate is
+//    clean". It was never in the packed set. A second attempt in that package's README.md also read
+//    clean, because the words chosen were not in `K5_PATTERNS`. Only the third attempt — an
+//    IMPLEMENTED term in a PACKED file — proved the gate could fire at all.
+//    Two false greens in a row, on a control being introduced as coverage. Check both: is the file
+//    packed, and is the term implemented.
 // ---------------------------------------------------------------------------
 function resolvePackedFiles(cwd) {
   let raw;

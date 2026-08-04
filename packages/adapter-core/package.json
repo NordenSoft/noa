@@ -1,6 +1,6 @@
 {
   "name": "noa-mcp-adapter-core",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Shared, testable MCP pre-flight decision engine — extracted from examples/mcp-preflight/preflight.mjs so any MCP integration (proxy, gateway, in-process guard) can call the same preCheck() instead of re-deriving it.",
   "keywords": [
     "ai-agent",
@@ -24,7 +24,19 @@
     "noa-approve": "src/approve-cli.mjs"
   },
   "exports": {
-    ".": "./src/index.mjs"
+    ".": "./src/index.mjs",
+    "./safe-throw": {
+      "types": "./src/safe-throw.d.ts",
+      "import": "./src/safe-throw.mjs"
+    },
+    "./tool-outcome-not-recorded": {
+      "types": "./src/tool-outcome-not-recorded.d.ts",
+      "import": "./src/tool-outcome-not-recorded.mjs"
+    },
+    "./side-effect-state": {
+      "types": "./src/side-effect-state.d.ts",
+      "import": "./src/side-effect-state.mjs"
+    }
   },
   "engines": {
     "node": ">=20"
@@ -33,7 +45,8 @@
     "src",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public",
@@ -44,6 +57,6 @@
     "prepublishOnly": "npm test"
   },
   "dependencies": {
-    "noa-receipt": "^0.5.0"
+    "noa-receipt": "file:../.."
   }
 }

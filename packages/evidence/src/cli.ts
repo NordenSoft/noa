@@ -13,20 +13,28 @@
  */
 import { readFileSync } from "node:fs";
 import { verifyEvidence } from "./verify-evidence.js";
+import type { VerificationPurpose } from "./types.js";
 
 function usage(msg?: string): never {
   if (msg) process.stderr.write(`error: ${msg}\n`);
   process.stderr.write(
-    "usage: noa-verify-evidence <bundle.json> --tenant-root <root.json> --checkpoint-keyring <cp.json> [--now <rfc3339>] [--max-age-hours <n>]\n",
+    "usage: noa-verify-evidence <bundle.json> --tenant-root <root.json> --checkpoint-keyring <cp.json> [--now <rfc3339>] [--max-age-hours <n>] [--purpose audit|authorize]\n",
   );
   process.exit(5);
 }
 
-function readJson(path: string): unknown {
+/**
+ * BYTES-IN: the CLI no longer parses anything. A bundle, a trust root and a checkpoint keyring are
+ * DOCUMENTS; the verifier takes them as bytes and the kernel's own strict parser is the single
+ * place they become data. `JSON.parse` here was a SECOND, weaker parser in front of the strict one
+ * — it accepts duplicate keys (last wins), floats, and `__proto__` — so a document the verifier
+ * would have rejected could have been silently normalised before it ever got there.
+ */
+function readBytes(path: string): Uint8Array {
   try {
-    return JSON.parse(readFileSync(path, "utf8"));
+    return readFileSync(path);
   } catch (e) {
-    usage(`cannot read/parse ${path}: ${(e as Error).message}`);
+    usage(`cannot read ${path}: ${(e as Error).message}`);
   }
 }
 
@@ -37,6 +45,7 @@ function main(argv: string[]): void {
   let checkpointKeyringPath: string | undefined;
   let now: string | undefined;
   let maxAgeHours: number | undefined;
+  let purpose: VerificationPurpose | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
@@ -44,7 +53,15 @@ function main(argv: string[]): void {
     else if (a === "--checkpoint-keyring") checkpointKeyringPath = args[++i];
     else if (a === "--now") now = args[++i];
     else if (a === "--max-age-hours") maxAgeHours = Number(args[++i]);
-    else if (a === "-h" || a === "--help") usage();
+    else if (a === "--purpose") {
+      // Both purposes require authority at verifier-controlled `now`; `authorize` identifies the
+      // result as a current authorization decision. Any other value is a usage error here —
+      // verifyEvidence ALSO fail-closes on it, but rejecting at the CLI gives the operator a clear
+      // message instead of an UNVERIFIED verdict.
+      const p = args[++i];
+      if (p !== "audit" && p !== "authorize") usage(`--purpose must be "audit" or "authorize" (got ${JSON.stringify(p)})`);
+      purpose = p;
+    } else if (a === "-h" || a === "--help") usage();
     else if (a.startsWith("--")) usage(`unknown flag ${a}`);
     else if (!bundlePath) bundlePath = a;
     else usage(`unexpected argument ${a}`);
@@ -54,15 +71,16 @@ function main(argv: string[]): void {
   if (!tenantRootPath) usage("missing --tenant-root (F7a: external trust root is REQUIRED)");
   if (!checkpointKeyringPath) usage("missing --checkpoint-keyring (F7a: external checkpoint keyring is REQUIRED)");
 
-  const bundle = readJson(bundlePath);
-  const tenantRoot = readJson(tenantRootPath) as Record<string, unknown>;
-  const checkpointKeyring = readJson(checkpointKeyringPath) as Record<string, unknown>;
+  const bundle = readBytes(bundlePath);
+  const tenantRoot = readBytes(tenantRootPath);
+  const checkpointKeyring = readBytes(checkpointKeyringPath);
 
   const res = verifyEvidence(bundle, {
-    tenantRoot: tenantRoot as never,
-    checkpointKeyring: checkpointKeyring as never,
+    tenantRoot,
+    checkpointKeyring,
     ...(now !== undefined ? { now } : {}),
     ...(maxAgeHours !== undefined && Number.isFinite(maxAgeHours) ? { maxAgeMs: maxAgeHours * 60 * 60 * 1000 } : {}),
+    ...(purpose !== undefined ? { purpose } : {}),
   });
 
   process.stdout.write(JSON.stringify(res, null, 2) + "\n");

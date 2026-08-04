@@ -26,6 +26,60 @@ export type {
 
 export { canonicalize, JcsError } from "./jcs.js";
 export { safeParse, SafeJsonError } from "./safe-json.js";
+/**
+ * THE BYTE BOUNDARY, PUBLISHED — because a sibling package had to re-create it, which is the exact
+ * drift hazard this file argues against thirty lines below for the inert primitives.
+ *
+ * `safeParse` was already exported and `decodeDocument`/`parseDocument` were not, so
+ * `packages/evidence` — which verifies the same documents under the same rules — reimplemented the
+ * byte-ceiling-before-decode and the `fatal:true, ignoreBOM:true` decode itself. Both halves are
+ * security mechanism: the ceiling is what stops bytes-in from REGRESSING DoS posture relative to the
+ * object API (ADR §3.4's one new normative rule), and the fatal decode is what stops two different
+ * byte strings from hashing the same after U+FFFD substitution. A near-copy of either will drift from
+ * this one the first time either changes, and then two packages will disagree about what a valid
+ * document is while both believe they agree.
+ *
+ * Exported as UTILITY rather than SECURITY_SENSITIVE for the same reason `safeParse` is: this IS the
+ * boundary. Its first parameter is `unknown` BY DESIGN — deciding whether an arbitrary value is a
+ * document is the whole job — so demanding it take `Uint8Array | string` would be circular.
+ */
+export { decodeDocument, parseDocument, isUint8Array, MAX_INPUT_BYTES, type DecodeResult, type ParseResult } from "./bytes.js";
+/**
+ * ── THE INGEST BOUNDARY IS GONE, AND ITS ABSENCE IS THE HEADLINE OF THIS RELEASE ─────────────────
+ *
+ * `snapshotImmutable`, `tryIngest`, `isIngestError`, `IngestError` and `MAX_INGEST_DEPTH` were 260
+ * lines whose entire purpose was to make a caller-owned, LIVE JavaScript object safe enough to
+ * reason about: fire every getter exactly once, refuse sparse arrays, strip prototypes, re-root onto
+ * an inert array prototype, and recognise its own error class through a `WeakSet` brand because
+ * `instanceof` is attacker-invocable. Every line of it was correct and every line of it was
+ * answering a question the kernel no longer asks. Security changes that DELETE mechanism are the
+ * ones that hold up; this is the deletion the whole migration was for.
+ *
+ * `deepFreeze` survives — it moved to `./inert.js`, where it always belonged. It freezes the
+ * MODULE'S OWN constant tables and never touched caller input.
+ *
+ * The inert-data primitives below survive for the same reason and it is worth stating, because the
+ * ADR's own summary table listed them for deletion: they are NOT an input boundary. They construct
+ * THIS package's literal policy tables so those tables inherit from nothing an attacker can write to
+ * (ADR §5.6), and bytes-in explicitly does not close that class — "bytes-in removes the R7 delivery
+ * vehicle; it does not remove the flaw." Deleting them would have removed a control that nothing
+ * replaces. They are published because the sibling packages verify the SAME bytes under the SAME
+ * class properties, and one implementation is better than five near-copies.
+ */
+export {
+  INERT_ARRAY_PROTOTYPE,
+  makeInertArray,
+  isInertArray,
+  frozenSet,
+  isFrozenSet,
+  frozenTable,
+  inertViolations,
+  deepFreeze,
+  MutablePolicyTableError,
+  type FrozenSet,
+} from "./inert.js";
+export * as intrinsics from "./intrinsics.js";
+export { isNFC, nonNfcPaths } from "./nfc.js";
 export { sha256Hex, sha256Prefixed, sha256Digest } from "./hash.js";
 export { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
 export { validateReceiptShape, type SchemaResult } from "./schema.js";
@@ -46,6 +100,13 @@ export {
   type VerifyResult,
   type VerifyStatus,
 } from "./verify.js";
+export {
+  SIGNING_KEY_LIFECYCLE_SPEC,
+  resolveVerificationKey,
+  type SigningKeyLifecycle,
+  type SigningKeyLifecycleEntry,
+  type ResolveVerificationKeyResult,
+} from "./verification-keyring.js";
 
 // L2 — policy-compliance (deterministic refEval). All fail-closed: a malformed policy or a
 // bad input yields a reproducible DENY verdict, never an exception or a silent permit.

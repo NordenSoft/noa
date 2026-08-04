@@ -4,7 +4,10 @@ import { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
 import { sha256Hex } from "./hash.js";
 import { signEd25519 } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
-import { validateReceiptShape } from "./schema.js";
+import { validateReceiptShapeParsed } from "./schema.js";
+import { nonNfcPaths, isNFC } from "./nfc.js";
+import { isSha256Hash, isRfc3339 } from "./scan.js";
+import { arrayPush, structuredCloneValue } from "./intrinsics.js";
 
 export interface Signer {
   kid: string;
@@ -73,7 +76,7 @@ export class BuilderError extends Error {
 function buildDraft(input: BuildInput, prev: Receipt | null, kid: string): { draft: Receipt; hashInput: string } {
   let cloned: Pick<BuildInput, "id" | "ts" | "scope" | "agent" | "action" | "governance">;
   try {
-    cloned = structuredClone({
+    cloned = structuredCloneValue({
       id: input.id,
       ts: input.ts,
       scope: input.scope,
@@ -83,6 +86,27 @@ function buildDraft(input: BuildInput, prev: Receipt | null, kid: string): { dra
     });
   } catch (e) {
     throw new BuilderError(`buildReceipt: input is not structured-cloneable (${(e as Error).message})`, []);
+  }
+
+  // NFC ENFORCEMENT AT THE PRODUCER (spec: "producers MUST emit NFC"). Checked on the CLONE,
+  // BEFORE anything is hashed or signed, so a non-conforming payload never reaches the signing key
+  // — mirroring the fail-closed discipline the rest of this builder already applies. This costs no
+  // compatibility: a producer emitting non-NFC was already violating the profile. The VERIFIER
+  // deliberately does not reject by default (already-issued receipts must keep verifying); it
+  // reports the same condition in `warnings`, and `requireNFC: true` makes it fatal for operators
+  // who want the strict rule today. See src/nfc.ts for why the asymmetry is the right shape.
+  // THE SIGNER KID IS SCANNED TOO. This scan reads the CLONE, and the clone is the caller-supplied
+  // payload — `sig.kid` is inserted afterwards, so the one string the SIGNER contributes was the
+  // only string in the receipt nothing checked. A kid is a producer-chosen identifier that relying
+  // parties match, index and alert on, so it carries exactly the hazard this rule exists for: two
+  // kids that render identically, differ in bytes, and both verify. (`sig.value` and the `chain`
+  // hashes are excluded by construction — base64/hex are ASCII and never a normalization question.)
+  const nonNfc = [...nonNfcPaths(cloned), ...(isNFC(kid) ? [] : ["sig.kid"])];
+  if (nonNfc.length > 0) {
+    throw new BuilderError(
+      `buildReceipt: refusing to sign a payload with non-NFC strings (the profile requires producers to emit Unicode NFC): ${nonNfc.join(", ")}`,
+      nonNfc,
+    );
   }
 
   const seq = prev ? prev.chain.seq + 1 : 0;
@@ -109,7 +133,7 @@ function buildDraft(input: BuildInput, prev: Receipt | null, kid: string): { dra
  *  guarantee this package's docstring (above `BuilderError`) documents: a caller must never
  *  receive a validly-SIGNED-but-structurally-malformed receipt. */
 function finalizeReceipt(draft: Receipt): Receipt {
-  const shape = validateReceiptShape(draft);
+  const shape = validateReceiptShapeParsed(draft);
   if (!shape.ok) {
     throw new BuilderError(
       `buildReceipt: refusing to return a signed receipt that fails its own verifier's structural check: ${shape.errors.join("; ")}`,
@@ -160,9 +184,10 @@ export async function buildReceiptAsync(input: BuildInput, prev: Receipt | null,
   return finalizeReceipt(draft);
 }
 
-const CHECKPOINT_HASH_RE = /^sha256:[0-9a-f]{64}$/;
-// RFC 3339 §5.6 permits lowercase 't'/'z' (matches schema.ts RFC3339_RE / verify.ts CP_RFC3339_RE).
-const CHECKPOINT_RFC3339_RE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
+// Formats are decided by hand-written scanners (src/scan.ts). A regex literal cannot stay on a
+// decision path: `RegExp.prototype.test` performs a dynamic `Get(re, "exec")`, so even a CAPTURED
+// `test` dispatches through the writable `RegExp.prototype.exec` — reproduced by
+// `test/security/r7-exploits/c02_regexp_witness.mjs` against the captured wrapper.
 
 /**
  * Structural check for a fully-built Checkpoint draft, run immediately before it is returned as
@@ -179,18 +204,18 @@ const CHECKPOINT_RFC3339_RE = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9}
  */
 function checkpointDraftErrors(cp: Checkpoint): string[] {
   const errors: string[] = [];
-  if (cp.spec !== "noa.checkpoint/0.1") errors.push('checkpoint.spec: must be "noa.checkpoint/0.1"');
-  if (typeof cp.chain !== "string" || cp.chain.length === 0) errors.push("checkpoint.chain: non-empty string");
+  if (cp.spec !== "noa.checkpoint/0.1") arrayPush(errors, 'checkpoint.spec: must be "noa.checkpoint/0.1"');
+  if (typeof cp.chain !== "string" || cp.chain.length === 0) arrayPush(errors, "checkpoint.chain: non-empty string");
   if (typeof cp.highestSeq !== "number" || !Number.isSafeInteger(cp.highestSeq) || cp.highestSeq < 0)
-    errors.push("checkpoint.highestSeq: non-negative safe integer");
-  if (typeof cp.headHash !== "string" || !CHECKPOINT_HASH_RE.test(cp.headHash))
-    errors.push("checkpoint.headHash: sha256:<64 hex>");
-  if (typeof cp.ts !== "string" || !CHECKPOINT_RFC3339_RE.test(cp.ts))
-    errors.push("checkpoint.ts: must be RFC 3339 UTC timestamp");
-  if (cp.sig.alg !== "ed25519") errors.push('checkpoint.sig.alg: must be "ed25519"');
-  if (typeof cp.sig.kid !== "string" || cp.sig.kid.length === 0) errors.push("checkpoint.sig.kid: non-empty string");
+    arrayPush(errors, "checkpoint.highestSeq: non-negative safe integer");
+  if (typeof cp.headHash !== "string" || !isSha256Hash(cp.headHash))
+    arrayPush(errors, "checkpoint.headHash: sha256:<64 hex>");
+  if (typeof cp.ts !== "string" || !isRfc3339(cp.ts))
+    arrayPush(errors, "checkpoint.ts: must be RFC 3339 UTC timestamp");
+  if (cp.sig.alg !== "ed25519") arrayPush(errors, 'checkpoint.sig.alg: must be "ed25519"');
+  if (typeof cp.sig.kid !== "string" || cp.sig.kid.length === 0) arrayPush(errors, "checkpoint.sig.kid: non-empty string");
   if (typeof cp.sig.value !== "string" || cp.sig.value.length === 0)
-    errors.push("checkpoint.sig.value: non-empty string");
+    arrayPush(errors, "checkpoint.sig.value: non-empty string");
   return errors;
 }
 
@@ -207,7 +232,7 @@ function checkpointDraftErrors(cp: Checkpoint): string[] {
 export function buildCheckpoint(head: Receipt, ts: string, signer: Signer): Checkpoint {
   let headSnap: { chain: string; seq: number; hash: string };
   try {
-    headSnap = structuredClone({ chain: head.scope.chain, seq: head.chain.seq, hash: head.chain.hash });
+    headSnap = structuredCloneValue({ chain: head.scope.chain, seq: head.chain.seq, hash: head.chain.hash });
   } catch (e) {
     throw new BuilderError(`buildCheckpoint: head is not structured-cloneable (${(e as Error).message})`, []);
   }

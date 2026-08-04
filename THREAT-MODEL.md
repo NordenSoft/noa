@@ -108,16 +108,37 @@ truth or safety.
   "this graph belongs to *your* deployment/customer/task" unless the caller checks `scope.chain`
   (and any agreed `tenant`/subject) against what it expected. `scope.chain` IS in the signed body
   (cross-chain splice is rejected), but matching it to *your* context is policy you must apply.
-  *Mitigation (A1 hardening, v0.3, additive):* unlike `scope.chain`, `scope.tenant` was previously
-  **not** checked for consistency across one chain at all — a caller relying on "one chain = one
-  tenant" got a silent `VALID` over a mixed-tenant chain. `verifyChain` now scans `scope.tenant`
-  across the whole (seq-ordered) chain and reports every drift (including a tenant appearing on
-  some receipts and not others) as a machine-readable `warnings` entry
-  (`tenant-drift: seq A "x" -> seq B "y"`) — by default the verdict is unaffected (backward
-  compatible). Pass `requireTenantConsistency: true` to instead reject the first drift as
-  `TAMPERED` (the same verdict class as a `scope.chain` partition split, since it is the identical
-  class of problem for the sibling scope field). This closes the "silent" half of the gap; matching
-  the (now-enforced-consistent) tenant value to *your* expected tenant remains the caller's job.
+  *Mitigation (fail-closed by DEFAULT since the tenant-consistency change; the earlier A1 revision
+  of this paragraph said the default verdict was unaffected — that is no longer true):*
+  `scope.tenant` was once not checked for consistency across a chain at all, so a caller relying on
+  "one chain = one tenant" got a silent `VALID` over a mixed-tenant chain. `verifyChain` now scans
+  `scope.tenant` across the whole (seq-ordered) chain and distinguishes TWO kinds of drift:
+
+  - **present → a DIFFERENT present value** (`acme` → `globex`) is a **cross-tenant splice**: every
+    receipt is individually intact and correctly signed, and the forgery is a property of the SET.
+    This is `TAMPERED` **by default** — the same verdict class as a `scope.chain` partition split,
+    since it is the identical class of problem for the sibling scope field. Pass
+    `requireTenantConsistency: false` for the previous warn-only behaviour.
+  - **absent ↔ present** (a deployment starting or stopping emission of an OPTIONAL field) is a
+    producer-version change, not a splice. `scope.tenant` is optional in the schema and this
+    profile has never declared it immutable, so this is **reported, never rejected** — labelling it
+    `TAMPERED` would send an operator hunting a forgery that does not exist.
+
+  **An omission does not RESET the boundary.** The comparison is against the last **present** tenant,
+  not against the adjacent receipt. While it was adjacent, the tolerance above was a laundering step:
+  `acme → globex` was `TAMPERED` and `acme → absent → globex` — the same splice, with one optional
+  field left out of the receipt in between — was `VALID`, in all five implementations. Dropping an
+  optional field is not a capability an attacker lacks. Carrying the last present value forward keeps
+  the relaxation intact (`acme → absent → acme` and `absent → acme` stay valid) while giving the
+  splice the same verdict however many tenant-less receipts are interleaved.
+
+  **Where each kind is reported.** A non-fatal drift lands in machine-readable `warnings`
+  (`tenant-drift: seq A "x" -> seq B "y"`). A FATAL drift is reported in `reason`, in that same
+  machine-readable form, with `badSeq` pointing at the receipt that contradicts the committed tenant
+  — a rejected result carries `warnings: []` by construction, so do not look for the fatal case
+  there. (An earlier revision of this paragraph said both kinds appear in `warnings`; that was never
+  true of the fatal one.) All five verifiers implement the identical rule.
+  Matching the tenant value to *your* expected tenant remains the caller's job.
 - **Omission ≠ tampering:** this proves the integrity of the receipts that EXIST. An agent that
   simply never emits a receipt for a bad action leaves no trace to detect. It is log-integrity,
   not a guarantee of behavioral honesty.
@@ -166,7 +187,140 @@ truth or safety.
   (every confirmed finding fixed in BOTH implementations with a regression probe + cross-impl
   conformance), the v0.1 correctness surface is **declared hardened**. Callers passing attacker-influenced
   *live JS objects* directly to the in-process API should pre-parse via `verifyChainText` / `JSON.parse`
-  (the immune path). New same-class in-process-getter findings are tracked and fixed, not gated on.
+  New same-class in-process-getter findings are tracked and fixed, not gated on.
+
+  > **CORRECTION (review #7, 2026-07-28) — this paragraph called `verifyChainText` "the immune path".
+  > It is not immune; it is immune to ONE of the two classes.** Measured, not argued: a probe against
+  > the built kernel showed `verifyChainText` fully exploitable by both C-01 and C-02
+  > (`clean = TAMPERED / POISON = VALID, sigVerified = true`). It calls `safeParse` and then hands the
+  > result to `verifyChain`, which still deep-copies through the *live global* `structuredClone`
+  > (`src/verify.ts:178`) and still resolves membership through live `Array.prototype.includes`
+  > (`src/verify.ts:426`). Parsing from text removes the hostile-ACCESSOR class (A) and leaves the
+  > intrinsic-POISONING class (B) untouched.
+  >
+  > Why the advice is still worth following, stated precisely: against the DECLARED threat model — a
+  > data-only attacker who controls the receipt bytes and nothing else — pre-parsing does close the
+  > class, because removing object traversal removes the only route by which untrusted DATA obtains
+  > code execution. It does not make the poisons fail; it removes the attacker's ability to run them.
+  > Against an attacker who already has code execution in the realm it closes nothing, and neither
+  > does anything else a library can do (see "The residual, stated plainly", below).
+  >
+  > Full reasoning and evidence: `docs/ADR-0001-trust-kernel-vnext.md` §2.3. Consolidated limits:
+  > `NON-CLAIMS.md`.
+
+  **Update (review #6, 2026-07-28) — the class was NOT closed by snapshotting, and the paragraph above
+  was too optimistic.** Reading a hostile object necessarily RUNS the attacker's code (a getter, a
+  Proxy trap), and `structuredClone` closed only the flipping half. A getter fired *during* ingestion
+  could rewrite a shared intrinsic — `Array.prototype.includes = () => true`, `Set.prototype.has = () =>
+  false`, `Array.prototype.find = () => attackerHead` — and the snapshot that came back was frozen,
+  accessor-free and completely honest while the DECISION taken over it was attacker-controlled,
+  because membership resolved through a globally-mutable slot. Three verdicts flipped that way.
+
+  What now holds, and how it is measured:
+  * every builtin the verifier core uses is captured at module load (`src/intrinsics.ts`) and called
+    through a captured `Reflect.apply`, so a decision never dispatches through a mutable slot;
+  * every snapshot node is inert — objects are null-prototype, arrays are re-rooted onto a frozen,
+    null-rooted prototype carrying pristine methods and a self-contained iterator, so nothing the
+    boundary produces inherits from anything writable;
+  * policy tables are built with `frozenTable`, which REFUSES a `Set`/`Map`/accessor at construction;
+  * `test/security/intrinsic-poisoning.test.ts` asserts the class property over every entry point,
+    every fixture and ~74 poisoned intrinsics.
+
+  > ## 🔴 SECOND WITHDRAWAL — THE OUT-OF-PROCESS VERDICT IS NOT AN ENFORCEMENT CONTROL (owner-ratified 2026-07-29)
+  >
+  > The withdrawal immediately below removed the *in-realm* claim and pointed at an isolated kernel
+  > as the answer. **Round 5 removed that answer too, for the caller-protection case.** An ambient
+  > attacker poisoning only `child_process.spawnSync` made a protected action execute while the
+  > honest out-of-process kernel returned `DENY` — application source unmodified, call site intact
+  > (`docs/ROUND5-FINDINGS.md` R5-01). The signed envelope does not close it, because the envelope
+  > check runs in the same poisoned realm (`docs/T7-trust-root.md` §1).
+  >
+  > **Beneficiary B-1 is withdrawn.** We do not claim that a separate kernel verdict protects a
+  > caller whose realm, transport, signature verification, or action path is compromised. The
+  > replacement invariant — *a critical action must be technically impossible without authority
+  > controlled by the independent boundary* — is normative in `NON-CLAIMS.md` NC-6.6, with the
+  > architecture options in `docs/ADR-0003-enforcement-boundary.md`.
+  >
+  > Both withdrawals stand. Neither is retracted by the other; they remove two different claims.
+
+  > ## ⚠ THE SECURITY OBJECTIVE IS NOT MET IN-REALM — WITHDRAWN CLAIM (ratified 2026-07-29)
+  >
+  > This section previously asserted, as a property of the shipped TypeScript library:
+  > *"no mutation of any shared intrinsic may make a verdict more permissive."*
+  >
+  > **That claim is WITHDRAWN. It is not true of same-realm TypeScript, and it cannot be made true
+  > by this library.**
+  >
+  > Four independent cross-vendor adversarial rounds (2026-07-28/29) each closed the call sites a
+  > review named and each found the identical class one call further out: the parse layer, then the
+  > hash layer, then the live `node:crypto` binding, then arrays manufactured *downstream* of the
+  > fix by `Object.keys`. Sixteen CRITICAL findings, four rounds, **zero clean rounds.** Every one
+  > was found while the project's own gates reported green.
+  >
+  > The generalisation is not "some primitives were missed". It is structural:
+  >
+  > **In a shared realm, the set of operations trusted code performs is not enumerable by that
+  > trusted code.** A capture list is a snapshot of the spellings someone thought of; the adversary
+  > chooses the spelling afterwards. A defence whose completeness cannot be decided is not a
+  > boundary.
+  >
+  > **What this library actually offers in-realm:** substantial, measured, best-effort hardening —
+  > captured intrinsics, inert data, AST-enforced dispatch gates, ~74 poisons and a durable exploit
+  > corpus. That raises the cost of an in-realm attack considerably. It does **not** meet the
+  > objective, and this document will not say that it does.
+  >
+  > **Where the objective is to be met — and what exists TODAY.** The isolated **Go kernel**
+  > (ADR-0002) is **SPECIFIED AND NOT YET BUILT.** There is no kernel directory in this repository.
+  > Do not read the paragraphs above as pointing at a shipped remedy; that would replace one unmet
+  > claim with another.
+  >
+  > What ships today is the **CLI**: `npx noa verify` runs in its own process and this package
+  > declares `"dependencies": {}`, so no third-party module is evaluated before it and a hostile
+  > *document* cannot poison that process's realm. **Against an attacker who controls only the data
+  > being verified, the CLI boundary holds now.** Its limit is NC-6.2: the CLI's output is not
+  > authenticated, so a compromised caller can still discard or misreport a correct verdict.
+  >
+  > *(This sentence used to end "— which is precisely what the kernel's signed-response envelope
+  > exists to close." **Withdrawn 2026-07-29**, same withdrawal as `README.md`. A signed verdict
+  > returned into a compromised caller is not an enforcement control. This survivor was missed by
+  > the first sweep because the sweep went document-by-document instead of claim-by-claim; the
+  > withdrawal block sits ~45 lines above and said "both withdrawals stand" while this line still
+  > asserted the withdrawn claim.)*
+  >
+  > TypeScript's in-process API is a best-effort compatibility and orchestration layer and makes no
+  > security claim of its own.
+  >
+  > **Pre-load compromise, specifically.** A host that mutates an intrinsic in a module evaluated
+  > BEFORE `noa-receipt` defeats the capture entirely — reproduced: a pre-load `Proxy` on `Number`
+  > yields `VALID` on a forged document. This was previously filed as a narrow residual. It is not
+  > narrow: it covers any dependency, bundler output, instrumentation shim or test harness that
+  > loads first, in an order the library does not control. An ordinary JavaScript module cannot
+  > enforce load order against its own host.
+
+  > **CORRECTION (review #7, 2026-07-28) — the advice to "run the verifier in a separate realm" is
+  > WITHDRAWN.** The first half (load `noa-receipt` first) is sound and stands. The second half was
+  > wrong, and wrong in the direction that invites a caller to believe they have mitigated something
+  > they have not.
+  >
+  > A same-realm "isolated realm" (`ShadowRealm`, `vm.createContext`) is not a boundary against the
+  > attacker who motivates it. That attacker controls the code that CONSTRUCTS the realm, marshals
+  > the input into it, and reads the verdict out. It adds a marshalling boundary and a second set of
+  > intrinsics to audit while moving the attacker's cost approximately nowhere — and it LOOKS like a
+  > boundary in documentation, which is the failure mode this project has spent four review rounds
+  > learning to detect.
+  >
+  > A separate PROCESS is genuinely different: it raises the required capability from "code execution
+  > in the host process" to "code execution in the verifier process". But it protects the INTEGRITY OF
+  > THE COMPUTATION and never the INTEGRITY OF THE CONSUMPTION. An attacker inside the host process
+  > can discard a correct verdict as easily as forge one, and that ceiling is not liftable by any
+  > isolation mechanism.
+  >
+  > **What actually defeats this attacker is already in the product, and is not an isolation mechanism
+  > at all:** the receipt is signed and offline-verifiable, so the party who CARES about the verdict
+  > re-verifies it themselves, in their own process, with their own copy. An attacker who owns the
+  > relying party's process has already won for reasons that have nothing to do with this kernel.
+  >
+  > Reasoning: `docs/ADR-0001-trust-kernel-vnext.md` §5.2-§5.3. Consolidated limits: `NON-CLAIMS.md`.
 
 ## Clean-room / scope boundary (why this is safe to open-source)
 

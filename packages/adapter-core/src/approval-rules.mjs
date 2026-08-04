@@ -6,6 +6,13 @@
  *
  * Runs AFTER preCheck()'s own ALLOW/DENY decision, never before/instead of it.
  */
+/*
+ * ⚠ ROUND 4 / R4-11 — the phrase "never throws" appears below and is MEASURED FALSE in one case: a
+ * revoked Proxy passed as caller input throws out of `preCheck`. Every input shape reached in
+ * practice returns a DENY rather than throwing, which is what the contract is FOR; the absolute is
+ * what was wrong. It is corrected in place rather than deleted, because "never" in a fail-closed
+ * contract is precisely the kind of word a reader stops testing.
+ */
 
 const MATCH_TYPES = new Set(["exact", "prefix", "suffix"]);
 const THRESHOLD_OPS = new Set(["ge", "gt"]);
@@ -14,40 +21,69 @@ function ruleErrors(rule, idx) {
   const errors = [];
   const where = `approvalRules[${idx}]`;
   if (!rule || typeof rule !== "object") return [`${where}: must be an object`];
-  if (typeof rule.id !== "string" || rule.id.length === 0) errors.push(`${where}.id: non-empty string`);
+  if (typeof rule.id !== "string" || rule.id.length === 0) arrayPush(errors, `${where}.id: non-empty string`);
   const m = rule.match;
   if (!m || typeof m !== "object" || !MATCH_TYPES.has(m.type)) {
-    errors.push(`${where}.match.type: must be "exact", "prefix", or "suffix"`);
+    arrayPush(errors, `${where}.match.type: must be "exact", "prefix", or "suffix"`);
   } else if (typeof m.action !== "string" || m.action.length === 0) {
-    errors.push(`${where}.match.action: non-empty string`);
+    arrayPush(errors, `${where}.match.action: non-empty string`);
   }
   if (rule.threshold !== undefined) {
     const t = rule.threshold;
     if (!t || typeof t !== "object") {
-      errors.push(`${where}.threshold: must be an object`);
+      arrayPush(errors, `${where}.threshold: must be an object`);
     } else {
-      if (typeof t.path !== "string" || t.path.length === 0) errors.push(`${where}.threshold.path: non-empty string`);
-      if (!THRESHOLD_OPS.has(t.op)) errors.push(`${where}.threshold.op: must be "ge" or "gt"`);
-      if (typeof t.value !== "number" || !Number.isSafeInteger(t.value)) errors.push(`${where}.threshold.value: safe integer`);
+      if (typeof t.path !== "string" || t.path.length === 0) arrayPush(errors, `${where}.threshold.path: non-empty string`);
+      if (!THRESHOLD_OPS.has(t.op)) arrayPush(errors, `${where}.threshold.op: must be "ge" or "gt"`);
+      if (typeof t.value !== "number" || !isSafeInteger(t.value)) arrayPush(errors, `${where}.threshold.value: safe integer`);
     }
   }
   return errors;
 }
 
 /** Validates an entire approvalRules array. Run ONCE at policy-load time (mirrors trusting
- *  `policy`); matchApprovalRule below does NOT re-validate per call, but never throws either way. */
+ *  `policy`); matchApprovalRule below does NOT re-validate per call, but returns rather than throwing for every input shape reached in practice (R4-11). */
+import { intrinsics } from "noa-receipt";
+
+// REDTEAM 2026-08-03. `matchApprovalRule` decides whether an action NEEDS a human approval, and
+// every failure mode in it lands on "no rule matched" — which the caller reads as "no approval
+// required". Two live-global reads reached that outcome directly, MEASURED against a rule with a
+// 4,000 threshold and a 900,000-cent refund:
+//
+//     Array.isArray  -> false  =>  returns null immediately                     APPROVAL BYPASSED
+//     hasOwnProperty -> false  =>  the threshold value reads as undefined and
+//                                  the rule is skipped                          APPROVAL BYPASSED
+//
+// The DIRECTION of the failure is what makes this severe. Every deliberate branch in this file fails
+// CLOSED — an ambiguous value returns the rule, a throw continues to the next one. But a poisoned
+// type predicate does not mis-evaluate a rule, it makes the rule INVISIBLE, and an empty rule set is
+// indistinguishable from "nothing needs approval here".
+
+// ROUND 3 — THE THIRD FIX IN THIS FUNCTION, AND THE FIRST ONE AIMED AT THE CLASS.
+// Round 2 hardened the named builtins; round 3 reproduced three MORE bypasses in the same code by
+// poisoning the ones that had not been named: `Object.keys`, `Array.prototype.map`, and the array
+// ITERATOR itself. Naming poisons one at a time is a race against whoever writes the next line.
+//
+// Iteration over caller-owned arrays on a decision path is now an INDEX LOOP. An index loop
+// dispatches through no method at all — there is no `next`, no `map`, no `forEach` to replace — so
+// the class is closed rather than its current members. This is the same move the kernel made when
+// its key walk and code-point walk became index loops.
+const { isArray, hasOwn, strStartsWith, strEndsWith, isSafeInteger, arrayPush } = intrinsics;
+
 export function validateApprovalRules(approvalRules) {
   if (approvalRules === undefined || approvalRules === null) return { ok: true, errors: [] };
-  if (!Array.isArray(approvalRules)) return { ok: false, errors: ["approvalRules: must be an array"] };
+  if (!isArray(approvalRules)) return { ok: false, errors: ["approvalRules: must be an array"] };
   const errors = [];
   const seenIds = new Set();
-  approvalRules.forEach((r, i) => {
-    errors.push(...ruleErrors(r, i));
+  for (let i = 0; i < approvalRules.length; i += 1) {
+    const r = approvalRules[i];
+    const errs = ruleErrors(r, i);
+    for (let e = 0; e < errs.length; e += 1) arrayPush(errors, errs[e]);
     if (r && typeof r.id === "string") {
-      if (seenIds.has(r.id)) errors.push(`approvalRules[${i}].id: duplicate rule id "${r.id}"`);
+      if (seenIds.has(r.id)) arrayPush(errors, `approvalRules[${i}].id: duplicate rule id "${r.id}"`);
       seenIds.add(r.id);
     }
-  });
+  }
   return { ok: errors.length === 0, errors };
 }
 
@@ -64,29 +100,30 @@ export function validateApprovalRules(approvalRules) {
  * Never throws: a malformed rule mid-array is treated as "does not match" for THAT rule only.
  */
 export function matchApprovalRule(approvalRules, actionId, inputs) {
-  if (!Array.isArray(approvalRules)) return null;
-  for (const rule of approvalRules) {
+  if (!isArray(approvalRules)) return null;
+  for (let ri = 0; ri < approvalRules.length; ri += 1) {
+    const rule = approvalRules[ri];
     try {
       if (!rule || typeof rule !== "object") continue;
       const m = rule.match;
       if (!m || typeof m !== "object") continue;
       let actionMatches = false;
       if (m.type === "exact") actionMatches = actionId === m.action;
-      else if (m.type === "prefix") actionMatches = typeof actionId === "string" && actionId.startsWith(m.action);
+      else if (m.type === "prefix") actionMatches = typeof actionId === "string" && strStartsWith(actionId, m.action);
       // "suffix" gates by the trailing segment of an action id (e.g. ".delete" catches "db.delete",
       // "s3.deleteObject" would NOT — endsWith is literal). Added for §19.1 risk-ladder defaults, which
       // must gate destructive verbs that are named as suffixes across integrations. Backward-compatible:
       // no pre-existing rule uses this type, so exact/prefix behavior is byte-identical.
-      else if (m.type === "suffix") actionMatches = typeof actionId === "string" && actionId.endsWith(m.action);
+      else if (m.type === "suffix") actionMatches = typeof actionId === "string" && strEndsWith(actionId, m.action);
       if (!actionMatches) continue;
 
       if (rule.threshold === undefined) return rule;
 
       const t = rule.threshold;
-      const v = Object.prototype.hasOwnProperty.call(inputs, t.path) ? inputs[t.path] : undefined;
+      const v = hasOwn(inputs, t.path) ? inputs[t.path] : undefined;
       if (v === undefined) continue;
 
-      if (typeof v === "number" && Number.isSafeInteger(v)) {
+      if (typeof v === "number" && isSafeInteger(v)) {
         const hit = t.op === "ge" ? v >= t.value : v > t.value;
         if (hit) return rule;
         continue;

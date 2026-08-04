@@ -8,6 +8,7 @@ import { buildAnchor, anchorForChainHead } from "../../src/federation/anchor.js"
 import { verifyChainWitnessed } from "../../src/federation/verify-witnessed.js";
 import type { TrustSet, PinnedWitness, Anchor } from "../../src/federation/acceptance.js";
 import { WIT1, WIT2, WIT3 } from "./_seeded-keys.js";
+import { b } from "../helpers/bytes.js";
 
 /**
  * Tests for verifyChainWitnessed (src/federation/verify-witnessed.ts): the OPT-IN composition of the
@@ -55,7 +56,7 @@ function fixture(): { receipts: Receipt[]; keyring: Record<string, string>; head
 test("QUORUM_CONFIRMED: VALID chain + 2 confirms -> chain VALID and witness complete", () => {
   const { receipts, keyring } = fixture();
   const anchors = [anchorForChainHead(receipts, W1S, { ts: NOW }), anchorForChainHead(receipts, W2S, { ts: NOW })];
-  const res = verifyChainWitnessed(receipts, keyring, { anchors, trustSet: TS3 });
+  const res = verifyChainWitnessed(b(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
   assert.equal(res.chain.status, "VALID", res.chain.reason);
   assert.equal(res.chain.count, 3);
   assert.equal(res.witness.complete, true, res.witness.reason);
@@ -66,7 +67,7 @@ test("QUORUM_CONFIRMED: VALID chain + 2 confirms -> chain VALID and witness comp
 test("the offline chain result is UNCHANGED whether or not witnesses are supplied (composition, not mutation)", () => {
   const { receipts, keyring } = fixture();
   const anchors = [anchorForChainHead(receipts, W1S, { ts: NOW }), anchorForChainHead(receipts, W2S, { ts: NOW })];
-  const res = verifyChainWitnessed(receipts, keyring, { anchors, trustSet: TS3 });
+  const res = verifyChainWitnessed(b(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
   // same offline verdict a default caller sees.
   assert.equal(res.chain.status, "VALID");
   assert.equal(res.chain.signaturesVerified, true);
@@ -82,7 +83,7 @@ test("TRUNCATED: a witness whose frontier extends past the head is caught (curre
     W3S,
   );
   const anchors = [anchorForChainHead(receipts, W1S, { ts: NOW }), anchorForChainHead(receipts, W2S, { ts: NOW }), beyond];
-  const res = verifyChainWitnessed(receipts, keyring, { anchors, trustSet: TS3 });
+  const res = verifyChainWitnessed(b(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
   assert.equal(res.chain.status, "VALID", "the offline chain itself is intact — truncation is only visible via the witness");
   assert.equal(res.witness.complete, false);
   assert.equal(res.witness.classification, "TRUNCATED");
@@ -98,7 +99,7 @@ test("FORK: a divergent frontier at the head seq is caught (fail-closed even wit
     W1S,
   );
   const anchors = [divergent, anchorForChainHead(receipts, W2S, { ts: NOW }), anchorForChainHead(receipts, W3S, { ts: NOW })];
-  const res = verifyChainWitnessed(receipts, keyring, { anchors, trustSet: TS3 });
+  const res = verifyChainWitnessed(b(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
   assert.equal(res.witness.complete, false);
   assert.equal(res.witness.classification, "FORK");
 });
@@ -109,7 +110,7 @@ test("FORK: a divergent frontier at the head seq is caught (fail-closed even wit
 test("NOT_ESTABLISHED: below-quorum confirmations fail closed (silence is 'unknown')", () => {
   const { receipts, keyring } = fixture();
   const anchors = [anchorForChainHead(receipts, W1S, { ts: NOW })]; // only 1, q=2
-  const res = verifyChainWitnessed(receipts, keyring, { anchors, trustSet: TS3 });
+  const res = verifyChainWitnessed(b(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
   assert.equal(res.witness.complete, false);
   assert.equal(res.witness.classification, "NOT_ESTABLISHED");
   assert.equal(res.witness.confirmations, 1);
@@ -122,9 +123,9 @@ test("STALE: a stale confirm quorum under a freshness window fails closed", () =
   const { receipts, keyring } = fixture();
   const stale = "2026-06-23T06:00:00Z"; // 4h before now
   const anchors = [anchorForChainHead(receipts, W1S, { ts: stale }), anchorForChainHead(receipts, W2S, { ts: stale })];
-  const res = verifyChainWitnessed(receipts, keyring, {
-    anchors,
-    trustSet: TS3,
+  const res = verifyChainWitnessed(b(receipts), b(keyring), {
+    anchors: b(anchors),
+    trustSet: b(TS3),
     freshness: { now: NOW_MS, maxAgeMs: ONE_HOUR },
   });
   assert.equal(res.witness.complete, false);
@@ -140,7 +141,7 @@ test("chain composition: a TAMPERED chain still reports TAMPERED (verifyChain un
   const tampered = structuredClone(receipts);
   tampered[2]!.action.paramsHash = sha256Prefixed("MUTATED"); // breaks the seq-2 hash
   const anchors = [anchorForChainHead(receipts, W1S, { ts: NOW }), anchorForChainHead(receipts, W2S, { ts: NOW })];
-  const res = verifyChainWitnessed(tampered, keyring, { anchors, trustSet: TS3 });
+  const res = verifyChainWitnessed(b(tampered), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
   assert.equal(res.chain.status, "TAMPERED");
   // The witness step is still evaluated over the presented (tampered) head — its verdict is returned
   // separately so the caller reads BOTH; it never masks the chain's TAMPERED verdict.
@@ -150,7 +151,7 @@ test("chain composition: a TAMPERED chain still reports TAMPERED (verifyChain un
 test("no keyring: the chain result is UNVERIFIED (never VALID), witness step still runs", () => {
   const { receipts } = fixture();
   const anchors = [anchorForChainHead(receipts, W1S, { ts: NOW }), anchorForChainHead(receipts, W2S, { ts: NOW })];
-  const res = verifyChainWitnessed(receipts, undefined, { anchors, trustSet: TS3 });
+  const res = verifyChainWitnessed(b(receipts), undefined, { anchors: b(anchors), trustSet: b(TS3) });
   assert.equal(res.chain.status, "UNVERIFIED");
   assert.equal(res.witness.classification, "QUORUM_CONFIRMED", "witness acceptance is independent of receipt-signature authentication");
 });
@@ -161,13 +162,13 @@ test("no keyring: the chain result is UNVERIFIED (never VALID), witness step sti
 test("text input: raw JSON text is verified via verifyChainText and the head is derived from the same input", () => {
   const { receipts, keyring } = fixture();
   const anchors = [anchorForChainHead(receipts, W1S, { ts: NOW }), anchorForChainHead(receipts, W2S, { ts: NOW })];
-  const res = verifyChainWitnessed(JSON.stringify(receipts), keyring, { anchors, trustSet: TS3 });
+  const res = verifyChainWitnessed(JSON.stringify(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
   assert.equal(res.chain.status, "VALID", res.chain.reason);
   assert.equal(res.witness.classification, "QUORUM_CONFIRMED", res.witness.reason);
 });
 
 test("malformed input: a non-array chain is MALFORMED and the witness head is INVALID_INPUT (fail-closed)", () => {
-  const res = verifyChainWitnessed("not-json{", undefined, { anchors: [], trustSet: TS3 });
+  const res = verifyChainWitnessed("not-json{", undefined, { anchors: b([]), trustSet: b(TS3) });
   assert.equal(res.chain.status, "MALFORMED");
   assert.equal(res.witness.classification, "INVALID_INPUT");
   assert.equal(res.witness.complete, false);
@@ -190,7 +191,7 @@ test("quorum independence: the same witness pubkey pinned under two kids is reje
   // verifies against WIT1's one pubkey — pre-fix this counted as 2 distinct confirmations (a false quorum).
   const a1 = anchorForChainHead(receipts, W1S, { ts: NOW });
   const a2 = { ...a1, sig: { ...a1.sig, kid: WIT1.kid + "-clone" } };
-  const res = verifyChainWitnessed(receipts, keyring, { anchors: [a1, a2], trustSet: clonedTrust });
+  const res = verifyChainWitnessed(b(receipts), b(keyring), { anchors: b([a1, a2]), trustSet: b(clonedTrust) });
   assert.equal(res.witness.complete, false);
   assert.equal(res.witness.classification, "INVALID_INPUT");
   assert.match(res.witness.reason, /same witness pubkey under two kids/);
@@ -225,12 +226,28 @@ test("snapshot-once: a flip-on-read head-hash getter cannot diverge the verified
     },
   };
   const hostile = [receipts[0], receipts[1], hostileHead] as unknown as readonly unknown[];
-  const res = verifyChainWitnessed(hostile, keyring, { anchors, trustSet: TS3 });
-  // The witness step must NOT report QUORUM_CONFIRMED over the fake head: the single frozen snapshot means
-  // the head the witnesses are checked against is the same one verifyChain saw — the fake-head anchors do
-  // not match it, so completeness fails closed.
+  // Both original assertions stand unchanged. The mechanism behind them changed: the chain is a DOCUMENT,
+  // so a flip-on-read hash cannot be delivered at all — `reads === 0` is the added proof, replacing "the
+  // snapshot froze it after one read" with "it was never read".
+  const res = verifyChainWitnessed(hostile as never, b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
   assert.equal(res.witness.complete, false, "a flipping getter must not smuggle a fake head past the witness check");
   assert.notEqual(res.witness.classification, "QUORUM_CONFIRMED");
+  assert.equal(reads, 0, "the head-hash getter fired inside the boundary");
+
+  // THE ATTACK AS BYTES: the attacker must commit to ONE head, and the composition is what defeats him.
+  // Presenting the fake hash does get the fake-head anchors to confirm — the witness step is deliberately
+  // independent of receipt-signature authentication (see "no keyring" above) — but the SAME document is
+  // what the chain verifier reads, so it reports TAMPERED. There is no input for which the caller sees a
+  // green chain over a head the witnesses did not confirm, or a confirmed head the chain verifier never
+  // validated. That equality of inputs is exactly what the flip was buying and what bytes make free.
+  assert.notEqual(realHash, fakeHash);
+  const fakeHeadChain = [receipts[0], receipts[1], { ...head, chain: { ...head.chain, hash: fakeHash } }];
+  const fixed = verifyChainWitnessed(b(fakeHeadChain), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
+  assert.equal(fixed.chain.status, "TAMPERED", "the fake head does not match the signed body");
+  // …and with the REAL head, the fake-head anchors do NOT confirm. One document, one head, one answer.
+  const real = verifyChainWitnessed(b(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
+  assert.equal(real.chain.status, "VALID", real.chain.reason);
+  assert.equal(real.witness.complete, false, "anchors over a fake head must not confirm the real head");
 });
 
 // ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -246,12 +263,20 @@ test("DoS bound: an over-maxReceipts array is rejected without cloning or traver
       return { seq: 0, hash: "sha256:" + "0".repeat(64) };
     },
   };
-  // length 3 with maxReceipts:1 ⇒ over bound. The wrapper must reject via the length check before any
-  // structuredClone or deriveHead reads element properties, so the sentinel's getter fires ZERO times.
+  // length 3 with maxReceipts:1 ⇒ over bound. `touches === 0` is unchanged and is the assertion this test
+  // is named for. ASSERTION CHANGED: the reason regex. A caller-owned array is refused by the byte
+  // boundary BEFORE the receipt count is even knowable, so the reason is the boundary's, not the bound's.
   const arr = [sentinel, sentinel, sentinel] as unknown as readonly unknown[];
-  const res = verifyChainWitnessed(arr, undefined, { anchors: [], trustSet: TS3, maxReceipts: 1 });
+  const res = verifyChainWitnessed(arr as never, undefined, { anchors: b([]), trustSet: b(TS3), maxReceipts: 1 });
   assert.equal(res.chain.status, "MALFORMED");
-  assert.match(res.chain.reason ?? "", /too many receipts/);
+  assert.match(res.chain.reason ?? "", /expected Uint8Array or string/);
   assert.equal(res.witness.classification, "INVALID_INPUT");
   assert.equal(touches, 0, "an over-bound array must not be cloned or traversed (no O(n) work past maxReceipts)");
+
+  // THE DoS BOUND ITSELF, on the byte path where it now lives: three receipts as a document with
+  // maxReceipts:1 must be rejected by the COUNT, with the count's own reason, and must not be walked.
+  const overBound = verifyChainWitnessed(b([{ x: 0 }, { x: 1 }, { x: 2 }]), undefined, { anchors: b([]), trustSet: b(TS3), maxReceipts: 1 });
+  assert.equal(overBound.chain.status, "MALFORMED");
+  assert.match(overBound.chain.reason ?? "", /too many receipts/);
+  assert.equal(overBound.witness.classification, "INVALID_INPUT");
 });

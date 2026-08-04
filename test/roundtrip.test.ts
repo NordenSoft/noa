@@ -5,6 +5,7 @@ import { buildReceipt, buildCheckpoint, type BuildInput, type Signer } from "../
 import { verifyChain, verifyCheckpoint } from "../src/verify.js";
 import { sha256Prefixed } from "../src/hash.js";
 import type { Receipt } from "../src/index.js";
+import { b } from "./helpers/bytes.js";
 
 function mkInput(seqId: string, ts: string): BuildInput {
   return {
@@ -37,14 +38,14 @@ test("build → verify round-trips as VALID with a fresh random key", () => {
     prev = r;
   }
 
-  const res = verifyChain(chain, { keyring });
+  const res = verifyChain(b(chain), { keyring: b(keyring) });
   assert.equal(res.status, "VALID", res.reason);
   assert.equal(res.count, 5);
 
   const cp = buildCheckpoint(chain[chain.length - 1]!, "2026-06-20T06:00:00.000Z", signer);
-  assert.equal(verifyCheckpoint(cp, keyring), "ok");
+  assert.equal(verifyCheckpoint(b(cp), b(keyring)), "ok");
 
-  const res2 = verifyChain(chain, { keyring, checkpoint: cp });
+  const res2 = verifyChain(b(chain), { keyring: b(keyring), checkpoint: b(cp) });
   assert.equal(res2.status, "VALID");
   assert.equal(res2.tailChecked, true);
 });
@@ -59,5 +60,5 @@ test("a single bit flip anywhere breaks verification", () => {
   // tamper r0 content after the fact
   const tampered = structuredClone([r0, r1]);
   tampered[0]!.action.riskClass = "LOW";
-  assert.equal(verifyChain(tampered, { keyring }).status, "TAMPERED");
+  assert.equal(verifyChain(b(tampered), { keyring: b(keyring) }).status, "TAMPERED");
 });

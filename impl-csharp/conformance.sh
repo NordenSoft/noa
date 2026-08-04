@@ -69,6 +69,12 @@ run_case "attack unknown-kid no-keyring (UNVERIFIED)"       "conformance/vectors
 run_case "attack seq-gap (TAMPERED)"                        "conformance/vectors/attack/seq-gap.json" "$KR"
 run_case "attack head-truncated (TAMPERED)"                "conformance/vectors/attack/head-truncated.json" "$KR"
 run_case "attack cross-chain-splice (TAMPERED)"            "conformance/vectors/attack/cross-chain-splice.json" "$KR"
+# Cross-tenant splice laundered through an OPTIONAL-field omission, and the two legitimate
+# absent<->present transitions that must STAY valid (see scripts/gen-vectors.ts 5d).
+run_case "attack tenant-splice-via-absent (TAMPERED)"      "conformance/vectors/attack/tenant-splice-via-absent.json" "$KR"
+run_case "attack tenant-splice-via-absent-long (TAMPERED)" "conformance/vectors/attack/tenant-splice-via-absent-long.json" "$KR"
+run_case "tenant-omission-then-same-tenant (VALID)"        "conformance/vectors/tenant-omission-then-same-tenant.json" "$KR"
+run_case "tenant-enrichment-absent-first (VALID)"          "conformance/vectors/tenant-enrichment-absent-first.json" "$KR"
 run_case "attack dup-seq (TAMPERED)"                        "conformance/vectors/attack/dup-seq.json" "$KR"
 run_case "attack wrong-signature (TAMPERED)"                "conformance/vectors/attack/wrong-signature.json" "$KR"
 run_case "attack relinked (TAMPERED)"                        "conformance/vectors/attack/relinked.json" "$KR"

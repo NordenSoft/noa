@@ -101,7 +101,10 @@ shown here.
 # Receipt structure (payload) {#payload}
 
 The COSE_Sign1 payload is the RFC 8785 (JCS) canonical serialization of a JSON object. All
-numbers MUST be integers (no floating-point); all strings MUST be Unicode NFC. The fields:
+numbers MUST be integers (no floating-point). String normalization is specified in
+{{canon-params}}: producers MUST emit NFC, and verifiers MUST NOT normalize — a receipt is not
+rejected for carrying a non-NFC string, and implementers MUST NOT infer that a verified receipt's
+strings are NFC. The fields:
 
 ~~~
 {
@@ -131,6 +134,38 @@ plain SHA-256 over a low-entropy value (an amount, an id, a boolean) would be gu
 `chain.hash` is computed as `"sha256:" + SHA-256( JCS( receipt WITHOUT chain.hash AND WITHOUT
 sig.value ) )`. Receipts in one scope are linked by `prevHash`; `prevHash` is `null` only at the
 genesis receipt (`seq == 0`).
+
+## Canonicalization parameters {#canon-params}
+
+A digest is only interoperable if the parameters that produced it are pinned. Naming a
+canonicalization ("canonical JSON") without pinning its parameters is the failure mode that does
+not announce itself: two implementations each behave correctly under their own reading and
+produce different bytes, or — worse — the same bytes for inputs that should differ. This section
+therefore pins every parameter of the construction above, normatively and exhaustively:
+
+| Parameter | Value for `noa.receipt/0.1` |
+|---|---|
+| Serialization | RFC 8785 (JCS) |
+| Member sort | UTF-16 code unit (RFC 8785); NOT Unicode code point — the two diverge for astral characters, which encode as surrogates `D800`–`DBFF` and sort BEFORE `E000`–`FFFF` |
+| Number rendering | RFC 8785; integers only, `abs(n) <= 2^53 - 1`; non-integer and non-finite values MUST be rejected |
+| Unicode normalization | NONE applied by the canonicalizer. Producers MUST emit NFC; verifiers MUST NOT normalize |
+| String escaping | RFC 8785: control characters below U+0020 escaped, every other code point emitted literally as UTF-8 |
+| Unpaired surrogates | MUST be rejected (they would collapse to U+FFFD at the UTF-8 hashing step, mapping distinct inputs onto one digest) |
+| Duplicate member names | MUST be rejected at the parse boundary, not resolved last-wins |
+| Digest | SHA-256, lowercase hex, `sha256:` prefixed |
+| Domain separation | the receipt signature is over `"NOA-Receipt-v0.1-sig:" ++ SHA-256(hash input)`; the checkpoint signature uses a distinct tag, so neither signature can be replayed as the other |
+
+Verifiers MUST NOT normalize, re-order, or re-render a received payload before hashing it: the
+bytes as received are the bytes that were signed.
+
+`action.paramsHash` is a per-producer commitment to that producer's own parameter set. It is NOT
+a cross-producer correlation key and MUST NOT be treated as a shared action digest: it does not
+commit to the tenant, chain, authorization, execution attempt, or nonce, and it may legitimately
+repeat across retries of the same action. A future revision that defines a shared, cross-producer
+action digest MUST carry that construction's canonicalization parameters with it and MUST carry a
+construction identifier on the wire, so a consumer can DETERMINE compatibility rather than assume
+it; a digest presented under a non-matching construction identifier MUST be treated as
+non-matching rather than compared.
 
 # COSE Signed Statement profile {#cose}
 
@@ -186,6 +221,34 @@ and tail truncation *within* a presented chain; it does NOT, by itself, detect *
 (an issuer signing two divergent chains) — that requires registration in a SCITT Transparency
 Service or an equivalent external witness.
 
+## Chain-level failure axes {#chain-axes}
+
+The checks above are properties of a receipt SET, not of any receipt. Each of the following
+failures is reachable only by a verifier that reconciles receipts against one another; a verifier
+presented with any single receipt from the set will find that receipt individually well-formed,
+correctly hashed, and correctly signed. They are named here so that a reconciling verifier can
+report WHICH set-level property failed, rather than collapsing every one of them onto a single
+"invalid":
+
+| Axis | Failure |
+|---|---|
+| `chain-link-broken` | a `prevHash` does not equal the prior receipt's `chain.hash`, or a non-genesis receipt carries `prevHash == null` |
+| `chain-sequence-duplicate` | two receipts in one `scope.chain` carry the same `chain.seq` |
+| `chain-sequence-gap` | the presented `chain.seq` values are not contiguous from 0 |
+| `chain-scope-mismatch` | receipts from more than one `scope.chain` are presented as a single chain |
+| `chain-head-truncated` | the presented head does not match the head asserted by an authenticated checkpoint |
+
+A verifier implementing this profile MUST detect all five and SHOULD report them distinctly. The
+distinction is operational, not cosmetic: `chain-sequence-duplicate` and `chain-scope-mismatch`
+indicate a splice of two genuine histories — every receipt involved verifies in isolation — while
+`chain-link-broken` indicates in-band alteration and `chain-head-truncated` indicates deletion of
+the most recent records. Reporting them as one verdict tells a relying party that something is
+wrong but not what an operator must do next.
+
+A verifier MUST NOT report a chain-level axis as a per-receipt failure, and MUST NOT infer from
+the absence of these axes that the presented set is complete: completeness against records the
+prover never presented is not a property of the presented set (see {{security}}).
+
 # Identity binding
 
 `agent.id` is a signer-asserted label. To authenticate WHICH agent acted (not merely that a
@@ -237,7 +300,7 @@ conformance vectors) is left to that separate companion profile and is not norma
 Implementations MUST NOT represent a receipt under this profile as carrying a re-derivable
 verdict.
 
-# Security Considerations
+# Security Considerations {#security}
 
 This profile attests exactly two things: (1) the record is tamper-evident and
 signature-verifiable under the issuer's key; and (2) the recorded fields (action, principal,
@@ -252,6 +315,24 @@ or a SCITT Transparency Service. Identity attribution above key level requires t
 identity manifest. Algorithm-confusion and key-confusion attacks are mitigated by the strict
 `alg = -19` and pinned-curve requirements of {{cose}}. Raw prompts, tool arguments, and secrets
 MUST NOT appear on a receipt; only hashes (optionally HMAC for low-entropy values) are carried.
+
+**The scope of a checkpoint check is the scope of the key that signed it.** A checkpoint detects
+tail truncation only to the strength of the binding between checkpoint authority and chain. With
+an identity manifest, that authority is bound to the key authorized at `seq == 0` — the chain
+opener — so a re-heading attacker's checkpoint over its own appended head is rejected. WITHOUT a
+manifest, checkpoint authentication is key-level only: any key the verifier trusts can mint a
+checkpoint over any head, so a co-trusted key holder can delete the most recent receipts, sign a
+checkpoint over the truncated head, and obtain a verified tail check over an incomplete chain.
+Implementations MUST surface this limitation to the relying party whenever a checkpoint
+authenticates without a manifest, and MUST NOT report such a result as an unqualified
+tail-truncation check. Even with a manifest the guarantee is opener-scoped: on a chain carrying
+more than one `agent.id`, the opener's checkpoint does not certify a co-agent's tail.
+
+Because non-NFC strings are neither normalized nor rejected ({{canon-params}}), two receipts may
+carry `agent.id` or `action.id` values that render identically but differ in bytes, and both
+verify. Relying parties that match, index, or alert on these fields MUST compare them as bytes,
+or normalize at their own layer before comparing, and MUST NOT assume that visual equality
+implies byte equality.
 
 # IANA Considerations
 
@@ -273,11 +354,12 @@ verifier in another language) is available under the Apache-2.0 license at
 the receipt-chain conformance vectors; a second independent *signer/evaluator* and a shared
 conformance vector pack are the interoperability bar this profile is working toward.
 
-NOTE (alg migration): the current reference implementation emits the now-deprecated polymorphic
-`EdDSA` identifier `-8` ([RFC9053], protected header bytes `a10127`). Migration to the
-fully-specified `-19` ([RFC9864], protected header bytes `a10132`), with regenerated
-cross-implementation conformance vectors, is in progress and is a precondition for any normative
-revision.
+NOTE (alg): the reference implementation emits the fully-specified Ed25519 identifier `-19`
+([RFC9864], protected header bytes `a10132`), as required by {{cose}}. It does not emit the
+now-deprecated polymorphic `EdDSA` identifier `-8` ([RFC9053], bytes `a10127`), and its COSE
+verifier rejects any `alg` other than `-19`. (An earlier revision of this section reported the
+`-8` → `-19` migration as still in progress; it is complete, and this note is corrected here
+rather than carried forward.)
 
 # Normative References
 

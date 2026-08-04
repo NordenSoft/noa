@@ -31,13 +31,17 @@
 import type { Receipt } from "../types.js";
 import type { Policy, InputSnapshot } from "./dsl.js";
 import { policyHash, readSetHash } from "./dsl.js";
-import { evaluate } from "./eval.js";
+import { evaluateParsed } from "./eval.js";
+import { parseDocument } from "../bytes.js";
+import { inertOptions, type OptionSchema } from "../opts.js";
 import { canonicalize } from "../jcs.js";
 import { sha256Prefixed, sha256Hex } from "../hash.js";
-import { validateReceiptShape } from "../schema.js";
+import { validateReceiptShapeParsed } from "../schema.js";
 import { receiptHashInput } from "../canonicalize.js";
 import { verifyEd25519, type Keyring, type IdentityManifest } from "../keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../signing.js";
+import { arrayIncludes, arrayJoin, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray, jsonStringify } from "../intrinsics.js";
+import { parseVerificationKeyring, type ParsedVerificationKeyring } from "../verification-keyring.js";
 
 export interface ComplianceCommit {
   policyHash: string;
@@ -60,13 +64,33 @@ export function complianceCommit(policy: Policy, inputs: InputSnapshot): Complia
     policyHash: policyHash(policy),
     readSetHash: readSetHash(policy),
     inputsHash: sha256Prefixed(canonicalize(inputs)),
-    verdict: evaluate(policy, inputs).verdict,
+    verdict: evaluateParsed(policy, inputs).verdict,
   };
 }
 
 export interface ComplianceResult {
   ok: boolean;
   reason?: string;
+  /**
+   * H2 (review #6) — WHAT `ok:true` IS A CLAIM ABOUT, made machine-readable.
+   *
+   * `ok:true` used to be one word for two very different guarantees, and the weaker one was the
+   * DEFAULT. Without a keyring nothing was authenticated at all: an attacker who replaced the whole
+   * `governance.compliance` block with one committed under an allow-everything policy got `ok:true`,
+   * because the L2 hashes line up with whatever policy the attacker also supplied. That mode is now
+   * refused outright (see below) — the L2 proof over an unauthenticated carrier proves nothing.
+   *
+   * What survives is the honest distinction between the two authenticated modes, and it is a FIELD,
+   * not a comment, so a caller can gate on it:
+   *
+   *   KID_LEVEL   — a keyring-trusted key signed this carrier. It does NOT establish that the
+   *                 receipt's own `agent.id` is the party that signed: in a multi-key keyring a
+   *                 co-trusted key can sign a receipt claiming someone else's agent.id.
+   *   AGENT_BOUND — additionally, an identityManifest authorized (agent.id, sig.kid).
+   *
+   * Absent on every `ok:false`.
+   */
+  attribution?: "KID_LEVEL" | "AGENT_BOUND";
   /** The reproduced verdict from re-running the committed policy over the recorded inputs. */
   policyVerdict?: "ALLOW" | "DENY";
   ruleFired?: string | null;
@@ -81,18 +105,30 @@ export interface VerifyComplianceOptions {
    * via `verifyChain([...], { keyring })` → VALID (see the module-level authenticity note).
    *
    * NOTE: keyring carrier-auth is KID-LEVEL (a keyring-trusted key signed), NOT agent-level. To bind WHICH
-   * agent.id signed, ALSO pass `identityManifest` below.
+   * agent.id signed, ALSO pass `identityManifest` below. Supplied as JSON bytes.
    */
-  keyring?: Keyring;
+  keyring?: Uint8Array | string;
   /**
    * Optional `agent.id -> authorized kid(s)` binding (the SAME trust class as the keyring). Meaningful ONLY
    * alongside `keyring` (it gates an AUTHENTICATED carrier). When supplied, after carrier-auth succeeds, a
    * carrier whose `(agent.id, sig.kid)` pairing is not authorized is rejected (ok:false) — upgrading L2
    * attribution from "a keyring-trusted key signed" to "THIS agent.id signed" (mirrors verify.ts 4c-bis /
    * the UNTRUSTED verdict). Omit it to keep kid-level attribution (the weaker, documented guarantee).
+   * Supplied as JSON bytes.
    */
-  identityManifest?: IdentityManifest;
+  identityManifest?: Uint8Array | string;
 }
+
+/** The document members arrive decoded to text; there are no scalar members here. */
+interface InertComplianceOptions {
+  readonly keyring?: string;
+  readonly identityManifest?: string;
+}
+
+const COMPLIANCE_OPTION_SCHEMA: OptionSchema = Object.freeze(Object.assign(Object.create(null), {
+  keyring: { kind: "document" },
+  identityManifest: { kind: "document" },
+})) as OptionSchema;
 
 /**
  * Offline L2 proof. Confirms the receipt's committed (policyHash, readSetHash, inputsHash) authenticate
@@ -108,47 +144,42 @@ export interface VerifyComplianceOptions {
  * kid-level (a keyring-trusted key signed, not necessarily THIS agent.id).
  */
 export function verifyReceiptCompliance(
-  receipt: Receipt,
-  policy: Policy,
-  inputs: InputSnapshot,
+  receipt: Uint8Array | string,
+  policy: Uint8Array | string,
+  inputs: Uint8Array | string,
   opts: VerifyComplianceOptions = {},
 ): ComplianceResult {
+  // ── THE BOUNDARY ───────────────────────────────────────────────────────────────────────────────
+  // Three documents and one options object. The receipt is the CARRIER of a signed commitment, the
+  // policy is hash-pinned, and the inputs are committed by hash — all three are artifacts under
+  // comparison, so all three are bytes. Only the trust configuration stays an object, admitted by
+  // the schema.
+  const admitted = inertOptions<InertComplianceOptions>(COMPLIANCE_OPTION_SCHEMA, opts, "options");
+  if (!admitted.ok) return { ok: false, reason: admitted.reason };
+  const o = admitted.value;
+  const rParsed = parseDocument(receipt, "receipt");
+  if (!rParsed.ok) return { ok: false, reason: rParsed.reason };
+  const pParsed = parseDocument(policy, "policy");
+  if (!pParsed.ok) return { ok: false, reason: pParsed.reason };
+  const iParsed = parseDocument(inputs, "inputs");
+  if (!iParsed.ok) return { ok: false, reason: iParsed.reason };
   try {
-    if (typeof receipt !== "object" || receipt === null) {
+    if (typeof rParsed.value !== "object" || rParsed.value === null) {
       return { ok: false, reason: "receipt is not an object" };
     }
-    // SNAPSHOT THE CARRIER ONCE (TOCTOU hardening): a LIVE receipt with a flipping accessor could
-    // return an EVIL governance.compliance on the first read (the comparison source) and the REAL signed
-    // block on later reads (carrier auth) — authenticating one block while comparing another → a false
-    // "compliant" green on an authenticated carrier. structuredClone fires every accessor EXACTLY ONCE,
-    // producing accessor-free data; ALL reads below (carrier auth AND the L2 compare) use this ONE snapshot.
-    // (Mirrors the identityManifest read-once snapshot + accessor hardening elsewhere in this module.) Reading
-    // INSIDE the try also honors the "never throws" contract for null / throwing-accessor receipts (#3/#7).
-    const snap = structuredClone(receipt) as Receipt;
+    // THE THREE SNAPSHOTS THAT USED TO LIVE HERE ARE GONE, AND THE REASON THEY EXISTED IS THE
+    // REASON THEY ARE GONE. Each argument was read MORE THAN ONCE — the receipt by carrier
+    // authentication and by the L2 comparison, the policy by `policyHash` + `readSetHash` +
+    // `evaluate`, the inputs by `inputsHash` and by `evaluate` — so a flipping accessor could
+    // authenticate one block while comparing another, or present ALLOW-inputs to the hash and
+    // DENY-inputs to the evaluator, yielding a false COMPLIANT the receipt never committed to.
+    // Parsed bytes cannot return two different values to two reads, so every one of those splits is
+    // unrepresentable rather than defended.
+    const snap = rParsed.value as Receipt;
     const c = snap.governance?.compliance;
     if (!c) return { ok: false, reason: "receipt carries no governance.compliance commitment" };
-    // SNAPSHOT THE POLICY + INPUTS ONCE (TOCTOU hardening). Both arguments are caller-supplied LIVE
-    // objects read MORE THAN ONCE: `policy` by policyHash + readSetHash + evaluate; `inputs` by the inputsHash
-    // check + evaluate. A flipping accessor (a getter that returns one value on read#1 and another on read#2)
-    // could split the hash check from the re-run — e.g. present ALLOW-inputs to inputsHash and DENY-inputs to
-    // evaluate (or vice-versa) → a false COMPLIANT (ok:true) that the receipt never actually committed to.
-    // structuredClone fires every accessor EXACTLY ONCE into plain, accessor-free data; ALL reads below
-    // (hash checks AND evaluate) use these snapshots, never the live args. Inside the try ⇒ a throwing accessor
-    // / non-cloneable arg fails closed (ok:false), honoring the "never throws" contract.
-    const policySnap = structuredClone(policy) as Policy;
-    const inputsSnap = structuredClone(inputs) as InputSnapshot;
-    // SNAPSHOT opts ONCE (hostile-accessor parity with verify.ts:95). `opts.keyring` and
-    // `opts.identityManifest` are caller-supplied and read MORE THAN ONCE below (the presence gate, then the
-    // value that carrier-auth / identity-binding actually use). A flipping accessor — `get keyring(){ return
-    // n++ === 0 ? undefined : realKeyring }` (undefined on read#1, a value later, or vice-versa) — could
-    // split the `!== undefined` presence check from the auth that depends on it, skipping carrier-auth while
-    // still returning ok:true. structuredClone deep-copies opts ONCE into plain, accessor-free data (firing
-    // every getter EXACTLY ONCE); a non-cloneable / throwing-getter opts is caught by the outer try → ok:false
-    // (fail-closed). A null/undefined opts normalizes to `{}` (the default-param only fills a MISSING arg, not
-    // an explicit null). EVERY opts read below is from `o`, never the live `opts`. (verifyChainText/CLI/Python
-    // consume parse output — no accessors — so are immune; this guards the in-process object API.)
-    const o: VerifyComplianceOptions =
-      (opts === null || opts === undefined) ? {} : (structuredClone(opts) as VerifyComplianceOptions);
+    const policySnap = pParsed.value as Policy;
+    const inputsSnap = iParsed.value as InputSnapshot;
     // CARRIER AUTHENTICATION: when a keyring is supplied, prove the receipt itself is
     // genuine BEFORE trusting its compliance block — otherwise a forged/tampered receipt (verifyChain ⇒
     // TAMPERED) would still get a green "compliant" signal off its attacker-mutable governance.compliance.
@@ -159,16 +190,51 @@ export function verifyReceiptCompliance(
     // never ran, yet ok:true could still come back. Presence-gating + the non-object guard immediately
     // below makes every supplied-but-malformed keyring fail CLOSED instead of being ignored.
     const haveKeyring = o.keyring !== undefined;
-    if (haveKeyring && (typeof o.keyring !== "object" || o.keyring === null || Array.isArray(o.keyring))) {
-      return { ok: false, reason: "keyring must be an object (kid -> base64 SPKI)" };
-    }
+    let keyringParsed: ParsedVerificationKeyring | undefined;
     if (haveKeyring) {
-      const keyring = o.keyring as Keyring;
-      const shape = validateReceiptShape(snap);
-      if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${shape.errors.join("; ")}` };
+      const kParsed = parseVerificationKeyring(o.keyring, "keyring");
+      if (!kParsed.ok) return { ok: false, reason: kParsed.reason };
+      keyringParsed = kParsed.value;
+    }
+    // ── H2 (review #6): NO TRUST ROOT ⇒ NO POSITIVE VERDICT. ──────────────────────────────────────
+    // This was the only verifier in the repository that returned a POSITIVE result with no trust
+    // input at all. `verifyChain` returns UNVERIFIED without a keyring; `verifyEvidence` returns
+    // UNVERIFIED without a tenant root (F7a); this returned `ok:true`. Two tests froze the
+    // consequence: swapping the ENTIRE compliance block for one committed under an attacker-authored
+    // allow-everything policy returned ok:true (the hashes agree because the attacker supplied both
+    // halves), and an impersonated receipt returned ok:true even when the caller HAD supplied an
+    // identityManifest — the binding silently no-opped because it gates on carrier-auth, which never
+    // ran. Both were commented as documented gaps; a comment is not a control, and a test asserting
+    // ok:true for an impersonated receipt codifies the unsafe behaviour regardless of what is written
+    // above it.
+    //
+    // The L2 proof is a statement about bytes the receipt COMMITTED to. Over a carrier nobody
+    // authenticated, those bytes are attacker-supplied on both sides of every comparison, so the
+    // proof is vacuous. Fail closed, exactly like every sibling verifier.
+    if (!haveKeyring) {
+      return {
+        ok: false,
+        reason:
+          "no keyring supplied — the compliance carrier cannot be authenticated, and the L2 hash proof " +
+          "over an unauthenticated receipt proves nothing (its governance.compliance block is attacker-mutable). " +
+          "Pass { keyring } (and { identityManifest } to bind WHICH agent signed).",
+      };
+    }
+    let attribution: "KID_LEVEL" | "AGENT_BOUND" = "KID_LEVEL";
+    {
+      const verification = keyringParsed as ParsedVerificationKeyring;
+      const keyring = verification.keyring;
+      const shape = validateReceiptShapeParsed(snap);
+      if (!shape.ok) return { ok: false, reason: `carrier receipt malformed: ${arrayJoin(shape.errors, "; ")}` };
       const hashInput = receiptHashInput(snap);
       if ("sha256:" + sha256Hex(hashInput) !== snap.chain.hash) {
         return { ok: false, reason: "carrier receipt hash mismatch — not authentic" };
+      }
+      if (verification.retiredKids[snap.sig.kid] === true) {
+        return {
+          ok: false,
+          reason: `carrier receipt signing key ${jsonStringify(snap.sig.kid)} is retired; signer-chosen receipt time is not an independent witness`,
+        };
       }
       const pub = keyring[snap.sig.kid];
       if (!pub) return { ok: false, reason: `carrier receipt signing key "${snap.sig.kid}" not in keyring` };
@@ -184,32 +250,40 @@ export function verifyReceiptCompliance(
       // / sig.kid from the read-once `snap`, never the live receipt. (Inside the outer try ⇒ a throwing manifest
       // accessor fails closed.)
       if (o.identityManifest !== undefined) {
-        const live = o.identityManifest;
-        if (typeof live !== "object" || live === null || Array.isArray(live)) {
+        const mParsed = parseDocument(o.identityManifest, "identityManifest");
+        if (!mParsed.ok) return { ok: false, reason: mParsed.reason };
+        const live = mParsed.value;
+        if (typeof live !== "object" || live === null || isArray(live)) {
           return { ok: false, reason: "identityManifest must be an object (agent.id -> kid[])" };
         }
-        const manifest = new Map<string, string[]>();
-        for (const aid of Object.getOwnPropertyNames(live)) {
+        const manifest = newMap<string, string[]>();
+        // INDEX WALK (round-4, A2) — same class and same shape as the verify.ts manifest walk.
+        const aids = objectGetOwnPropertyNames(live);
+        for (let ai = 0; ai < aids.length; ai++) {
+          const aid = aids[ai] as string;
           const kidsLive = (live as Record<string, unknown>)[aid]; // ONE read of the entry
-          if (!Array.isArray(kidsLive)) {
+          if (!isArray(kidsLive)) {
             return { ok: false, reason: `identityManifest["${aid}"] must be an array of kid strings` };
           }
-          const kids = Array.prototype.slice.call(kidsLive) as unknown[]; // copy by value
-          if (!kids.every((k) => typeof k === "string")) {
+          const kids = arraySlice(kidsLive) as unknown[]; // copy by value
+          if (!arrayEvery(kids, (k) => typeof k === "string")) {
             return { ok: false, reason: `identityManifest["${aid}"] must be an array of kid strings` };
           }
-          manifest.set(aid, kids as string[]);
+          mapSet(manifest, aid, kids as string[]);
         }
-        const allowed = manifest.get(snap.agent.id);
-        if (allowed === undefined || !allowed.includes(snap.sig.kid)) {
+        // C-02(b) SINK, CLOSED: same writable `Array.prototype.includes`; `c02_compliance_includes.mjs`
+        // used it to return ok:true / attribution "AGENT_BOUND" for bob impersonating alice.
+        const allowed = mapGet(manifest, snap.agent.id);
+        if (allowed === undefined || !arrayIncludes(allowed, snap.sig.kid)) {
           return { ok: false, reason: `agent "${snap.agent.id}" not authorized for signing key "${snap.sig.kid}" (identity manifest)` };
         }
+        attribution = "AGENT_BOUND";
       }
     }
     if (policyHash(policySnap) !== c.policyHash) return { ok: false, reason: "policyHash mismatch — supplied policy is not the committed one" };
     if (readSetHash(policySnap) !== c.readSetHash) return { ok: false, reason: "readSetHash mismatch" };
     if (sha256Prefixed(canonicalize(inputsSnap)) !== c.inputsHash) return { ok: false, reason: "inputsHash mismatch — supplied inputs are not the recorded ones" };
-    const ev = evaluate(policySnap, inputsSnap);
+    const ev = evaluateParsed(policySnap, inputsSnap);
     // Verdict RECONCILIATION: when the commitment records a verdict, the re-run MUST
     // reproduce it. This is what makes spec §9's "re-runs and confirms the committed verdict reproduces"
     // literally true: a receipt that commits inputs which evaluate to DENY while recording ALLOW is
@@ -218,8 +292,13 @@ export function verifyReceiptCompliance(
     if (c.verdict !== undefined && ev.verdict !== c.verdict) {
       return { ok: false, reason: `verdict mismatch — recorded decision does not reproduce (recorded ${c.verdict}, re-run ${ev.verdict})`, policyVerdict: ev.verdict, ruleFired: ev.ruleFired };
     }
-    return { ok: true, policyVerdict: ev.verdict, ruleFired: ev.ruleFired };
-  } catch (e) {
-    return { ok: false, reason: `compliance check error: ${(e as Error).message}` };
+    return { ok: true, policyVerdict: ev.verdict, ruleFired: ev.ruleFired, attribution };
+  } catch {
+    // BOUNDARY 2, recurring (found by the C2 entry-point probe, not by a reviewer): this used to
+    // interpolate `(e as Error).message`, so a hostile value — a revoked Proxy, an object with a
+    // throwing `message` getter — threw AGAIN inside the catch and escaped raw, defeating the
+    // "never throws / fail-closed" contract on the exact input class the contract exists for. The
+    // thrown value is not read at all; there is nothing left to weaponize.
+    return { ok: false, reason: "compliance check failed closed: an input could not be reduced to inert data (a hostile getter, a proxy trap, or a non-plain object)" };
   }
 }

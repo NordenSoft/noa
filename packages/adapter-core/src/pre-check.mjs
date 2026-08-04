@@ -5,12 +5,19 @@
  * Sits between an MCP host and its tool servers. For EVERY tool call it runs the
  * DETERMINISTIC policy evaluator `evaluate(policy, inputs)` (noa-receipt's offline-replayable
  * policy engine, imported from the noa-receipt package) and returns a SIGNED receipt of the
- * ALLOW/DENY decision. FAIL-CLOSED: any policy/input error resolves to DENY, never a throw,
+ * ALLOW/DENY decision. FAIL-CLOSED: any policy/input error resolves to DENY, not a throw for any input shape reached in practice (a revoked Proxy is the measured exception, R4-11),
  * never a silent allow.
  *
  * Dependency note: this module consumes noa-receipt as a published registry dependency
  * (`^0.4.0`, see package.json), imported by its package name. The receipt builder, policy
  * evaluator, and hash helpers below all resolve from that package's public entry point.
+ */
+/*
+ * ⚠ ROUND 4 / R4-11 — the phrase "never throws" appears below and is MEASURED FALSE in one case: a
+ * revoked Proxy passed as caller input throws out of `preCheck`. Every input shape reached in
+ * practice returns a DENY rather than throwing, which is what the contract is FOR; the absolute is
+ * what was wrong. It is corrected in place rather than deleted, because "never" in a fail-closed
+ * contract is precisely the kind of word a reader stops testing.
  */
 import {
   buildReceipt,
@@ -23,6 +30,46 @@ import {
   sha256Prefixed,
 } from "noa-receipt";
 import { matchApprovalRule } from "./approval-rules.mjs";
+import { intrinsics } from "noa-receipt";
+// ROUND 4. This destructure existed BEFORE round 4 and was applied only to the fallback stringifier
+// 150 lines below the code that decides a verdict. The lines that compute the DECISION kept reading
+// live builtins — `encodeDocument`'s JSON.stringify (R4-01), `Object.keys`/`Number.isFinite`/
+// `Number.isSafeInteger` on the flatten path (R4-04), `String.prototype.includes` on the dotted-key
+// decoy guard (R4-03). Capturing a builtin and then not using it where the verdict is made is worse
+// than not capturing it: the file reads as hardened.
+//
+// The flatten output is also `objectCreateNull()` now. `out[prefix] = args` is a property WRITE, and
+// `[[Set]]` walks the prototype chain, so an accessor on Object.prototype swallowed the write and the
+// policy evaluated inputs that were silently missing a key — an omission bypass with NO builtin
+// replaced at all (R4-02b). A null-prototype object has no chain to walk.
+const { isArray, objectKeys, arraySort, arrayPush, arrayJoin, jsonStringify, isFiniteNumber,
+        isSafeInteger, strIncludes, objectCreateNull, objectAssign } = intrinsics;
+
+/**
+ * ── THE DOCUMENT ENCODER (bytes-in) ──────────────────────────────────────────────────────────────
+ *
+ * `evaluate(policy, inputs)` no longer takes live JavaScript objects; both arguments are DOCUMENTS
+ * and arrive as bytes, which the kernel parses itself. That is what let the kernel delete its
+ * `snapshotImmutable` ingest boundary: it no longer walks a caller-owned object graph, so there is
+ * nothing to snapshot.
+ *
+ * Serializing here rather than there does NOT move the old hazard into this module. `policy` is
+ * operator configuration that this file already canonicalizes twice on the same call
+ * (`safePolicyHash`, `complianceCommit`), and `inputs` is the flat scalar map built a few lines
+ * above out of values this module already captured once behind its own read guard. The one new
+ * failure mode — a policy object `JSON.stringify` itself refuses (circular, a throwing getter, a
+ * bigint) — is caught explicitly at the call site and reported as its own fail-closed DENY rather
+ * than being mislabelled as an args failure.
+ */
+const DOCUMENT_ENCODER = new TextEncoder();
+function encodeDocument(value) {
+  // ROUND 4 / R4-01. This was a live `JSON.stringify`, and it encodes the document the VERDICT is
+  // computed from — poison it and preCheck returns DENY->ALLOW with a signed, chain-VALID receipt
+  // carrying an honest policyHash, so nothing downstream can tell. `jsonStringify` was destructured
+  // at the top of this file in the same commit that left this line alone: the capture was applied to
+  // the fallback stringifier 150 lines BELOW the code that decides.
+  return DOCUMENT_ENCODER.encode(jsonStringify(value));
+}
 
 /** Cap on how deep `flattenArgsToPolicyInputs` will descend into nested args, and on how many
  *  scalar paths it will emit — a defensive bound against a maliciously deep/huge tool-call
@@ -75,9 +122,9 @@ function flattenArgsToPolicyInputs(args, prefix, depth, out, state) {
     return out;
   }
   if (t === "number") {
-    if (Number.isSafeInteger(args)) {
+    if (isSafeInteger(args)) {
       out[prefix] = args;
-    } else if (Number.isFinite(args)) {
+    } else if (isFiniteNumber(args)) {
       out[prefix] = canonicalDecimalNumberString(args);
     }
     // else: NaN / +-Infinity — no meaningful decimal-string projection exists; omitted, same as
@@ -94,12 +141,14 @@ function flattenArgsToPolicyInputs(args, prefix, depth, out, state) {
     return out;
   }
   if (t === "object") {
-    for (const k of Object.keys(args)) {
+    const argKeys = objectKeys(args);
+    for (let ki = 0; ki < argKeys.length; ki += 1) {
+      const k = argKeys[ki];
       if (state.count >= MAX_ARGS_FLATTEN_ENTRIES) break;
       // Dotted raw keys are rejected up-front by findAmbiguousDottedArgKey() before this function
       // is ever called (see preCheck()) — reaching here with one would mean a caller bypassed that
       // guard; defensively skip it rather than silently flattening an ambiguous path.
-      if (k.includes(".")) continue;
+      if (strIncludes(k, ".")) continue;
       flattenArgsToPolicyInputs(args[k], `${prefix}.${k}`, depth + 1, out, state);
     }
     return out;
@@ -127,8 +176,10 @@ function findAmbiguousDottedArgKey(args, prefix = "args", depth = 0) {
     }
     return null;
   }
-  for (const k of Object.keys(args)) {
-    if (k.includes(".")) return `${prefix}.${k}`;
+  const dottedKeys = objectKeys(args);
+  for (let ki = 0; ki < dottedKeys.length; ki += 1) {
+    const k = dottedKeys[ki];
+    if (strIncludes(k, ".")) return `${prefix}.${k}`;
     const found = findAmbiguousDottedArgKey(args[k], `${prefix}.${k}`, depth + 1);
     if (found !== null) return found;
   }
@@ -167,29 +218,37 @@ function canonicalDecimalNumberString(n) {
 function stableStringifyFallback(value, seen) {
   if (value === null) return "null";
   const t = typeof value;
-  if (t === "string") return JSON.stringify(value);
+  if (t === "string") return jsonStringify(value);
   if (t === "boolean") return value ? "true" : "false";
-  if (t === "number") return Number.isFinite(value) ? canonicalDecimalNumberString(value) : "null";
-  if (t === "bigint") return JSON.stringify(value.toString());
+  if (t === "number") return isFiniteNumber(value) ? canonicalDecimalNumberString(value) : "null";
+  if (t === "bigint") return jsonStringify(value.toString());
   if (t === "undefined" || t === "function" || t === "symbol") return undefined;
-  if (Array.isArray(value)) {
+  if (isArray(value)) {
     if (seen.has(value)) throw new Error("noa-mcp-adapter-core: circular structure in tool-call args");
     seen.add(value);
-    const items = value.map((v) => stableStringifyFallback(v, seen) ?? "null");
+    const items = [];
+    for (let i = 0; i < value.length; i += 1) arrayPush(items, stableStringifyFallback(value[i], seen) ?? "null");
     seen.delete(value);
-    return `[${items.join(",")}]`;
+    return `[${arrayJoin(items, ",")}]`;
   }
   if (t === "object") {
     if (seen.has(value)) throw new Error("noa-mcp-adapter-core: circular structure in tool-call args");
     seen.add(value);
     const parts = [];
-    for (const k of Object.keys(value).sort()) {
-      const encoded = stableStringifyFallback(value[k], seen);
+    // INDEX LOOP, not `for…of Object.keys(v).sort()`. This fallback runs when the hardened JCS
+    // canonicalizer THROWS — which the surrounding code documents as an expected, legitimate shape
+    // (JCS refuses non-integer numbers, and a float `rate` is ordinary tool-call input). A redteam
+    // review reached it with a plain float and then collapsed `{amountMinor:10, rate:1.5}` and
+    // `{amountMinor:900000, rate:1.5}` to the SAME paramsHash by poisoning `Object.keys` — an
+    // approval minted for one authorising the other.
+    const ks = arraySort(objectKeys(value), undefined);
+    for (let i = 0; i < ks.length; i += 1) {
+      const encoded = stableStringifyFallback(value[ks[i]], seen);
       if (encoded === undefined) continue; // JSON.stringify semantics: undefined-valued keys are omitted
-      parts.push(`${JSON.stringify(k)}:${encoded}`);
+      arrayPush(parts, `${jsonStringify(ks[i])}:${encoded}`);
     }
     seen.delete(value);
-    return `{${parts.join(",")}}`;
+    return `{${arrayJoin(parts, ",")}}`;
   }
   return undefined; // function/symbol nested value: not JSON-representable, dropped
 }
@@ -229,7 +288,7 @@ function canonicalParamsHash(args) {
     } catch {
       // Neither JCS nor the stable-stringify fallback could represent this content at all (e.g. a
       // circular reference) — fall back to the fixed sentinel rather than letting the exception
-      // escape `preCheck`'s "never throws" public contract.
+      // escape `preCheck`'s "returns a DENY rather than throwing" contract (R4-11: a revoked Proxy is the measured exception).
       return UNCANONICALIZABLE_ARGS_SENTINEL_HASH;
     }
   }
@@ -257,7 +316,7 @@ const UNCANONICALIZABLE_POLICY_SENTINEL_HASH = sha256Prefixed("noa-mcp-adapter-c
  * MAX_DEPTH, or a `NaN`/`Infinity` tucked into an unrelated/unknown field), an UNGUARDED
  * `policyHash(policy)` call independently throws a `JcsError` on it — this used to escape
  * `preCheck()` uncaught, a crash on what is fundamentally an operator/policy-config mistake, not a
- * caller-input attack, but `preCheck()`'s own "never throws" contract must hold for it too. Falls
+ * caller-input attack, but `preCheck()`'s own "returns a DENY rather than throwing" contract must hold for it too. Falls
  * back to the fixed `UNCANONICALIZABLE_POLICY_SENTINEL_HASH` sentinel rather than raising — the
  * decision itself is already DENY by the time this runs (via `evaluate()`'s own policy-invalid
  * fail-close), so this wrapper only needs to keep `preCheck()` from crashing while computing
@@ -305,7 +364,7 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
   // can contain one) on ANY of these fields — e.g. an `args` object whose `amountMinor` property is
   // `{ get amountMinor() { throw ... } }`, or a `toolCall` whose `agentId` getter throws. Reading
   // any of them unguarded would throw straight out of `preCheck()`, before reaching ANY fail-closed
-  // guard — violating this module's own "never throws, only DENY" contract. `safeName`/`safeArgs`/
+  // guard — violating this module's own "returns a DENY rather than throwing" contract. `safeName`/`safeArgs`/
   // `safeAmountMinor`/`safeAgentId` are captured ONCE, inside this ONE try/catch, and reused
   // EVERYWHERE below (the receipt's `action.id`/`canonical`/`agent.id` included, and every later
   // `toolCall.args` read) instead of re-reading `toolCall.name`/`toolCall.args`/`toolCall.agentId` a
@@ -330,7 +389,18 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
   const safeActionId = toolCallReadThrew || nameInvalid ? "unknown-action" : safeName;
   const safeAgentIdForReceipt = typeof safeAgentId === "string" && safeAgentId.length > 0 ? safeAgentId : "mcp-agent";
 
-  const inputs = toolCallReadThrew ? {} : { action: safeName, amountMinor: safeAmountMinor };
+  // ROUND 5 / R5-01. This was a plain object literal, and `objectAssign` below merges the
+  // null-prototype flatten output INTO it — `Object.assign` performs [[Set]], which walks the
+  // prototype chain. Round 4 hardened the flatten TARGET and left the MERGE target, so an inherited
+  // accessor on `Object.prototype["args.<key>"]` swallowed the write and the policy evaluated inputs
+  // that were silently missing a key. Measured DENY -> ALLOW on a rule keyed on `args.transfer.amount`,
+  // with a signed, chain-valid receipt and an honest policyHash.
+  //
+  // Scope, measured rather than assumed: a policy that lists the path in `requiredPaths` fails CLOSED
+  // (the absent path is caught). The exploit bites policies that gate on `args.*` WITHOUT declaring it
+  // required — and `packages/adapter-core/README.md` teaches `args.*` gating as the headline feature.
+  const inputs = objectCreateNull();
+  if (!toolCallReadThrew) { inputs.action = safeName; inputs.amountMinor = safeAmountMinor; }
   if (inputs.amountMinor === undefined) delete inputs.amountMinor;
 
   const paramsHash = canonicalParamsHash(safeArgs);
@@ -357,8 +427,20 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
     ev = { verdict: "DENY", ruleFired: "args-uncanonicalizable", engine: "args-canonicalization-guard" };
   } else {
     try {
-      Object.assign(inputs, flattenArgsToPolicyInputs(safeArgs, "args", 0, {}, { count: 0 }));
-      ev = evaluate(policy, inputs); // ALLOW | DENY, fail-closed, re-runnable
+      objectAssign(inputs, flattenArgsToPolicyInputs(safeArgs, "args", 0, objectCreateNull(), { count: 0 }));
+      // BYTES-IN: both documents are serialized ONCE here and parsed by the kernel — see
+      // `encodeDocument` above. A policy that cannot be serialized at all is its own fail-closed
+      // DENY, not an args error: the receipt's `ruleId` is evidence, and evidence that names the
+      // wrong cause is worse than evidence that names none.
+      let policyBytes = null;
+      try {
+        policyBytes = encodeDocument(policy);
+      } catch {
+        policyBytes = null;
+      }
+      ev = policyBytes === null
+        ? { verdict: "DENY", ruleFired: "policy-unserializable", engine: "policy-encode-guard" }
+        : evaluate(policyBytes, encodeDocument(inputs)); // ALLOW | DENY, fail-closed, re-runnable
     } catch {
       argsEnumerationThrew = true;
       ev = { verdict: "DENY", ruleFired: "args-enumeration-threw", engine: "args-flatten-ambiguity-guard" };
@@ -401,7 +483,15 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
     },
     governance: {
       mode: "on",
-      verdict: finalDecision === "ALLOW" ? "EXECUTED" : finalDecision === "DEFERRED" ? "DEFERRED" : "BLOCKED",
+      // PRE-EXECUTION DECISION RECEIPT. `preCheck` runs BEFORE the tool is invoked — it decides,
+      // it does not observe. An ALLOW therefore records ALLOWED ("policy permitted this call"),
+      // never EXECUTED ("this call ran"). It previously recorded EXECUTED, which made every
+      // consumer of this function attest an execution that had not happened yet and, when the call
+      // subsequently failed, had not happened at all: a signed, chain-valid receipt asserting
+      // EXECUTED for an operation that threw before any side effect. The post-attempt
+      // EXECUTED/FAILED receipt is a SEPARATE artifact emitted after the call settles (see
+      // framework-adapters' wrap-tool.mjs, and mcp-proxy's outcome-receipt.mjs for the MCP path).
+      verdict: finalDecision === "ALLOW" ? "ALLOWED" : finalDecision === "DEFERRED" ? "DEFERRED" : "BLOCKED",
       ruleId: heldRule ? `approval:${heldRule.id}` : (ev.ruleFired ?? "default-deny"),
       approval: null,
       sandboxed: false,

@@ -19,7 +19,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { makeHarness, makeAgent, makeDevice, signDecisionReceipt, bodyOf, PARAMS_HASH } from "./helpers.js";
+import { makeHarness, makeAgent, makeDevice, signDecisionReceipt, bodyOf, PARAMS_HASH , agentForTenant } from "./helpers.js";
 import { FileStore } from "../src/file-store.js";
 
 const ACTION = { canonical: "infra.deploy", riskClass: "HIGH" as const, paramsHash: PARAMS_HASH };
@@ -55,8 +55,10 @@ test("RESTART-PERSISTENCE: rich state written, then a FRESH FileStore over the S
   const store1 = new FileStore(path);
   const h = makeHarness({}, store1);
 
-  const { agent } = makeAgent(h);
-  const d = makeDevice(h, "restart-device", 42);
+  // R8-11: scoped to "acme" so the manifest publish below is authorized WITHOUT minting a
+  // second agent — this test asserts `agents.length === 1` on the reconstructed store.
+  const { agent } = makeAgent(h, "test-agent", "acme");
+  const d = makeDevice(h, agent, "restart-device", 42);
   assert.equal(h.engine.registerPush(d.device.id, { subscription: { fcmToken: "tok-abc" } }).status, 204);
   const { holdId } = bodyOf<{ holdId: string }>(h.engine.createHold(agent, "idem-1", { action: ACTION }));
   const receipt = signDecisionReceipt({
@@ -69,7 +71,7 @@ test("RESTART-PERSISTENCE: rich state written, then a FRESH FileStore over the S
   assert.equal(h.engine.decide(d.device, holdId, { receipt }).status, 200);
   const manifest = { spec: "noa.key-manifest/0.1", tenant: "acme", version: 3, keys: [] };
   const delegation = { spec: "noa.key-delegation/0.1", tenant: "acme", delegatedKid: "gate-1" };
-  assert.equal(h.engine.putManifest({ manifest, delegation }).status, 200);
+  assert.equal(h.engine.putManifest(agent, { manifest, delegation }).status, 200);
 
   const before = store1.dump() as unknown as Dump;
   assert.equal(before.agents.length, 1);
@@ -105,12 +107,20 @@ test("RESTART-PERSISTENCE: equal-version manifest equivocation is rejected after
   const delegation = { spec: "noa.key-delegation/0.1", tenant, delegatedKid: "gate-1" };
 
   const store1 = new FileStore(path);
-  assert.equal(makeHarness({}, store1).engine.putManifest({ manifest, delegation }).status, 200);
+  const h1 = makeHarness({}, store1);
+  const publisher = agentForTenant(h1, tenant);
+  assert.equal(h1.engine.putManifest(publisher, { manifest, delegation }).status, 200);
   store1.close();
   const bytesBefore = readFileSync(path, "utf8");
 
   const store2 = new FileStore(path);
-  const swap = makeHarness({}, store2).engine.putManifest({
+  const h2 = makeHarness({}, store2);
+  // R8-11 conversion: reuse the SAME agent, reloaded from disk. Minting a new one here would itself
+  // persist a write and destroy the byte-identity assertion at the end — which is the property this
+  // test exists for. Reloading also proves the tenant scope survived the restart.
+  const reloaded = store2.getAgentById(publisher.id);
+  assert.equal(reloaded?.tenant, tenant, "the agent's tenant scope must survive a store reload");
+  const swap = h2.engine.putManifest(reloaded!, {
     manifest: { ...manifest, keys: [{ kid: "attacker-key" }] },
     delegation,
   });
@@ -149,8 +159,8 @@ test("D2: TRUNCATED file (valid snapshot cut mid-write, simulating a crash) -> F
   const path = join(tmpDir(), "store.json");
   const store1 = new FileStore(path);
   const h = makeHarness({}, store1);
-  makeAgent(h);
-  makeDevice(h);
+  const { agent } = makeAgent(h);
+  makeDevice(h, agent);
   const full = readFileSync(path, "utf8");
   assert.ok(full.length > 10, "precondition: the snapshot must be non-trivial to truncate meaningfully");
   const truncated = full.slice(0, Math.floor(full.length / 2));
@@ -169,7 +179,7 @@ test("D2: TRUNCATED file (valid snapshot cut mid-write, simulating a crash) -> F
 test("D2: an EXISTING file that is unreadable (permission denied) -> FileStore construction FAILS LOUD, never silently starts empty", { skip: IS_ROOT && "root bypasses file permissions — cannot exercise EACCES" }, () => {
   const path = join(tmpDir(), "store.json");
   const realData = JSON.stringify({
-    agents: [{ id: "real-data", name: "x", apiKeyHash: "h", ownerDevice: null, createdAt: 1 }],
+    agents: [{ id: "real-data", name: "x", apiKeyHash: "h", ownerDevice: null, tenant: null, createdAt: 1 }],
     devices: [],
     push: [],
     pairings: [],
@@ -219,7 +229,7 @@ test("a partial object (known fields simply ABSENT, e.g. an older pre-schema sna
   const path = join(tmpDir(), "store.json");
   writeFileSync(
     path,
-    JSON.stringify({ agents: [{ id: "a1", name: "x", apiKeyHash: "h", ownerDevice: null, createdAt: 1 }] }),
+    JSON.stringify({ agents: [{ id: "a1", name: "x", apiKeyHash: "h", ownerDevice: null, tenant: null, createdAt: 1 }] }),
     "utf8",
   );
   const store = new FileStore(path);
@@ -234,14 +244,14 @@ test("the file on disk is valid, parseable JSON immediately after every mutation
   const store = new FileStore(path);
   const h = makeHarness({}, store);
 
-  makeAgent(h);
+  const { agent } = makeAgent(h);
   assert.doesNotThrow(() => JSON.parse(readFileSync(path, "utf8")));
 
-  makeDevice(h);
+  makeDevice(h, agent);
   assert.doesNotThrow(() => JSON.parse(readFileSync(path, "utf8")));
 
-  const { agent } = makeAgent(h, "second-agent");
-  h.engine.createHold(agent, "idem-atomic", { action: ACTION });
+  const { agent: agent2 } = makeAgent(h, "second-agent");
+  h.engine.createHold(agent2, "idem-atomic", { action: ACTION });
   assert.doesNotThrow(() => JSON.parse(readFileSync(path, "utf8")));
   store.close();
 });
@@ -287,7 +297,7 @@ test("D1: a persist() failure during a mutation is NEVER swallowed — the call 
   const dir = tmpDir();
   const path = join(dir, "store.json");
   const store = new FileStore(path);
-  const agent = { id: "a1", name: "x", apiKeyHash: "h", ownerDevice: null, createdAt: 1 };
+  const agent = { id: "a1", name: "x", apiKeyHash: "h", ownerDevice: null, tenant: null, createdAt: 1 };
 
   // Fail-BEFORE proof (documented in the QA finding): the PRE-fix code caught this exact
   // writeFileSync failure, logged it, and returned NORMALLY with the Map already mutated — a false
@@ -324,6 +334,7 @@ test("D1: putDevice rolls back BOTH indexes (devices + devicesByKid) on a persis
     publicKeyHex: "a".repeat(64),
     custodyTier: "software-browser",
     deviceSecretHash: "h",
+    agentId: null,
     revokedAt: null,
     createdAt: 1,
   };

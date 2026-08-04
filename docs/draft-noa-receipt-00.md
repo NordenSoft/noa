@@ -348,9 +348,13 @@ verify(receipts, { keyring?, checkpoint?, identityManifest?, requireTenantConsis
   1. Structurally validate every receipt (Sections 3-4, strict; reject unknown
      fields, bad enums/formats, non-well-formed Unicode).      -> else MALFORMED
   2. Require a single chain partition; seqs contiguous 0..n-1, unique. -> else TAMPERED
-  3. (OPTIONAL) Scan scope.tenant across the seq-ordered chain; by default record
-     each drift as a warning (verdict unaffected). If requireTenantConsistency is
-     set, reject the first drift as TAMPERED.
+  3. Scan scope.tenant across the seq-ordered chain, comparing each PRESENT value
+     against the last present value (an absent scope.tenant is reported and does
+     NOT reset the comparison -- otherwise omitting an optional field launders a
+     cross-tenant change). A present -> DIFFERENT present drift is rejected as
+     TAMPERED by DEFAULT; requireTenantConsistency: false downgrades it to a
+     warning. An absent <-> present transition is always a warning only.
+                                                                -> else TAMPERED
 
   For each receipt in seq order:
   4. Recompute hashInput and chain.hash (Section 5.1); assert it equals the

@@ -1,6 +1,6 @@
 {
   "name": "noa-mcp-proxy",
-  "version": "0.2.0",
+  "version": "0.3.1",
   "description": "Transparent MCP proxy-middleware: sits between an MCP host and an EXISTING, unmodified downstream tool server, dynamically reflects its tool surface, and gates every tools/call through noa-mcp-adapter-core's preCheck before forwarding — fail-closed on DENY, malformed input, or a broken downstream connection.",
   "keywords": [
     "mcp",
@@ -29,19 +29,27 @@
     "src",
     "README.md",
     "LICENSE",
-    "NOTICE"
+    "NOTICE",
+    "CHANGELOG.md"
   ],
   "publishConfig": {
     "access": "public",
     "provenance": true
   },
   "scripts": {
-    "test": "node test/smoke.mjs",
+    "test": "node test/dependency-reachability.mjs && node --test test/*.test.mjs && node test/smoke.mjs",
+    "test:reachability": "node test/dependency-reachability.mjs",
     "prepublishOnly": "npm test"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "noa-mcp-adapter-core": "file:../adapter-core"
+  },
+  "overrides": {
+    "@hono/node-server": "^2.0.5",
+    "fast-uri": "^3.1.5",
+    "hono": "^4.12.34",
+    "ip-address": "^10.4.0"
   },
   "optionalDependencies": {
     "noa-signer-sidecar": "file:../signer-sidecar"
