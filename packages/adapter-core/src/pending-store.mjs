@@ -8,7 +8,8 @@
  * limit: if this file is lost, the receipt chain remains the source of truth; a lost entry just
  * means that ONE request can no longer be resolved through the CLI. No cross-process file lock in
  * v1 (CLI-driven scale) — the real atomicity backstop for double-consumption races is
- * createChainSessionStore's in-memory `advance()` (see session-store.mjs's `adoptApprovedReceipt`).
+ * `createChainSessionStore`'s in-memory `advance()`, in `packages/adapter-core/src/session-store.mjs`
+ * (`adoptApprovedReceipt`).
  *
  * FAIL-CLOSED LOADING: any corrupt NON-EMPTY line makes the whole load refuse (PendingStoreError)
  * — never a silent skip. "Corrupt" includes a line that does not parse as JSON, one missing a

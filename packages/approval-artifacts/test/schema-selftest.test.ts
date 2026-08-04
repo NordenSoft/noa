@@ -91,3 +91,68 @@ test("every shipped schema parses, has $id, and validates its own valid vector",
   }
   void CONF_DIR;
 });
+
+/* ─── P1-6: THREE FROZEN SCHEMAS ADVERTISED A CIPHER SUITE NOBODY IMPLEMENTS ───────────────────────
+ *
+ * `noa-encrypted-display`, `noa-decision` and `noa-encrypted-reason` all declared
+ * `aead: { "enum": [2, 3] }`, and `noa-decision`'s own description called AES-256-GCM=2 an
+ * "accepted alternate". Nothing accepts it: the sole sealer emits `HPKE_SUITE` (aead 3,
+ * `signer-core/src/encrypted-display.ts:180`) and the sole opener throws on anything else (`:212`,
+ * "unsupported HPKE suite (decrypter never guesses)"). A schema-valid document with aead:2 was
+ * therefore refused by the only implementation that exists — the schema was advertising a promise
+ * no code could keep.
+ *
+ * NARROWED IN PLACE rather than version-bumped, on four measured grounds:
+ *   1. the correction is FAIL-CLOSED — it rejects more, never accepts more. A frozen artifact may be
+ *      corrected in place only in this direction; a widening erratum would be refused outright.
+ *   2. zero blast radius — no emitter of aead:2 exists anywhere in the repo, and this artifact
+ *      family has no presence in impl-py/go/rust/csharp and no conformance vectors.
+ *   3. the spec-bump trigger is "an already-issued document verifies differently", and no aead:2
+ *      document has ever existed. Hypothetical aead:2 input was rejected before and is rejected
+ *      now; the refusal merely moves earlier, from open-time to schema-time.
+ *   4. for `decision` and `encrypted-reason` nothing validates the suite at RUNTIME at all — both
+ *      type it as a bare `number` — so the JSON schema is the only machine gate on aead. A prose
+ *      non-claim would have reached no validator.
+ *
+ * These vectors run BOTH directions per schema. A schema narrowed without a passing case is a
+ * schema nobody proved still accepts real documents, and one narrowed without a failing case is a
+ * narrowing nobody proved happened.
+ */
+test("P1-6: all three HPKE schemas REFUSE aead:2 and still ACCEPT aead:3", () => {
+  const HPKE_SCHEMAS = [
+    "noa-encrypted-display-0.1.schema.json",
+    "noa-decision-0.1.schema.json",
+    "noa-encrypted-reason-0.1.schema.json",
+  ];
+  for (const file of HPKE_SCHEMAS) {
+    // Untyped, matching the shipped-schema test above: `SchemaNode` is internal to schema-eval.ts,
+    // and these are external JSON documents whose shape is exactly what is under test.
+    const schema = JSON.parse(readFileSync(join(SCHEMA_DIR, file), "utf8"));
+    const suite = schema.$defs.suite;
+
+    assert.ok(evalSchema(suite, { kem: 32, kdf: 1, aead: 3 }).ok,
+      `${file}: the narrowing rejected the ONLY suite any implementation emits — this would refuse ` +
+        `every real sealed document, which is an outage, not a hardening`);
+
+    assert.ok(!evalSchema(suite, { kem: 32, kdf: 1, aead: 2 }).ok,
+      `${file}: aead:2 (AES-256-GCM) still validates. No sealer emits it and the opener throws on ` +
+        `it (signer-core/src/encrypted-display.ts:212), so the schema is promising a cipher suite ` +
+        `that does not exist — the exact defect P1-6 recorded`);
+
+    assert.ok(!evalSchema(suite, { kem: 32, kdf: 1, aead: 1 }).ok,
+      `${file}: aead:1 (AES-128-GCM) validates — the constraint is not a bound, it is a hole`);
+  }
+});
+
+test("P1-6: the decision schema's PROSE no longer offers AES-256-GCM either", () => {
+  // The sharpest false claim was not the enum — it was the sentence beside it. A reader integrating
+  // against this schema would have implemented AES-256-GCM on the strength of the words "accepted
+  // alternate" and produced documents nothing can open. Narrowing the enum while leaving the prose
+  // would have left the schema self-contradictory, which is worse than either half alone.
+  const raw = readFileSync(join(SCHEMA_DIR, "noa-decision-0.1.schema.json"), "utf8");
+  assert.ok(!/accepted alternate/.test(raw),
+    "the schema still describes AES-256-GCM as an accepted alternate while its enum refuses it");
+  assert.ok(/ChaCha20Poly1305=0x0003=3 \(locked/.test(raw),
+    "the locked suite must stay named — deleting the description entirely removes the reader's " +
+      "only statement of what IS supported");
+});

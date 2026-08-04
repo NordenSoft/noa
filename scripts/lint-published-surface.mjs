@@ -78,7 +78,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync, readdirSync } from "node:fs";
 import { resolve, dirname, isAbsolute } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -184,9 +184,10 @@ const K5_PATTERNS = [
  *   • `proves`  — load-bearing honest usage: *"the knockout proves the control is load-bearing"*. The
  *                 narrow `proof-of-action` above already covers the marketing form.
  *
- * `constant-time` and `atomic` are genuine overclaim risks AND genuine true claims here
- * (`constantTimeEqualHex`; the gate's real atomic CAS). Telling an asserted guarantee from a named
- * mechanism needs a written scope, so they are a separate task, not a quiet addition.
+ * `constant-time` and `atomic` are NOT K5 terms and never will be — they are genuine overclaim
+ * risks AND genuine true claims here, so a ban fires on true statements. They are handled by K6
+ * below, which asks what the SENTENCE does with the term rather than whether the term appears.
+ * (This paragraph used to say the two were "a separate task"; that task is P1-11 and it is closed.)
  */
 const NEGATION_RE = /\bnot\b|\bnever\b|n't|\bwithout\b/i;
 const LIST_MARKER_RE = /^(?:[-*+]|\d+\.)\s+/;
@@ -258,6 +259,28 @@ function scanK4(file, text) {
 // ---------------------------------------------------------------------------
 
 /** Split a file's lines into "items": blank-line blocks, further split at each new list marker. */
+/**
+ * A JSDoc continuation line starts with `*`, and `LIST_MARKER_RE` reads `*` as a bullet — so every
+ * line of a block comment became its own "item" and no sentence could ever span a line break.
+ *
+ * MEASURED 2026-08-04, and it made K6 impossible rather than merely noisy: a doc comment reading
+ *
+ *     * v1 (CLI-driven scale) — the real atomicity backstop for double-consumption races is
+ *     * `createChainSessionStore`'s in-memory `advance()`, in `packages/.../session-store.mjs`
+ *
+ * was split so the term landed in one item and BOTH of its anchors in the next. K6 saw an
+ * unanchored claim; the author had cited the mechanism twice on the following line. A rule that
+ * cannot be satisfied by correct prose is a rule authors route around.
+ *
+ * Only stripped for SOURCE files. In Markdown, `* ` genuinely is a bullet and splitting there is
+ * right — which is why this takes the file name rather than guessing from the text.
+ */
+const COMMENT_PREFIX_RE = /^\s*(?:\*|\/\/|#)\s?/;
+function stripCommentPrefix(text, file) {
+  if (/\.(?:md|markdown)$/i.test(file)) return text;
+  return text.replace(COMMENT_PREFIX_RE, "");
+}
+
 function splitIntoItems(lines) {
   // lines: [{ no, text }]. Returns: [[{no,text}], ...]
   const blocks = [];
@@ -329,7 +352,7 @@ function splitSentences(text) {
 function scanK5(file, text) {
   const found = new Map(); // key `${line}|${term}` -> finding (dedupe)
   const rawLines = text.split("\n");
-  const items = splitIntoItems(rawLines.map((t, idx) => ({ no: idx + 1, text: t })));
+  const items = splitIntoItems(rawLines.map((t, idx) => ({ no: idx + 1, text: stripCommentPrefix(t, file) })));
   for (const itemLines of items) {
     const { joined, lineOf } = joinWithLineMap(itemLines);
     for (const sentence of splitSentences(joined)) {
@@ -353,6 +376,231 @@ function scanK5(file, text) {
   return [...found.values()];
 }
 
+
+// ---------------------------------------------------------------------------
+// K6 — MECHANISM TERMS: A CITATION PASSES, A CLAIM FAILS (P1-11)
+// ---------------------------------------------------------------------------
+/**
+ * `constant-time` and `atomic` are the two terms this repository could not decide about, and the
+ * reason they resisted a K5-style ban is that BOTH readings are true here:
+ *
+ *   · genuine implementations — `constantTimeEqualHex` (`packages/gate/src/auth.ts:50`, re-exported
+ *     from gate and relay), and the gate's real UNUSED->RESERVED CAS (`gate/src/engine.ts:1054-1064`)
+ *   · genuine overclaim risk — an asserted guarantee riding under a mechanism's name, which is
+ *     exactly the class this gate exists to catch
+ *
+ * A blanket ban fires on the true statements; no ban lets the assertion through. So the rule is not
+ * about the WORD, it is about what the sentence does with it:
+ *
+ *   **A mechanism term is a CITATION when the same sentence binds it to a resolvable code anchor,
+ *   and a CLAIM otherwise. Citations pass; claims fail. A universally quantified sentence is a CLAIM
+ *   even with an anchor — an anchor can witness an existential, never a universal.**
+ *
+ * That last clause is what "names a mechanism" compiles down to, and it is the part a matcher can
+ * actually see: `file:line` can prove *this* compare is constant-time; nothing citable can prove
+ * *all* comparisons are.
+ *
+ * ⚠ MASK, DO NOT EXEMPT. Backtick spans and code fences are replaced with placeholders before the
+ * term scan rather than exempting the whole sentence. Exempting would rebuild the `never`
+ * self-allowlisting tautology documented beside NEGATION_RE — any claim could be immunised by
+ * quoting one identifier. Masking is also what stops `constantTimeEqualHex` and
+ * `grant-atomic.test.ts` from flagging themselves as prose.
+ *
+ * ⚠ STATED RESIDUAL: K6 verifies a citation's FORM and RESOLVABILITY, never its TRUTH. A real but
+ * irrelevant identifier passes. Truth stays with human adjudication — a lint claiming to verify it
+ * would itself be the overclaim this file is about.
+ */
+const K6_TERMS = [
+  { name: "constant-time", re: /\bconstant[- ]time\b/i },
+  { name: "atomic", re: /\batomic(?:ally|ity)?\b/i },
+];
+
+/** A universal quantifier turns any mechanism term into a claim no citation can support. */
+const K6_UNIVERSAL_RE = /\b(?:all|every|always|entirely|fully|everywhere|unconditionally)\b/i;
+
+/** Replace backtick spans with same-length placeholders, so offsets and line maps stay valid. */
+function maskCodeSpans(text) {
+  return text.replace(/`[^`]*`/g, (m) => " ".repeat(m.length));
+}
+
+/** Backtick spans of a sentence, in source order — the candidate anchors. */
+function codeSpansOf(text) {
+  const out = [];
+  const re = /`([^`]+)`/g;
+  let m;
+  while ((m = re.exec(text)) !== null) out[out.length] = m[1].trim();
+  return out;
+}
+
+const SOURCE_EXT_RE = /\.(?:ts|tsx|mjs|cjs|js|go|rs|py|cs|json)(?::\d+(?:-\d+)?)?$/;
+const IDENT_RE = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+/**
+ * Does this backtick span resolve to something a reader can open?
+ *
+ * A path-like token resolves iff the file exists after stripping `:lines`. A bare identifier
+ * resolves iff it appears, at a word boundary, in the repo's TypeScript sources. Anything else —
+ * prose in backticks, a made-up name, a dead path — does not resolve, which is the point: an anchor
+ * nobody can follow is decoration, and decoration is what the claim was hiding behind.
+ */
+function anchorResolves(span, sourceIndex) {
+  if (span.includes("/") || SOURCE_EXT_RE.test(span)) {
+    const path = span.replace(/:\d+(?:-\d+)?$/, "");
+    return existsSync(resolve(REPO_ROOT, path));
+  }
+  // `acquireLock()` is how a function is named in prose, and refusing the parens would push authors
+  // toward text they would not otherwise write. Measured: without this, four HONEST-LIMIT paragraphs
+  // in `adapter-core` that already cite the exact function they are qualifying were reported as
+  // unanchored claims. A gate that fires on correctly-cited true statements gets switched off.
+  const bare = span.replace(/\(\s*\)$/, "");
+  if (IDENT_RE.test(bare)) {
+    const re = new RegExp(`\\b${bare.replace(/[.*+?^${}()|[\]\\]/g, (ch) => "\\" + ch)}\\b`);
+    for (const body of sourceIndex) if (re.test(body)) return true;
+  }
+  return false;
+}
+
+/** Every TS source body, read once — the index `anchorResolves` greps for bare identifiers. */
+let SOURCE_INDEX = null;
+function sourceIndex() {
+  if (SOURCE_INDEX !== null) return SOURCE_INDEX;
+  const bodies = [];
+  const roots = [resolve(REPO_ROOT, "src")];
+  const pkgDir = resolve(REPO_ROOT, "packages");
+  if (existsSync(pkgDir)) {
+    for (const p of readdirSync(pkgDir)) {
+      const s = resolve(pkgDir, p, "src");
+      if (existsSync(s)) bodies.push(s);
+    }
+  }
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const abs = resolve(dir, entry.name);
+      if (entry.isDirectory()) walk(abs);
+      else if (/\.(?:ts|mjs)$/.test(entry.name)) SOURCE_INDEX.push(readFileSync(abs, "utf8"));
+    }
+  };
+  SOURCE_INDEX = [];
+  for (const r of [...roots, ...bodies]) if (existsSync(r)) walk(r);
+  return SOURCE_INDEX;
+}
+
+function scanK6(file, text) {
+  const found = new Map();
+  const rawLines = text.split("\n");
+  const items = splitIntoItems(rawLines.map((t, idx) => ({ no: idx + 1, text: stripCommentPrefix(t, file) })));
+  for (const itemLines of items) {
+    const { joined, lineOf } = joinWithLineMap(itemLines);
+    for (const sentence of splitSentences(joined)) {
+      const masked = maskCodeSpans(sentence.text);
+      // Honest negatives pass, same as K5. "the bearer lookup is NOT constant-time" is a warning to
+      // the reader, and punishing warnings teaches people to delete them.
+      if (NEGATION_RE.test(masked)) continue;
+      const universal = K6_UNIVERSAL_RE.test(masked);
+      const anchored = !universal && codeSpansOf(sentence.text).some((s) => anchorResolves(s, sourceIndex()));
+      for (const term of K6_TERMS) {
+        const re = new RegExp(term.re.source, term.re.flags + "g");
+        let m;
+        while ((m = re.exec(masked)) !== null) {
+          if (!universal && anchored) break; // a citation — pass
+          const absOffset = sentence.start + m.index;
+          const line = lineOf[absOffset] ?? itemLines[0].no;
+          const key = `${line}|${term.name}`;
+          if (!found.has(key)) {
+            const snippet = (rawLines[line - 1] ?? sentence.text).trim().slice(0, 160);
+            found.set(key, {
+              file, line, category: "K6",
+              term: universal ? `${term.name} (universal)` : `${term.name} (unanchored)`,
+              snippet,
+            });
+          }
+          if (m.index === re.lastIndex) re.lastIndex++;
+        }
+      }
+    }
+  }
+  return [...found.values()];
+}
+
+
+// ---------------------------------------------------------------------------
+// K6 SELFTEST — `node scripts/lint-published-surface.mjs --selftest`
+// ---------------------------------------------------------------------------
+/**
+ * K6 currently finds ZERO on the real published surface, and a gate that finds nothing has to prove
+ * it CAN fire before that zero means anything. These fixtures are the proof, in both directions:
+ * four sentences that must be caught and three that must be let through.
+ *
+ * They run in-process because `scanK6` is a pure function of `(file, text)` — no file planting, so
+ * the selftest cannot be defeated by the packed-file trap that has caught three earlier attempts to
+ * test this script (`npm pack` decides the file set, so a violation planted in `src/` is never
+ * scanned).
+ *
+ * ⚠ PROVENANCE OF THIS MUTATION LIST, stated because it changes what the green line means: the four
+ * must-fail cases were specified by the reviewing seat, the three must-pass cases and the bypass
+ * below are mine. No independent hand has tried to break K6. A passing selftest here says "the
+ * author's and reviewer's attacks fail", not "the gate is unbypassable".
+ *
+ * ⚠ KNOWN BYPASS, LEFT OPEN DELIBERATELY (my own attempt, and it WORKS):
+ *
+ *     "Reservation is atomic (`package.json`)."
+ *
+ * `package.json` resolves, so the sentence passes as a citation while citing something with no
+ * bearing on atomicity. This is the residual K6 was designed with, not a gap discovered afterwards:
+ * K6 verifies a citation's FORM and RESOLVABILITY, never its TRUTH. Closing it would need the lint
+ * to judge whether an anchor SUPPORTS a claim, which is adjudication — and a lint claiming to do
+ * that would itself be the overclaim this whole category exists to catch. It is recorded here rather
+ * than in a comment nobody reads, so the next person to trust a green K6 knows its exact reach.
+ */
+const K6_SELFTEST_CASES = [
+  // ── must FAIL ──────────────────────────────────────────────────────────────────────────────
+  { expect: "finding", why: "a universal quantifier beats any anchor — nothing citable witnesses 'all'",
+    text: "All comparisons are constant-time (`constantTimeEqualHex`)." },
+  { expect: "finding", why: "a bare assertion with no anchor at all — the base case",
+    text: "The gate is atomic." },
+  { expect: "finding", why: "an anchor that does not resolve is decoration, and decoration is what the claim hides behind",
+    text: "Reservation is atomic (`definitelyNotARealFnXyzzy`)." },
+  { expect: "finding", why: "a dead path is the same failure as a fake identifier, spelled differently",
+    text: "Compared in constant time (`gone/missing.ts:12`)." },
+  { expect: "finding", why: "MY OWN ATTEMPT: an anchor in a NEIGHBOURING sentence must not rescue this one — scanning is per sentence, and 'see elsewhere' is how an unanchored claim would smuggle itself in",
+    text: "The gate is atomic. See `packages/gate/src/engine.ts` for the CAS." },
+
+  // ── must PASS ──────────────────────────────────────────────────────────────────────────────
+  { expect: "clean", why: "the honest citation form: term bound to a resolvable identifier AND a real path",
+    text: "The enrolment secret is compared in constant time (`constantTimeEqualHex`, `packages/gate/src/auth.ts`)." },
+  { expect: "clean", why: "the term appears ONLY inside backticks — masking must stop a filename flagging itself as prose",
+    text: "`grant-atomic.test.ts` covers the burn." },
+  { expect: "clean", why: "an honest negative is a warning to the reader; punishing warnings teaches people to delete them",
+    text: "The bearer lookup is NOT constant-time." },
+];
+
+function runK6Selftest() {
+  let failures = 0;
+  for (const c of K6_SELFTEST_CASES) {
+    const found = scanK6("selftest.md", c.text);
+    const ok = c.expect === "finding" ? found.length > 0 : found.length === 0;
+    if (!ok) failures++;
+    const verdict = ok ? "ok     " : "FAIL   ";
+    console.log(`  ${verdict} expect ${c.expect.padEnd(7)} ${JSON.stringify(c.text).slice(0, 76)}`);
+    if (!ok) console.log(`           ${c.why}`);
+  }
+  // ANTI-VACUITY: a scanK6 that returned [] for everything would satisfy every "clean" case, and a
+  // scanK6 that flagged everything would satisfy every "finding" case. Requiring both non-empty is
+  // what makes the pair of expectations mean something.
+  const findingCases = K6_SELFTEST_CASES.filter((c) => c.expect === "finding").length;
+  const cleanCases = K6_SELFTEST_CASES.length - findingCases;
+  if (findingCases === 0 || cleanCases === 0) {
+    console.error("  FAIL    the selftest tests only one direction — it cannot distinguish a working gate from a stuck one");
+    failures++;
+  }
+  console.log(
+    failures === 0
+      ? `\nK6 selftest: ${findingCases} caught, ${cleanCases} let through — the gate fires and it discriminates.`
+      : `\nK6 selftest: ${failures} FAILURE(S) — the category that judges published claims is itself wrong.`,
+  );
+  return failures === 0 ? 0 : 1;
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -372,6 +620,7 @@ function main() {
     }
     allFindings.push(...scanK4(relPath, text));
     allFindings.push(...scanK5(relPath, text));
+    allFindings.push(...scanK6(relPath, text));
   }
 
   if (allFindings.length === 0) {
@@ -388,4 +637,5 @@ function main() {
   process.exit(1);
 }
 
+if (process.argv.includes("--selftest")) process.exit(runK6Selftest());
 main();

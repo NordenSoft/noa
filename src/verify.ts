@@ -106,7 +106,40 @@ export interface VerifyResult {
   status: VerifyStatus;
   chain: string | null;
   count: number;
+  /**
+   * TRUE means: **this result is backed by COMPLETED signature authentication of the whole input.**
+   *
+   * It is NOT "a keyring was supplied", and it is NOT a progress report. It is a success-qualifier
+   * that only a completed run can earn, so it is `false` on every non-VALID verdict — including a
+   * failure at receipt N where receipts 1..N-1 authenticated cleanly, and including a failure whose
+   * reason is not cryptographic at all (tenant drift, chain order, a malformed later field). The
+   * status and `reason` carry how far the run got; this field does not.
+   *
+   * ── WHY THE OTHER READING IS THE DANGEROUS ONE (P1-13, adjudicated 2026-08-04) ─────────────────
+   * `fail()` hardcodes `false` here at all 35 call sites, and 19 of those sit after signature
+   * checking begins (`:401`), which reads like a lie. It is not, and the alternative is the defect:
+   * under "a keyring was supplied", a TAMPERED verdict would carry `signaturesVerified: true` — a
+   * POSITIVE SUB-CLAIM RIDING A FAILED CHECK. That is the same shape as a CI job reporting success
+   * having skipped its tests. A run that did not complete must never report its sub-checks as
+   * passed.
+   *
+   * The success path computes this meaning EXACTLY rather than loosely: loop 4c (`:481-495`) has no
+   * skip path — a retired kid, an unknown kid and a bad signature all `return fail(...)` — so
+   * reaching `:658` with a keyring PROVES every receipt signature authenticated. `haveKeyring` is
+   * therefore an exact witness there, not a proxy. Pinned by `test/signatures-verified-contract.test.ts`.
+   */
   signaturesVerified: boolean;
+  /**
+   * TRUE means: **an AUTHENTICATED checkpoint certified the chain head.** Same contract as
+   * `signaturesVerified` above, same reasoning, same `false`-on-every-failure rule: `:620` sets it
+   * from `cpVerify === "ok"` and nothing else, so an unauthenticated head match is never reported
+   * as a tail check.
+   *
+   * ⚠ SCOPE, not strength: with no identity manifest this says the tail was certified by SOME key
+   * the keyring trusts, which is only as strong as the weakest holder of any key in it — the §5b
+   * genesis binding that ties checkpoint authority to the chain opener runs only when a manifest is
+   * present. The warning at `:625` says so on the result itself.
+   */
   tailChecked: boolean;
   badSeq?: number;
   reason?: string;
@@ -122,6 +155,10 @@ function fail(
   count: number,
   badSeq?: number,
 ): VerifyResult {
+  // BOTH FLAGS ARE FALSE BY CONTRACT, NOT AS A PROGRESS REPORT. A failure result never carries a
+  // positive sub-claim, even when the sub-check in question did pass before the run stopped — see
+  // the `signaturesVerified` contract on the interface. This literal is deliberate and load-bearing;
+  // making it conditional on how far the loop got is the change P1-13 considered and rejected.
   const r: VerifyResult = { status, chain, count, signaturesVerified: false, tailChecked: false, reason, warnings: [] };
   if (badSeq !== undefined) r.badSeq = badSeq;
   return r;
@@ -655,6 +692,13 @@ function verifyParsedChain(receipts: unknown, o: InertVerifyOptions): VerifyResu
   }
 
   const status: VerifyStatus = haveKeyring ? "VALID" : "UNVERIFIED";
+  // `signaturesVerified: haveKeyring` is EXACT here, not a proxy, and the invariant that makes it so
+  // is worth stating because it is invisible from this line: loop 4c above has NO SKIP PATH. A
+  // retired kid, an unknown kid and a bad signature each `return fail(...)`. So control cannot reach
+  // this line with a keyring unless every receipt signature authenticated — `haveKeyring` and "every
+  // signature verified" are the same fact at this point. If anyone ever adds a `continue` to that
+  // loop, this line silently becomes a lie and the contract on `VerifyResult.signaturesVerified`
+  // breaks with it.
   return { status, chain: chainId, count: list.length, signaturesVerified: haveKeyring, tailChecked, warnings };
 }
 
