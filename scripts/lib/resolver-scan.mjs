@@ -106,7 +106,12 @@ function packageOf(rel) {
 function scannableFiles(root) {
   const out = [];
   for (const e of fs.readdirSync(root, { withFileTypes: true })) {
-    if (e.name.startsWith(".") || e.name === "node_modules" || e.name === "dist") continue;
+    // `noa-mobile` is ANOTHER PRODUCT, present inside this root only as the CI checkout of the
+    // private phone core (developers keep it as a SIBLING, which is why scanning it was never
+    // observed locally). Its trust-key census lives in its own repository; walking it here made
+    // the first armed CI run report 41 VOCAB_UNCLASSIFIED findings about foreign code
+    // (2026-08-04, run 30937306222).
+    if (e.name.startsWith(".") || e.name === "node_modules" || e.name === "dist" || e.name === "noa-mobile") continue;
     const abs = path.join(root, e.name);
     const st = fs.statSync(abs);
     if (st.isDirectory()) out.push(...filesUnder(root, e.name, { match: SOURCE }));

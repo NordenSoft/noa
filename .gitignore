@@ -34,3 +34,7 @@ agent-context/
 # Local agent scratch — must never be committed to a PUBLIC repo by a stray `git add -A`.
 scratchpad/
 .agents/
+
+# The private phone core, when checked out INSIDE this repo (CI does this; developers use a
+# sibling). Untracked here so the whole-tree clean-worktree gate measures THIS repo only.
+/noa-mobile/
