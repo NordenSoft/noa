@@ -366,6 +366,52 @@ export class RelayEngine {
     }
 
     const deferredReceipt = this.parseReceiptOrNull(input["deferredReceipt"]);
+
+    // P1-4/R8-14 — THE BINDING TARGET MUST NOT BE TRANSPLANTABLE.
+    //
+    // The decide path binds a decision to this hold's deferred receipt. That is worth nothing if the
+    // TARGET can be copied: an agent reads hold A's deferred receipt (its own, or one it obtained),
+    // opens hold B carrying the SAME deferred receipt, and replays A's approval onto B — where it now
+    // chains correctly and the binding passes. Same adversary as R8-14 itself (an agent credential
+    // plus a device transport token), and the bypass sits directly adjacent to the fix.
+    //
+    // Two deliberate choices:
+    //   · ANY status, ANY agent. A DECIDED hold is not spent ammunition, it is the ammunition — its
+    //     approval is the thing being replayed. Scoping this to the caller's own PENDING holds would
+    //     leave the whole attack open. No information leaks by scanning across agents: to trigger the
+    //     409 the caller must already hold the receipt whose hash it names.
+    //   · Keyed on the CLAIMED `chain.hash` string, not a recomputed digest. The claimed field is what
+    //     the decide path compares against, so that is the value that must be unique — and keying on
+    //     it also catches a forged copy whose body was altered while the hash field was kept.
+    //
+    // Placed AFTER the idempotency return above, so an honest retry of the same request replays its
+    // original 200 instead of colliding with the hold it created a moment ago.
+    if (deferredReceipt !== null) {
+      const drc: unknown = (deferredReceipt as unknown as Record<string, unknown>)["chain"];
+      const claimedHash = isRecord(drc) && typeof drc["hash"] === "string" ? drc["hash"] : null;
+      if (claimedHash !== null) {
+        // Index walk, not `for…of` — and the security gate is what caught the first version. `for…of`
+        // dispatches through `%ArrayIteratorPrototype%.next`, so an attacker who can poison the array
+        // iterator makes the loop SKIP the colliding hold and this guard reports "no reuse" while
+        // standing on the evidence. That is the project's whole defect class: a decision that depends
+        // on a replaceable part of the environment is not a decision. An index walk reads integer
+        // properties and consults no prototype.
+        const all = this.store.listHolds({});
+        for (let i = 0; i < all.length; i++) {
+          const odr: unknown = all[i]?.deferredReceipt;
+          if (!isRecord(odr)) continue;
+          const oc: unknown = odr["chain"];
+          if (isRecord(oc) && oc["hash"] === claimedHash) {
+            return err(409, "DEFERRED_RECEIPT_REUSED", {
+              detail:
+                "this deferred receipt already opened another hold; a hold's binding target must be " +
+                "unique, or an approval of that hold could be replayed onto this one",
+            });
+          }
+        }
+      }
+    }
+
     const now = this.now();
     const hold: HoldRecord = {
       id: randomUUID(),
@@ -621,6 +667,92 @@ export class RelayEngine {
     const ra = isRecord(receipt.action) ? receipt.action : undefined;
     if (!ra || ra.canonical !== hold.action.canonical || ra.paramsHash !== hold.action.paramsHash) {
       return err(422, "ACTION_BINDING_MISMATCH");
+    }
+
+    // ── P1-4 / R8-14 — THE ACTION IS NOT THE HOLD ──────────────────────────────────────────────
+    //
+    // The check above binds the decision to an ACTION. Two holds for the same action carry the
+    // identical `(canonical, paramsHash)` pair, so a genuine signed approval of hold A was accepted
+    // verbatim on hold B: same signature, same registered device, same verdict — a DIFFERENT
+    // QUESTION. The relay then recorded hold B as APPROVED by a human who was never shown hold B.
+    //
+    // The gate refuses this on its own decide path, so no execution grant is forged and nothing runs.
+    // What broke is the RELAY'S RECORD — what an operator reads during an incident — and a false
+    // "a human agreed to this" is a false answer even when nothing executed.
+    //
+    // ⚠ NOTHING NEW GOES ON THE WIRE, and that was measured BEFORE this line was written, because the
+    // previous item in this workstream was a verifier rule that contradicted the frozen spec and had
+    // to be reverted whole. The shipping phone ALREADY chains its decision receipt onto the hold's
+    // deferred receipt (`noa-mobile/src/transport/decision.ts:82-83` passes `deferredReceipt` as the
+    // previous receipt), so `chain.prevHash` is present in every decision a real client sends today.
+    // No client change, no format change, no new field — this starts CHECKING a binding the artifact
+    // already carried.
+    //
+    // What did NOT chain was this package's own test helper (`prev = null`), which is exactly why the
+    // gap was invisible here: the fixture had drifted from the client it stands in for.
+    //
+    // Own-property reads throughout — `receipt` is a caller-supplied document.
+    //
+    // ⚠ `chain.hash`, NOT `refHash`. The first attempt compared against `safeRefHash(deferred)` and
+    // the CONTROL caught it: the honest path broke and 15 relay tests went red. A chained receipt's
+    // `prevHash` is the previous receipt's `chain.hash` — measured directly rather than assumed:
+    //     buildReceipt(inputB, receiptA, signer).chain.prevHash === receiptA.chain.hash   -> true
+    // Two hashes over the same document are not interchangeable, and the control is the only reason
+    // that did not ship as an outage.
+    //
+    // ⚠⚠ THE BINDING IS SYMMETRIC BY CLASS, AND THE CLASS IS FIXED WHEN THE HOLD IS CREATED.
+    //
+    // A first version required a deferred receipt on every decide. That would have DELETED A SHIPPED
+    // PRODUCT SURFACE, not narrowed a contract: `POST /v1/holds` documents `deferredReceipt?` as
+    // optional (`README.md:62`) and the "third gate" flow uses it — curl/python/cron agents post a
+    // bare `{action}` hold and a headless approver decides it with an UNCHAINED receipt
+    // (`packages/e2e-demo/examples/http-agent/run-local-stack.mjs:13-14` documents the bare hold,
+    // `:153` passes `null` as the previous receipt). Refusing those is an outage for that gate.
+    //
+    // Binding only WHEN a deferred receipt is present would be worse than useless: any bearer agent
+    // can open a bare hold (`createHold` accepts one from any authenticated agent), so the adversary
+    // simply omits the field and opts out of the guard. A check an attacker can decline is decoration.
+    //
+    // So each class is bound to ITS OWN shape, and crossing classes is refused in BOTH directions:
+    //   chained hold  ->  decision MUST chain onto exactly this hold's deferred receipt
+    //   bare hold     ->  decision MUST be unchained; a chained receipt visibly belongs elsewhere
+    // A captured phone approval can therefore never land on an attacker's bare hold, and a captured
+    // headless approval can never land on a gate-opened hold.
+    //
+    // The three-way split below is NOT defensive styling — `parseReceiptOrNull` (`:410-413`) accepts
+    // any object whose `spec` is `noa.receipt/0.1` and NEVER checks that `chain.hash` is readable, so
+    // a hold really can carry a receipt with no usable hash. Collapsing this to a single
+    // `presented !== expected` comparison fails OPEN on exactly that hold: the unreadable hash reads
+    // as `null`, the hold silently reclassifies as bare, and unchained decisions are accepted.
+    const dr = isRecord(hold.deferredReceipt) ? hold.deferredReceipt : undefined;
+    const drChain = dr && isRecord(dr.chain) ? dr.chain : undefined;
+    const rc = isRecord(receipt.chain) ? receipt.chain : undefined;
+    const presentedPrev = rc && typeof rc.prevHash === "string" ? rc.prevHash : null;
+
+    if (dr === undefined) {
+      // BARE CLASS — the third gate. An unchained decision is the only correct answer here.
+      if (presentedPrev !== null) {
+        return err(422, "ACTION_BINDING_MISMATCH", {
+          detail:
+            "this hold carries no deferred receipt, so a decision chained onto one belongs to a " +
+            "different hold; an approval of a gate-opened hold is not an approval of this one",
+        });
+      }
+    } else if (drChain === undefined || typeof drChain.hash !== "string") {
+      // UNREADABLE — the hold names a deferred receipt whose chain hash cannot be read, so there is
+      // nothing to bind to and no way to tell which class this hold is. Fail closed rather than
+      // guess: an undecidable hold is a visible fault, an unbound one is a silent bypass.
+      return err(422, "ACTION_BINDING_MISMATCH", {
+        detail:
+          "this hold's deferred receipt has no readable chain hash, so no decision can be bound to it",
+      });
+    } else if (presentedPrev !== drChain.hash) {
+      // CHAINED CLASS — the phone flow.
+      return err(422, "ACTION_BINDING_MISMATCH", {
+        detail:
+          "the decision does not chain onto THIS hold's deferred receipt; an approval of another " +
+          "hold with the same action is not an approval of this one",
+      });
     }
 
     hold.decisionReceipt = receipt;

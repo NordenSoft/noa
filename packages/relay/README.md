@@ -64,10 +64,36 @@ GET  /v1/holds?status=pending (device) inbox (opaque summaries)
 GET  /v1/holds/:id       (agent|…)     status (+decisionReceipt when decided)
 GET  /v1/holds/:id/display (device)    the encrypted-display ciphertext
 GET  /v1/holds/:id/wait?timeout=25 (agent) long-poll for the decision
-POST /v1/holds/:id/decision (device)   {receipt, decisionArtifact?} → transport-verify + store
+POST /v1/holds/:id/decision (device)   {receipt, decisionArtifact?} → transport-verify + bind + store
 GET  /v1/manifest?tenant=              current (externally-signed) Key Manifest — public material
 POST /v1/manifest        (agent)       store the externally-signed manifest (relay never signs it)
 ```
+
+**Decision–hold binding (P1-4/R8-14).** A decision must bind to *this* hold, not merely to the same
+action. Two holds for the same action carry the same `(canonical, paramsHash)`, so binding on that
+pair alone let a signed approval of hold A be recorded verbatim as an approval of hold B.
+
+`deferredReceipt` stays **optional**, and the rule is symmetric over the two classes that creates —
+the class is fixed when the hold is created:
+
+- a hold created **with** a `deferredReceipt` accepts only a decision receipt chained onto it
+  (`receipt.chain.prevHash == deferredReceipt.chain.hash`) — which is what the shipping phone
+  already sends, so no client, format or field changes;
+- a hold created **without** one accepts only an **unchained** decision — the headless flow, where a
+  curl/python/cron agent posts a bare `{action}` and an approver decides it directly.
+
+Either mismatch → `422 ACTION_BINDING_MISMATCH`. A hold whose `deferredReceipt` carries no readable
+`chain.hash` is unbindable and refuses every decision. A `deferredReceipt` whose `chain.hash` was
+already presented on another hold is refused at creation with `409 DEFERRED_RECEIPT_REUSED` —
+otherwise the binding target could simply be copied onto a second hold and the replay would chain
+correctly. That check sits below the idempotency reply, so an honest retry still replays its 200.
+
+**Residual, stated rather than implied:** two *bare* holds for the same action are distinguishable
+only by the transport layer, not by signed material, so an unchained approval of one bare hold can
+still be presented on another. Closing that means requiring bare decisions to commit to the `holdId`
+in signed material — a contract change binding out-of-repo clients, so it belongs in its own ADR
+rather than here. The reference client already signs three such commitments
+(`packages/e2e-demo/examples/http-agent/run-local-stack.mjs:142-149`).
 
 Manifest versions are monotonic per tenant. A lower version returns `409 STALE_MANIFEST_VERSION`;
 an equal version is accepted only as a JCS-equivalent retry of the effective manifest + delegation

@@ -140,6 +140,17 @@ export function makeDevice(
 }
 
 /** Build a REAL signed ALLOWED/BLOCKED decision receipt for a given action, by a device key. */
+/**
+ * ⚠ `prev` IS THE HOLD'S DEFERRED RECEIPT, AND OMITTING IT IS NOW A REFUSED DECISION (P1-4/R8-14).
+ *
+ * This helper used to build every decision with `prev = null` — a genesis receipt chained onto
+ * nothing. **That is not what the shipping phone sends:** `noa-mobile/src/transport/decision.ts:82-83`
+ * passes the hold's deferred receipt, so a real decision always carries `chain.prevHash`.
+ *
+ * The drift mattered. Binding a decision to `(canonical, paramsHash)` alone let an approval of hold A
+ * be accepted on hold B — and this fixture could not see it, because it never produced the field the
+ * binding needed. **A fixture that is weaker than its client tests a system nobody runs.**
+ */
 export function signDecisionReceipt(opts: {
   kid: string;
   privateKey: string;
@@ -148,6 +159,8 @@ export function signDecisionReceipt(opts: {
   verdict: "ALLOWED" | "BLOCKED";
   chain?: string;
   ts?: string;
+  /** The hold's deferred receipt. Omit ONLY to exercise the unchained-decision refusal. */
+  prev?: Receipt | null;
 }): Receipt {
   const ts = opts.ts ?? "2026-07-14T12:00:00.000Z";
   return buildReceipt(
@@ -171,7 +184,7 @@ export function signDecisionReceipt(opts: {
         approval: { by: opts.kid, at: ts },
       },
     },
-    null,
+    opts.prev ?? null,
     { kid: opts.kid, privateKey: opts.privateKey },
   );
 }
