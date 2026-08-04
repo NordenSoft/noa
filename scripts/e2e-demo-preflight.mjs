@@ -101,8 +101,9 @@ console.log(
   "phone-core: ABSENT — the golden-path suite (packages/e2e-demo) was NOT EXECUTED in this environment.\n" +
     "  It consumes the PRIVATE sibling product NordenSoft/noa-mobile as TypeScript source, so a public CI\n" +
     "  runner cannot fetch it without a credential. This line is the honest record that the check did not\n" +
-    "  run; it is deliberately NOT a pass. To turn it into a real gate, configure the NOA_MOBILE_TOKEN\n" +
-    "  repository secret (the workflow already checks the sibling out and runs the suite when it exists),\n" +
+    "  run; it is deliberately NOT a pass. To turn it into a real gate, configure the NOA_MOBILE_SSH_KEY\n" +
+    "  repository secret — a read-only deploy key on NordenSoft/noa-mobile (the workflow already checks\n" +
+    "  the sibling out and runs the suite when it exists),\n" +
     "  or set NOA_MOBILE_SRC=<path> locally.",
 );
 process.exit(0);

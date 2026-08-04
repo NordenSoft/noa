@@ -37,7 +37,7 @@
  * taxonomy in `lib/knockout-runner.mjs`, and a kill requires a failure the CLEAN baseline did not
  * already have.
  *
- * Run:  node scripts/lint-control-knockout.mjs [--warn] [--only <id>]
+ * Run:  node scripts/lint-control-knockout.mjs [--warn] [--only <id>] [--requires <tag>]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -52,6 +52,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WARN_ONLY = process.argv.includes("--warn");
 const onlyIdx = process.argv.indexOf("--only");
 const ONLY = onlyIdx > -1 ? process.argv[onlyIdx + 1] : null;
+// --requires <tag>: run exactly the entries that DECLARE the given dependency tag. The set is
+// derived from the registry, never hand-listed — a hand-written id list in a workflow is how a
+// coverage promise rots (an eleventh phone-core control would silently miss the armed job).
+// Used by the golden-path CI job, which is the one environment where `phone-core` is present.
+const requiresIdx = process.argv.indexOf("--requires");
+const REQUIRES = requiresIdx > -1 ? process.argv[requiresIdx + 1] : null;
 const PROOF_INVENTORY = JSON.parse(
   fs.readFileSync(path.join(ROOT, "scripts", "resolver-inventory.json"), "utf8"),
 ).proofs ?? {};
@@ -1048,7 +1054,23 @@ for (const k of KNOCKOUTS) {
 const { runnable: DEPS_OK, setupFailed: DEPS_MISSING } = partitionByDependency(
   KNOCKOUTS, ROOT, DEPENDENCY_PROBES,
 );
-const selected = ONLY ? DEPS_OK.filter((k) => k.id === ONLY) : DEPS_OK;
+const selected = ONLY
+  ? DEPS_OK.filter((k) => k.id === ONLY)
+  : REQUIRES
+    ? DEPS_OK.filter((k) => (k.requires ?? []).includes(REQUIRES))
+    : DEPS_OK;
+if (REQUIRES && selected.length === 0) {
+  // No verdict is not a pass (KURAL 29): an armed job whose whole selection fell into
+  // SETUP_FAILED — or matched nothing — must refuse loudly, not exit 0 having measured nothing.
+  const declared = KNOCKOUTS.filter((k) => (k.requires ?? []).includes(REQUIRES));
+  const setupFailed = DEPS_MISSING.filter((m) => declared.some((k) => k.id === m.id));
+  console.error(
+    `--requires ${REQUIRES}: 0 runnable entries selected ` +
+    `(${declared.length} declared, ${setupFailed.length} SETUP_FAILED). ` +
+    `The experiment did not happen; refusing to report a pass.`,
+  );
+  process.exit(1);
+}
 
 // Snapshot the worktree BEFORE anything runs, so residue is measured as a DIFFERENCE.
 let WORKTREE_BEFORE = "";

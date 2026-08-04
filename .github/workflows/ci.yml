@@ -173,7 +173,9 @@ jobs:
     env:
       # The `secrets` context is NOT available in a step-level `if:`; a job-level `env` is where it
       # can be read, so the presence of the credential becomes an ordinary string to branch on.
-      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
+      # The credential is a READ-ONLY DEPLOY KEY on NordenSoft/noa-mobile (least privilege: it can
+      # read that one repository and nothing else), stored as the NOA_MOBILE_SSH_KEY secret.
+      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_SSH_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -200,7 +202,7 @@ jobs:
         # declare `requires: ["phone-core"]` and are excluded as SETUP_FAILED.
         if: steps.preflight.outputs.present != 'true'
         run: |
-          echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_TOKEN secret to measure them."
+          echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_SSH_KEY secret (read-only deploy key on NordenSoft/noa-mobile) to measure them."
           { echo ""; echo "**NOT EXECUTED** — phone core unreachable. 6 golden-path scenarios and 10 knockout controls were not measured."; } >> "$GITHUB_STEP_SUMMARY"
       - name: Fail closed when the owner has demanded the phone core
         # Opt-in strictness, never the default. A gate that blocks EVERY push on an absence only the
@@ -238,14 +240,23 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # 24, not 22, and it is a MEASURED requirement of the knockout step below: the
+          # proof-liveness runner tier reads `node --test`'s emitted markers, and their shape on
+          # Node 22 breaks proof-resolve.selftest.mjs itself (measured 2026-08-04, run
+          # 30939660927 in CI and reproduced on 22.22.2 locally: "expected passing, got absent").
+          # The selftest refusing to certify on 22 is that gate WORKING — an instrument that
+          # cannot pass its own controls must not judge, so this job runs on a Node the
+          # instrument is proven on (22 → red selftest; 24.13.0 → selftest green,
+          # resolver-parity 0 findings, ten knockouts 10/10). The product's 20/22 support is
+          # measured by the `test` matrix; this job measures the phone-core path, not Node compat.
+          node-version: 24
           cache: npm
       - name: Check out the private phone core
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: NordenSoft/noa-mobile
           path: noa-mobile
-          token: ${{ secrets.NOA_MOBILE_TOKEN }}
+          ssh-key: ${{ secrets.NOA_MOBILE_SSH_KEY }}
           persist-credentials: false
       - name: Prove the phone core is actually here before claiming to test it
         # The token can exist and the checkout still land nothing usable. Without this, a partial
@@ -257,12 +268,38 @@ jobs:
             echo "::error title=Phone core missing after checkout::the credential is configured but the phone core did not land"
             exit 1
           }
+      - name: Install the repo root first
+        # packages/e2e-demo depends on the repo root via `file:`; installing it runs the root
+        # `prepare` (tsc build), which needs the root devDependencies. Every developer machine has
+        # the root installed, so this could only ever fail in CI — and it did, the FIRST time this
+        # job ran for real (2026-08-04, run 30937117417: TS2688 "Cannot find type definition file
+        # for 'node'"). Until that run the job had only ever been skipped.
+        run: npm ci
+      - name: Install every package the golden path builds or imports
+        # Each is a measured requirement from the first two real executions of this job, not
+        # tidiness: build:deps runs each package's own tsc (needs that package's devDeps); the
+        # suite imports packages/adapter-core source, which resolves `noa-receipt` from its own
+        # node_modules; and the phone core's TS source imports its own @noble dependencies, which
+        # a bare checkout does not have (a developer's sibling checkout always does — which is why
+        # none of this could fail anywhere but here).
+        run: |
+          for p in signer-core approval-artifacts gate relay evidence adapter-core; do
+            npm --prefix "packages/$p" ci
+          done
+          npm --prefix noa-mobile ci
       - name: Build the in-repo dependencies
         run: cd packages/e2e-demo && npm ci && npm run build:deps
       - name: Typecheck the golden path
         run: cd packages/e2e-demo && npm run typecheck
       - name: Run the 6 golden-path scenarios
         run: cd packages/e2e-demo && npm test
+      - name: Measure the ten phone-core knockout controls (the only environment that can)
+        # The `test` matrix job excludes these as SETUP_FAILED because the phone core is absent
+        # there — correct, and previously the end of the story: nothing anywhere measured them.
+        # This is the one job with the phone core plus the full install set, so the ten controls
+        # are measured here. The selection is DERIVED from the registry (`--requires phone-core`),
+        # never hand-listed, and the runner refuses to pass if the selection comes back empty.
+        run: node scripts/lint-control-knockout.mjs --requires phone-core
 
   five-verifier-conformance:
     # THE FIVE-LANGUAGE INTEROP BAR, GATED. The `test` job below runs the TS<->Python conformance
@@ -312,31 +349,19 @@ jobs:
     strategy:
       matrix:
         node: [20, 22]
-    env:
-      # SELF-ARMING. Ten knockout controls declare `requires: ["phone-core"]` and this job never had
-      # a phone-core checkout, so `lint:knockout` ran their suites against a dependency that was not
-      # there: three suites failed at BASELINE, ten controls came back ANTI_VACUITY_FAILED, the gate
-      # went to `proven load-bearing 58/68` and blocked a merge — over ten controls that are all fine
-      # when the dependency is present.
-      #
-      # The runner now excludes them as SETUP_FAILED and says so loudly, which makes CI honest but
-      # leaves them unmeasured. This env + the conditional checkout below is the other half: inert
-      # today (the secret is unset, the step is skipped, nothing changes), and the moment the owner
-      # saves a read token as NOA_MOBILE_TOKEN all ten start being measured here with no further
-      # work. Recording "configure the secret later" in a document instead would mean the fix only
-      # lands if somebody remembers to come back and wire it.
-      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
+    # NO PHONE-CORE CHECKOUT IN THIS JOB — measured, not stylistic (2026-08-04, run 30937306222).
+    # An earlier design armed a conditional checkout here ("self-arming: the moment the owner saves
+    # a read token all ten start being measured with no further work"). The first run with a real
+    # credential measured that claim FALSE three ways at once: the untracked `noa-mobile/` tree
+    # tripped the whole-tree clean-worktree gate below; the resolver-parity vocabulary scan walked
+    # the foreign tree and reported 41 findings about another product's code; and the ten armed
+    # knockouts' suites need an install set this matrix job does not have. The ten phone-core
+    # knockouts are measured in `e2e-demo-golden-path` instead (`lint:knockout --requires
+    # phone-core`), the one job whose environment actually contains the phone core. Here they stay
+    # honestly excluded as SETUP_FAILED.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          persist-credentials: false
-      - name: Check out the private phone core (only when a credential is configured)
-        if: env.HAS_PHONE_CORE_TOKEN == 'true'
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: NordenSoft/noa-mobile
-          path: noa-mobile
-          token: ${{ secrets.NOA_MOBILE_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
