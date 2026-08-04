@@ -1,0 +1,54 @@
+name: pr-title
+
+# The repository squashes with `squash_merge_commit_title: PR_TITLE`, so a PR's title becomes the
+# commit subject on `main` verbatim. `main` is protected against force-pushes and its history is
+# signed, which makes that subject permanent. This gate reads the field before it becomes history.
+#
+# It lives in its own workflow rather than inside `ci.yml` on purpose. It has to re-run when the
+# title is EDITED, and adding `edited` to ci.yml's triggers would re-run the whole test matrix
+# every time somebody fixes a typo in a title.
+
+on:
+  pull_request:
+    # `edited` is the load-bearing one: it is what makes a red check turn green again after the
+    # author fixes the title, with no new commit and no re-run needed.
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  pr-title:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      # Anti-vacuity, and it runs FIRST. If the fixtures misbehave, the job fails here and renders
+      # no verdict at all on the real title — "the check could not run" and "the check passed" must
+      # never share an exit code. The fixtures run in both directions: titles that must be rejected
+      # AND titles that must be accepted, the second half being what stops a lazy substring
+      # implementation from silently blocking every legitimate title containing the word "test".
+      - name: Prove the gate can fail before letting it judge
+        run: node scripts/lint-pr-title.mjs --selftest
+
+      - name: Lint the PR title
+        # The title is passed through `env`, never interpolated into the shell. A title is
+        # attacker-controlled text — anyone can open a PR — and `${{ }}` inside a `run:` block is
+        # substituted BEFORE the shell parses the line, so a title containing a quote and a
+        # semicolon would execute as commands on the runner. This is the standard GitHub Actions
+        # script-injection sink, and a repository about trustworthy approvals does not get to have
+        # one in its own CI.
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/lint-pr-title.mjs --title "$PR_TITLE"
