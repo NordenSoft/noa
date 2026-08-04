@@ -436,8 +436,15 @@ jobs:
           npm --prefix packages/relay ci
           npm --prefix packages/evidence ci
           npm --prefix packages/framework-adapters ci
+          npm --prefix packages/signer-sidecar ci
           npm --prefix packages/mcp-proxy ci
           npm --prefix packages/e2e-demo ci
+          # e2e-demo runs `node --import tsx --test test/*.test.ts` straight from source, but it
+          # IMPORTS six siblings' BUILD OUTPUT. `npm ci` alone left it at `exit 1` with real failures
+          # in CI while a developer tree passed, because a developer tree already has them built. Its
+          # own `build:deps` script is the authoritative list — using it rather than repeating the six
+          # here means the two cannot drift.
+          npm --prefix packages/e2e-demo run build:deps
 
       - name: L4 control knockout (every control has a test that dies without it)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
