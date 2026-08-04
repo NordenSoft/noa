@@ -240,7 +240,16 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          # 24, not 22, and it is a MEASURED requirement of the knockout step below: the
+          # proof-liveness runner tier reads `node --test`'s emitted markers, and their shape on
+          # Node 22 breaks proof-resolve.selftest.mjs itself (measured 2026-08-04, run
+          # 30939660927 in CI and reproduced on 22.22.2 locally: "expected passing, got absent").
+          # The selftest refusing to certify on 22 is that gate WORKING — an instrument that
+          # cannot pass its own controls must not judge, so this job runs on a Node the
+          # instrument is proven on (22 → red selftest; 24.13.0 → selftest green,
+          # resolver-parity 0 findings, ten knockouts 10/10). The product's 20/22 support is
+          # measured by the `test` matrix; this job measures the phone-core path, not Node compat.
+          node-version: 24
           cache: npm
       - name: Check out the private phone core
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
