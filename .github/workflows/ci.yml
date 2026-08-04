@@ -408,6 +408,36 @@ jobs:
         # were import errors, not measurements — a red gate for a reason that had nothing to do with
         # the controls it exists to prove.
         run: cd packages/adapter-core && npm ci
+      - name: Install EVERY package the knockout sweep mutates — a suite that cannot run measures nothing
+        # ADDED 2026-08-03, and it is the same class as the adapter-core step above found one layer up.
+        #
+        # The knockout registry mutates controls across ten packages and re-runs each one's suite. This
+        # job installed FOUR of them (root, approval-artifacts, gate, adapter-core). The other six were
+        # never installed, so the runner measured baselines like this, in CI, at 3c9a30f:
+        #
+        #     packages/relay        exit 2    0 pre-existing failure(s)
+        #     packages/signer-core  exit 2    0 pre-existing failure(s)
+        #     packages/evidence     exit 2    0 pre-existing failure(s)
+        #
+        # `exit 2` with ZERO failures is a suite that could not START. Against a baseline that is
+        # already broken, a mutation cannot make anything worse — so six knockouts reported
+        # ANTI_VACUITY_FAILED with the exact words "a GATE suite failed exactly as its baseline did
+        # (exit 1 -> 1). Nothing got worse." **The gate was right and honest**; it was measuring an
+        # environment, not the controls.
+        #
+        # Locally the same sweep is 66/66, because a developer's tree has everything installed. That
+        # divergence is the whole point of this step.
+        #
+        # signer-core is BUILT, not just installed: relay resolves it as a local package dependency and
+        # imports its build output, so `npm ci` alone leaves relay unable to start.
+        run: |
+          set -euo pipefail
+          npm --prefix packages/signer-core ci && npm --prefix packages/signer-core run build
+          npm --prefix packages/relay ci
+          npm --prefix packages/evidence ci
+          npm --prefix packages/framework-adapters ci
+          npm --prefix packages/mcp-proxy ci
+          npm --prefix packages/e2e-demo ci
 
       - name: L4 control knockout (every control has a test that dies without it)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
