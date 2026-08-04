@@ -1108,10 +1108,20 @@ export class RelayEngine {
   /**
    * BLIND TRANSPORT (owner decision, 2026-07-30). The relay does not publish a verdict.
    *
-   * WHY. The relay's keyring has no root: `POST /v1/devices` is open, so anyone who can reach the
-   * server registers an approver key and drives a hold to APPROVED. No real approval is forged —
-   * the gate re-verifies from its own keyring at `gate/src/engine.ts:713-716` and never reads relay
-   * state — but this view used to publish `status: "APPROVED"` and `reasonCode: "HUMAN_APPROVED"`,
+   * WHY, RESTED ON THE INVARIANT RATHER THAN ON A CONFIGURATION (rewritten 2026-08-04).
+   *
+   * This used to read "`POST /v1/devices` is open, so anyone who can reach the server registers an
+   * approver key". That was true when it was written and is now STALE — R8-07 and ADR-0007 confined
+   * that route to the loopback development opt-in, and a valid enrolment secret does not open it
+   * (`server.ts:250-264`). Leaving the reason resting on an open route would have made this whole
+   * provision look closed the day enrolment was tightened, which is exactly backwards.
+   *
+   * The durable reason is narrower and does not move: **enrolment authenticates a DEVICE to the
+   * relay; it never authenticates an APPROVER to the tenant.** The relay holds no pinned root, so a
+   * signature it accepts means "the enrolled device presenting this hold signed it" and can mean
+   * nothing stronger. No real approval is forged — the gate re-verifies against its OWN
+   * `receiptKeyring` before any grant and never reads relay state — but this view used to publish
+   * `status: "APPROVED"` and `reasonCode: "HUMAN_APPROVED"`,
    * which is indistinguishable from a real approval to anyone who reads it and does not re-verify.
    * The docstring at the top of this file said "never a forged approval" while this method handed
    * one out. A document cannot carry that guarantee; the wire format has to.
@@ -1128,8 +1138,10 @@ export class RelayEngine {
    * worse than the bug it describes.
    *
    * AND DO NOT VERIFY IT "AGAINST A REGISTERED KEY" — that phrasing was here and it is dangerous.
-   * The relay's keyring is precisely the thing with no root: anyone who clears enrolment registers a
-   * key, so "valid against a registered key" is satisfied BY THE ATTACKER. The sound check is the
+   * The relay's keyring is precisely the thing with no root: registration proves possession of a
+   * keypair and nothing about the tenant, so "valid against a registered key" is satisfied BY THE
+   * ATTACKER — with an enrolment credential, or without one wherever enrolment is open. Tightening
+   * enrolment narrows WHO can register; it does not turn registration into authority. The sound check is the
    * CONSUMER'S OWN keyring, which is what the gate actually does — `gate/src/engine.ts` verifies with
    * `keyring: encodeDocument(this.trust.receiptKeyring)` and never consults relay state.
    *

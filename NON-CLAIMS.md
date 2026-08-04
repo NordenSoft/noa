@@ -437,6 +437,52 @@ Architecture options and their surviving claims: `docs/ADR-0003-enforcement-boun
 
 ---
 
+### NC-6.7 — The relay's record is not evidence (untrusted transport, by design)
+
+**We do not claim that anything the relay's own record asserts is evidence of a human approval.**
+
+The relay verifies exactly one thing: that a decision receipt's signature matches the enrolled key of
+the device presenting it (`packages/relay/src/engine.ts:687`, keyed by `store.getDeviceByKid`). That
+check authenticates a **device to the relay** — never an **approver to the tenant**. The relay holds
+no pinned root, and the key material it stores and serves (`POST /v1/manifest`, `GET /v1/trust`) is
+bearer-published, unrooted, and never consulted for any verification decision: `putManifest`'s checks
+are structural and routing only (spec, tenant scope, version monotonicity, JCS-canonicalizability,
+delegation structure), and its own docstring says the signature duty is the consumer's.
+
+Consequently everything the relay's record asserts is **bookkeeping by an unrooted party**:
+
+- a hold marked `APPROVED` or `DENIED`;
+- an `EXPIRED` the relay authors from its own clock (`engine.ts`, deliberately unsigned);
+- action fields carried over from a deferred receipt — hash-bound consistency, not authority
+  (ADR-0005 §4).
+
+Structural consistency, never authority. The authoritative artifacts are the **signed receipts
+themselves**, verified by consumers holding their own anchors: the phone against its SAS-pinned root
+(`noa-mobile/src/core/manifestChain.ts`, and `trustRefresh.ts` updates its record only on the
+`verified` branch), and the gate against its own `receiptKeyring` before it issues any execution
+grant. **An operator reading the relay's record during an incident is reading a claim, not evidence —
+re-verify the receipts.**
+
+**Giving the relay a root is not planned, and that is a decision rather than an omission.** It was
+taken on 2026-07-30 and recorded in source as "BLIND TRANSPORT (owner decision)"; this entry
+ratifies and centralizes it after two measurements taken 2026-08-04:
+
+- **Consumer census.** Every consumer of relay-served trust material verifies it against a root
+  pinned out of band. There is no trust-on-first-use: without pinned material `refreshTrust` returns
+  `unverifiable` and leaves the stored record untouched.
+- **Terminality.** The relay never verifies anything against its own served keyring, and no
+  execution decision reads relay state.
+
+So a root would upgrade **record quality only**, at the cost of a second trust anchor to provision,
+rotate and defend. The residual it would address is real and is named here rather than hidden: the
+relay's record can assert an approval the gate would refuse. That is closed by structural bindings —
+a decision must chain onto the hold it answers (ADR-0007 / the P1-4 binding) — not by a root.
+
+⚠ **Do not restate this as "the relay is safe because enrolment is closed."** Tightening enrolment
+narrows WHO may register a device; it never turns registration into authority. A reason resting on a
+configuration goes stale the day the configuration changes — this one rests on the invariant.
+
+
 ## 7. Changing this document
 
 **Adding** a non-claim: an ordinary commit. Always in scope, never needs justification.
