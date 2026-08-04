@@ -29,7 +29,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers } from "./lib/knockout-runner.mjs";
+import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds } from "./lib/knockout-runner.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ko-selftest-"));
 let failures = 0;
@@ -142,6 +142,33 @@ check("a 'tests' declaration whose baseline printed no footer is INVALID_TEST, n
   });
   assert.equal(ev.verdict, VERDICT.INVALID_TEST, `got ${ev.verdict}: ${ev.detail}`);
   assert.match(ev.detail, /disagree/);
+});
+
+/** THE REPORTER THE DEVELOPER MACHINE NEVER PRODUCES.
+ *
+ *  `node --test` emits the SPEC reporter to a TTY and **TAP** otherwise. The parser modelled only
+ *  spec's `✖ name`, so in CI it read every mutated suite as having zero failures and the classifier
+ *  fell through to ANTI_VACUITY_FAILED.
+ *
+ *  MEASURED at 50e4ed8: local `proven load-bearing 67/67`, CI **3/67**, with 64 findings reading
+ *  "Nothing new broke" over mutations that had all worked — their exit codes went 0 → 1 exactly as
+ *  designed. The 3 survivors were GATE-kind entries, which classify on the exit transition and never
+ *  call this function.
+ *
+ *  A local-only fixture could not have caught it, which is why the assertion is on the STRINGS rather
+ *  than on a real run. */
+check("failingTestIds reads BOTH reporters — spec on a TTY, TAP in CI", () => {
+  const spec = failingTestIds("✔ fine\n✖ a real failure (12ms)\n✖ failing tests:\n");
+  assert.deepEqual([...spec], ["a real failure"], "spec `✖` parsing regressed");
+
+  const tap = failingTestIds("ok 1 - fine\nnot ok 7 - a real failure\nnot ok 8 - another one\n");
+  assert.deepEqual([...tap], ["a real failure", "another one"],
+    "TAP `not ok` lines are invisible — this is the CI format, and reading it as zero failures turns " +
+      "every successful mutation into ANTI_VACUITY_FAILED");
+
+  const skipped = failingTestIds("not ok 3 - deliberately skipped # SKIP\nnot ok 4 - genuinely broken\n");
+  assert.deepEqual([...skipped], ["genuinely broken"],
+    "a SKIP directive counted as a kill — a skipped test would certify a control it never exercised");
 });
 
 check("restoration is proven byte-for-byte after every run above", () => {

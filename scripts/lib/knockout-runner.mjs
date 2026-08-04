@@ -203,12 +203,43 @@ export const VERDICT = {
 
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 
-/** Extract the set of failing test names from a node:test run. Order-independent. */
+/**
+ * Extract the set of failing test names from a node:test run. Order-independent.
+ *
+ * ── BOTH REPORTERS, AND THE SECOND ONE COST 64 FALSE FINDINGS ───────────────────────────────────
+ *
+ * This read only the SPEC reporter's `✖ name` lines. `node --test` emits spec when stdout is a TTY
+ * and **TAP otherwise** — so on a developer machine it printed `✖`, and in CI it printed
+ * `not ok 7 - name`. The parser saw nothing, `newFailures` came back empty for every suite, and the
+ * classifier fell through to ANTI_VACUITY_FAILED.
+ *
+ * MEASURED at `50e4ed8`: **local `proven load-bearing 67/67`, CI `3/67`** — with 64 findings whose
+ * text read *"the suite failed, but ONLY with the 0 failure(s) its baseline already had. Nothing new
+ * broke."* Every one of those mutations HAD worked; the exit code went 0 → 1 exactly as designed. The
+ * runner simply could not see which tests died. The three that survived were the GATE-kind entries,
+ * which classify on the exit transition and never consult this function.
+ *
+ * This is the same defect this file already documents for gates one comment below — a parser that
+ * models ONE output format, applied to a suite that speaks another, returning EMPTY and having that
+ * emptiness read as "nothing failed". **Absence of a finding and absence of parsing are the same
+ * value in code and opposite facts in reality.** It was fixed for gates in 2026-07-31 and left
+ * unfixed for the TAP case, because the developer machine never produced it.
+ */
 export function failingTestIds(output) {
   const ids = new Set();
   for (const line of String(output).split("\n")) {
-    const m = /^✖\s+(.*?)(?:\s+\(\d[\d.]*ms\))?\s*$/.exec(line);
-    if (m && m[1] && m[1] !== "failing tests:") ids.add(m[1].trim());
+    // spec reporter: `✖ the test name (1.23ms)`
+    const spec = /^✖\s+(.*?)(?:\s+\(\d[\d.]*ms\))?\s*$/.exec(line);
+    if (spec && spec[1] && spec[1] !== "failing tests:") {
+      ids.add(spec[1].trim());
+      continue;
+    }
+    // TAP reporter: `not ok 7 - the test name`  — what CI actually produces. `# TODO`/`# SKIP`
+    // directives are NOT failures and are excluded, or a skipped test would count as a kill.
+    const tap = /^not ok\s+\d+\s*-\s*(.*?)\s*$/.exec(line);
+    if (tap && tap[1] && !/#\s*(TODO|SKIP)\b/i.test(tap[1])) {
+      ids.add(tap[1].replace(/\s*#\s*(TODO|SKIP)\b.*$/i, "").trim());
+    }
   }
   return ids;
 }
