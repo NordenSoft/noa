@@ -268,8 +268,10 @@ SOC 2-scoped, not the scoped system itself.
 **The system that IS on a SOC 2 Type I readiness path is the hosted `noa-trust` console** —
 that work already exists and was just merged:
 
-- **`/Users/toratoraman/noa-trust/docs/ENTERPRISE-EVIDENCE-PACK.md`** (different repo — cited
-  by path per this task's instruction, not duplicated here). Its own opening line states the
+- **`docs/ENTERPRISE-EVIDENCE-PACK.md` in the `noa-trust` repository** (a different repository —
+  cited rather than duplicated, so the two cannot drift apart). It was previously cited by an
+  absolute path under one developer's home directory, which named a location no reader of this
+  public repository can resolve. Its own opening line states the
   same honesty framing this document uses: *"It is not an audit, and it is not a
   certification... Where a claim would require an independent auditor's opinion... this
   document says so plainly and does not simulate one."*

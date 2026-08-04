@@ -5,9 +5,16 @@ The MCP pre-flight decision engine, extracted from
 shared, unit-tested module so more than one integration (a proxy, an in-process guard, a future
 gateway) can call the exact same `preCheck()` instead of re-deriving the receipt-building logic.
 
-This package consumes the receipt engine as a registry dependency (`noa-receipt@^0.4.0`, see
-[`package.json`](package.json)), imported by package name rather than by a relative path into the
-repo's build output. See [`src/pre-check.mjs`](src/pre-check.mjs) for the imports.
+This package consumes the receipt engine as a registry dependency — see the `noa-receipt` entry
+in [`package.json`](package.json) for the exact range — imported by package name rather than by a
+relative path into the repo's build output.
+
+The range is deliberately NOT repeated here. This sentence read `^0.4.0` while the published
+tarball's manifest said `^0.6.0`, so anyone who trusted the README pinned two major-equivalent
+versions behind what they actually received. The number also differs by context: in this
+repository the dependency is `file:../..` so the package builds against the local tree, and the
+release workflow rewrites it to a registry range at publish time. There is no single number this
+line could state that would be true in both places — which is the argument for stating none. See [`src/pre-check.mjs`](src/pre-check.mjs) for the imports.
 
 ## API
 

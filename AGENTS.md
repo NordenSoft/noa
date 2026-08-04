@@ -1,6 +1,9 @@
 # NOA Receipt Project Operating System
 
-This repository inherits `/Users/toratoraman/AGENTS.md`. The rules below are additional and repository-specific.
+This repository inherits the maintainer's machine-level `AGENTS.md` (`~/AGENTS.md` — outside this
+repository and not published with it). The rules below are additional and repository-specific,
+and stand on their own: nothing here depends on having read the inherited file, which is why a
+contributor who cannot see it is not missing a rule.
 
 ## Mission and language
 
