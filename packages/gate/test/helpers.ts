@@ -61,7 +61,14 @@ export interface GateFixture {
   apiKey: string;
 }
 
-export function setupGate(opts: { approverRole?: "approve-high" | "approve-critical"; config?: Partial<GateConfig> } = {}): GateFixture {
+export function setupGate(opts: {
+  approverRole?: "approve-high" | "approve-critical";
+  config?: Partial<GateConfig>;
+  /** ADR-0005 M5 / G5. The sealer is INJECTED in production, so a test must be able to inject a
+   *  wrong one — that is the whole threat: the gate asks for a display bound to THIS hold and signs
+   *  whatever comes back. Defaults to `testSealer`, so every existing call site is unchanged. */
+  sealer?: DisplaySealer;
+} = {}): GateFixture {
   const clock = makeClock();
   const now = () => clock.t;
   let seq = 0;
@@ -72,7 +79,7 @@ export function setupGate(opts: { approverRole?: "approve-high" | "approve-criti
   const agent: AgentRecord = { id: "agent-1", name: "test-agent", apiKeyHash: hashSecret(apiKey), createdAt: now() };
   store.putAgent(agent);
   const config = resolveGateConfig({ now, ...(opts.config ?? {}) });
-  const engine = new GateEngine({ store, config, trust, schemas: loadSchemas(), sealDisplay: testSealer });
+  const engine = new GateEngine({ store, config, trust, schemas: loadSchemas(), sealDisplay: opts.sealer ?? testSealer });
   return { clock, trust, store, engine, agent, apiKey };
 }
 

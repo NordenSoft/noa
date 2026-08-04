@@ -101,12 +101,34 @@ const KNOCKOUTS = [
   // the G4 registry claim and G5 claim are withdrawn below rather than represented by false-green
   // entries. The canonical ADR/release-status correction is outside this batch's authorized files.
   //
-  // G5 IS FORMALLY WITHDRAWN, not quietly skipped. Its instruction is "delete the egress AAD
-  // verification", and that verification does not exist: `grep -rn "aad" packages/gate/src` returns
-  // exactly ONE hit, `types.ts:71`, an unused optional field. A knockout deletes a control; there is
-  // nothing here to delete, so writing a G5 entry would have manufactured the appearance of coverage
-  // over a control that was never built. The gap is recorded in ADR-0005 §13 instead — the missing
-  // control is F-1/R8-17, and it is open.
+  // G5 WAS FORMALLY WITHDRAWN AND IS NOW REGISTERED (2026-08-03). The withdrawal note read: "Its
+  // instruction is 'delete the egress AAD verification', and that verification does not exist… A
+  // knockout deletes a control; there is nothing here to delete, so writing a G5 entry would have
+  // manufactured the appearance of coverage over a control that was never built."
+  //
+  // That refusal is why this gap was findable at all — the registry declined to fake coverage, and the
+  // hole stayed visible instead of reading as closed. The control now exists
+  // (`verifySealedDisplayEgress`, engine.ts), so the condition the withdrawal named is discharged and
+  // the entry is registered in the SAME commit that built it. Never the other way round.
+  {
+    id: "g5-display-aad-egress-check",
+    control:
+      "ADR-0005 §5/§7 G5 (M5 cross-hold display replay) — the gate VERIFIES the sealed display it is " +
+      "about to sign: the returned envelope's tenant/holdId/deferredReceiptHash/expiresAt must equal " +
+      "what the gate asked for, its aadHash must equal the gate's OWN derivation over those values, " +
+      "and every requested recipient — including the always-present AUDIT key — must have survived. " +
+      "The sealer is INJECTED, so without this the gate signed whatever a component it does not " +
+      "control handed back, and a blob describing a DIFFERENT hold produced a gate-signed envelope " +
+      "binding the human's approval to a display they never saw, with every downstream check green.",
+    file: "packages/gate/src/engine.ts",
+    // Deleting the refusal is the honest mutation: the check still runs, its verdict is discarded.
+    // Deleting the CALL instead would leave `egress` unused and fail to compile — a build error scores
+    // as MUTATION_DID_NOT_BUILD and tests nothing, which is the trap G3's comment above records.
+    find: "      if (egress !== null) {\n        return err(422, \"DISPLAY_EGRESS_AAD_MISMATCH\", { detail: egress });\n      }",
+    replace: "      void egress;",
+    kind: "tests",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
   {
     id: "g3-parse-boundary-strictness",
     control: "ADR-0005 §7 G3 — stage 0: every request body enters through parseDocument. PROVEN SCOPE (2026-07-31): replacing it with a LENIENT parser breaks the three bytes-in refusals, so the boundary is load-bearing. NOT yet isolated: whether non-strict JSON specifically is refused — that half needs a mutant that reproduces decodeDocument's exact reason string, and until one exists this entry does not claim it.",

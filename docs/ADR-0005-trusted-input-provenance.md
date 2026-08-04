@@ -21,19 +21,22 @@ The owner accepted the recommendation to **split** what ADR-0004 tried to do in 
 
 **Why the split, in one sentence:** ADR-0003 and ADR-0004 were both rejected because each bundled a reversible internal correction with an irreversible external commitment, so the owner could not approve the correction without also approving the commitment. Everything in this ADR is a **two-way door**, so it can be approved on its own merits and reverted without stranding anything.
 
-**What this buys measurably:** ADR-0005 closes **M1, M2, M3, M4, M6, M7 and R-2** — every defect measured in this workstream except the ones that genuinely require custody or target cooperation. §8 maps each one to the section that closes it and states honestly what it does not close.
+**What this buys measurably:** ADR-0005 closes **M1, M2, M3, M4, M5, M6, M7 and R-2** — every defect measured in this workstream except the ones that genuinely require custody or target cooperation. §8 maps each one to the section that closes it and states honestly what it does not close.
 
-> ⚠ **M5 IS NOT IN THAT LIST, AND THIS LINE USED TO SAY IT WAS.** Corrected 2026-08-03. §8 was fixed
-> on 2026-07-31 (claim finding C12) to record **M5 cross-hold display replay as 🔴 NOT CLOSED**, but
-> this summary sentence and the §5 table row below were left saying the opposite. **Two texts in force
-> in one document, and this is the one a reader trusts first** — a KURAL 28-1 violation, and precisely
-> the failure mode this ADR was written to eliminate.
+> **M5's history, kept because it is the more useful half.** For weeks this line claimed M5 while §8
+> said 🔴 NOT CLOSED — **two texts in force in one document**, and this summary is the one a reader
+> trusts first. The egress verification described in §5 had never been written; its knockout `G5
+> display-aad-egress-check` was FORMALLY WITHDRAWN, and `scripts/lint-control-knockout.mjs` said why:
+> *"A knockout deletes a control; there is nothing here to delete, so writing a G5 entry would have
+> manufactured the appearance of coverage over a control that was never built."*
 >
-> The egress AAD verification the design describes **does not exist in code**. Its knockout, `G5
-> display-aad-egress-check`, is FORMALLY WITHDRAWN rather than quietly skipped —
-> `scripts/lint-control-knockout.mjs:96-108` states the reason: *"A knockout deletes a control; there
-> is nothing here to delete, so writing a G5 entry would have manufactured the appearance of coverage
-> over a control that was never built."* §8's M5 row is authoritative; tracked as P1-3.
+> **That refusal is why the gap was findable at all.** The registry declined to fake coverage, so the
+> hole stayed visible for five days instead of reading as closed.
+>
+> **The claim is now true, and only now.** `verifySealedDisplayEgress` (`engine.ts`) verifies the
+> sealed display before the gate signs it, and G5 is registered and `DETECTOR_TRIGGERED` — 6 new
+> failures beyond baseline when the refusal is removed, restoration byte-verified. Control built and
+> knockout registered in the SAME commit as this sentence; never the other way round.
 
 ---
 
@@ -190,7 +193,7 @@ Stage 0 closes the temporal and parse defects. It closes none of the 42 authorit
 | `action.reversible` | (A) with silent `false` default `:172` | **(B)** from the action schema | ADR-0004 tier-B leverage |
 | `chain` | (A) caller-chosen `:176` | **(D)** boundary-issued; a caller may supply a *continuation reference* the boundary validates as its own | chain-identity spoofing |
 | `recipients[]` | (A) caller array | **(D)** approver kid **+ the manifest's AUDIT key, always** | caller-deletable audit |
-| the four `encryptedDisplay` AAD fields | never checked | ⚠ **DESIGN ONLY — NOT BUILT.** The target state is verification on egress against this hold's `(tenant, holdId, deferredReceiptHash, expiresAt)`. **Today it is still "never checked"**: `grep -rn "aad" packages/gate/src` returns one hit, `types.ts`, an unused optional field. This column describes every other row's SHIPPED state, which is why leaving this one undecorated read as done. | **M5 — 🔴 NOT CLOSED, see §8** |
+| the four `encryptedDisplay` AAD fields | never checked | **verified on egress** against this hold's `(tenant, holdId, deferredReceiptHash, expiresAt)` — `verifySealedDisplayEgress`, `engine.ts`. The `aadHash` is RE-DERIVED by the gate rather than compared for presence, and every requested recipient (including the always-present AUDIT key) must have survived. Payload deliberately unchecked: the gate holds no key, so any ciphertext assertion would be decoration. | **M5** ✅ · knockout `g5-display-aad-egress-check` |
 | relay `action.{canonical,riskClass,paramsHash}` | (A) `relay/engine.ts:315-317` | **(C)** taken from the **deferred receipt** the envelope binds through `deferredReceiptHash`, once `refHash(deferredReceipt) == envelope.deferredReceiptHash`; otherwise the hold is refused. **Not read from the envelope directly** — `noa.hold/0.1` is `additionalProperties:false` over 16 required properties and has **no** `action` field. **Authority caveat:** the relay's keyring is published through an agent-authenticated route and is unrooted, so until the trust-root decision lands this yields structural consistency, **not** authority. | R-1 §4 |
 | relay `custodyTier` | (A) self-asserted `:162` | **(C)** from device attestation, or **the field is deleted** | a trust attribute written by its own subject |
 | `requestHash` pre-image | omits `display`, `encryptedDisplay`, `ttlMs`, RAW params `:217` | covers **everything that changes what the human sees** | idempotency blind to the display |
@@ -262,7 +265,7 @@ That is the runtime representation of "only the boundary may construct this". A 
 | **G2 — no `JSON.parse` on any trusted-boundary ingress** | AST lint over `packages/*/src`, allow-list by file | reintroduce `JSON.parse` at `server.ts:244` → red |
 | **G3 — knockout: `parse-boundary-strictness`** | delete the `parseDocument` call in `createHold` | suite must go red. If it stays green, no test covers stage 0 and the control is unmeasured |
 | **G4 — knockout: `render-node-single-input`** | make `render` read the parsed object instead of the canonical bytes | ⚠ **CLAIM WITHDRAWN 2026-08-01 — MEASURED, and it does NOT go red.** Withdrawn text, verbatim: *"must go red — this is the M7 regression test"*. Measured through the render node's public projection surface: clean **6/6 GREEN**, mutated **6/6 GREEN**. **What is withdrawn is the claim that a test measures this — NOT the invariant itself.** The render node reading canonical bytes is still asserted and still matters; what is now known is that nothing proves it. Absence of a proof is not absence of the property, so this stays OPEN as work rather than being closed as fine. Tracked in `noa-trust-plan.md` → P1-2 |
-| **G5 — knockout: `display-aad-egress-check`** | delete the egress AAD verification | must go red — the M5 regression test |
+| **G5 — knockout: `display-aad-egress-check`** | delete the egress AAD refusal (the check still runs; its verdict is discarded — deleting the CALL would not compile, and a build error tests nothing) | ✅ **REGISTERED + DETECTOR_TRIGGERED** 2026-08-03, load-bearing 1/1 |
 | **G6 — knockout: `riskclass-derived-not-accepted`** | accept `rawAction["riskClass"]` again | must go red — the M2 regression test |
 | **G7 — `packages/relay/src/` enters the knockout target set** | 0 of 28 controls target it today | any relay control, once one exists |
 
@@ -278,7 +281,7 @@ G3–G6 are **knockouts, not unit tests**, and the distinction is the point: a k
 | **M2** caller-chosen `riskClass` selects the approver | §4 | `riskClass` becomes (D), derived from the action schema |
 | **M3** signed DENY → `HUMAN_APPROVED` + grant | §2 | parsed values have no accessors; both reads return the same bytes `[premise measured]` |
 | **M4** absence forged via `Object.prototype` | §2 | null-prototype parse output `[premise measured]` |
-| **M5** cross-hold display replay | 🔴 **NOT CLOSED** (corrected 2026-07-31, claim finding C12) | the egress AAD verification named here **does not exist**: `grep -rc "display-aad-egress-check"` across `packages/` and `src/` returns **0**, and mechanism 5's own precedent column at §5 says *"the binding exists; nothing verifies it"*. This row previously read "Closed by §4, §5 mech. 5", which the same document refuted three pages earlier. Tracked as P1-3 in RELEASE-BLOCKERS.md. |
+| **M5** cross-hold display replay | ✅ **CLOSED 2026-08-03** | `verifySealedDisplayEgress` (`gate/src/engine.ts`) verifies the sealed display BEFORE the gate signs it: tenant/holdId/deferredReceiptHash/expiresAt must equal what the gate asked for, `aadHash` must equal the gate's **own re-derivation** over those values (presence would not have been enough — a sealer can return self-consistent nonsense), and every requested recipient including the AUDIT key must have survived. Knockout `g5-display-aad-egress-check` **DETECTOR_TRIGGERED**, 6 new failures beyond baseline, restoration byte-verified. ⚠ **HISTORY:** this row read "Closed by §4, §5 mech. 5" while the control did not exist, was corrected to 🔴 NOT CLOSED on 07-31 (claim finding C12), and stayed open until the control was built. The knockout registry's refusal to register a knockout for an absent control is what kept it visible. |
 | **M6** M1 over plain HTTP | §3, §4 | same as M1 |
 | **M7** ENFORCED split via `argv` read multiplicity | §2 **and** §3 | parse removes the accessor; the render node removes the second read |
 | **R-2** F2 check skipped when `holdEnvelope` absent — and, measured 2026-07-30, **also whenever `displayCiphertextHash` is present-and-falsy**, because the guard reads `envHash &&` | §4 | `holdEnvelope` becomes REQUIRED on `POST /v1/holds` and is parsed against `noa.hold/0.1`, where `displayCiphertextHash` is one of 16 required properties — so `envHash` cannot be absent and the skip branch ceases to exist. **This makes the check UNSKIPPABLE, not AUTHORITATIVE:** the envelope's signature is only meaningful once the relay's keyring is rooted, which is a separate owner decision. Do not read this row as closing R-1. |

@@ -19,7 +19,7 @@
  *     receivedAt (never the phone's decidedAt).
  */
 
-import { parseDocument, verifyArtifact, refHash, receiptRefHash } from "noa-approval-artifacts";
+import { parseDocument, verifyArtifact, refHash, receiptRefHash, canonicalize, sha256Prefixed } from "noa-approval-artifacts";
 // R8-08: reached through the ALREADY-PUBLISHED `intrinsics` namespace (src/index.ts:81)
 // rather than a new top-level export. Adding one tripped L1 and the C2 registry test —
 // correctly: a new name on a published surface is a permanent compatibility commitment,
@@ -131,6 +131,74 @@ function asBool(v: unknown, dflt: boolean): boolean {
 }
 function err(status: number, error: string, extra: Record<string, unknown> = {}): EngineResult {
   return { status, body: { error, ...extra } };
+}
+
+/**
+ * G5 / M5 — does the sealed display the sealer RETURNED describe the hold the gate ASKED about?
+ *
+ * Returns `null` when it does, or a human-readable reason when it does not. Never throws: this runs
+ * on the request path and a throw here would be an unhandled 500 in place of a fail-closed 422.
+ *
+ * ⚠ EVERY READ IS AN OWN-PROPERTY READ. The sealed object comes from an INJECTED component, so
+ * `sealed["holdId"]` walks a prototype chain that component controls — the same `[[Get]]` class that
+ * produced CRITICAL #2 and #3 in this repository's own audit (a polluted `Object.prototype` inventing
+ * a manifest entry). `hasOwn` first, then read, is the pattern the rest of this file already uses.
+ *
+ * ⚠ AAD HASH IS RE-DERIVED, NOT COMPARED FOR PRESENCE. A sealer that returned self-consistent
+ * nonsense — an `aadHash` committing to ITS OWN fields rather than to this hold's — would satisfy any
+ * "is it there" or "does it match the blob" check. The only question worth asking is whether it equals
+ * the value the GATE computes from the values the GATE asked for.
+ *
+ * ⚠ RECIPIENTS ARE CHECKED AS A SET, and the audit key is why. ADR-0005 Slice 4 made the audit key a
+ * non-optional recipient because a display only the approver can open is a binding no third party can
+ * ever verify. The engine put it in the REQUEST; nothing checked it survived into the RESPONSE, so a
+ * sealer could drop it silently and the gate would sign an envelope whose display no auditor can open.
+ */
+function verifySealedDisplayEgress(
+  requested: { tenant: string; holdId: string; deferredReceiptHash: string; expiresAt: string },
+  requestedKids: readonly string[],
+  sealed: Record<string, unknown>,
+): string | null {
+  const own = (k: string): unknown => (hasOwn(sealed, k) ? sealed[k] : undefined);
+
+  for (const field of ["tenant", "holdId", "deferredReceiptHash", "expiresAt"] as const) {
+    const got = own(field);
+    if (got !== requested[field]) {
+      return `sealed display ${field} is ${JSON.stringify(got)}, the gate asked for ${JSON.stringify(requested[field])}`;
+    }
+  }
+
+  const expectedAad = sha256Prefixed(canonicalize({
+    tenant: requested.tenant,
+    holdId: requested.holdId,
+    deferredReceiptHash: requested.deferredReceiptHash,
+    expiresAt: requested.expiresAt,
+  }));
+  const gotAad = own("aadHash");
+  if (gotAad !== expectedAad) {
+    return `sealed display aadHash does not equal the gate's own derivation over the fields it asked for`;
+  }
+
+  const rcpts = own("recipients");
+  if (!Array.isArray(rcpts)) return "sealed display carries no recipients array";
+  const gotKids: string[] = [];
+  for (let i = 0; i < rcpts.length; i++) {
+    const r: unknown = rcpts[i];
+    if (!isRecord(r)) return `sealed display recipient[${i}] is not an object`;
+    const kid = hasOwn(r, "kid") ? r["kid"] : undefined;
+    if (typeof kid !== "string") return `sealed display recipient[${i}] has no kid`;
+    gotKids[gotKids.length] = kid;
+  }
+  for (let i = 0; i < requestedKids.length; i++) {
+    const want = requestedKids[i]!;
+    let found = false;
+    for (let j = 0; j < gotKids.length; j++) if (gotKids[j] === want) found = true;
+    if (!found) {
+      return `sealed display dropped recipient ${JSON.stringify(want)} — the gate asked for it and a ` +
+        `display it cannot open is a binding nobody can independently verify`;
+    }
+  }
+  return null;
 }
 
 export interface GateEngineDeps {
@@ -520,6 +588,37 @@ export class GateEngine {
           { kid: this.trust.auditKid, hpkePublicKey: this.trust.auditHpkePublicKey },
         ],
       });
+
+      // ─── G5 / M5 — VERIFY THE SEALED DISPLAY ON EGRESS (ADR-0005 §5, §7) ───────────────────────
+      //
+      // WHAT WAS HERE: nothing. The gate asked the sealer for a display bound to THIS hold and then
+      // signed whatever came back, without checking that the returned envelope carried the fields it
+      // had asked for. `sealDisplay` is INJECTED, so "whatever came back" is a component this engine
+      // does not control — and the Hold Envelope below binds it via `displayCiphertextHash` and signs
+      // the result.
+      //
+      // A sealer returning another hold's blob therefore produced a gate-signed envelope in which the
+      // human's approval was bound to a display belonging to a DIFFERENT hold. Everything downstream
+      // stayed consistent: genuine signature, correct chain, honest projection identity. Nothing could
+      // tell. That is M5 cross-hold display replay.
+      //
+      // ⚠ THIS CONTROL WAS NAMED IN A DESIGN DOCUMENT FOR WEEKS AND NEVER BUILT. ADR-0005 §5 wrote
+      // "verified on egress" in a column where every other row described SHIPPED state, and §7 named
+      // its knockout `G5 display-aad-egress-check`. The knockout registry refused to register G5 and
+      // said why — "a knockout deletes a control; there is nothing here to delete" — which is the only
+      // reason the gap stayed visible instead of reading as covered.
+      //
+      // WHAT IT CHECKS AND WHAT IT DELIBERATELY DOES NOT: the AAD BINDING, never the payload. The gate
+      // holds no decryption key, so any assertion about the ciphertext would be decoration. A control
+      // that cannot fail for the reason it claims is the pattern this file has deleted twice.
+      const egress = verifySealedDisplayEgress(
+        { tenant: this.trust.tenant, holdId, deferredReceiptHash, expiresAt },
+        [this.trust.approver.kid, this.trust.auditKid],
+        encryptedDisplay as unknown as Record<string, unknown>,
+      );
+      if (egress !== null) {
+        return err(422, "DISPLAY_EGRESS_AAD_MISMATCH", { detail: egress });
+      }
     }
 
     // Hold Envelope (D1) — gate-signed, binds display + projection identity + manifest version.
