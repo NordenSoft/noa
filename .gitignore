@@ -13,6 +13,15 @@ __pycache__/
 # Scratch / repro artifacts (audit agents write these to the repo root; never ship them)
 _*.mjs
 _*.ts
+# Added 2026-08-04. The rule above covered two extensions, and the convention it encodes —
+# a leading underscore means local scratch — covers all of them. Two scratch files written in
+# other languages (_cose-interop-vector.json, _cose_interop_verify.py) were therefore committed
+# to a PUBLIC repository while their own headers stated they were gitignored. A convention that
+# holds for some extensions is not a convention; it is a coincidence that has not failed yet.
+_*.py
+_*.json
+_*.txt
+_*.sh
 _repro_*
 _probe*
 # Exception: a LEGIT shared test fixture that happens to use the _ prefix — deterministic seeded

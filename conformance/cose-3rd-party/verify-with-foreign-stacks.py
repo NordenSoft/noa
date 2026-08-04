@@ -1,4 +1,10 @@
-# SCRATCH (gitignored _*) — independent 3rd-party verification of a NOA COSE_Sign1 -19 envelope.
+# Independent 3rd-party verification of a NOA COSE_Sign1 -19 envelope.
+#
+# This header used to read 'SCRATCH (gitignored _*)'. Both halves were false: the repository's
+# ignore rules covered _*.mjs and _*.ts but never _*.py, so this file was tracked and public
+# while telling every reader it was neither. It is now a tracked conformance artifact, named
+# and placed like one, and the ignore rules have been extended so the next _*.py really is
+# ignored. See README.md in this directory for what it proves and how to re-run it.
 # Two independent stacks, neither is NOA code:
 #   (A) pycose 1.1.0 — does it recognize/decode the COSE_Sign1 structure and read alg=-19?
 #   (B) cbor2 + cryptography (PyCA) — independently reconstruct RFC 9052 Sig_structure and
@@ -7,8 +13,19 @@ import json, sys
 import cbor2
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
-with open("_cose-interop-vector.json") as f:
+# The vector defaults to the one sitting beside this script, so the check runs from anywhere:
+#   python3 conformance/cose-3rd-party/verify-with-foreign-stacks.py
+# Pass a path to judge a different vector. The previous version hardcoded a bare filename, so it
+# only worked when the working directory happened to be the repository root — and it accepted an
+# argv path silently without using it, which is worse than rejecting one: you can hand it vector A,
+# watch it verify vector B, and read that as a PASS for A.
+import os
+DEFAULT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cose-sign1-ed25519.vector.json")
+path = sys.argv[1] if len(sys.argv) > 1 else DEFAULT
+
+with open(path) as f:
     v = json.load(f)
+print(f"vector: {path}")
 
 cose = bytes.fromhex(v["cose_sign1_hex"])
 print("=== Vector ===")
