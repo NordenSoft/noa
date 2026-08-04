@@ -91,3 +91,16 @@ same `guard.receipts` array — one hash chain per agent, `verifyChain`-able as 
 Not yet published. See the root repo's publish workflow ([`.github/workflows/publish-mcp.yml`](../../.github/workflows/publish-mcp.yml))
 for how sibling packages (`noa-mcp-adapter-core`, `noa-mcp-proxy`) are released — publishing this
 package is an operator action, not automatic.
+
+## What this package does not claim
+
+[`NON-CLAIMS.md`](https://github.com/NordenSoft/noa/blob/main/NON-CLAIMS.md) is the normative record of what NOA does **not** do. It is
+not shipped inside this tarball, so it is linked by URL rather than by a relative path that would
+404 for exactly the reader who needs it.
+
+Read it before you rely on this package for anything that matters. A boundary you have to infer
+from silence is a boundary you will get wrong, and the failure this project is built around is a
+forged or misattributed approval — not downtime, which is the one people plan for.
+
+Alongside it: [`THREAT-MODEL.md`](https://github.com/NordenSoft/noa/blob/main/THREAT-MODEL.md) for what is defended against, and
+[`SECURITY.md`](https://github.com/NordenSoft/noa/blob/main/SECURITY.md) for which versions get fixes and how to report a finding.
