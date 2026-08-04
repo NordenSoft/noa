@@ -27,8 +27,21 @@
  * WHY THIS FILE EXISTS RATHER THAN A FIX AT EACH SITE. Round 3 hardened thirteen sites; round 4
  * found four more, in the same shape, in the same packages. Per-site conversion means per-site
  * omission, and the omissions are invisible until someone reproduces the next one. There is now ONE
- * conversion, it is itself undefeatable, and `scripts/lint-thrown-value-handling.mjs` fails the
+ * conversion, held to the four rules below, and `scripts/lint-thrown-value-handling.mjs` fails the
  * build when any handler in the governed packages touches a caught value any other way.
+ *
+ * ⚠ THIS SENTENCE CARRIED A K5-BANNED ABSOLUTE about the conversion itself. Corrected 2026-08-04,
+ * caught the hour that term entered the publish-surface lint's set — this file ships in
+ * `noa-mcp-adapter-core`, so it was published text making an unfalsifiable claim.
+ *
+ * What is true is stronger for being sayable: ONE conversion instead of seventeen, four auditable
+ * rules, and a mechanical gate that fails the build on any bypass. What was NOT true is the absolute.
+ * This project's whole defect record is controls described that way being broken anyway, three
+ * releases running — the rules below are a discipline, not a proof.
+ *
+ * Writing this note cost two attempts. The first named the banned term while explaining it, and the
+ * gate refused that too — correctly, because an explanation shipped inside a published package is
+ * published text. **A banned absolute cannot be discussed on the published surface, only replaced.**
  *
  * THE RULES THIS MODULE HOLDS ITSELF TO (audit them — they are the whole contract):
  *   1. Nothing in here reads a property of the untrusted value outside a `try`.
