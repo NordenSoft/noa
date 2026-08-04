@@ -54,7 +54,7 @@ test("buildReceiptAsync's receipt verifies VALID under the RemoteSigner's own pu
   const remoteSigner = fakeRemoteSigner(kp.kid, kp.privateKey);
   const r = await buildReceiptAsync(mkInput("rcpt_0", "2026-07-11T00:00:00.000Z"), null, remoteSigner);
   const v = verifyChain(b([r]), { keyring: b({ [kp.kid]: kp.publicKey }) });
-  assert.equal(v.status, "VALID", v.reason);
+  assert.equal(v.status, "VALID", v.reason ?? "");
 });
 
 test("buildReceiptAsync propagates a RemoteSigner rejection (sidecar down) instead of swallowing it", async () => {
@@ -77,5 +77,5 @@ test("buildReceiptAsync accepts a LOCAL { kid, privateKey } Signer too (not Remo
   const kp = generateKeyPair("k-async-4");
   const r = await buildReceiptAsync(mkInput("rcpt_0", "2026-07-11T00:00:00.000Z"), null, { kid: kp.kid, privateKey: kp.privateKey });
   const v = verifyChain(b([r]), { keyring: b({ [kp.kid]: kp.publicKey }) });
-  assert.equal(v.status, "VALID", v.reason);
+  assert.equal(v.status, "VALID", v.reason ?? "");
 });

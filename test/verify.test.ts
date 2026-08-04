@@ -40,7 +40,7 @@ const checkpointObj = load("checkpoint.json") as Checkpoint;
 
 test("valid chain + keyring -> VALID, signatures verified", () => {
   const r = verifyChain(doc("valid-chain.json"), { keyring });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.signaturesVerified, true);
   assert.equal(r.count, 3);
   // honest caveat: tail truncation not checked without a checkpoint
@@ -50,7 +50,7 @@ test("valid chain + keyring -> VALID, signatures verified", () => {
 
 test("valid chain + keyring + checkpoint -> VALID, tail checked", () => {
   const r = verifyChain(doc("valid-chain.json"), { keyring, checkpoint });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.tailChecked, true);
 });
 
@@ -397,7 +397,7 @@ test("a flipping checkpoint accessor cannot yield VALID over a truncated tail (t
   // pair a truncated chain with the legitimate checkpoint and be told the tail was checked. Without the
   // flip there is no split to exploit, and the genuine checkpoint over an erased tail is TAMPERED.
   const overBytes = verifyChain(b(truncated), { keyring, checkpoint });
-  assert.equal(overBytes.status, "TAMPERED", overBytes.reason);
+  assert.equal(overBytes.status, "TAMPERED", overBytes.reason ?? "");
   assert.equal(overBytes.tailChecked, false);
 });
 
@@ -447,7 +447,7 @@ test("a flipping agent.id accessor cannot produce a false VALID attribution — 
   // it simply breaks the signed body and is caught as TAMPERED. Never a false VALID either way.
   const spoofed = { ...r0, agent: { ...r0.agent, id: "attacker-spoofed" } };
   const spoofRes = verifyChain(b([spoofed]), { keyring });
-  assert.equal(spoofRes.status, "TAMPERED", spoofRes.reason);
+  assert.equal(spoofRes.status, "TAMPERED", spoofRes.reason ?? "");
 });
 
 test("a non-object keyring (array / null) → MALFORMED (parity with the Python verifier)", () => {
@@ -531,7 +531,7 @@ test("a flipping keyring getter cannot authenticate the walk with one key and a 
   const legitKeyring = { [legitKid]: legit.publicKey };
   const legitCp = buildCheckpoint(full[full.length - 1]!, "2026-06-21T11:00:00.000Z", { kid: legitKid, privateKey: legit.privateKey });
   const good = verifyChain(b(full), { keyring: b(legitKeyring), checkpoint: b(legitCp) });
-  assert.equal(good.status, "VALID", good.reason);
+  assert.equal(good.status, "VALID", good.reason ?? "");
   assert.equal(good.tailChecked, true);
 });
 
@@ -623,7 +623,7 @@ test("a non-object checkpoint → MALFORMED (parity with the Python CLI, not TAM
   }
   // sanity: the legit checkpoint still VALID + tailChecked (no regression).
   const good = verifyChain(doc("valid-chain.json"), { keyring, checkpoint });
-  assert.equal(good.status, "VALID", good.reason);
+  assert.equal(good.status, "VALID", good.reason ?? "");
   assert.equal(good.tailChecked, true);
 });
 
@@ -652,7 +652,7 @@ test("A1: mixed scope.tenant across one chain -> TAMPERED BY DEFAULT (fail-close
   const r = verifyChain(b([r0, r1, r2]), { keyring: tenantKeyring });
   // Tenant isolation is a security boundary; the DEFAULT now enforces it. The failure is loud and
   // machine-readable, never a quietly different answer.
-  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.equal(r.status, "TAMPERED", r.reason ?? "");
   assert.match(r.reason ?? "", /tenant-drift: seq 1 "acme" -> seq 2 "globex"/);
   assert.equal(r.badSeq, 2, "badSeq must point at the FIRST drifting receipt");
 });
@@ -662,7 +662,7 @@ test("A1: consistent scope.tenant across one chain -> NO tenant-drift warning", 
   const r1 = mkTenantReceipt("r1", "acme", r0);
   const r2 = mkTenantReceipt("r2", "acme", r1);
   const r = verifyChain(b([r0, r1, r2]), { keyring: tenantKeyring });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.ok(!r.warnings.some((w) => /tenant-drift/.test(w)), `unexpected tenant-drift warning: ${JSON.stringify(r.warnings)}`);
 });
 
@@ -670,7 +670,7 @@ test("A1: scope.tenant absent on every receipt -> NO tenant-drift warning (absen
   const r0 = mkTenantReceipt("r0", undefined, null);
   const r1 = mkTenantReceipt("r1", undefined, r0);
   const r = verifyChain(b([r0, r1]), { keyring: tenantKeyring });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.ok(!r.warnings.some((w) => /tenant-drift/.test(w)), `unexpected tenant-drift warning: ${JSON.stringify(r.warnings)}`);
 });
 
@@ -683,7 +683,7 @@ test("A1: absent<->present tenant is REPORTED but not TAMPERED (an optional fiel
   const r0 = mkTenantReceipt("r0", "acme", null);
   const r1 = mkTenantReceipt("r1", undefined, r0);
   const r = verifyChain(b([r0, r1]), { keyring: tenantKeyring });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.ok(
     r.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 (none)'),
     `the transition must still be REPORTED, got: ${JSON.stringify(r.warnings)}`,
@@ -706,7 +706,7 @@ test("A1: acme -> absent -> globex is the SAME splice as acme -> globex -> TAMPE
   const r1 = mkTenantReceipt("r1", undefined, r0);
   const r2 = mkTenantReceipt("r2", "globex", r1);
   const r = verifyChain(b([r0, r1, r2]), { keyring: tenantKeyring });
-  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.equal(r.status, "TAMPERED", r.reason ?? "");
   assert.match(
     r.reason ?? "",
     /tenant-drift: seq 0 "acme" -> seq 2 "globex"/,
@@ -721,7 +721,7 @@ test("A1: MORE omissions do not help — acme -> absent -> absent -> globex is s
   const r2 = mkTenantReceipt("r2", undefined, r1);
   const r3 = mkTenantReceipt("r3", "globex", r2);
   const r = verifyChain(b([r0, r1, r2, r3]), { keyring: tenantKeyring });
-  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.equal(r.status, "TAMPERED", r.reason ?? "");
   assert.match(r.reason ?? "", /tenant-drift: seq 0 "acme" -> seq 3 "globex"/);
 });
 
@@ -730,7 +730,7 @@ test("A1: acme -> absent -> acme stays VALID — the same tenant resuming is the
   const r1 = mkTenantReceipt("r1", undefined, r0);
   const r2 = mkTenantReceipt("r2", "acme", r1);
   const r = verifyChain(b([r0, r1, r2]), { keyring: tenantKeyring });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.ok(
     r.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 (none)'),
     `the absent transitions must still be REPORTED: ${JSON.stringify(r.warnings)}`,
@@ -742,7 +742,7 @@ test("A1: absent -> absent -> acme stays VALID (enrichment: a producer that STAR
   const r1 = mkTenantReceipt("r1", undefined, r0);
   const r2 = mkTenantReceipt("r2", "acme", r1);
   const r = verifyChain(b([r0, r1, r2]), { keyring: tenantKeyring });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
 });
 
 test("A1: the opt-out still reports the laundered splice against the LAST PRESENT tenant, never silently drops it", () => {
@@ -752,7 +752,7 @@ test("A1: the opt-out still reports the laundered splice against the LAST PRESEN
   const r1 = mkTenantReceipt("r1", undefined, r0);
   const r2 = mkTenantReceipt("r2", "globex", r1);
   const r = verifyChain(b([r0, r1, r2]), { keyring: tenantKeyring, requireTenantConsistency: false });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.ok(
     r.warnings.includes('tenant-drift: seq 0 "acme" -> seq 2 "globex"'),
     `the splice itself must be reported, not only the two adjacent transitions: ${JSON.stringify(r.warnings)}`,
@@ -763,7 +763,7 @@ test("A1: present -> DIFFERENT present IS a cross-tenant splice -> TAMPERED by d
   const r0 = mkTenantReceipt("r0", "acme", null);
   const r1 = mkTenantReceipt("r1", "globex", r0);
   const r = verifyChain(b([r0, r1]), { keyring: tenantKeyring });
-  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.equal(r.status, "TAMPERED", r.reason ?? "");
   assert.match(r.reason ?? "", /tenant-drift: seq 0 "acme" -> seq 1 "globex"/);
 });
 
@@ -772,7 +772,7 @@ test("A1: requireTenantConsistency:true + drift -> fail-closed TAMPERED (same ve
   const r1 = mkTenantReceipt("r1", "acme", r0);
   const r2 = mkTenantReceipt("r2", "globex", r1);
   const r = verifyChain(b([r0, r1, r2]), { keyring: tenantKeyring, requireTenantConsistency: true });
-  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.equal(r.status, "TAMPERED", r.reason ?? "");
   assert.match(r.reason ?? "", /tenant-drift: seq 1 "acme" -> seq 2 "globex"/);
   assert.equal(r.badSeq, 2);
 });
@@ -781,7 +781,7 @@ test("A1: requireTenantConsistency:true + NO drift -> VALID (opt-in enforcement 
   const r0 = mkTenantReceipt("r0", "acme", null);
   const r1 = mkTenantReceipt("r1", "acme", r0);
   const r = verifyChain(b([r0, r1]), { keyring: tenantKeyring, requireTenantConsistency: true });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.deepEqual(r.warnings.filter((w) => /tenant-drift/.test(w)), []);
 });
 
@@ -796,7 +796,7 @@ test("A1: requireTenantConsistency:false restores the EXACT previous behaviour (
   assert.equal(enforced.status, "TAMPERED", "the new default is fail-closed");
 
   const optOut = verifyChain(b([r0, r1]), { keyring: tenantKeyring, requireTenantConsistency: false });
-  assert.equal(optOut.status, "VALID", optOut.reason);
+  assert.equal(optOut.status, "VALID", optOut.reason ?? "");
   assert.ok(
     optOut.warnings.includes('tenant-drift: seq 0 "acme" -> seq 1 "globex"'),
     `the opt-out must still REPORT the drift, got: ${JSON.stringify(optOut.warnings)}`,
@@ -894,18 +894,18 @@ test("P0-14: every root chain/checkpoint surface refuses a lifecycle-retired key
     }) },
   );
 
-  assert.equal(currentControl.status, "VALID", currentControl.reason);
+  assert.equal(currentControl.status, "VALID", currentControl.reason ?? "");
   assert.equal(unknownControl.status, "TAMPERED");
   assert.match(unknownControl.reason ?? "", /unknown signing key/);
   assert.equal(freshRetiredAttack.status, "TAMPERED", `retired at ${retirement}: ${freshRetiredAttack.reason ?? "accepted"}`);
   assert.match(freshRetiredAttack.reason ?? "", /retired/i);
-  assert.equal(backdatedRetiredAttack.status, "TAMPERED", backdatedRetiredAttack.reason);
+  assert.equal(backdatedRetiredAttack.status, "TAMPERED", backdatedRetiredAttack.reason ?? "");
   assert.match(backdatedRetiredAttack.reason ?? "", /retired/i);
-  assert.equal(backdatedRetiredTextAttack.status, "TAMPERED", backdatedRetiredTextAttack.reason);
+  assert.equal(backdatedRetiredTextAttack.status, "TAMPERED", backdatedRetiredTextAttack.reason ?? "");
   assert.match(backdatedRetiredTextAttack.reason ?? "", /retired/i);
-  assert.equal(staticControl.status, "VALID", staticControl.reason);
-  assert.equal(staticKeysKidControl.status, "VALID", staticKeysKidControl.reason);
-  assert.equal(currentCheckpointControl.status, "VALID", currentCheckpointControl.reason);
+  assert.equal(staticControl.status, "VALID", staticControl.reason ?? "");
+  assert.equal(staticKeysKidControl.status, "VALID", staticKeysKidControl.reason ?? "");
+  assert.equal(currentCheckpointControl.status, "VALID", currentCheckpointControl.reason ?? "");
   assert.equal(currentCheckpointControl.tailChecked, true);
   assert.equal(retiredCheckpointAttack.status, "TAMPERED");
   assert.match(retiredCheckpointAttack.reason ?? "", /checkpoint signing key.*retired/i);

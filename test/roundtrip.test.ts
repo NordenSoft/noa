@@ -39,7 +39,7 @@ test("build → verify round-trips as VALID with a fresh random key", () => {
   }
 
   const res = verifyChain(b(chain), { keyring: b(keyring) });
-  assert.equal(res.status, "VALID", res.reason);
+  assert.equal(res.status, "VALID", res.reason ?? "");
   assert.equal(res.count, 5);
 
   const cp = buildCheckpoint(chain[chain.length - 1]!, "2026-06-20T06:00:00.000Z", signer);

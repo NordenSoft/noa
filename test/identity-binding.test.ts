@@ -26,7 +26,7 @@ function mkInput(agentId: string): BuildInput {
 test("B1: identity manifest authorizes the (agent.id, kid) pairing → VALID", () => {
   const chain = [buildReceipt(mkInput("alice"), null, { kid: alice.kid, privateKey: alice.privateKey })];
   const r = verifyChain(b(chain), { keyring: b(keyring), identityManifest: b({ alice: ["alice-key"], bob: ["bob-key"] }) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.signaturesVerified, true);
 });
 
@@ -87,7 +87,7 @@ test("B1 (genesis-binding): a checkpoint forged by a co-trusted-but-UNauthorized
   // the authorized checkpoint (signed by alice's own key — the opener) still verifies + tail-checks
   const goodCp = buildCheckpoint(head, "2026-06-21T11:00:00.000Z", { kid: alice.kid, privateKey: alice.privateKey });
   const good = verifyChain(b([head]), { keyring: b(keyring), checkpoint: b(goodCp), identityManifest: b(manifest) });
-  assert.equal(good.status, "VALID", good.reason);
+  assert.equal(good.status, "VALID", good.reason ?? "");
   assert.equal(good.tailChecked, true);
 });
 
@@ -119,7 +119,7 @@ test("B1: RE-HEADING truncation — a co-trusted key appends onto a victim's pre
   const bobCp = buildCheckpoint(b1, "2026-06-21T11:00:00.000Z", bobS);
 
   const attack = verifyChain(b([a0, b1]), { keyring: b(keyring), checkpoint: b(bobCp), identityManifest: b(manifest) });
-  assert.equal(attack.status, "UNTRUSTED", attack.reason);
+  assert.equal(attack.status, "UNTRUSTED", attack.reason ?? "");
   assert.equal(attack.tailChecked, false);
   assert.match(attack.reason ?? "", /checkpoint signing key "bob-key" is not authorized for chain opener \(genesis\) agent "alice"/);
 
@@ -221,7 +221,7 @@ test("B1: an accessor-backed manifest is NO LONGER accepted even when its value 
   // The migration path, and the half of the original assertion that survives: the SAME authorization,
   // supplied as the document it always was, is still VALID.
   const r = verifyChain(b(chain), { keyring: b(keyring), identityManifest: b({ alice: ["alice-key"], bob: ["bob-key"] }) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
 });
 
 test("B1: a malformed manifest is fail-closed (MALFORMED), never silently ignored", () => {

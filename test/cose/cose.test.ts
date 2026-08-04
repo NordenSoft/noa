@@ -55,7 +55,7 @@ test("receipt → COSE_Sign1 → verify round-trips, returns the receipt", () =>
   assert.equal(cose[0], 0xd2); // CBOR tag 18 (0xc0|18=0xd2) — a real COSE_Sign1 tag
 
   const r = receiptFromCose(cose, b(keyring));
-  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.ok, true, r.reason ?? "");
   assert.equal(r.kid, "noa-key-1");
   // canonical-equivalence (safeParse yields null-prototype objects; bytes are what matter)
   assert.equal(canonicalize(r.receipt), canonicalize(receipt));
@@ -295,7 +295,7 @@ test("FWD-COMPAT (a): kid in the PROTECTED header {1:-19, 4:kid} is accepted AND
   const prot = encMap([[encInt(1), encInt(-19)], [encInt(4), encBstr(Buffer.from("k-prot", "utf8"))]]);
   const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
   const r = coseSign1Verify(cose, b({ "k-prot": kp.publicKey }));
-  assert.equal(r.ok, true, r.reason); // former exact-{1:-19} gate REJECTED this; now accepted
+  assert.equal(r.ok, true, r.reason ?? ""); // former exact-{1:-19} gate REJECTED this; now accepted
   assert.equal(r.kid, "k-prot"); // resolved from the protected (signed) bucket
   assert.equal(r.payload?.toString("utf8"), "kid-in-protected-payload");
 });
@@ -308,7 +308,7 @@ test("FWD-COMPAT (a'): protected kid is preferred over a DIFFERENT unprotected k
   const unprot = encMap([[encInt(4), encBstr(Buffer.from("attacker-decoy-kid", "utf8"))]]);
   const cose = buildCose(prot, unprot, payload, kp.privateKey);
   const r = coseSign1Verify(cose, b({ "signer-key": kp.publicKey }));
-  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.ok, true, r.reason ?? "");
   assert.equal(r.kid, "signer-key");
 });
 
@@ -354,7 +354,7 @@ test("FWD-COMPAT (b''): a crit listing the kid label {2:[4]} is accepted — we 
   ]);
   const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
   const r = coseSign1Verify(cose, b({ "k-crit-kid": kp.publicKey }));
-  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.ok, true, r.reason ?? "");
   assert.equal(r.kid, "k-crit-kid");
 });
 
@@ -364,7 +364,7 @@ test("FWD-COMPAT (b'): a crit listing ONLY the alg label {2:[1]} is accepted (we
   const prot = encMap([[encInt(1), encInt(-19)], [encInt(2), encArray([encInt(1)])]]);
   const cose = buildCose(prot, encMap([[encInt(4), encBstr(Buffer.from("k-crit-ok", "utf8"))]]), payload, kp.privateKey);
   const r = coseSign1Verify(cose, b({ "k-crit-ok": kp.publicKey }));
-  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.ok, true, r.reason ?? "");
 });
 
 test("FWD-COMPAT (c): alg-confusion STILL closed — {1:-8} (deprecated EdDSA) is rejected post-relaxation", () => {
@@ -390,7 +390,7 @@ test("FWD-COMPAT (c'): an extra UNKNOWN non-critical protected label is IGNORED,
   ]);
   const cose = buildCose(prot, encMap([]), payload, kp.privateKey);
   const r = coseSign1Verify(cose, b({ "k-extra": kp.publicKey }));
-  assert.equal(r.ok, true, r.reason); // unknown non-critical labels ignored, not rejected (forward-compat)
+  assert.equal(r.ok, true, r.reason ?? ""); // unknown non-critical labels ignored, not rejected (forward-compat)
   assert.equal(r.kid, "k-extra");
 });
 
@@ -404,7 +404,7 @@ test("FWD-COMPAT (d): a legacy kid-in-UNPROTECTED envelope STILL verifies, but i
   const prot = encMap([[encInt(1), encInt(-19)]]); // {1:-19} — alg only, NO kid in the signed header
   const cose = buildCose(prot, encMap([[encInt(4), encBstr(Buffer.from("k-legacy", "utf8"))]]), payload, kp.privateKey);
   const r = coseSign1Verify(cose, b({ "k-legacy": kp.publicKey }));
-  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.ok, true, r.reason ?? "");
   assert.equal(r.kid, "k-legacy");
   assert.equal(r.kidAuthenticated, false, "an unprotected-header kid is not covered by the signature — not authenticated");
 });
@@ -451,7 +451,7 @@ test("H4: NOA's producer now puts the kid in the PROTECTED (signed) header — a
   const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
   const cose = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
   const r = coseSign1Verify(cose, b({ [kp.kid]: kp.publicKey }));
-  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.ok, true, r.reason ?? "");
   assert.equal(r.kid, kp.kid);
   assert.equal(r.kidAuthenticated, true, "the producer's kid is in the signed header");
 });
@@ -468,7 +468,7 @@ test("H4: an UNPROTECTED-only kid cannot bind an agent (manifest mode) — but s
 
   // no manifest → ok:true (a keyring-trusted key signed) + the existing kid-level-attribution warning.
   const weak = receiptFromCose(cose, b(keyring));
-  assert.equal(weak.ok, true, weak.reason);
+  assert.equal(weak.ok, true, weak.reason ?? "");
   assert.ok(weak.warnings.some((w) => /attribution is kid-level/.test(w)));
 
   // with a manifest → REJECTED: the kid is not signed, so it is swappable and cannot bind an agent.
@@ -491,7 +491,7 @@ test("H4: swapping the unprotected kid on a protected-kid envelope does NOT chan
   const unprot = encMap([[encInt(4), encBstr(Buffer.from(victim.kid, "utf8"))]]);
   const cose = buildCose(prot, unprot, payload, signer.privateKey);
   const r = coseSign1Verify(cose, b({ [signer.kid]: signer.publicKey, [victim.kid]: victim.publicKey }));
-  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.ok, true, r.reason ?? "");
   assert.equal(r.kid, signer.kid, "the SIGNED protected kid wins — the unprotected decoy is ignored");
   assert.equal(r.kidAuthenticated, true);
 });
@@ -524,6 +524,6 @@ test("H5: a genuine receipt round-trips (the canonical check does not over-rejec
   const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey });
   const cose = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
   const r = receiptFromCose(cose, b({ [kp.kid]: kp.publicKey }));
-  assert.equal(r.ok, true, r.reason);
+  assert.equal(r.ok, true, r.reason ?? "");
   assert.equal(canonicalize(r.receipt), canonicalize(receipt));
 });

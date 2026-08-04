@@ -1,7 +1,7 @@
 {
   "name": "noa-approval-artifacts",
   "version": "0.1.0",
-  "description": "The \u00a76 side-artifact layer of the NOA Mobile Approval App: frozen JSON schemas + Ed25519/refHash signature conventions + 1-valid/7-rejection conformance vectors for the Hold Envelope, Decision, Key Manifest, Key Delegation, Execution Grant/Consumption/Uncertainty, Hold Resolution, Pairing, Pairing Confirmation, and the (unsigned) Encrypted Display/Reason blobs. Zero runtime dependencies (node:crypto only). The receipt core stays frozen in noa-receipt; this is the non-receipt half every gate/relay/phone/verifier depends on.",
+  "description": "The §6 side-artifact layer of the NOA Mobile Approval App: frozen JSON schemas + Ed25519/refHash signature conventions + 1-valid/7-rejection conformance vectors for the Hold Envelope, Decision, Key Manifest, Key Delegation, Execution Grant/Consumption/Uncertainty, Hold Resolution, Pairing, Pairing Confirmation, and the (unsigned) Encrypted Display/Reason blobs. Zero runtime dependencies (node:crypto only). The receipt core stays frozen in noa-receipt; this is the non-receipt half every gate/relay/phone/verifier depends on.",
   "keywords": [
     "ai-agent",
     "governance",
@@ -51,7 +51,7 @@
     "prepublishOnly": "npm test"
   },
   "devDependencies": {
-    "@types/node": "^22.0.0",
+    "@types/node": "^26.1.2",
     "typescript": "^5.6.0"
   }
 }

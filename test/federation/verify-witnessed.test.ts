@@ -57,7 +57,7 @@ test("QUORUM_CONFIRMED: VALID chain + 2 confirms -> chain VALID and witness comp
   const { receipts, keyring } = fixture();
   const anchors = [anchorForChainHead(receipts, W1S, { ts: NOW }), anchorForChainHead(receipts, W2S, { ts: NOW })];
   const res = verifyChainWitnessed(b(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
-  assert.equal(res.chain.status, "VALID", res.chain.reason);
+  assert.equal(res.chain.status, "VALID", res.chain.reason ?? "");
   assert.equal(res.chain.count, 3);
   assert.equal(res.witness.complete, true, res.witness.reason);
   assert.equal(res.witness.classification, "QUORUM_CONFIRMED");
@@ -163,7 +163,7 @@ test("text input: raw JSON text is verified via verifyChainText and the head is 
   const { receipts, keyring } = fixture();
   const anchors = [anchorForChainHead(receipts, W1S, { ts: NOW }), anchorForChainHead(receipts, W2S, { ts: NOW })];
   const res = verifyChainWitnessed(JSON.stringify(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
-  assert.equal(res.chain.status, "VALID", res.chain.reason);
+  assert.equal(res.chain.status, "VALID", res.chain.reason ?? "");
   assert.equal(res.witness.classification, "QUORUM_CONFIRMED", res.witness.reason);
 });
 
@@ -246,7 +246,7 @@ test("snapshot-once: a flip-on-read head-hash getter cannot diverge the verified
   assert.equal(fixed.chain.status, "TAMPERED", "the fake head does not match the signed body");
   // …and with the REAL head, the fake-head anchors do NOT confirm. One document, one head, one answer.
   const real = verifyChainWitnessed(b(receipts), b(keyring), { anchors: b(anchors), trustSet: b(TS3) });
-  assert.equal(real.chain.status, "VALID", real.chain.reason);
+  assert.equal(real.chain.status, "VALID", real.chain.reason ?? "");
   assert.equal(real.witness.complete, false, "anchors over a fake head must not confirm the real head");
 });
 
