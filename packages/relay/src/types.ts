@@ -145,6 +145,26 @@ export interface DeviceRecord {
   /** raw 32-byte Ed25519 public key, lowercase hex. */
   publicKeyHex: string;
   custodyTier: string;
+  /**
+   * WHICH TENANT THIS DEVICE BELONGS TO — the same field, for the same reason, as `AgentRecord.tenant`
+   * below (R8-11). `null` means the device made no tenant claim, which is what an anonymously
+   * enrolled device has.
+   *
+   * ⚠ WHAT IT CLOSES, AND WHAT IT DOES NOT (ADR-0007 constraint 3).
+   *
+   * `claimDevice` refuses an unknown device and someone else's device identically, but an UNCLAIMED
+   * device (`agentId === null`) is claimable by ANY authenticated agent — first claimer wins. With
+   * one relay serving several customers, the window between a device enrolling and its own operator
+   * claiming it is a window in which a different customer can take it, and from then on that
+   * customer sees and decides everything the device is shown.
+   *
+   * A device that declares a tenant can be matched against the claiming agent's tenant, which closes
+   * the race for it. A device with `tenant: null` still cannot be matched on anything — there is no
+   * claim to check — so it keeps the old behaviour. That is stated rather than hidden: the residual
+   * belongs to the anonymous enrolment path, which is development-only (`config.ts:161`) and which
+   * ADR-0007 exists to replace.
+   */
+  tenant: string | null;
   /** sha256 hex of "noa_device_<secret>" for non-signing session calls. */
   deviceSecretHash: string;
   /**

@@ -334,6 +334,7 @@ test("D1: putDevice rolls back BOTH indexes (devices + devicesByKid) on a persis
     publicKeyHex: "a".repeat(64),
     custodyTier: "software-browser",
     deviceSecretHash: "h",
+    tenant: null,
     agentId: null,
     revokedAt: null,
     createdAt: 1,

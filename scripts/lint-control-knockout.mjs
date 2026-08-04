@@ -189,6 +189,27 @@ const KNOCKOUTS = [
   //
   // The older claim above remains preserved as history; this entry measures the current correction.
   {
+    id: "adr0007-device-tenant-claim",
+    control:
+      "ADR-0007 constraint 3 — a device that DECLARES a tenant is claimable only by that tenant. " +
+      "claimDevice refuses an unknown device and someone else's device identically, and that part " +
+      "was always right; the gap was the UNCLAIMED device, whose agentId === null satisfies the " +
+      "ownership check for EVERY authenticated agent. The window between a device enrolling and its " +
+      "own operator claiming it is a window in which a different customer on the same relay takes " +
+      "it, and from then on sees and decides everything that device is shown — the same consequence " +
+      "DeviceRecord.agentId records for an unscoped device, reached through a different door. No " +
+      "forgery and no stolen credential: just an unowned object and two parties entitled to ask.",
+    file: "packages/relay/src/engine.ts",
+    find: "    if (device.tenant !== null && device.tenant !== agent.tenant) {",
+    // The mutation KEEPS the `device.tenant !== null` narrowing TypeScript relies on further down.
+    // A plain `if (false)` looked like the obvious knockout and came back MUTATION_DID_NOT_BUILD:
+    // dropping the narrowing makes `device` possibly-undefined at :257, so the experiment measured
+    // the compiler rather than the control. `x !== x` is always false and narrows identically.
+    replace: "    if (device.tenant !== null && device.tenant !== device.tenant) {",
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
     id: "stage4-digest-display-disagreement",
     control:
       "ADR-0006 §5 stage 4 — the DIGEST and the DISPLAY must commit to the same bytes. NOA's " +

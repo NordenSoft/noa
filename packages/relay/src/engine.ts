@@ -204,6 +204,12 @@ export class RelayEngine {
       publicKeyHex,
       custodyTier,
       deviceSecretHash: hashSecret(deviceSecret),
+      // NO TENANT CLAIM. This is the ANONYMOUS enrolment route: the caller presented a public key and
+      // nothing else, so there is no tenant to record and `claimDevice` has nothing to match on. The
+      // first-claimer-wins window therefore stays open for devices enrolled this way — stated rather
+      // than papered over, because this route is development-only (`config.ts:161`) and ADR-0007
+      // exists to replace it with a route where the tenant arrives on a credential.
+      tenant: null,
       // UNCLAIMED. Enrolment proves possession of a keypair; it proves nothing about WHOSE approvals
       // this device may see. An agent must claim it with its own credential before it can read or
       // decide anything, so the default state of a newly enrolled device is "useless".
@@ -233,6 +239,25 @@ export class RelayEngine {
       return err(404, "UNKNOWN_DEVICE");
     }
     if (device.revokedAt !== null) return err(403, "DEVICE_REVOKED");
+    // ADR-0007 constraint 3 — A DEVICE THAT DECLARES A TENANT IS CLAIMABLE ONLY BY THAT TENANT.
+    //
+    // Everything above this line refuses an unknown device and someone else's device identically,
+    // which is correct and is not the gap. The gap is the UNCLAIMED device: `agentId === null`
+    // passes the check above for EVERY authenticated agent, so between a device enrolling and its
+    // own operator claiming it, any other customer on the same relay can take it — and from then on
+    // sees and decides everything that device is shown. No forgery, no stolen credential, just a
+    // race nobody was running.
+    //
+    // Reported as UNKNOWN_DEVICE rather than a tenant-specific error, deliberately: the same
+    // no-existence-oracle rule as above. Telling a caller "that device exists but belongs to another
+    // tenant" is an enumeration primitive, and it is the tenant boundary that this line defends.
+    if (device.tenant !== null && device.tenant !== agent.tenant) {
+      this.log("authz.denied", {
+        route: "claimDevice", deviceId, reason: "tenant-mismatch",
+        deviceTenant: device.tenant, callerTenant: agent.tenant,
+      });
+      return err(404, "UNKNOWN_DEVICE");
+    }
     if (device.agentId === agent.id) return { status: 200, body: { deviceId: device.id, claimed: true, idempotent: true } };
     this.store.putDevice({ ...device, agentId: agent.id });
     this.log("device.claimed", { deviceId, agentId: agent.id });
