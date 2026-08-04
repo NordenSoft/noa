@@ -113,3 +113,16 @@ witness-anchor toolkit (`buildAnchor`, `Anchor`), which is not yet in a publishe
 repo's development docs). Publishing this package to npm is a separate, future step (mirroring
 `packages/mcp-proxy`'s `file:../adapter-core` -> registry-version swap in `.github/workflows/publish-mcp.yml`)
 and is out of scope until `noa-receipt` itself republishes with the federation exports included.
+
+## What this package does not claim
+
+[`NON-CLAIMS.md`](https://github.com/NordenSoft/noa/blob/main/NON-CLAIMS.md) is the normative record of what NOA does **not** do. It is
+not shipped inside this tarball, so it is linked by URL rather than by a relative path that would
+404 for exactly the reader who needs it.
+
+Read it before you rely on this package for anything that matters. A boundary you have to infer
+from silence is a boundary you will get wrong, and the failure this project is built around is a
+forged or misattributed approval — not downtime, which is the one people plan for.
+
+Alongside it: [`THREAT-MODEL.md`](https://github.com/NordenSoft/noa/blob/main/THREAT-MODEL.md) for what is defended against, and
+[`SECURITY.md`](https://github.com/NordenSoft/noa/blob/main/SECURITY.md) for which versions get fixes and how to report a finding.

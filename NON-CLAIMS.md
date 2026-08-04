@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Version** | `noa.non-claims/1` |
-| **Status** | NORMATIVE. Referenced by `THREAT-MODEL.md`, `SECURITY.md`, the root `README.md`, and 17 further in-repo documents. **Not** by any of the eleven package READMEs — the claim that it was said so for months and was never true (measured 2026-08-04: 0 of 11). A stranger who installs `noa-mcp-proxy` and reads only its README cannot currently reach this document; carrying a link in the six published package READMEs is owed work, not a shipped fact. |
+| **Status** | NORMATIVE. Referenced by `THREAT-MODEL.md`, `SECURITY.md`, the root `README.md`, 17 further in-repo documents, and — since 2026-08-04 — **all six non-private package READMEs**. That last one was false for months before it was measured (0 of 11) and then made true: a stranger who installs `noa-mcp-proxy` and reads only what came with it can now reach this document, by absolute URL rather than a relative path that would 404 inside a tarball. The five `private: true` packages are deliberately excluded — they ship to nobody, so there is no stranger to reach. |
 | **Last reviewed** | 2026-07-28 |
 | **Change rule** | **Adding** a non-claim is an ordinary commit. **Weakening or removing** one is a reviewed event — see [§7](#7-changing-this-document). |
 

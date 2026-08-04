@@ -89,3 +89,16 @@ stateful semantics (the D2 phone-side verification order, the §13 outcome-keyed
 verifier, anti-rollback manifest-version monotonicity across holds, HPKE encrypt/decrypt round-trips —
 `noa-signer`'s G3) are the consuming services' jobs; `verifyArtifact` is the shared per-artifact core
 they build on. HPKE keys in vectors are opaque test strings (no HPKE round-trip is performed here).
+
+## What this package does not claim
+
+[`NON-CLAIMS.md`](https://github.com/NordenSoft/noa/blob/main/NON-CLAIMS.md) is the normative record of what NOA does **not** do. It is
+not shipped inside this tarball, so it is linked by URL rather than by a relative path that would
+404 for exactly the reader who needs it.
+
+Read it before you rely on this package for anything that matters. A boundary you have to infer
+from silence is a boundary you will get wrong, and the failure this project is built around is a
+forged or misattributed approval — not downtime, which is the one people plan for.
+
+Alongside it: [`THREAT-MODEL.md`](https://github.com/NordenSoft/noa/blob/main/THREAT-MODEL.md) for what is defended against, and
+[`SECURITY.md`](https://github.com/NordenSoft/noa/blob/main/SECURITY.md) for which versions get fixes and how to report a finding.
