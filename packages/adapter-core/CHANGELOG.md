@@ -4,6 +4,23 @@ The root `CHANGELOG.md` scopes itself to `noa-receipt` in its first line, so sec
 package had nowhere to be written. `0.2.0` is live on npm and exploitable; without this file a
 consumer upgrading to `0.3.0` would see a silent version bump and no reason to hurry.
 
+## [0.3.2] - 2026-08-04
+
+**No change to this package. Version bumped only to stay in lockstep with `noa-mcp-proxy@0.3.2`,**
+which carries a real security patch.
+
+The two packages release together under one `mcp-v*` tag, and the release workflow refuses to
+publish when their versions differ — a mismatch would publish stale or duplicate versions, or fail
+halfway through the two-package sequence. So this version exists to satisfy that gate.
+
+Said plainly because the alternative is worse: a consumer who sees a version bump with an empty
+changelog has to guess whether something was fixed quietly. Nothing was. `0.3.1` and `0.3.2` of
+this package are identical in behaviour.
+
+The patch is in `noa-mcp-proxy@0.3.2` — an `@hono/node-server` `overrides` entry that npm ignores
+when a dependency declares it, so every real install of `0.3.1` resolved a vulnerable version
+(GHSA-frvp-7c67-39w9) while the manifest read as pinned. See that package's changelog.
+
 ## [0.3.1] - 2026-08-03
 
 > **SECURITY PATCH. Upgrade from 0.3.0 immediately if any of your policy rules gate on `args.*`.**

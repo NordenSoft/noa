@@ -1,5 +1,45 @@
 # Changelog — `noa-mcp-proxy`
 
+## [0.3.2] - 2026-08-04
+
+> **SECURITY PATCH. Upgrade from 0.3.1.** If you installed `noa-mcp-proxy@0.3.1` you received a
+> vulnerable `@hono/node-server`, no matter what the manifest appeared to say.
+
+### Security
+
+**The `@hono/node-server` override in 0.3.1 was decoration.** The manifest declared
+`overrides: { "@hono/node-server": "^2.0.5" }` — and **npm ignores `overrides` declared by a
+dependency**. They apply in the root project only. So the entry protected this repository's own
+`node_modules` while every consumer of the published package got the vulnerable resolution.
+
+Measured in a clean directory against 0.3.1:
+
+```
+npm install noa-mcp-proxy
+→ @hono/node-server 1.19.17     (GHSA-frvp-7c67-39w9, path traversal)
+→ npm audit: 3 moderate
+```
+
+The obvious fix does not work alone. Declaring `^2.0.5` as a direct dependency fights the SDK:
+`@modelcontextprotocol/sdk@1.29.0` permits only `^1.19.9`. `1.30.0` permits `^1.19.9 || ^2.0.5`,
+so both move together — SDK to 1.30.0, and `@hono/node-server` promoted from `overrides` to a real
+dependency where npm honours it.
+
+Verified the same way, against a packed tarball rather than the working tree:
+
+```
+npm pack && npm install ./noa-mcp-proxy-0.3.2.tgz
+→ @hono/node-server 2.1.0
+→ npm audit: 0 vulnerabilities, all severities
+```
+
+### Note on 0.3.1
+
+0.3.1 is not being unpublished. It is a real release whose stated behaviour is correct about the
+forgery fixes it shipped and wrong about this one. Anyone auditing it will find the `overrides`
+entry and reasonably conclude the dependency was pinned; this entry exists so that conclusion is
+corrected in the same place they would look.
+
 ## [0.3.0] - 2026-08-03
 
 > **SECURITY RELEASE. Upgrade from 0.2.0.** This package is the process that decides whether a
