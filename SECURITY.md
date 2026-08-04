@@ -8,6 +8,28 @@ for encrypted, repository-scoped coordination. If GitHub reporting is unavailabl
 public issue for a security report. We aim to acknowledge within 72 hours. This is an early-access
 project; coordinated disclosure is appreciated.
 
+## Supported versions
+
+Measured against the registry on 2026-08-04, so a reporter knows which line a fix would land on
+before spending time on a report.
+
+| package | published | supported |
+|---|---|---|
+| `noa-receipt` | **0.6.0** | yes — fixes land here |
+| `noa-mcp-adapter-core` | **0.3.1** | yes |
+| `noa-mcp-proxy` | **0.3.1** | yes |
+| everything older | — | **no**. Upgrade; 0.6.0 is deliberately stricter than 0.5.0 and artifacts that verified `VALID` under 0.5.0 can verify `REFUSE` or `TAMPERED` under it. That is the point of the release, and it is documented in `CHANGELOG.md`. |
+
+⚠ **`noa-receipt@0.6.1` exists in this repository and is NOT on the registry.** It is a
+documentation-only patch; no behaviour differs from 0.6.0. Report against 0.6.0 — that is what you
+can install. The version was bumped because the published 0.6.0 tarball had stopped matching what
+this tree builds, and `lint:release-parity` refuses to let a dependent package publish against a
+mismatched kernel.
+
+**Unpublished packages are out of scope for this table but not for a report.** `packages/gate` and
+`packages/relay` are `private: true` and ship to nobody — a finding in them is still very much
+wanted, it simply has no released version to name.
+
 ## Design stance
 
 This is a **trust layer**, so it is built to be boring and hostile-input-safe:
