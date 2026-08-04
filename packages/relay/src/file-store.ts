@@ -88,6 +88,7 @@ import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { classifyManifestPut, ManifestPutConflictError, type Store } from "./store.js";
 import type {
+  DevicePairingRecord,
   AgentRecord,
   DeviceRecord,
   HoldRecord,
@@ -102,12 +103,13 @@ interface Snapshot {
   devices: DeviceRecord[];
   push: PushSubscriptionRecord[];
   pairings: PairingRecord[];
+  devicePairings: DevicePairingRecord[];
   holds: HoldRecord[];
   manifests: KeyManifestRecord[];
 }
 
 function emptySnapshot(): Snapshot {
-  return { agents: [], devices: [], push: [], pairings: [], holds: [], manifests: [] };
+  return { agents: [], devices: [], push: [], pairings: [], devicePairings: [], holds: [], manifests: [] };
 }
 
 function isNonEmptyString(v: unknown): v is string {
@@ -135,6 +137,11 @@ function isValidPush(v: unknown): v is PushSubscriptionRecord {
 }
 function isValidPairing(v: unknown): v is PairingRecord {
   return isRecordShape(v) && isNonEmptyString(v["token"]);
+}
+function isValidDevicePairing(v: unknown): v is DevicePairingRecord {
+  // `tenant` is required and non-empty on purpose: a device token with no tenant would mint a device
+  // claimable by any tenant, so a persisted record missing it is corrupt rather than permissive.
+  return isRecordShape(v) && isNonEmptyString(v["tokenHash"]) && isNonEmptyString(v["tenant"]) && isNonEmptyString(v["kid"]);
 }
 function isValidHold(v: unknown): v is HoldRecord {
   return (
@@ -196,6 +203,7 @@ function normalizeSnapshot(v: unknown, filePath: string): Snapshot {
     devices: validateArray<DeviceRecord>(v, "devices", filePath, isValidDevice),
     push: validateArray<PushSubscriptionRecord>(v, "push", filePath, isValidPush),
     pairings: validateArray<PairingRecord>(v, "pairings", filePath, isValidPairing),
+    devicePairings: validateArray<DevicePairingRecord>(v, "devicePairings", filePath, isValidDevicePairing),
     holds: validateArray<HoldRecord>(v, "holds", filePath, isValidHold),
     manifests: validateArray<KeyManifestRecord>(v, "manifests", filePath, isValidManifest),
   };
@@ -222,6 +230,8 @@ export class FileStore implements Store {
   private readonly devicesByKid = new Map<string, string>();
   private readonly push = new Map<string, PushSubscriptionRecord>();
   private readonly pairings = new Map<string, PairingRecord>();
+  /** Keyed by token HASH — the plaintext is returned once at issuance and never persisted. */
+  private readonly devicePairings = new Map<string, DevicePairingRecord>();
   private readonly holds = new Map<string, HoldRecord>();
   private readonly holdsByIdem = new Map<string, string>();
   private readonly manifests = new Map<string, KeyManifestRecord>();
@@ -344,6 +354,7 @@ export class FileStore implements Store {
     this.devicesByKid.clear();
     this.push.clear();
     this.pairings.clear();
+    this.devicePairings.clear();
     this.holds.clear();
     this.holdsByIdem.clear();
     this.manifests.clear();
@@ -354,6 +365,13 @@ export class FileStore implements Store {
     }
     for (const p of snap.push) this.push.set(p.deviceId, p);
     for (const p of snap.pairings) this.pairings.set(p.token, p);
+    // Index walk, not `for…of`: the reload path is a decision path and `for…of` dispatches through
+    // %ArrayIteratorPrototype%.next. Same discipline as the rest of this file.
+    const dps = snap.devicePairings ?? [];
+    for (let i = 0; i < dps.length; i++) {
+      const p = dps[i];
+      if (p) this.devicePairings.set(p.tokenHash, p);
+    }
     for (const h of snap.holds) {
       this.holds.set(h.id, h);
       this.holdsByIdem.set(idemKey(h.agentId, h.idempotencyKey), h.id);
@@ -367,6 +385,7 @@ export class FileStore implements Store {
       devices: [...this.devices.values()],
       push: [...this.push.values()],
       pairings: [...this.pairings.values()],
+      devicePairings: [...this.devicePairings.values()],
       holds: [...this.holds.values()],
       manifests: [...this.manifests.values()],
     };
@@ -496,6 +515,21 @@ export class FileStore implements Store {
       else this.pairings.delete(p.token);
     });
   }
+  putDevicePairing(p: DevicePairingRecord): void {
+    // `get` once and compare, rather than `has` + `get`: `.has(` is a Map dispatch the security
+    // gate flags on a decision path, and two lookups of the same key is also two chances to
+    // disagree about what was there.
+    const prev = this.devicePairings.get(p.tokenHash);
+    const had = prev !== undefined;
+    this.devicePairings.set(p.tokenHash, p);
+    this.persistOrRollback(() => {
+      if (had) this.devicePairings.set(p.tokenHash, prev!);
+      else this.devicePairings.delete(p.tokenHash);
+    });
+  }
+  getDevicePairingByHash(tokenHash: string): DevicePairingRecord | undefined {
+    return this.devicePairings.get(tokenHash);
+  }
   getPairing(token: string): PairingRecord | undefined {
     return this.pairings.get(token);
   }
@@ -580,6 +614,7 @@ export class FileStore implements Store {
       devices: [...this.devices.values()],
       push: [...this.push.values()],
       pairings: [...this.pairings.values()],
+      devicePairings: [...this.devicePairings.values()],
       holds: [...this.holds.values()],
       manifests: [...this.manifests.values()],
     };

@@ -30,6 +30,9 @@ export interface RelayConfig {
 
   /** Pairing token TTL (FAZ-APP §4.1: 10-min one-time token). */
   pairingTokenTtlMs: number;
+  /** ADR-0007 constraint 5 — the device token gets its OWN bound rather than inheriting the agent
+   *  one by assumption. The ceremony clock starts near its end, so this is stated, not guessed. */
+  deviceTokenTtlMs: number;
 
   /** Expiry sweep cadence (FAZ-APP §4.2: every 30s mark overdue PENDING → EXPIRED). */
   expirySweepMs: number;
@@ -116,6 +119,7 @@ export const DEFAULT_CONFIG: RelayConfig = {
   rateLimitRefillPerMin: 60,
   maxPendingPerAgent: 100,
   pairingTokenTtlMs: 10 * 60 * 1000,
+  deviceTokenTtlMs: 10 * 60 * 1000,
   expirySweepMs: 30 * 1000,
   maxBodyBytes: 256 * 1024,
   enrolmentSecret: null,

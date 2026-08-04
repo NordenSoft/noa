@@ -197,6 +197,37 @@ export interface PushSubscriptionRecord {
 }
 
 /** A one-time pairing token used to onboard an agent. */
+/**
+ * A DEVICE-pairing token: the credential a phone presents to enrol, issued during the ceremony the
+ * operator already performs (ADR-0007).
+ *
+ * FOUR PROPERTIES, each from a measured reason rather than from caution:
+ *
+ *  · HASHED AT REST (`tokenHash`). `PairingRecord` stores its token raw, unlike `apiKeyHash` and
+ *    `deviceSecretHash` — a pre-existing inconsistency this type does not inherit.
+ *  · KID-BOUND (`kid`). The gate sees the phone key in the CONFIRMATION before it authors ACCEPTED,
+ *    so the token can name the only device allowed to redeem it. A leaked paste bundle is then
+ *    useless without that phone private key — a property a shared operator secret cannot have.
+ *  · TENANT REQUIRED, never null. For AGENTS a null tenant fails CLOSED (it cannot publish a
+ *    manifest). For DEVICES a null tenant fails OPEN: it bypasses the claim match at
+ *    `engine.ts` and the device becomes claimable by anyone. The device namespace must not
+ *    inherit the agent default, or this route reopens the race through the front door.
+ *  · SINGLE-USE (`usedAt`), and "single-use" is the honest word. No revoke API exists for these
+ *    tokens; single use plus a short TTL is the whole mechanism, and calling it "revocable" would be
+ *    an overclaim.
+ */
+export interface DevicePairingRecord {
+  /** sha256 of the token. The plaintext is returned once, at issuance, and never stored. */
+  tokenHash: string;
+  /** The tenant the redeemed device is scoped to. NEVER null — see above. */
+  tenant: string;
+  /** The ONLY device key permitted to redeem this token. */
+  kid: string;
+  usedAt: number | null;
+  expiresAt: number;
+  createdAt: number;
+}
+
 export interface PairingRecord {
   token: string;
   agentHint: string | null;

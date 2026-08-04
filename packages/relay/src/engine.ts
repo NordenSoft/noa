@@ -24,8 +24,7 @@ import { classifyManifestPut, ManifestPutConflictError, type Store } from "./sto
 import type { PushProvider, PushMessage } from "./push.js";
 import { verifyReceiptSignature, safeRefHash, inertSnapshot } from "./crypto.js";
 import { hashSecret } from "./auth.js";
-import type {
-  AgentRecord,
+import type {  AgentRecord,
   DeviceRecord,
   EncryptedDisplay,
   HoldAction,
@@ -36,6 +35,32 @@ import type {
   Receipt,
   RiskClass,
 } from "./types.js";
+
+/** The device-token namespace. Disjoint from `noa_pair_` so an agent token and a device token can
+ *  never be confused for one another — they mint different authorities. */
+const DEVICE_TOKEN_PREFIX = "noa_devpair_";
+
+/**
+ * Is this a raw 32-byte Ed25519 public key in lowercase hex?
+ *
+ * An INDEX WALK rather than `/^[0-9a-f]{64}$/.test(...)`. A regex literal on a decision path
+ * dispatches through `RegExp.prototype.exec` — a dynamic lookup on a replaceable global — and the
+ * security gate flags it for exactly that reason. Adding a SECOND copy for the paired route would
+ * have added a second such surface; extracting it removes the original one too.
+ *
+ * The walk consults no prototype: `charCodeAt` on a primitive string and integer comparisons.
+ */
+function isRawEd25519Hex(s: string): boolean {
+  if (s.length !== 64) return false;
+  for (let i = 0; i < 64; i++) {
+    const c = s.charCodeAt(i);
+    const isDigit = c >= 48 && c <= 57;        // 0-9
+    const isLowerAF = c >= 97 && c <= 102;     // a-f
+    if (!isDigit && !isLowerAF) return false;
+  }
+  return true;
+}
+
 
 /**
  * R6 — the maximum a single manifest publish may advance the per-tenant version counter beyond the
@@ -188,13 +213,142 @@ export class RelayEngine {
     return { status: 200, body: { agentId: agent.id, apiKey } };
   }
 
+// ── device pairing (ADR-0007) ──────────────────────────────────────────────
+  /**
+   * ISSUE a device-pairing token. Behind the enrolment gate: this is an operator action.
+   *
+   * `tenant` and `kid` are BOTH required, and the tenant requirement is the one worth explaining.
+   * `createPairing` above tolerates `tenant: null` because for an AGENT that fails closed — a
+   * null-tenant agent can never publish a manifest. For a DEVICE it fails OPEN: a null-tenant device
+   * bypasses the claim match in `claimDevice` and becomes claimable by any tenant on this relay.
+   * The device namespace must not inherit the agent default, or this route reopens through the front
+   * door the race ADR-0007 constraint 3 closed.
+   */
+  createDevicePairing(input: unknown): EngineResult {
+    if (!isRecord(input)) return err(400, "BAD_REQUEST");
+    const tenant = asString(input["tenant"]);
+    const kid = asString(input["kid"]);
+    if (!tenant || !kid) {
+      return err(400, "MISSING_FIELDS", {
+        need: ["tenant", "kid"],
+        detail:
+          "a device token must name the tenant it scopes the device to and the ONLY key permitted " +
+          "to redeem it; a tenant-less device is claimable by any tenant, and an unbound token is " +
+          "usable by anyone who obtains the paste bundle",
+      });
+    }
+    const token = DEVICE_TOKEN_PREFIX + randomBytes(24).toString("base64url");
+    const expiresAt = this.now() + this.cfg.deviceTokenTtlMs;
+    // HASHED AT REST. The plaintext is returned exactly once, here, and never stored — unlike
+    // `PairingRecord.token`, whose raw storage is a pre-existing inconsistency this does not inherit.
+    this.store.putDevicePairing({
+      tokenHash: hashSecret(token), tenant, kid, usedAt: null, expiresAt, createdAt: this.now(),
+    });
+    this.log("device.token.issued", { tenant, kid, expiresAt });
+    return { status: 201, body: { token, expiresAt: new Date(expiresAt).toISOString() } };
+  }
+
+  /**
+   * REDEEM a device-pairing token. Reached on a route OUTSIDE the enrolment gate: the token IS the
+   * credential, and gating it on the operator secret as well would mean the phone needs both.
+   *
+   * ⚠ THE RE-REDEEM RULE IS THE SUBTLE PART, AND GETTING IT WRONG BRICKS A PHONE.
+   *
+   * A used token is refused, full stop — single-use is single-use, and "return the same device"
+   * cannot honestly be implemented anyway: the secret is hashed at rest, so a second redemption has
+   * nothing to hand back that the retrying phone could use.
+   *
+   * But refusing must not brick the KID. A phone that lost its response holds a `deviceSecret` it
+   * cannot prove and cannot revoke, so recovery has to exist: the operator issues a FRESH token for
+   * the same kid, and that token re-mints the secret onto the EXISTING record — same device id,
+   * claim state preserved. Copying the anonymous route's unconditional `409 KID_ALREADY_REGISTERED`
+   * here would make the lost response permanent, and `revokeSelf` needs the very secret that was lost.
+   *
+   * Same-tenant only: re-minting across tenants would be a device takeover with an operator's help.
+   */
+  redeemDevicePairing(input: unknown): EngineResult {
+    if (!isRecord(input)) return err(400, "BAD_REQUEST");
+    const token = asString(input["token"]);
+    const kid = asString(input["kid"]);
+    const publicKeyHex = asString(input["publicKeyHex"]);
+    const custodyTier = asString(input["custodyTier"]) ?? "software-native";
+    if (!token || !kid || !publicKeyHex) {
+      return err(400, "MISSING_FIELDS", { need: ["token", "kid", "publicKeyHex"] });
+    }
+    if (!isRawEd25519Hex(publicKeyHex)) return err(422, "BAD_PUBLIC_KEY");
+
+    // NAMESPACE, CHECKED BEFORE ANYTHING ELSE. An agent token must not redeem as a device and vice
+    // versa: the two mint different authorities, and a confusion here hands an approver key to an
+    // agent. Checked on the PREFIX rather than by lookup, so a token of the wrong kind is refused
+    // even if some future store keys both kinds the same way.
+    if (!token.startsWith(DEVICE_TOKEN_PREFIX)) {
+      return err(422, "WRONG_TOKEN_TYPE", {
+        detail: "this route redeems device-pairing tokens only; an agent pairing token is a different authority",
+      });
+    }
+
+    const rec = this.store.getDevicePairingByHash(hashSecret(token));
+    if (!rec) return err(404, "UNKNOWN_DEVICE_TOKEN");
+    if (rec.usedAt !== null) {
+      return err(409, "DEVICE_TOKEN_ALREADY_USED", {
+        detail:
+          "a device token is single-use. If the response to the first redemption was lost, the " +
+          "operator issues a FRESH token for the same kid — that re-mints the secret onto the " +
+          "existing device rather than creating a second one",
+      });
+    }
+    if (this.now() > rec.expiresAt) return err(410, "DEVICE_TOKEN_EXPIRED");
+    // KID-BINDING. The token names the only key allowed to use it, so a leaked paste bundle is
+    // worthless without that phone's private key.
+    if (rec.kid !== kid) {
+      this.log("authz.denied", { route: "redeemDevicePairing", reason: "kid-mismatch", tokenKid: rec.kid, presented: kid });
+      return err(403, "DEVICE_TOKEN_KID_MISMATCH");
+    }
+
+    const existing = this.store.getDeviceByKid(kid);
+    const deviceSecret = "noa_device_" + randomBytes(24).toString("base64url");
+
+    if (existing) {
+      // RECOVERY, not a second device. Cross-tenant re-minting would be a takeover with operator
+      // help, so it is refused with the same no-existence-oracle shape used elsewhere.
+      if (existing.tenant !== rec.tenant) {
+        this.log("authz.denied", { route: "redeemDevicePairing", reason: "tenant-mismatch", kid });
+        return err(404, "UNKNOWN_DEVICE_TOKEN");
+      }
+      if (existing.revokedAt !== null) return err(403, "DEVICE_REVOKED");
+      this.store.putDevice({ ...existing, publicKeyHex, custodyTier, deviceSecretHash: hashSecret(deviceSecret) });
+      this.store.putDevicePairing({ ...rec, usedAt: this.now() });
+      this.log("device.secret.reminted", { deviceId: existing.id, kid, tenant: rec.tenant });
+      return { status: 200, body: { deviceId: existing.id, deviceSecret, reminted: true } };
+    }
+
+    const device: DeviceRecord = {
+      id: randomUUID(),
+      kid,
+      publicKeyHex,
+      custodyTier,
+      // FROM THE TOKEN, never from this request body. The redeeming caller supplies its own key and
+      // could just as easily have supplied a tenant — which is the mistake R8-11 fixed for agents.
+      tenant: rec.tenant,
+      deviceSecretHash: hashSecret(deviceSecret),
+      agentId: null,
+      revokedAt: null,
+      createdAt: this.now(),
+    };
+    this.store.putDevice(device);
+    this.store.putDevicePairing({ ...rec, usedAt: this.now() });
+    this.log("device.enrolled.paired", { deviceId: device.id, kid, tenant: rec.tenant });
+    return { status: 201, body: { deviceId: device.id, deviceSecret, reminted: false } };
+  }
+
+
   registerDevice(input: unknown): EngineResult {
     if (!isRecord(input)) return err(400, "BAD_REQUEST");
     const kid = asString(input["kid"]);
     const publicKeyHex = asString(input["publicKeyHex"]);
     const custodyTier = asString(input["custodyTier"]) ?? "software-browser";
     if (!kid || !publicKeyHex) return err(400, "MISSING_FIELDS", { need: ["kid", "publicKeyHex"] });
-    if (!/^[0-9a-f]{64}$/.test(publicKeyHex)) return err(422, "BAD_PUBLIC_KEY");
+    if (!isRawEd25519Hex(publicKeyHex)) return err(422, "BAD_PUBLIC_KEY");
     if (this.store.getDeviceByKid(kid)) return err(409, "KID_ALREADY_REGISTERED");
 
     const deviceSecret = "noa_device_" + randomBytes(24).toString("base64url");

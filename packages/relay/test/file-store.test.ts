@@ -30,10 +30,11 @@ interface Dump {
   devices: unknown[];
   push: unknown[];
   pairings: unknown[];
+  devicePairings: unknown[];
   holds: unknown[];
   manifests: unknown[];
 }
-const EMPTY_DUMP: Dump = { agents: [], devices: [], push: [], pairings: [], holds: [], manifests: [] };
+const EMPTY_DUMP: Dump = { agents: [], devices: [], push: [], pairings: [], devicePairings: [], holds: [], manifests: [] };
 
 function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), "noa-relay-filestore-"));

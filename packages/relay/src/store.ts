@@ -11,6 +11,7 @@
  */
 
 import type {
+  DevicePairingRecord,
   AgentRecord,
   DeviceRecord,
   HoldRecord,
@@ -95,6 +96,10 @@ export interface Store {
   putPairing(p: PairingRecord): void;
   getPairing(token: string): PairingRecord | undefined;
 
+  // device pairing (ADR-0007) — keyed by the token HASH, never by the token
+  putDevicePairing(p: DevicePairingRecord): void;
+  getDevicePairingByHash(tokenHash: string): DevicePairingRecord | undefined;
+
   // holds
   putHold(h: HoldRecord): void;
   getHold(id: string): HoldRecord | undefined;
@@ -132,6 +137,8 @@ export class InMemoryStore implements Store {
   private readonly devicesByKid = new Map<string, string>();
   private readonly push = new Map<string, PushSubscriptionRecord>();
   private readonly pairings = new Map<string, PairingRecord>();
+  /** Keyed by token HASH — the plaintext token is returned once at issuance and never stored. */
+  private readonly devicePairings = new Map<string, DevicePairingRecord>();
   private readonly holds = new Map<string, HoldRecord>();
   private readonly holdsByIdem = new Map<string, string>();
   private readonly manifests = new Map<string, KeyManifestRecord>();
@@ -176,6 +183,12 @@ export class InMemoryStore implements Store {
 
   putPairing(p: PairingRecord): void {
     this.pairings.set(p.token, p);
+  }
+  putDevicePairing(p: DevicePairingRecord): void {
+    this.devicePairings.set(p.tokenHash, p);
+  }
+  getDevicePairingByHash(tokenHash: string): DevicePairingRecord | undefined {
+    return this.devicePairings.get(tokenHash);
   }
   getPairing(token: string): PairingRecord | undefined {
     return this.pairings.get(token);
@@ -239,6 +252,7 @@ export class InMemoryStore implements Store {
       devices: [...this.devices.values()],
       push: [...this.push.values()],
       pairings: [...this.pairings.values()],
+      devicePairings: [...this.devicePairings.values()],
       holds: [...this.holds.values()],
       manifests: [...this.manifests.values()],
     };

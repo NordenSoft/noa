@@ -189,6 +189,57 @@ const KNOCKOUTS = [
   //
   // The older claim above remains preserved as history; this entry measures the current correction.
   {
+    id: "adr0007-device-token-kid-binding",
+    control:
+      "ADR-0007 constraint 4 — a device-pairing token names the ONLY key permitted to redeem it. " +
+      "The gate sees the phone public key in the CONFIRMATION before it authors ACCEPTED, so the " +
+      "token can be issued kid-bound; a leaked paste bundle is then worthless without that phone " +
+      "private key. This is the property a shared operator secret cannot have at any price, and it " +
+      "is why option A (teach the app one static secret) was rejected: a fleet-wide bearer " +
+      "credential is not per-device, not attributable, and unrevocable without rotating every device.",
+    file: "packages/relay/src/engine.ts",
+    find: "    if (rec.kid !== kid) {",
+    replace: "    if (rec.kid !== rec.kid) {",
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr0007-device-token-single-use",
+    control:
+      "ADR-0007 constraint 8 — a device token is SINGLE-USE, and single-use is the honest word: no " +
+      "revoke API exists for these tokens, so one use plus a short TTL is the entire mechanism. " +
+      "Accepting a second redemption would turn a replayable paste artifact into a standing " +
+      "credential. Recovery for a phone that LOST its response is a SEPARATE path — a fresh token " +
+      "re-mints onto the existing device — and its own control pins that this refusal does not " +
+      "brick the kid, because revokeSelf needs the very secret that was lost.",
+    file: "packages/relay/src/engine.ts",
+    find: "    if (rec.usedAt !== null) {",
+    replace: "    if (rec.usedAt !== rec.usedAt) {",
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr0007-device-token-hashed-at-rest",
+    control:
+      "ADR-0007 constraint 6 — the device token is HASHED at rest; the plaintext is returned once " +
+      "at issuance and never stored. PairingRecord stores its token raw, unlike apiKeyHash and " +
+      "deviceSecretHash — a pre-existing inconsistency the device namespace does not inherit. " +
+      "NOTE THE MUTATION SHAPE: it changes BOTH the write and the lookup. Changing only the write " +
+      "was tried first and broke FIVE tests on lookup consistency instead of one on secrecy — it " +
+      "measured the wrong property, and a knockout that kills for the wrong reason certifies nothing.",
+    file: "packages/relay/src/engine.ts",
+    find: "      tokenHash: hashSecret(token), tenant, kid, usedAt: null, expiresAt, createdAt: this.now(),",
+    replace: "      tokenHash: token, tenant, kid, usedAt: null, expiresAt, createdAt: this.now(),",
+    also: [
+      {
+        find: "    const rec = this.store.getDevicePairingByHash(hashSecret(token));",
+        replace: "    const rec = this.store.getDevicePairingByHash(token);",
+      },
+    ],
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
     id: "adr0007-untenanted-enrolment-dev-only",
     control:
       "ADR-0007 — a VALID enrolment secret must NOT open the untenanted device route. Constraint 3 " +
