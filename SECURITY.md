@@ -35,9 +35,15 @@ wanted, it simply has no released version to name.
 This is a **trust layer**, so it is built to be boring and hostile-input-safe:
 
 - **Zero runtime dependencies.** The verifier and library use only the Node standard library
-  (`node:crypto`). The single declared dependency, `@types/node`, is **type-only** — TypeScript
-  declarations stripped at build, never imported or executed at runtime. Nothing is pulled from the
-  network at verify time. Smaller supply chain = smaller attack surface.
+  (`node:crypto`). Measured against the root `package.json` on 2026-08-04: **`dependencies` is empty**,
+  and the four `devDependencies` (`@types/node`, `typescript`, `vitest`, `cbor2`) are build- and
+  test-time only — none is imported or executed by shipped code, and none is installed by a consumer.
+  (`cbor2` is used by the COSE interop tests; the library's own COSE path does not depend on it.)
+  Nothing is pulled from the network at verify time. Smaller supply chain = smaller attack surface.
+
+  ⚠ This bullet describes the **kernel**. `noa-mcp-proxy` is a server, not a verifier, and does have
+  runtime dependencies — see its own manifest. Reading this bullet as covering every published package
+  would be a mistake: it does not.
 - **Strict parser.** Receipts are parsed by a hardened JSON parser (`safeParse`) that rejects
   duplicate keys, `__proto__`/`constructor`/`prototype` keys, floats/exponents, unpaired
   surrogates, and over-deep or over-large input. The `noa verify` CLI and the `verifyChainText()`

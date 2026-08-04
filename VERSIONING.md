@@ -5,7 +5,7 @@ common way to misjudge compatibility, so this is deliberately short and blunt.
 
 ## 1. The package version (npm `semver`)
 
-`package.json`'s `version` (currently `0.3.0`) follows [SemVer](https://semver.org/) for the
+`package.json`'s `version` follows [SemVer](https://semver.org/) for the
 **library and CLI** — the TypeScript API surface exported from
 [`src/index.ts`](src/index.ts), the `noa` CLI's flags/exit codes, and runtime behavior. A
 `major` bump means an API or CLI contract changed in a way existing callers must adapt to; a

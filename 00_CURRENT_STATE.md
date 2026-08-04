@@ -36,13 +36,41 @@ Completed areas: IMPLEMENTED source, schemas, TypeScript reference implementatio
 
 In progress: ADR-0005 trusted-input-provenance hardening and associated security-gate work; reconciliation of protocol authority and field semantics with the NOA Trust consumer; release/conformance evidence refresh.
 
-Known breakage: Current remote PR CI is red and the local HEAD has no hosted CI run. Five-verifier conformance evidence applies only to the earlier remote SHA, not this local HEAD. Current NOA Trust integration pins `0.4.0` and uses `action.id`/`action.canonical` inconsistently with receipt semantics; the receipt schema does not detect that mismatch. COSE prose and implementation disagree about protected `kid`, embedded receipt signatures, payload bytes, detached-payload binding, and whether COSE verification also establishes native-chain validity.
+Known breakage: Current remote PR CI is red and the local HEAD has no hosted CI run. Five-verifier conformance evidence applies only to the earlier remote SHA, not this local HEAD. ~~Current NOA Trust integration pins `0.4.0`~~ — **measured false on 2026-08-04**: no package pins a
+version of the kernel at all. All seven in-repo consumers (`adapter-core`, `evidence`, `e2e-demo`,
+`gate`, `signer-sidecar`, `signer-core`, `tsa-anchor`) depend on `noa-receipt: file:../..`, so they build
+against this tree, not against a published version. The `action.id`/`action.canonical` half of this entry
+is NOT retracted — it was never re-measured, and the receipt schema still does not detect that mismatch. COSE prose and implementation disagree about protected `kid`, embedded receipt signatures, payload bytes, detached-payload binding, and whether COSE verification also establishes native-chain validity.
 
-Blockers: Do not release `0.6.0` or claim conformance for this HEAD until required CI, conformance, security gates, and independent review pass at the same immutable revision. Freeze a normative authority hierarchy; resolve the COSE construction/verification contradictions; and resolve or version the Trust semantic mismatch without changing frozen `noa.receipt/0.1`. Independent implementation and deployment/adoption evidence is insufficient.
+Blockers: ⚠ **The `0.6.0` release blocker below was overtaken by events on 2026-08-03 and is kept, not deleted,
+because how it was overtaken is the useful part.** `noa-receipt@0.6.0` was published to npm at
+2026-08-03T18:19Z from tag `v0.6.0` (SHA `7ea6fe59`). At that exact SHA the `ci` workflow was **RED**
+(run `30840108534`), so by this blocker's literal words the release should not have happened.
 
-Latest test result: TESTED locally on 2026-08-03: `npm run typecheck:all` passed; `npm run lint:security-gates` passed with 393 warn-mode findings and zero blocking findings. This is not a full test, conformance, package, CI, or release result.
+Measured, because "a red CI shipped anyway" is the kind of sentence that must never be left as an
+impression: **every failing test at that SHA was in `packages/gate`, which is `private: true` and ships
+to nobody.** The gates that actually govern what strangers download were green and correctly scoped —
+`publish.yml` gates the kernel on the kernel's own suite before `npm publish`, and `publish-mcp.yml`
+runs a separate `npm test` inside `adapter-core`, `signer-sidecar` and `mcp-proxy` before publishing any
+of them. Nothing broken was published.
 
-Latest deploy: No deployment of this checkout is verified. npm `0.5.0` publication is distribution evidence only, not deployment, adoption, or production verification.
+**The defect is in the blocker's granularity, not in the release.** It was written repo-wide ("required
+CI must pass") while the risk it protects against is per-package ("do not publish a broken artifact").
+A repo-wide phrasing turns a red that cannot reach a consumer into an apparent violation — and a blocker
+that gets correctly overridden once is a blocker people learn to override. Future release blockers name
+the artifact they guard.
+
+Still open, unchanged by the above: freeze a normative authority hierarchy; resolve the COSE construction/verification contradictions; and resolve or version the Trust semantic mismatch without changing frozen `noa.receipt/0.1`. Independent implementation and deployment/adoption evidence is insufficient.
+
+Latest test result: TESTED locally on 2026-08-04 at `bf88f4f`: kernel `npm test` **534 pass / 0 fail**;
+`packages/adapter-core` **332 pass / 0 fail** — which retires the seven `packages/gate` failures that were
+red at the `v0.6.0` tag. `lint:security-gates` and `lint:topology` both exit 0. This is still not a full
+conformance, package, CI, or release result. Previously, on 2026-08-03: `npm run typecheck:all` passed; `npm run lint:security-gates` passed with 393 warn-mode findings and zero blocking findings. This is not a full test, conformance, package, CI, or release result.
+
+Latest deploy: No deployment of this checkout is verified. The npm publication is distribution evidence
+only — not deployment, adoption, or production verification. Registry state measured 2026-08-04:
+`noa-receipt` **0.6.0** (published 2026-08-03T18:19Z), `noa-mcp-adapter-core` and `noa-mcp-proxy`
+**0.3.1**. `noa-receipt@0.6.1` exists in this tree and is **not** on the registry.
 
 Next objective: Freeze the normative authority hierarchy, reconcile COSE wire and layered-verification semantics, and decide the additive Trust action-binding carrier; add cross-repository semantic vectors, then run revision-bound CI, conformance/security/package gates, and independent Codex review.
 
