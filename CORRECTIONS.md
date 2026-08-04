@@ -402,3 +402,32 @@ the ones that have not are listed as genuinely pending elsewhere rather than swe
 The merge itself was authorised and the result is sound: content byte-identical to the branch tip
 (`git diff origin/main HEAD` empty), GitHub-signed (`verified: true`), CI green afterwards. What
 failed was the title, and the judgement that produced it.
+
+---
+
+## 2026-08-04 — a release tag pushed before its own commit existed
+
+**The wrong act, stated plainly.** `v0.6.2` was created and pushed onto `b968b99` — the squash of
+PR #30, whose `package.json` says **0.6.1**. The intent was to tag the 0.6.2 bump (PR #31), and the
+tagging command ran against `origin/main` immediately after a merge attempt that had in fact
+FAILED: the ruleset rejected it ("6 of 6 required status checks are expected", the PR being behind
+a base that had moved). The failure was visible in the same output and was not read before the next
+command ran. `git push origin v0.6.2` then tagged whatever `origin/main` happened to be.
+
+**What it could have cost, and why it did not.** The tag fires `publish.yml`. The run started
+(`30949925040`) and was cancelled while still `in_progress`; the registry was then re-measured
+directly — `npm view noa-receipt versions` returns `0.5.0, 0.6.0, 0.6.1` and **no 0.6.2**. Nothing
+wrong was published. Had the cancel been a minute later, npm would carry a `0.6.2` whose contents
+are 0.6.1 — the exact "one version, two contents" defect that `lint:release-parity` exists to
+prevent, shipped by the tooling built to prevent it.
+
+**The scar.** The tag cannot be removed: the tag ruleset (`Enterprise release tag protection`)
+enforces `deletion` and `non_fast_forward` on `refs/tags/v*`, and both the CLI and the API refuse
+(`422 Cannot delete this tag`). It is fast-forwarded onto the real 0.6.2 commit once that lands,
+which is permitted, honest while nothing has been published under it, and recorded here rather than
+performed quietly.
+
+**The rule this yields, and it is not "be careful".** A command whose effect is publication must
+not be chained to a command whose success was not READ. Merge, then re-read the merged state from
+the remote, and only then tag. `&&` in a shell is not a verification step — it chains on exit code,
+and `gh pr merge` printed a rule violation while the pipeline carried on.
