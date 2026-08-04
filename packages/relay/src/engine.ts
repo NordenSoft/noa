@@ -941,7 +941,12 @@ export class RelayEngine {
     // — the field is optional, and a malformed one is recorded as absent rather than as itself.
     hold.decisionArtifact = inertSnapshot(input["decisionArtifact"] ?? null) ?? null;
     hold.status = verdict === "ALLOWED" ? "APPROVED" : "DENIED";
-    hold.reasonCode = verdict === "ALLOWED" ? "HUMAN_APPROVED" : "HUMAN_DENIED";
+    // The ban is TOKEN-LEVEL, not surface-level: the relay's record is not evidence (NC-6.7), but
+    // it still writes the token an operator reads during an incident, and the owner's invariant
+    // forbids CLAIMING it rather than forbidding one component from doing so. The relay establishes
+    // strictly LESS than the gate — it verifies an enrolled device's signature and nothing about
+    // intent equality — so if the gate may not claim it, the relay certainly may not.
+    hold.reasonCode = verdict === "ALLOWED" ? "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND" : "HUMAN_DENIED";
     hold.decidedAt = this.now();
     this.store.putHold(hold);
     // THE FIFTH PUBLICATION SITE, and the one that is NOT a wire leak — recorded precisely because

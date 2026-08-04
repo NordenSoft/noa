@@ -369,6 +369,16 @@ check that would catch the forgery.
 > **No component may claim `HUMAN_APPROVED` unless that equality has been independently
 > established.**
 
+**IMPLEMENTED 2026-08-04, on the owner's explicit authorization.** The rule above had been stated
+since 2026-07-29 and the code violated it: the ENFORCED path emitted `HUMAN_APPROVED` while the
+execution leg had no source. It now emits **`HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND`** — a human
+approved this exact derived intent; whether that intent executed is not established.
+
+`HUMAN_APPROVED` stays in the union, RESERVED and emitted by nothing. It is the destination for the
+day an execution witness exists, and a source-scanning guard
+(`packages/gate/test/human-approved-is-reserved.test.ts`) fails if anything starts emitting it again
+— including in a merge, which is the cheapest way a single string comes back.
+
 Eight consequences are owner-ratified and binding: caller-supplied display text and caller-supplied
 `paramsHash` **cannot** be independent authoritative inputs; the trusted boundary **must** derive the
 canonical intent and its digest from the structured snapshot; approval UI content **must** be

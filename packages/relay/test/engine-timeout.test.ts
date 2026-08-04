@@ -95,7 +95,11 @@ test("an approval BEFORE expiry works; a SECOND decision is rejected (D17 first-
   assert.equal(first.status, 200);
   // The state machine still records the verdict...
   assert.equal(h.store.getHold(holdId)!.status, "APPROVED");
-  assert.equal(h.store.getHold(holdId)!.reasonCode, "HUMAN_APPROVED");
+  // Same correction as the gate: the relay establishes strictly less than the gate does, so if
+    // the gate may not claim HUMAN_APPROVED, the relay certainly may not.
+    assert.equal(h.store.getHold(holdId)!.reasonCode, "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND");
+    assert.notEqual(h.store.getHold(holdId)!.reasonCode, "HUMAN_APPROVED",
+      "the relay claimed HUMAN_APPROVED — it verifies an enrolled device signature and nothing about intent equality");
   // ...but the PUBLISHED view must not reveal it. APPROVED and DENIED both read `DECIDED`, so a
   // consumer cannot learn the outcome without verifying the signed receipt.
   assert.equal(bodyOf<{ lifecycle: string }>(first).lifecycle, "DECIDED");

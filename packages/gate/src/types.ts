@@ -22,7 +22,41 @@ export type HoldStatus =
 
 /** Machine-readable terminal reason (never free text / never PII). */
 export type HoldReasonCode =
+  /**
+   * ⚠ RESERVED, AND NOTHING EMITS IT TODAY. That is the point, not an oversight.
+   *
+   * `NON-CLAIMS.md` (owner-amended 2026-07-29, owner-ratified and binding) states the invariant:
+   *
+   *     approval_intent_digest == grant_intent_digest == execution_intent_digest
+   *     No component may claim `HUMAN_APPROVED` unless that equality has been independently
+   *     established.
+   *
+   * TWO of those three legs are established at the gate — the boundary-derived display, the
+   * action binding, the approver identity, the timing window, the decision-to-hold binding, and
+   * the grant taken from `hold.action.paramsHash`. The THIRD, execution, has no admissible
+   * source: stages 9-10 take no input a gate can verify, `NC-6.8` declined credential custody,
+   * and no cooperating third party exists. So the equality cannot be established today, and this
+   * token cannot honestly be emitted.
+   *
+   * It stays in the union as the destination: when an execution witness exists, the ENFORCED path
+   * moves back to this from the INTENT_NOT_EXECUTION_BOUND token below, and the move is a
+   * one-line change rather than a redesign.
+   */
   | "HUMAN_APPROVED"
+  | "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND"
+  /**
+   * A human approved this exact derived intent; whether that intent EXECUTED is not established.
+   *
+   * ADDED 2026-08-04 on the owner's explicit authorization — a normative addition to the frozen
+   * §13 union, which is why it needed one. Before it existed the ENFORCED path emitted
+   * `HUMAN_APPROVED`, which the owner's own invariant forbids while the third leg is unsourced.
+   * The change is NOT a downgrade from a true claim to a weaker one; it is a move from an
+   * UNSUPPORTED claim to a true one.
+   *
+   * What it asserts, exactly: the boundary derived the display, a human with an authorized
+   * approver key approved THAT, and the grant is bound to the same params hash. What it refuses
+   * to assert: that the target ran those params.
+   */
   /** RAW (UNENFORCED) acknowledgement. A key-holder acknowledged a display the boundary did NOT
    *  derive, so this is NOT authorization and NOT execution evidence (owner decision 2026-07-30).
    *  It exists so an unenforced acknowledgement can never be mistaken for HUMAN_APPROVED. */
