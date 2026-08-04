@@ -39,7 +39,7 @@ test("A3 happy path: valid input -> buildReceipt -> verifyChain is VALID", () =>
 
   const r = buildReceipt(mkInput("0", "2026-06-20T00:00:00.000Z"), null, signer);
   const res = verifyChain(b([r]), { keyring: b(keyring) });
-  assert.equal(res.status, "VALID", res.reason);
+  assert.equal(res.status, "VALID", res.reason ?? "");
 });
 
 test("A3 PoC: id over the 128-code-point cap throws BuilderError (never returns a signed receipt)", () => {
@@ -98,7 +98,7 @@ test("A3 mutation-safety: mutating the caller's input object after build does NO
   assert.equal(r.governance.verdict, "EXECUTED", "receipt must not alias caller's governance object");
 
   const res = verifyChain(b([r]), { keyring: b(keyring) });
-  assert.equal(res.status, "VALID", res.reason);
+  assert.equal(res.status, "VALID", res.reason ?? "");
 });
 
 // ── A3: buildCheckpoint must refuse to hand back a signed-but-MALFORMED checkpoint ────────

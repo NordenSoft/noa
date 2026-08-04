@@ -108,7 +108,7 @@ test("VERIFY: requireNFC:true rejects the same receipt as MALFORMED, naming the 
 test("VERIFY: requireNFC:true is a no-op on a conforming chain (no false positives)", () => {
   const r = buildReceipt(mkInput(), null, { kid: kp.kid, privateKey: kp.privateKey });
   const res = verifyChain(b([r]), { keyring: b(keyring), requireNFC: true });
-  assert.equal(res.status, "VALID", res.reason);
+  assert.equal(res.status, "VALID", res.reason ?? "");
   assert.equal(res.warnings.some((w) => w.startsWith("non-nfc:")), false);
 });
 

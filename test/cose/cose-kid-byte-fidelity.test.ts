@@ -88,7 +88,7 @@ test("H1 producer: a kid that does not round-trip through UTF-8 is refused befor
 test("H1: no false negative — an ordinary kid still verifies, authenticated", () => {
   const cose = coseSign1(Buffer.from("p"), { kid: "gate-1", privateKey: kp.privateKey });
   const res = coseSign1Verify(cose, b({ "gate-1": kp.publicKey }));
-  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.ok, true, res.reason ?? "");
   assert.equal(res.kid, "gate-1");
   assert.equal(res.kidAuthenticated, true);
   // …including non-ASCII kids that ARE valid UTF-8: this refuses lossiness, not internationalisation.

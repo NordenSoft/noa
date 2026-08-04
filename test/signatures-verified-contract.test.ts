@@ -75,7 +75,7 @@ function chainOf(n: number, driftAt = -1) {
  *  would satisfy them. This proves the honest chain reaches `true`, so `false` means something. */
 test("CONTROL — a complete, fully-authenticated chain reports signaturesVerified TRUE", () => {
   const r = verifyChain(b(chainOf(5)), { keyring: b(keyring) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.signaturesVerified, true,
     "the honest path does not reach true — every `false` assertion below would then be vacuous");
 });

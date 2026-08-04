@@ -92,7 +92,7 @@ test("the same chain WITH an identityManifest is rejected UNTRUSTED (the §5b ge
     checkpoint: b(forged),
     identityManifest: b({ "agent-1": [victim.kid] }),
   });
-  assert.equal(res.status, "UNTRUSTED", res.reason);
+  assert.equal(res.status, "UNTRUSTED", res.reason ?? "");
   assert.match(res.reason ?? "", /not authorized for chain opener/);
 });
 
@@ -103,7 +103,7 @@ test("the new warning does NOT fire when an identityManifest IS supplied (no fal
     checkpoint: b(legit),
     identityManifest: b({ "agent-1": [victim.kid] }),
   });
-  assert.equal(res.status, "VALID", res.reason);
+  assert.equal(res.status, "VALID", res.reason ?? "");
   assert.equal(res.tailChecked, true);
   const warned = res.warnings.some((w) => /checkpoint/i.test(w) && /identityManifest/i.test(w));
   assert.equal(warned, false, "the kid-level checkpoint warning must not fire when the manifest is present");

@@ -146,7 +146,7 @@ test("andAlso applies both mutations and hash-verifies restoration of both files
       timeoutMs: 60_000,
     });
 
-    assert.equal(ev.verdict, VERDICT.DETECTOR_TRIGGERED, ev.detail);
+    assert.equal(ev.verdict, VERDICT.DETECTOR_TRIGGERED, ev.detail ?? "");
     assert.equal(ev.andAlso, "companion");
     assert.deepEqual(Object.keys(ev.hashBefore).sort(), ["companion.js", "primary.js"]);
     assert.deepEqual(Object.keys(ev.hashAfter).sort(), ["companion.js", "primary.js"]);
@@ -174,7 +174,7 @@ test("the primary mutation alone stays green in the same fixture", () => {
       baseline: baseline(root, lone.suite),
       timeoutMs: 60_000,
     });
-    assert.equal(ev.verdict, VERDICT.DETECTOR_DID_NOT_TRIGGER, ev.detail);
+    assert.equal(ev.verdict, VERDICT.DETECTOR_DID_NOT_TRIGGER, ev.detail ?? "");
     assert.equal(ev.restored, true);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
@@ -211,7 +211,7 @@ test("same-file paired mutations that cancel to pristine never run as a mutant",
       baseline: baseline(root, suite),
       timeoutMs: 60_000,
     });
-    assert.equal(ev.verdict, VERDICT.MUTATION_NOT_APPLIED, ev.detail);
+    assert.equal(ev.verdict, VERDICT.MUTATION_NOT_APPLIED, ev.detail ?? "");
     assert.match(ev.detail ?? "", /pair cancelled itself/);
     assert.equal(ev.restored, true);
   } finally {
@@ -248,7 +248,7 @@ test("restoration refuses to erase an unexpected edit made while the suite runs"
       baseline: baseline(root, suite),
       timeoutMs: 60_000,
     });
-    assert.equal(ev.verdict, VERDICT.RESTORATION_FAILED, ev.detail);
+    assert.equal(ev.verdict, VERDICT.RESTORATION_FAILED, ev.detail ?? "");
     assert.equal(ev.restored, false);
     assert.match(ev.detail ?? "", /refusing to overwrite a concurrent edit/);
     assert.equal(fs.readFileSync(path.join(root, "primary.js"), "utf8"), "concurrent edit\n");

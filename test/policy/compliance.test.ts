@@ -61,7 +61,7 @@ test("B4: on-receipt compliance proof — re-run reproduces the verdict (ALLOW)"
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const res = verifyReceiptCompliance(b(r), b(POLICY), b(inputs), { keyring: b(keyring) });
-  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.ok, true, res.reason ?? "");
   assert.equal(res.policyVerdict, "ALLOW");
   assert.equal(res.attribution, "KID_LEVEL", "no manifest ⇒ the weaker guarantee, stated as a FIELD not a comment");
 });
@@ -79,7 +79,7 @@ test("P0-14: compliance carrier authentication refuses a lifecycle-retired signe
   });
 
   const staticControl = verifyReceiptCompliance(b(retiredCarrier), b(POLICY), b(inputs), { keyring: b(keyring) });
-  assert.equal(staticControl.ok, true, staticControl.reason);
+  assert.equal(staticControl.ok, true, staticControl.reason ?? "");
 
   const attack = verifyReceiptCompliance(b(retiredCarrier), b(POLICY), b(inputs), { keyring: lifecycle });
   assert.equal(attack.ok, false, "compliance verifier accepted a carrier signed by a lifecycle-retired key");
@@ -90,7 +90,7 @@ test("B4: on-receipt compliance proof — DENY reproduces too", () => {
   const inputs = { action: "payment.refund", amountMinor: 100_000_000 };
   const r = receiptWith(inputs, "BLOCKED");
   const res = verifyReceiptCompliance(b(r), b(POLICY), b(inputs), { keyring: b(keyring) });
-  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.ok, true, res.reason ?? "");
   assert.equal(res.policyVerdict, "DENY");
 });
 
@@ -143,7 +143,7 @@ test("B4: backward-compat — a commitment WITHOUT a verdict still verifies (rec
   const c = r.governance.compliance!;
   const legacy = resign({ ...r, governance: { ...r.governance, compliance: { policyHash: c.policyHash, readSetHash: c.readSetHash, inputsHash: c.inputsHash } } } as never);
   const res = verifyReceiptCompliance(b(legacy), b(POLICY), b(inputs), { keyring: b(keyring) });
-  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.ok, true, res.reason ?? "");
   assert.equal(res.policyVerdict, "ALLOW");
 });
 
@@ -164,7 +164,7 @@ test("with a keyring, an AUTHENTIC carrier passes the L2 proof", () => {
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const res = verifyReceiptCompliance(b(r), b(POLICY), b(inputs), { keyring: b(keyring) });
-  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.ok, true, res.reason ?? "");
   assert.equal(res.policyVerdict, "ALLOW");
 });
 
@@ -251,7 +251,7 @@ test("happy path is preserved — a valid keyring + a genuine carrier still auth
   const inputs = { action: "payment.refund", amountMinor: 4200 };
   const r = receiptWith(inputs, "EXECUTED");
   const res = verifyReceiptCompliance(b(r), b(POLICY), b(inputs), { keyring: b(keyring) });
-  assert.equal(res.ok, true, res.reason);
+  assert.equal(res.ok, true, res.reason ?? "");
   assert.equal(res.policyVerdict, "ALLOW");
 });
 
@@ -300,7 +300,7 @@ test("a flipping keyring getter is REFUSED unread — an accessor is not configu
   // The other half of the original assertion, kept as a control: the SAME genuine carrier with the SAME
   // keyring supplied as bytes still authenticates and still reproduces ALLOW.
   const good = verifyReceiptCompliance(b(r), b(POLICY), b(inputs), { keyring: b(keyring) });
-  assert.equal(good.ok, true, good.reason);
+  assert.equal(good.ok, true, good.reason ?? "");
   assert.equal(good.policyVerdict, "ALLOW");
 });
 
@@ -421,7 +421,7 @@ test("a flipping `inputs` getter cannot split inputsHash from the re-run — the
   // is judged consistently: the committed 4200 reproduces ALLOW and is COMPLIANT; the 100M document fails
   // the inputsHash bind. There is no document that hashes as one and evaluates as the other.
   const asCommitted = verifyReceiptCompliance(b(r), b(POLICY), b({ action: "payment.refund", amountMinor: 4200 }), { keyring: b(keyring) });
-  assert.equal(asCommitted.ok, true, asCommitted.reason);
+  assert.equal(asCommitted.ok, true, asCommitted.reason ?? "");
   assert.equal(asCommitted.policyVerdict, "ALLOW");
   const asFlipped = verifyReceiptCompliance(b(r), b(POLICY), b({ action: "payment.refund", amountMinor: 100_000_000 }), { keyring: b(keyring) });
   assert.equal(asFlipped.ok, false, "the 100M inputs were never committed — the hash bind must reject them");
@@ -455,7 +455,7 @@ test("a flipping `inputs` getter cannot split inputsHash from the re-run — the
   test("AUTHORIZED (agent.id, kid) pairing → ok:true with { keyring, identityManifest }", () => {
     const r = compReceiptFor("alice", { kid: aliceK.kid, privateKey: aliceK.privateKey });
     const res = verifyReceiptCompliance(b(r), b(POLICY), b(inputs), { keyring: b(bothKr), identityManifest: b(manifest) });
-    assert.equal(res.ok, true, res.reason);
+    assert.equal(res.ok, true, res.reason ?? "");
     assert.equal(res.policyVerdict, "ALLOW");
   });
 
@@ -539,6 +539,6 @@ test("a flipping `inputs` getter cannot split inputsHash from the re-run — the
     // …and the permissive manifest is the control: it AUTHORIZES the pairing, which is exactly why the
     // getter-split mattered. An attacker who can only supply bytes must supply one or the other, never both.
     const permissiveRes = verifyReceiptCompliance(b(imp), b(POLICY), b(inputs), { keyring: b(bothKr), identityManifest: b(permissive) });
-    assert.equal(permissiveRes.ok, true, permissiveRes.reason);
+    assert.equal(permissiveRes.ok, true, permissiveRes.reason ?? "");
   });
 }

@@ -92,7 +92,7 @@ test("every valid vector ACCEPTS and every rejection vector REJECTS", () => {
 for (const { slug, file, vec } of vectors) {
   test(`${slug}/${file.replace(/\.json$/, "")} → ${vec.expect}`, () => {
     const res = verifyArtifact(b(vec.artifact), b({ ...vec.context, schemas, keyring }));
-    assert.equal(res.ok, vec.expect === "ACCEPT", res.reason);
+    assert.equal(res.ok, vec.expect === "ACCEPT", res.reason ?? "");
   });
 }
 
@@ -185,7 +185,7 @@ test("P0-14: a lifecycle-revoked artifact signer is refused outright, including 
     schemas,
     keyring: currentControl,
   }));
-  assert.equal(current.ok, true, current.reason);
+  assert.equal(current.ok, true, current.reason ?? "");
 });
 
 test("an invalid verifier-controlled authorization time fails closed", () => {
@@ -234,11 +234,11 @@ test("P0-14 activation mirror: signer-chosen future time cannot activate a not-y
     authorizationTime: "2026-07-14T12:00:00.000Z",
     riskClass: "HIGH",
   }));
-  assert.equal(honestControl.ok, true, honestControl.reason);
+  assert.equal(honestControl.ok, true, honestControl.reason ?? "");
 
   // CONTROL: a genuine static key has no lifecycle assertion and keeps the legacy contract.
   const staticControl = verifyArtifact(b(valid.vec.artifact), b({ schemas, keyring, riskClass: "HIGH" }));
-  assert.equal(staticControl.ok, true, staticControl.reason);
+  assert.equal(staticControl.ok, true, staticControl.reason ?? "");
 
   // FAIL CLOSED: a lifecycle-bearing key needs a verifier-controlled time from the caller.
   const noTrustedTime = verifyArtifact(b(valid.vec.artifact), b({ schemas, keyring: active, riskClass: "HIGH" }));

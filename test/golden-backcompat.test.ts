@@ -64,7 +64,7 @@ test("golden v0.3.0 [genesis + keyring]: a well-formed single receipt correctly 
   // WHY VALID: seq-0 genesis, prevHash null, hash + sig internally consistent, kid present in the
   // supplied keyring. Every integrity check passes and the trust root authenticates the signature.
   const r = verifyChain(b(chain("genesis/chain.json")), { keyring: b(genesisKeyring) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.signaturesVerified, true);
   assert.equal(r.count, 1);
 });
@@ -84,7 +84,7 @@ test("golden v0.3.0 [multi + keyring]: 4-receipt, 2-signer chain, both kids trus
   // WHY VALID: contiguous seq 0..3, every prevHash links, every sig authenticates against a
   // keyring-trusted kid, and each agent.id uses one continuous key (no mid-chain swap).
   const r = verifyChain(b(chain("multi/chain.json")), { keyring: b(multiKeyring) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.signaturesVerified, true);
   assert.equal(r.count, 4);
 });
@@ -101,7 +101,7 @@ test("golden v0.3.0 [multi + keyring + checkpoint]: head matches checkpoint -> V
   // trusted key and matches the presented head exactly, so tail-truncation detection is armed and
   // finds nothing missing.
   const r = verifyChain(b(chain("multi/chain.json")), { keyring: b(multiKeyring), checkpoint: b(multiCheckpoint) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.tailChecked, true);
   assert.equal(r.count, 4);
 });
@@ -116,7 +116,7 @@ test("golden v0.3.0 [multi truncated + checkpoint]: dropping the head hides seq 
   assert.equal(full.length, 4, "fixture precondition: multi chain has 4 receipts");
   const truncated = full.slice(0, -1); // drop seq 3, the checkpoint's pinned head
   const r = verifyChain(b(truncated), { keyring: b(multiKeyring), checkpoint: b(multiCheckpoint) });
-  assert.equal(r.status, "TAMPERED", r.reason);
+  assert.equal(r.status, "TAMPERED", r.reason ?? "");
 });
 
 // ───────────────────────── IDENTITY MANIFEST + IMPERSONATION ─────────────────────────
@@ -125,7 +125,7 @@ test("golden v0.3.0 [identity + keyring + manifest]: each agent signs with its o
   // WHY VALID: golden-agent-a is bound to golden-signer-a and golden-agent-b to golden-signer-b in
   // the manifest, and each receipt's (agent.id, sig.kid) pairing matches its binding.
   const r = verifyChain(b(chain("identity/chain.json")), { keyring: b(identityKeyring), identityManifest: b(identityManifest) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.signaturesVerified, true);
   assert.equal(r.count, 2);
 });
@@ -135,7 +135,7 @@ test("golden v0.3.0 [identity + keyring, NO manifest]: -> VALID at kid-level att
   // ("a keyring-trusted key signed"), not per-agent binding. Both receipts are validly signed by
   // trusted kids, so VALID is correct — and MUST stay VALID so pre-manifest callers don't break.
   const r = verifyChain(b(chain("identity/chain.json")), { keyring: b(identityKeyring) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.signaturesVerified, true);
   assert.equal(r.count, 2);
 });
@@ -147,7 +147,7 @@ test("golden v0.3.0 [impersonation + keyring, NO manifest]: -> VALID but ONLY ki
   // the "attribution is kid-level" honesty warning. This is the disclosed limit, frozen so it can
   // neither silently strengthen (false confidence) nor silently weaken.
   const r = verifyChain(b(chain("identity/impersonation-chain.json")), { keyring: b(identityKeyring) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.ok(
     r.warnings.some((w) => /attribution is kid-level/.test(w)),
     "must carry the kid-level-attribution honesty warning",
@@ -160,7 +160,7 @@ test("golden v0.3.0 [impersonation + keyring + manifest]: agent.id signed by the
   // identityManifest exists to stop. A verifier that returned VALID here would let any holder of
   // ANY keyring-trusted key forge receipts under ANY agent identity. It MUST be UNTRUSTED forever.
   const r = verifyChain(b(chain("identity/impersonation-chain.json")), { keyring: b(identityKeyring), identityManifest: b(identityManifest) });
-  assert.equal(r.status, "UNTRUSTED", r.reason);
+  assert.equal(r.status, "UNTRUSTED", r.reason ?? "");
   assert.equal(r.signaturesVerified, false);
 });
 
@@ -170,7 +170,7 @@ test("golden v0.3.0 [verifyChainText on raw frozen bytes]: -> VALID (strict-pars
   // Exercises the separately-hardened verifyChainText entry point (safeParse: duplicate-key /
   // __proto__ / surrogate rejection) on the frozen RAW multi-chain text, not JSON.parse+verifyChain.
   const r = verifyChainText(raw("multi/chain.json"), { keyring: b(multiKeyring), checkpoint: b(multiCheckpoint) });
-  assert.equal(r.status, "VALID", r.reason);
+  assert.equal(r.status, "VALID", r.reason ?? "");
   assert.equal(r.signaturesVerified, true);
   assert.equal(r.tailChecked, true);
   assert.equal(r.count, 4);
