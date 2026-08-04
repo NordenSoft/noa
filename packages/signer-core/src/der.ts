@@ -100,8 +100,28 @@ export function spkiEd25519ToRawPublicKey(publicKeyB64: string): Uint8Array {
 export function rawSeedToPkcs8Der(seed: Uint8Array): string {
   if (seed.length !== 32) throw new DerCodecError(`rawSeedToPkcs8Der: expected a 32-byte seed, got ${seed.length} bytes`);
   const der = new Uint8Array(PKCS8_ED25519_TOTAL_LEN);
-  der.set(PKCS8_ED25519_PREFIX, 0);
-  der.set(seed, PKCS8_ED25519_PREFIX.length);
+  // ── P1-9: ASSEMBLED BY INDEX, NEVER BY `.set()` — AND HERE THE ARGUMENT IS THE PRIVATE KEY ──────
+  //
+  // What stood here was `der.set(seed, PKCS8_ED25519_PREFIX.length)`. `Uint8Array.prototype.set` is a
+  // WRITABLE GLOBAL, and this call handed it the **raw 32-byte Ed25519 private seed as its first
+  // argument**.
+  //
+  // That is a different and worse consequence than the one #77-A closed in `signing.ts`. There, a
+  // replaced `set` could make the signed message a constant — a correctness loss, loud once measured.
+  // Here a replacement does not need to corrupt anything: it can COPY the seed and then call through,
+  // leaving the DER output byte-identical and every test green. **Corruption is a bug; this is
+  // exfiltration of the key the whole product exists to protect.**
+  //
+  // Integer-indexed writes on a typed array are handled by the exotic object's own internal method and
+  // do NOT consult the prototype chain for a setter — measured separately on `bytes.ts`, where an
+  // accessor on `Uint8Array.prototype["0"]` never fired. So these loops cannot be intercepted the way
+  // `.set()` could, and no `intrinsics` capture is needed: there is nothing left to dispatch through.
+  //
+  // Same idiom as `signing.ts:44-55` deliberately — one shape for this class in this package, not two.
+  const p = PKCS8_ED25519_PREFIX.length;
+  for (let i = 0; i < p; i++) der[i] = PKCS8_ED25519_PREFIX[i] as number;
+  const s = seed.length;
+  for (let i = 0; i < s; i++) der[p + i] = seed[i] as number;
   return bytesToBase64(der);
 }
 
@@ -111,7 +131,14 @@ export function rawSeedToPkcs8Der(seed: Uint8Array): string {
 export function rawPublicKeyToSpkiDer(publicKey: Uint8Array): string {
   if (publicKey.length !== 32) throw new DerCodecError(`rawPublicKeyToSpkiDer: expected a 32-byte public key, got ${publicKey.length} bytes`);
   const der = new Uint8Array(SPKI_ED25519_TOTAL_LEN);
-  der.set(SPKI_ED25519_PREFIX, 0);
-  der.set(publicKey, SPKI_ED25519_PREFIX.length);
+  // P1-9, same class as `rawSeedToPkcs8Der` above and fixed identically. This one carries a PUBLIC
+  // key, so the exfiltration argument does not apply — but a replaced `set` can still silently swap
+  // the encoded key, and a keyring entry that is not the key it claims to be is its own defect. Fixed
+  // in the same pass rather than left as the neighbour: this project has produced a CRITICAL in three
+  // consecutive releases by fixing one site and leaving the one beside it.
+  const p = SPKI_ED25519_PREFIX.length;
+  for (let i = 0; i < p; i++) der[i] = SPKI_ED25519_PREFIX[i] as number;
+  const k = publicKey.length;
+  for (let i = 0; i < k; i++) der[p + i] = publicKey[i] as number;
   return bytesToBase64(der);
 }

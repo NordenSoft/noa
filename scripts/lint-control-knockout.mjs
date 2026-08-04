@@ -111,6 +111,21 @@ const KNOCKOUTS = [
   // (`verifySealedDisplayEgress`, engine.ts), so the condition the withdrawal named is discharged and
   // the entry is registered in the SAME commit that built it. Never the other way round.
   {
+    id: "p1-9-key-encoding-index-assembly",
+    control:
+      "P1-9 — the PKCS8 key encoder assembles by INDEX, never `.set()`. `der.set(seed, 16)` handed the " +
+      "RAW 32-BYTE ED25519 PRIVATE SEED to `Uint8Array.prototype.set`, a writable global. Unlike the " +
+      "#77-A defect this repeats, a replacement here need not corrupt anything: it can copy the seed, " +
+      "call through, and leave the DER byte-identical with every test green. That is EXFILTRATION, and " +
+      "an output comparison is structurally blind to it — which is why the test asserts a HIT-COUNT of " +
+      "zero on a counting, non-destructive poison rather than comparing bytes.",
+    file: "packages/signer-core/src/der.ts",
+    find: "  const p = PKCS8_ED25519_PREFIX.length;\n  for (let i = 0; i < p; i++) der[i] = PKCS8_ED25519_PREFIX[i] as number;\n  const s = seed.length;\n  for (let i = 0; i < s; i++) der[p + i] = seed[i] as number;",
+    replace: "  der.set(PKCS8_ED25519_PREFIX, 0);\n  der.set(seed, PKCS8_ED25519_PREFIX.length);",
+    kind: "tests",
+    suite: ["packages/signer-core", "npm", ["test"]],
+  },
+  {
     id: "g5-display-aad-egress-check",
     control:
       "ADR-0005 §5/§7 G5 (M5 cross-hold display replay) — the gate VERIFIES the sealed display it is " +

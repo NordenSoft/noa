@@ -49,10 +49,15 @@ function concatBytes(...arrays: Uint8Array[]): Uint8Array {
   let total = 0;
   for (const a of arrays) total += a.length;
   const out = new Uint8Array(total);
+  // P1-9: index assembly, same class as `der.ts` — SAME MECHANISM, LOWER STAKES, stated honestly.
+  // No key material passes through here; this concatenates HPKE suite ids and labels. A replaced
+  // `set` would corrupt the KDF info string rather than leak a secret. Converted in the same commit
+  // because the class is the unit of repair, not the severity.
   let off = 0;
   for (const a of arrays) {
-    out.set(a, off);
-    off += a.length;
+    const n = a.length;
+    for (let i = 0; i < n; i++) out[off + i] = a[i] as number;
+    off += n;
   }
   return out;
 }
