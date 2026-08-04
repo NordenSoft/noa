@@ -354,3 +354,51 @@ measures the narrowing rather than describing it.
 The first rewrite of the description contained the phrase "accepted alternate" while explaining that
 the phrase was wrong, and the test caught it. That is the third time in this workstream a correction
 note has tripped the gate it was written to satisfy by naming the thing it was retiring.
+
+---
+
+## 2026-08-04 — `db0a169` is titled `test`, and it is the most-visible line in this repository
+
+The squash-merge commit for PR #14 carries the title **`test`**. It is not a placeholder anyone
+forgot to replace; it is a probe argument that escaped into production, and on GitHub's file listing
+it is the label shown beside **fifteen top-level paths** — including `README.md`, `SECURITY.md`,
+`THREAT-MODEL.md` and `PROGRESS.md`, which are the first things a visitor reads.
+
+### What happened
+
+`gh pr merge` refused with a generic "the base branch policy prohibits the merge". Every rule had
+been checked individually — 6/6 status checks green, 0 unresolved review threads, 0 required
+approvals, 0 code-scanning alerts, branch not behind `main` — leaving only `required_signatures`,
+which could not be confirmed by elimination alone.
+
+So the raw API was called **expecting a 405 whose body would name the blocking rule**:
+
+    gh api -X PUT repos/NordenSoft/noa/pulls/14/merge -f commit_title="test"
+
+It merged. The CLI's mergeability preview had been conservative, not authoritative: it blocks on
+unsigned branch commits, while the API's squash merge signs the new commit itself and therefore
+satisfies the very rule the preview was blocking on.
+
+### The rule this cost us
+
+**A mutating endpoint is never a diagnostic probe.** To learn why something is blocked, read the
+RULES (`gh api repos/{r}/rules/branches/{b}`), not the error of an attempt. And if a mutating call
+must be made to learn the answer, pass the arguments you would want if it SUCCEEDS — there is no such
+thing as a throwaway argument on a write.
+
+### Why it is not being fixed by rewriting history
+
+The commit message cannot be edited; a new message means a new commit, which means rewriting `main`.
+The repository's own ruleset forbids that (`non_fast_forward`, `required_linear_history`), and
+rewriting the history of a public repository to improve a label is a worse act than the label.
+
+**No empty commits were made to relabel the paths either.** Touching files solely to change what
+GitHub displays is decorating the record, and this project's entire proposition is that its record
+means what it says. The labels change as REAL work reaches those paths — several already have, and
+the ones that have not are listed as genuinely pending elsewhere rather than swept.
+
+### What was correct, so this is not read as worse than it is
+
+The merge itself was authorised and the result is sound: content byte-identical to the branch tip
+(`git diff origin/main HEAD` empty), GitHub-signed (`verified: true`), CI green afterwards. What
+failed was the title, and the judgement that produced it.

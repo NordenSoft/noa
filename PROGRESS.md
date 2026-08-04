@@ -7,9 +7,49 @@
 > **How to read this file.** Written at the end of each work block; its timestamp is the last moment
 > work happened, not "now".
 
-**Last updated:** 2026-07-31 (micro-batch A closing commit — child of `12d715c`) · branch
-`impl/adr-0005-trusted-input-provenance` · working tree **clean at freeze** · **nothing pushed**
-· convergence **0/2**
+**Last updated:** 2026-08-04 · branch `impl/adr-0005-trusted-input-provenance` ·
+**merged to `main` twice** (`7864eba`, `0c4cdb7`) · kernel `0.6.1` (bumped, **not published**)
+
+> ⚠ **The line above used to read "nothing pushed · convergence 0/2", dated 2026-07-31, while
+> `main` already carried two merges.** A status file that is wrong is worse than one that is
+> missing: the missing one sends you to the code, the wrong one sends you away from it. Corrected
+> rather than quietly overwritten, because the failure mode — a stale evidence file read as
+> current — is the same class this project keeps finding in its gates.
+
+### Measured totals — 2026-08-04, all re-run for this line
+
+| suite | result |
+|---|---|
+| kernel | **534 / 534** |
+| `packages/gate` | **241 / 241** |
+| `packages/relay` | **166 / 166** |
+| `packages/approval-artifacts` | **179 / 179** |
+| `lint:knockout` | **74 controls, 74 load-bearing, exit 0** |
+| `typecheck:all` | 0 errors |
+| `lint:security-gates` | exit 0 (269 findings against a 270 baseline) |
+
+### Landed since the stale line above
+
+- **Round-8 P1 items all closed** — P1-3, 4, 5, 6, 8, 9, 10, 11, 13.
+- **P1-4 / R8-14** — a decision now binds to THIS hold, symmetrically by class.
+- **CI honesty** — a job that reported SUCCESS having skipped every scenario now reports `skipped`;
+  a knockout whose dependency is absent reports `SETUP_FAILED` and names what went unmeasured.
+- **ADR-0007** — a phone could not join any relay an operator had secured. Device-pairing enrolment,
+  end to end, proven over real HTTP against a secret-configured relay.
+- **NC-6.7** — the relay has no trust root **by design**, ratified by two measurements.
+- **NC-6.8** — NOA never holds a customer's provider credentials.
+- **`HUMAN_APPROVED` is reserved and emitted by nothing** — the owner's own invariant forbids it
+  while the execution intent digest has no source.
+
+### Open, and named rather than implied
+
+- **P1-12** — with no identity manifest, any keyring-trusted key can mint a checkpoint over any
+  head. Owner-authorised 2026-08-04; design in progress.
+- **`lint:release-parity` red** — 0.6.1 has no tag and is not on the registry. Publishing is
+  owner-authorised; no tag was created, because a tag with nothing published asserts a release
+  that has not happened.
+- **`db0a169` is titled `test`** — a probe argument that escaped into a merge. Unfixable without
+  rewriting `main`, which the ruleset forbids. Recorded in `CORRECTIONS.md`.
 
 ## ⚠ LEAD HANDOVER — 2026-07-31
 
