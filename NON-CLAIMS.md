@@ -209,6 +209,22 @@ signatures, envelope bindings and checkpoint verified — it does NOT mean "the 
 saw is the one the gate sealed".** Re-checking F2 independently requires the encrypted display to be
 supplied alongside the bundle, out of band.
 
+### NC-4.5 — A checkpoint endorsement is not an external anchor (P1-12, ratified 2026-08-04)
+With no identity manifest supplied, **any keyring-trusted key can mint a checkpoint over any
+head** — recorded verbatim in `docs/receipt-spec.md` as a residual. Plain words: any key you
+already trust can vouch for a chain's endpoint. An endorsement therefore proves *a trusted key
+said this is the head*; it never proves *an independent party observed it*. Detecting a trusted
+key lying about the endpoint requires an external witness or anchor, and — as NC-4.3 already
+states — nothing in this repository contacts one.
+
+**v1.0 does not claim external anchoring.** Closing the gap changes the published format across
+all five verifier implementations plus vector regeneration; claiming it without that machinery
+would be the exact false-claim class this document exists to prevent. External anchoring
+(`packages/tsa-anchor` exists, unpublished) is a roadmap epic, re-examined at launch planning —
+while there are zero deployed consumers a format change is at its cheapest, and if the anchor
+lands before launch this entry is removed under [§7](#7-changing-this-document)'s reviewed-event
+rule.
+
 ---
 
 ## 5. Policy and compliance
