@@ -189,6 +189,95 @@ const KNOCKOUTS = [
   //
   // The older claim above remains preserved as history; this entry measures the current correction.
   {
+    id: "adr0007-device-token-kid-binding",
+    control:
+      "ADR-0007 constraint 4 — a device-pairing token names the ONLY key permitted to redeem it. " +
+      "The gate sees the phone public key in the CONFIRMATION before it authors ACCEPTED, so the " +
+      "token can be issued kid-bound; a leaked paste bundle is then worthless without that phone " +
+      "private key. This is the property a shared operator secret cannot have at any price, and it " +
+      "is why option A (teach the app one static secret) was rejected: a fleet-wide bearer " +
+      "credential is not per-device, not attributable, and unrevocable without rotating every device.",
+    file: "packages/relay/src/engine.ts",
+    find: "    if (rec.kid !== kid) {",
+    replace: "    if (rec.kid !== rec.kid) {",
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr0007-device-token-single-use",
+    control:
+      "ADR-0007 constraint 8 — a device token is SINGLE-USE, and single-use is the honest word: no " +
+      "revoke API exists for these tokens, so one use plus a short TTL is the entire mechanism. " +
+      "Accepting a second redemption would turn a replayable paste artifact into a standing " +
+      "credential. Recovery for a phone that LOST its response is a SEPARATE path — a fresh token " +
+      "re-mints onto the existing device — and its own control pins that this refusal does not " +
+      "brick the kid, because revokeSelf needs the very secret that was lost.",
+    file: "packages/relay/src/engine.ts",
+    find: "    if (rec.usedAt !== null) {",
+    replace: "    if (rec.usedAt !== rec.usedAt) {",
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr0007-device-token-hashed-at-rest",
+    control:
+      "ADR-0007 constraint 6 — the device token is HASHED at rest; the plaintext is returned once " +
+      "at issuance and never stored. PairingRecord stores its token raw, unlike apiKeyHash and " +
+      "deviceSecretHash — a pre-existing inconsistency the device namespace does not inherit. " +
+      "NOTE THE MUTATION SHAPE: it changes BOTH the write and the lookup. Changing only the write " +
+      "was tried first and broke FIVE tests on lookup consistency instead of one on secrecy — it " +
+      "measured the wrong property, and a knockout that kills for the wrong reason certifies nothing.",
+    file: "packages/relay/src/engine.ts",
+    find: "      tokenHash: hashSecret(token), tenant, kid, usedAt: null, expiresAt, createdAt: this.now(),",
+    replace: "      tokenHash: token, tenant, kid, usedAt: null, expiresAt, createdAt: this.now(),",
+    also: [
+      {
+        find: "    const rec = this.store.getDevicePairingByHash(hashSecret(token));",
+        replace: "    const rec = this.store.getDevicePairingByHash(token);",
+      },
+    ],
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr0007-untenanted-enrolment-dev-only",
+    control:
+      "ADR-0007 — a VALID enrolment secret must NOT open the untenanted device route. Constraint 3 " +
+      "gave DeviceRecord a tenant and made claimDevice match on it, but that match only fires when " +
+      "device.tenant !== null (engine.ts:254) and anonymous POST /v1/devices records tenant: null " +
+      "(engine.ts:212). So a correctly-authenticated PRODUCTION operator could still mint devices " +
+      "claimable by any tenant — the first-claimer-wins race constraint 3 closed, reopened through " +
+      "the side door by the same change that closed it. The route survives, confined to the loopback " +
+      "development opt-in where the demo, e2e and simulator flows live; production gets exactly one " +
+      "device-minting path, the one that stamps a tenant.",
+    file: "packages/relay/src/config.ts",
+    find: "  if (opts.untenanted === true) {",
+    replace: "  if (false) {",
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
+    id: "adr0007-device-tenant-claim",
+    control:
+      "ADR-0007 constraint 3 — a device that DECLARES a tenant is claimable only by that tenant. " +
+      "claimDevice refuses an unknown device and someone else's device identically, and that part " +
+      "was always right; the gap was the UNCLAIMED device, whose agentId === null satisfies the " +
+      "ownership check for EVERY authenticated agent. The window between a device enrolling and its " +
+      "own operator claiming it is a window in which a different customer on the same relay takes " +
+      "it, and from then on sees and decides everything that device is shown — the same consequence " +
+      "DeviceRecord.agentId records for an unscoped device, reached through a different door. No " +
+      "forgery and no stolen credential: just an unowned object and two parties entitled to ask.",
+    file: "packages/relay/src/engine.ts",
+    find: "    if (device.tenant !== null && device.tenant !== agent.tenant) {",
+    // The mutation KEEPS the `device.tenant !== null` narrowing TypeScript relies on further down.
+    // A plain `if (false)` looked like the obvious knockout and came back MUTATION_DID_NOT_BUILD:
+    // dropping the narrowing makes `device` possibly-undefined at :257, so the experiment measured
+    // the compiler rather than the control. `x !== x` is always false and narrows identically.
+    replace: "    if (device.tenant !== null && device.tenant !== device.tenant) {",
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
     id: "stage4-digest-display-disagreement",
     control:
       "ADR-0006 §5 stage 4 — the DIGEST and the DISPLAY must commit to the same bytes. NOA's " +

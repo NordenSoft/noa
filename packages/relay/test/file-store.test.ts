@@ -30,10 +30,11 @@ interface Dump {
   devices: unknown[];
   push: unknown[];
   pairings: unknown[];
+  devicePairings: unknown[];
   holds: unknown[];
   manifests: unknown[];
 }
-const EMPTY_DUMP: Dump = { agents: [], devices: [], push: [], pairings: [], holds: [], manifests: [] };
+const EMPTY_DUMP: Dump = { agents: [], devices: [], push: [], pairings: [], devicePairings: [], holds: [], manifests: [] };
 
 function tmpDir(): string {
   return mkdtempSync(join(tmpdir(), "noa-relay-filestore-"));
@@ -334,6 +335,7 @@ test("D1: putDevice rolls back BOTH indexes (devices + devicesByKid) on a persis
     publicKeyHex: "a".repeat(64),
     custodyTier: "software-browser",
     deviceSecretHash: "h",
+    tenant: null,
     agentId: null,
     revokedAt: null,
     createdAt: 1,

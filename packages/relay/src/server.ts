@@ -252,12 +252,39 @@ async function handle(
   // configured. See `RelayConfig.enrolmentSecret` for why the default is tied to exposure rather than
   // to convenience.
   const isEnrolmentRoute =
-    method === "POST" && (path === "/v1/pairings" || path === "/v1/pair" || path === "/v1/devices");
+    method === "POST" &&
+    (path === "/v1/pairings" || path === "/v1/pair" || path === "/v1/devices" ||
+     // ADR-0007 ISSUANCE is an OPERATOR action and carries a tenant, so it belongs inside the gate
+     // exactly like /v1/pairings. REDEMPTION is deliberately NOT here — see below.
+     path === "/v1/device-pairings");
   if (isEnrolmentRoute) {
-    const refusal = enrolmentRefusal(config, header(req, "x-noa-enrolment-secret"));
+    // `/v1/devices` mints a device with NO tenant (`engine.ts:212`), and a tenant-less device is
+    // claimable by any tenant — the race ADR-0007 constraint 3 closed for devices that DO declare
+    // one. So this route is confined to the development opt-in MECHANICALLY: a valid enrolment
+    // secret does not open it. The decision itself lives in `enrolmentRefusal`, not here, so there is
+    // one expression deciding who may enrol rather than two that agree today.
+    const untenanted = path === "/v1/devices";
+    const refusal = enrolmentRefusal(config, header(req, "x-noa-enrolment-secret"), { untenanted });
     if (refusal) return sendJson(res, refusal.status, refusal.body);
   }
 
+  if (method === "POST" && path === "/v1/device-pairings") {
+    const b = await readBody(req, res, config);
+    if (!b.ok) return;
+    return respond(res, engine.createDevicePairing(b.value));
+  }
+  // ⚠ REDEMPTION SITS OUTSIDE THE ENROLMENT GATE, ON PURPOSE (ADR-0007 constraint 2).
+  //
+  // The token IS the credential here. Gating it on the operator secret as well would mean the phone
+  // needs both, which defeats the point: the ceremony already handed it the only thing it should
+  // need. And the carve-out is expressed as its own ROUTE rather than as a condition on the body of
+  // /v1/devices — the gate above runs before `readBody`, so a content-conditional exemption would be
+  // the R8-07 ordering mistake in new clothes.
+  if (method === "POST" && path === "/v1/devices/pair") {
+    const b = await readBody(req, res, config);
+    if (!b.ok) return;
+    return respond(res, engine.redeemDevicePairing(b.value));
+  }
   if (method === "POST" && path === "/v1/pairings") {
     const b = await readBody(req, res, config);
     if (!b.ok) return;

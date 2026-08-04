@@ -145,6 +145,26 @@ export interface DeviceRecord {
   /** raw 32-byte Ed25519 public key, lowercase hex. */
   publicKeyHex: string;
   custodyTier: string;
+  /**
+   * WHICH TENANT THIS DEVICE BELONGS TO — the same field, for the same reason, as `AgentRecord.tenant`
+   * below (R8-11). `null` means the device made no tenant claim, which is what an anonymously
+   * enrolled device has.
+   *
+   * ⚠ WHAT IT CLOSES, AND WHAT IT DOES NOT (ADR-0007 constraint 3).
+   *
+   * `claimDevice` refuses an unknown device and someone else's device identically, but an UNCLAIMED
+   * device (`agentId === null`) is claimable by ANY authenticated agent — first claimer wins. With
+   * one relay serving several customers, the window between a device enrolling and its own operator
+   * claiming it is a window in which a different customer can take it, and from then on that
+   * customer sees and decides everything the device is shown.
+   *
+   * A device that declares a tenant can be matched against the claiming agent's tenant, which closes
+   * the race for it. A device with `tenant: null` still cannot be matched on anything — there is no
+   * claim to check — so it keeps the old behaviour. That is stated rather than hidden: the residual
+   * belongs to the anonymous enrolment path, which is development-only (`config.ts:161`) and which
+   * ADR-0007 exists to replace.
+   */
+  tenant: string | null;
   /** sha256 hex of "noa_device_<secret>" for non-signing session calls. */
   deviceSecretHash: string;
   /**
@@ -177,6 +197,37 @@ export interface PushSubscriptionRecord {
 }
 
 /** A one-time pairing token used to onboard an agent. */
+/**
+ * A DEVICE-pairing token: the credential a phone presents to enrol, issued during the ceremony the
+ * operator already performs (ADR-0007).
+ *
+ * FOUR PROPERTIES, each from a measured reason rather than from caution:
+ *
+ *  · HASHED AT REST (`tokenHash`). `PairingRecord` stores its token raw, unlike `apiKeyHash` and
+ *    `deviceSecretHash` — a pre-existing inconsistency this type does not inherit.
+ *  · KID-BOUND (`kid`). The gate sees the phone key in the CONFIRMATION before it authors ACCEPTED,
+ *    so the token can name the only device allowed to redeem it. A leaked paste bundle is then
+ *    useless without that phone private key — a property a shared operator secret cannot have.
+ *  · TENANT REQUIRED, never null. For AGENTS a null tenant fails CLOSED (it cannot publish a
+ *    manifest). For DEVICES a null tenant fails OPEN: it bypasses the claim match at
+ *    `engine.ts` and the device becomes claimable by anyone. The device namespace must not
+ *    inherit the agent default, or this route reopens the race through the front door.
+ *  · SINGLE-USE (`usedAt`), and "single-use" is the honest word. No revoke API exists for these
+ *    tokens; single use plus a short TTL is the whole mechanism, and calling it "revocable" would be
+ *    an overclaim.
+ */
+export interface DevicePairingRecord {
+  /** sha256 of the token. The plaintext is returned once, at issuance, and never stored. */
+  tokenHash: string;
+  /** The tenant the redeemed device is scoped to. NEVER null — see above. */
+  tenant: string;
+  /** The ONLY device key permitted to redeem this token. */
+  kid: string;
+  usedAt: number | null;
+  expiresAt: number;
+  createdAt: number;
+}
+
 export interface PairingRecord {
   token: string;
   agentHint: string | null;

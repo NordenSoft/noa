@@ -30,6 +30,9 @@ export interface RelayConfig {
 
   /** Pairing token TTL (FAZ-APP §4.1: 10-min one-time token). */
   pairingTokenTtlMs: number;
+  /** ADR-0007 constraint 5 — the device token gets its OWN bound rather than inheriting the agent
+   *  one by assumption. The ceremony clock starts near its end, so this is stated, not guessed. */
+  deviceTokenTtlMs: number;
 
   /** Expiry sweep cadence (FAZ-APP §4.2: every 30s mark overdue PENDING → EXPIRED). */
   expirySweepMs: number;
@@ -116,6 +119,7 @@ export const DEFAULT_CONFIG: RelayConfig = {
   rateLimitRefillPerMin: 60,
   maxPendingPerAgent: 100,
   pairingTokenTtlMs: 10 * 60 * 1000,
+  deviceTokenTtlMs: 10 * 60 * 1000,
   expirySweepMs: 30 * 1000,
   maxBodyBytes: 256 * 1024,
   enrolmentSecret: null,
@@ -132,6 +136,23 @@ export const DEFAULT_CONFIG: RelayConfig = {
 export function enrolmentRefusal(
   config: RelayConfig,
   presented: string | undefined,
+  /**
+   * `untenanted: true` for a route that mints a record carrying NO tenant.
+   *
+   * ADR-0007 constraint 3 gave `DeviceRecord` a tenant and made `claimDevice` match on it — but that
+   * match only fires when `device.tenant !== null` (`engine.ts:254`), and anonymous `POST /v1/devices`
+   * records `tenant: null` (`engine.ts:212`) because it has no credential to take a tenant from.
+   *
+   * So an operator running a PRODUCTION relay with a valid enrolment secret could still mint
+   * untenanted devices through that route — and every one of them is claimable by any tenant, which
+   * is exactly the first-claimer-wins race constraint 3 was written to close. The gate was closed at
+   * the front door and left open at the side.
+   *
+   * The flag is a property of the ROUTE, not of the caller, and it lives here rather than at the
+   * server so there is ONE expression deciding who may enrol (KURAL 31). Dev-only is now mechanical:
+   * a valid secret does not open this route, only the loopback development opt-in does.
+   */
+  opts: { untenanted?: boolean } = {},
 ): { status: number; body: { error: string; detail?: string } } | null {
   if (config.enrolmentSecret === null) {
     // EXPOSURE IS NOT `bindAddress`, AND IT IS NO LONGER INFERRED FROM ANYTHING (R8-07, 2026-07-31).
@@ -179,6 +200,25 @@ export function enrolmentRefusal(
   // Compare over hex digests so the comparison is fixed-length regardless of the input's length.
   if (!constantTimeEqualHex(hashSecret(presented), hashSecret(config.enrolmentSecret))) {
     return { status: 403, body: { error: "ENROLMENT_SECRET_INVALID" } };
+  }
+  // THE SECRET IS VALID — AND THAT IS NOT ENOUGH FOR AN UNTENANTED ROUTE.
+  //
+  // Reached only when an operator has provisioned a secret, i.e. a production relay. A route that
+  // mints a tenant-less record hands back a device claimable by ANY tenant, so allowing it here
+  // would let a correctly-authenticated operator reopen the race ADR-0007 constraint 3 just closed.
+  // Production gets exactly one device-minting path: the one that stamps a tenant.
+  if (opts.untenanted === true) {
+    return {
+      status: 403,
+      body: {
+        error: "UNTENANTED_ENROLMENT_IS_DEVELOPMENT_ONLY",
+        detail:
+          "this route mints a device with no tenant, and a tenant-less device is claimable by any " +
+          "tenant on this relay. A valid enrolment secret does not open it: it is reachable only " +
+          "under the loopback development opt-in. Enrol through the pairing ceremony instead, which " +
+          "carries the tenant on the credential (ADR-0007).",
+      },
+    };
   }
   return null;
 }

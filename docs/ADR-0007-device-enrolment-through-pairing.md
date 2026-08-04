@@ -127,6 +127,10 @@ false claim today, so this is hygiene rather than a correction.
 ## 5. Residual, stated
 
 Even with this ADR implemented, a device's authority still rests on the relay's keyring, which is
-published through an agent-authenticated route and is **unrooted** until the relay trust-root decision
-lands (an open owner decision). This ADR makes enrolment attributable and per-device; it does not
-give the relay a root, and it does not claim to.
+published through an agent-authenticated route and is **unrooted by design** — that decision has
+landed (NON-CLAIMS NC-6.7; taken 2026-07-30, ratified by measurement 2026-08-04). This ADR makes
+enrolment attributable and per-device; it does not give the relay a root, and no root is planned.
+
+The distinction this ADR must not blur: enrolment authenticates a DEVICE to the relay, never an
+APPROVER to the tenant. Tightening enrolment narrows who may register; it does not turn registration
+into authority.

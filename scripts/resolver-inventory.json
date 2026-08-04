@@ -1385,7 +1385,9 @@
     "test/security/r7-exploits/o01_preload_includes.mjs": "root kernel tests: string-keyring consumers",
     "test/serve/ipc-rehearsal.test.ts": "root kernel tests: string-keyring consumers",
     "test/verify.test.ts": "root kernel tests: string-keyring consumers",
-    "test/signatures-verified-contract.test.ts": "P1-13 contract tests: the keyring is a plain {kid: publicKey} map handed to verifyChain, never resolved or constructed here — this file only consumes, and exists to pin that signaturesVerified/tailChecked are completed-run success-qualifiers rather than progress reports"
+    "test/signatures-verified-contract.test.ts": "P1-13 contract tests: the keyring is a plain {kid: publicKey} map handed to verifyChain, never resolved or constructed here — this file only consumes, and exists to pin that signaturesVerified/tailChecked are completed-run success-qualifiers rather than progress reports",
+    "packages/relay/test/device-pairing-enrolment.test.ts": "ADR-0007 enrolment tests: publicKeyHex is the raw key a phone PRESENTS at redemption; this file builds no KeyEntry and resolves no keyring — it only consumes the redemption API and asserts its refusals",
+    "packages/relay/test/adr0007-e2e-http.test.ts": "ADR-0007 end-to-end HTTP test: publicKeyHex is the raw key a phone PRESENTS over the wire; this file builds no KeyEntry and resolves no keyring — it drives the real routes and asserts their refusals"
   },
   "proofs": {
     "RES-PAR-GATE-KEYRING": {
