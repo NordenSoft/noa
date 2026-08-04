@@ -100,6 +100,13 @@ The stated basis does not hold universally: the adopter path is fixed, while con
 
 Owner: *"Ne zaman tum yapilanlarin commitli commitsiz merge push deploy edilecegine sen karar verirsin."* The five actions are **not one event**; each has a different cost and a different payoff, so each has its own trigger.
 
+**⚠ ORDERING DICTATE — owner, 2026-08-04, verbatim:** *"Musterileri almak icin herseyin bitmesi
+lazim. once sistemi eksiksiz bitirip mobil app e gecmeliyiz."* In force, in order: **(1) finish the
+system COMPLETELY** (open engineering: undici advisory, noatrust PR #7, the scheduler 503's real
+fault + its zero-tenant false alarm, the restore drill) → **(2) the mobile app phase** → **(3) only
+then customers.** Customer onboarding is the LAST step and the owner's trigger; no launch step may
+be pulled earlier because a window looks convenient.
+
 | # | action | when | why that trigger, and not sooner |
 |---|---|---|---|
 | 1 | **commit** | continuously, no gate | Work that is not committed is the only work that can actually be lost. |
