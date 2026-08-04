@@ -287,3 +287,70 @@ mutable metadata". On the measured evidence, **at the system level it is not una
 plus the gate signature already cover it, provided the consumer verifies the envelope. The honest
 statement of the remaining gap is narrower and must be presented as such before implementation is
 authorised, because it changes the cost/benefit of a wire-format break.
+
+---
+
+## 2026-08-04 — three FROZEN schemas advertised a cipher suite no implementation has (P1-6)
+
+A claim a reader could have acted on, in the strongest possible place: a frozen schema. Three
+shipped `0.1` schemas declared
+
+    "aead": { "enum": [2, 3] }
+
+and `noa-decision-0.1.schema.json` said so in words too, calling AES-256-GCM=0x0002=2 an
+*"accepted alternate"*.
+
+**Nothing accepts it.** The only sealer emits `HPKE_SUITE` — aead 3, ChaCha20-Poly1305 —
+(`packages/signer-core/src/encrypted-display.ts:180`), and the only opener throws on anything else:
+
+    encrypted-display.ts:212
+      suite["aead"] !== HPKE_SUITE.aead -> "openEncryptedDisplay: unsupported HPKE suite
+                                            (decrypter never guesses)"
+
+So an integrator reading the schema — the artifact this project asks people to build against — would
+have implemented AES-256-GCM, produced schema-valid sealed displays, and had every one of them
+refused by the only software that can open them. The prose was worse than the enum: an enum offering
+two values invites a question, the words "accepted alternate" answer it wrongly.
+
+### The correction: narrowed in place. No spec bump, no 0.2.
+
+`{ "enum": [2, 3] }` → `{ "const": 3 }` in all three schemas (`noa-encrypted-display`,
+`noa-decision`, `noa-encrypted-reason`), and the decision schema's description rewritten to record
+what happened instead of repeating the offer.
+
+Mutating a frozen schema needs "explicit scope and revision-bound justification" (`AGENTS.md:58`).
+This is it, on four measured grounds:
+
+1. **FAIL-CLOSED DIRECTION ONLY.** The correction rejects more and accepts nothing new. This is the
+   general rule it establishes: a frozen artifact may be corrected in place only in the direction
+   that refuses more. A widening erratum is refused outright, no matter how well justified — that
+   would be changing the contract, not correcting a false statement of it.
+2. **ZERO BLAST RADIUS, MEASURED.** No emitter of `aead:2` exists anywhere: sources, tests, fixtures,
+   `conformance/`. This artifact family also has no presence in `impl-py`, `impl-go`, `impl-rust` or
+   `impl-csharp`, so unlike the P1-5 case, narrowing here cannot split independent verifiers.
+3. **THE SPEC-BUMP TRIGGER IS NOT MET.** `VERSIONING.md` §2 bumps when an *already-issued* document
+   would verify differently. No `aead:2` document has ever existed. Hypothetical `aead:2` input was
+   rejected before this change and is rejected after it — the refusal simply moves earlier, from
+   open-time to schema-time.
+4. **A PROSE NON-CLAIM WOULD HAVE REACHED NO VALIDATOR.** For `decision` and `encrypted-reason`
+   nothing checks the suite at runtime at all — `gate/src/types.ts:68` and `relay/src/types.ts:63`
+   type it as a bare `number`. The JSON schema is the *only* machine gate on `aead` for those two.
+   Documenting the divergence instead of fixing it would have left the sole enforcement point still
+   stating the false thing.
+
+### What proves it
+
+`packages/approval-artifacts/test/schema-selftest.test.ts` — vectors in BOTH directions for each of
+the three schemas: `aead:3` must still PASS (a narrowing that broke the real suite would be an
+outage, not a hardening), `aead:2` and `aead:1` must FAIL. Plus a check that the decision schema's
+prose no longer offers the suite its enum refuses — because narrowing the enum and leaving the words
+would have made the schema contradict itself, which is worse than either half alone.
+
+Knockout, run: restoring `{ "enum": [2, 3] }` in one of the three turns the vector RED. The test
+measures the narrowing rather than describing it.
+
+### One more thing this cost, recorded because it keeps happening
+
+The first rewrite of the description contained the phrase "accepted alternate" while explaining that
+the phrase was wrong, and the test caught it. That is the third time in this workstream a correction
+note has tripped the gate it was written to satisfy by naming the thing it was retiring.

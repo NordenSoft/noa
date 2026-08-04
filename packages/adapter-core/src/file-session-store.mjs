@@ -104,9 +104,9 @@
  *     own commit step runs), the very next post-restart receipt re-mints that same seq number, and a
  *     verifier merging the two logs correctly reports a duplicate-seq TAMPERED finding for what is
  *     actually an honest crash-recovery gap, not tampering. Closing this fully would require an
- *     atomic combined commit across both persistence layers — out of scope for a session-position
- *     checkpoint; this module's `advance()`/POISON design protects against every CAUGHT failure, not
- *     an uncatchable crash mid-syscall.
+ *     atomic combined commit across both persistence layers (`advance()`) — out of scope for a
+ *     session-position checkpoint; this module's `advance()`/POISON design protects against every
+ *     CAUGHT failure, not an uncatchable crash mid-syscall.
  *   - The SAME orphaned-segment class above (a `segmentId` minted in memory but never disk-recorded)
  *     can ALSO occur without any crash at all: if a CAP-EVICTION's own tombstone write fails and
  *     poisons the store (see `onEvict`'s own doc comment below), the `peek()` call that triggered
@@ -127,9 +127,10 @@
  *     first one's freshly-recreated file, then its own `wx` create succeeds against the now-empty
  *     path). This nonce fix protects `releaseLock()` from deleting a lock it no longer owns, but does
  *     NOT close this narrower reclaim-time race, which only opens in the moments right after BOTH a
- *     crash AND a near-simultaneous restart-race — a genuinely atomic fix needs an OS-level advisory
- *     lock (`flock()`) unavailable from plain `node:fs` without a native binding; accepted as a known,
- *     narrow limitation rather than a half-fixed illusion of full atomicity.
+ *     crash AND a near-simultaneous restart-race — a genuinely atomic fix for `acquireLock()` needs
+ *     an OS-level advisory lock (`flock`) unavailable from plain `node:fs` without a native binding.
+ *     `acquireLock()` is accepted as a known, narrow limitation rather than a half-fixed illusion of
+ *     full atomicity.
  *   - HONEST LIMIT -- CROSS-TENANT SEEDING ORDER: `reloadAll()` (below) visits this `dir`'s
  *     `tenant-<sha256(tenant)>.jsonl` files in `readdirSync(dir)` order -- filesystem/directory-
  *     enumeration order, NOT any cross-tenant recency signal. WITHIN one tenant's own file,

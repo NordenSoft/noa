@@ -101,7 +101,7 @@ bundle. Different content at an existing version returns `409 MANIFEST_EQUIVOCAT
 authoritative record unchanged. A higher version remains a normal rotation.
 
 Auth: agents `Authorization: Bearer noa_agent_<secret>`; devices `Bearer noa_device_<secret>`.
-Only sha256 HASHES of secrets are stored. ⚠ Corrected 2026-07-31 (C09): this line read "Constant-time hash compare". The bearer lookup (`store.ts:145-147`) is a linear scan using plain `===` with an early return — the constant-time helper exists but is used for the enrolment secret, not bearers. The comparison is over a HASH, so the residual is a false control claim, not an authorization bypass. See `auth.ts` for the full note.
+Only sha256 HASHES of secrets are stored. ⚠ Corrected 2026-07-31 (C09): this line claimed a constant-time hash compare, and the bearer lookup it described (`packages/relay/src/store.ts`) is a linear scan using plain `===` with an early return — the constant-time helper exists but is used for the enrolment secret, not bearers. The comparison is over a HASH, so the residual is a false control claim, not an authorization bypass. See `auth.ts` for the full note.
 
 ## Build decisions (this slice)
 
@@ -140,8 +140,9 @@ NOA_RELAY_STORE=file NOA_RELAY_STORE_PATH=/absolute/path/to/relay-store.json npm
   nothing changes for existing dev/test usage.
 - `NOA_RELAY_STORE=file` requires `NOA_RELAY_STORE_PATH`; the relay refuses to start with a clear
   error otherwise (never guesses a path). The file is a single JSON snapshot, written to a 0600
-  (owner-only) temp file, `fsync`ed, then atomically `rename`d over the real path on every mutation
-  — a crash mid-write leaves the previous good file untouched.
+  (owner-only) temp file, `fsync`ed, then `rename`d over the real path on every mutation. The
+  `rename` is the atomic step (`packages/relay/src/file-store.ts`), so a crash mid-write leaves the
+  previous good file untouched.
 - **Fail-closed, not "always degrades to clean" (#63-S3 hardening, precise guarantees):**
   - A genuinely missing file (first run) or a genuinely EMPTY (0-byte) file starts clean — there is
     nothing real to lose either way.

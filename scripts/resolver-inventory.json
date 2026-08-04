@@ -1384,7 +1384,8 @@
     "test/security/r7-exploits/c02_sethas_verdict.mjs": "root kernel tests: string-keyring consumers",
     "test/security/r7-exploits/o01_preload_includes.mjs": "root kernel tests: string-keyring consumers",
     "test/serve/ipc-rehearsal.test.ts": "root kernel tests: string-keyring consumers",
-    "test/verify.test.ts": "root kernel tests: string-keyring consumers"
+    "test/verify.test.ts": "root kernel tests: string-keyring consumers",
+    "test/signatures-verified-contract.test.ts": "P1-13 contract tests: the keyring is a plain {kid: publicKey} map handed to verifyChain, never resolved or constructed here — this file only consumes, and exists to pin that signaturesVerified/tailChecked are completed-run success-qualifiers rather than progress reports"
   },
   "proofs": {
     "RES-PAR-GATE-KEYRING": {

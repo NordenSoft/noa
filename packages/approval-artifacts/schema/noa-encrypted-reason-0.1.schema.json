@@ -23,7 +23,7 @@
       "properties": {
         "kem": { "const": 32 },
         "kdf": { "const": 1 },
-        "aead": { "enum": [2, 3] }
+        "aead": { "const": 3 }
       }
     }
   }

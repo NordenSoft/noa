@@ -1,0 +1,21 @@
+# NOA Receipt Risk Register
+
+The current operational blockers are in [00_CURRENT_STATE.md](00_CURRENT_STATE.md). This register records durable risk classes and required controls.
+
+| ID | Risk | Evidence status | Required control / exit evidence |
+| --- | --- | --- | --- |
+| R-01 | Frozen receipt semantics are changed or misread by a consumer. | OBSERVED integration mismatch with NOA Trust. | Versioned mapping contract; field-level positive/negative vectors; consumer release gate. |
+| R-02 | A receipt is interpreted as proof of physical completion or truth. | NORMATIVE NON-CLAIM. | Preserve [NON-CLAIMS.md](NON-CLAIMS.md); require an external evidence chain and explicit policy. |
+| R-03 | `PARTIAL`, `UNKNOWN`, or tool self-report is treated as success/safe retry. | NORMATIVE NON-CLAIM. | Fail-closed outcome mapping; adversarial outcome vectors; no silent promotion. |
+| R-04 | Replay, forgery, substitution, key theft, or signature confusion. | Threat class; controls partially IMPLEMENTED. | Strict canonical/signature/key validation, nonce/chain policy where applicable, negative vectors, and branch-local security results. |
+| R-05 | Stale, revoked, or wrong trust-anchor/key material is accepted. | IMPLEMENTATION and policy gap must be revision-checked. | Explicit key lifecycle, freshness/revocation/anchor contracts, offline limits, and verifier tests. |
+| R-06 | Canonicalization or parser differences break interoperability. | Known cross-implementation risk. | Frozen vectors, malformed/duplicate-key negatives, deterministic error taxonomy, independent implementations. |
+| R-07 | Privacy loss through hashes, correlation, metadata, or retention. | NORMATIVE concern. | Data-minimization review; keyed-digest policy where appropriate; retention and disclosure documentation; privacy tests. |
+| R-08 | Claimed conformance is not reproducible at the release SHA. | OBSERVED: local HEAD lacks hosted CI evidence. | Immutable SHA, published runner/profile, full CI and independent QA artifacts. |
+| R-09 | Governance or registry capture creates a misleading trust claim. | Threat hypothesis until a concrete registry profile exists. | Explicit authority/delegation/revocation/governance model and emergency-abuse analysis. |
+| R-10 | Users infer global-standard, pilot, or production status from source/published package. | UNKNOWN; evidence insufficient. | Evidence labels in releases/docs; external adoption and operating metrics before claim escalation. |
+| R-11 | Independent implementations construct or verify incompatible COSE objects because prose and implementation disagree. | OBSERVED documentation/implementation contradiction. | One normative COSE construction and layered-verification contract; positive, negative, and cross-implementation vectors. |
+
+| R-12 | A decision binds to an action but not to the *request*, so a genuine approval of one request is recorded against another. | **PARTIALLY CLOSED 2026-08-04 (P1-4/R8-14).** The relay bound a decision to a hold on `(canonical, paramsHash)` alone, which two holds for the same action share. Now bound symmetrically by class: a hold carrying a `deferredReceipt` accepts only a decision chained onto it, a hold without one accepts only an unchained decision, and a `deferredReceipt` already presented on another hold is refused at creation (`409 DEFERRED_RECEIPT_REUSED`) so the binding target cannot be transplanted. **RESIDUAL, OPEN:** two *bare* holds for the same action are distinguishable only by the transport layer, not by signed material, so an unchained approval of one bare hold can still be presented on another. | Closing the residual requires bare decisions to commit to the `holdId` in signed material — a contract change binding out-of-repo curl/python clients, so it needs its own ADR rather than being folded into the fix. The reference client already signs three such commitments (`packages/e2e-demo/examples/http-agent/run-local-stack.mjs:142-149`), so the shape is known. Exit evidence: cross-hold replay refused for the bare class with a control proving the honest bare flow still works. |
+
+Risk acceptance must name owner, scope, expiry, compensating controls, and observable rollback or containment path.

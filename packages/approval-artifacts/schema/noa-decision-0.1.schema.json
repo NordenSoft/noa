@@ -39,12 +39,12 @@
     "suite": {
       "type": "object",
       "additionalProperties": false,
-      "description": "RFC 9180 ciphersuite ids (§4): KEM DHKEM(X25519,HKDF-SHA256)=0x0020=32, KDF HKDF-SHA256=0x0001=1, AEAD ChaCha20Poly1305=0x0003=3 (locked) or AES-256-GCM=0x0002=2 (accepted alternate).",
+      "description": "RFC 9180 ciphersuite ids (§4): KEM DHKEM(X25519,HKDF-SHA256)=0x0020=32, KDF HKDF-SHA256=0x0001=1, AEAD ChaCha20Poly1305=0x0003=3 (locked, and the only value this schema admits). AES-256-GCM=0x0002=2 was previously offered here as a second permitted option; no sealer has ever emitted it and the opener refuses it (signer-core/src/encrypted-display.ts:212), so both the enum and this sentence were corrected in place — fail-closed, no spec bump, since no such document has ever existed.",
       "required": ["kem", "kdf", "aead"],
       "properties": {
         "kem": { "const": 32 },
         "kdf": { "const": 1 },
-        "aead": { "enum": [2, 3] }
+        "aead": { "const": 3 }
       }
     },
     "sig": {
