@@ -1,6 +1,13 @@
 # ADR-0007 — A phone joins through the pairing ceremony, not anonymously
 
-**Status:** PROPOSED · **Date:** 2026-08-04 · **Supersedes:** nothing · **Superseded by:** nothing
+**Status:** **IMPLEMENTED** · **Date:** 2026-08-04 · **Supersedes:** nothing · **Superseded by:** nothing
+
+> Status moved from PROPOSED to IMPLEMENTED the same day, and the evidence is nameable rather than
+> asserted: relay side `a796e81`, app side `366882b` (noa-mobile), end-to-end proof
+> `packages/relay/test/adr0007-e2e-http.test.ts` — a real relay over real HTTP with an operator
+> enrolment secret configured, the configuration in which enrolment was impossible before this ADR.
+> Constraints 1-6 and 8 are implemented and knockout-proven; constraint 7 (carrier choice) was
+> decided as alongside-in-bundle and constraint 4 (kid-binding) is therefore mandatory and enforced.
 
 **Scope:** how a physical approver device obtains relay credentials.
 **Explicitly out of scope:** R8-07 itself (it is correct and is not reopened), the Console build path

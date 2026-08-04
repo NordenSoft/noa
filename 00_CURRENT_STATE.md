@@ -49,3 +49,19 @@ Next objective: Freeze the normative authority hierarchy, reconcile COSE wire an
 Do not touch: Frozen `noa.receipt/0.1` semantics, existing golden vectors, `NON-CLAIMS.md`, append-only `CORRECTIONS.md`, or the pre-existing working-tree changes without a separately authorized, revision-bound task.
 
 Unverified claims: That the five implementation paths are organizationally independent; that any external party interoperates with this protocol; that a receipt proves a physical-world result; that approvals prove comprehension or rendering; that a chain is complete; that an operation is exactly once; and that NOA Receipt is standardized, pilot-proven, production-ready, or globally adopted.
+
+## ADR status headers — eight of nine are missing one
+
+`ADR-0007` carries `**Status:** IMPLEMENTED · **Date:** …`. The other eight ADRs carry no status and
+no date at all, so a reader cannot tell live policy from an abandoned proposal — and several of them
+contain tables that READ as current state. `ADR-0001:909-911` lists the npm registry contents as of
+when it was written (`noa-receipt` latest 0.5.0, `noa-mcp-adapter-core` 0.2.0); the registry today
+has 0.6.0 and 0.3.1.
+
+**Not fixed by rewriting them.** An ADR is a dated record of a decision; editing its tables to match
+today would falsify the record — the same reason the `test`-titled merge commit is not being
+rewritten. The fix is a status/date header on each, and that needs the ACTUAL status of each
+decision. `ADR-0001`'s `0.5.0 -> 1.0.0` plan is either live, superseded or abandoned, and inventing
+an answer would be worse than the current silence.
+
+**Named here as owed work rather than done badly.**
