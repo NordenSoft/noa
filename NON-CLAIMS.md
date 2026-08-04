@@ -369,6 +369,16 @@ check that would catch the forgery.
 > **No component may claim `HUMAN_APPROVED` unless that equality has been independently
 > established.**
 
+**IMPLEMENTED 2026-08-04, on the owner's explicit authorization.** The rule above had been stated
+since 2026-07-29 and the code violated it: the ENFORCED path emitted `HUMAN_APPROVED` while the
+execution leg had no source. It now emits **`HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND`** — a human
+approved this exact derived intent; whether that intent executed is not established.
+
+`HUMAN_APPROVED` stays in the union, RESERVED and emitted by nothing. It is the destination for the
+day an execution witness exists, and a source-scanning guard
+(`packages/gate/test/human-approved-is-reserved.test.ts`) fails if anything starts emitting it again
+— including in a merge, which is the cheapest way a single string comes back.
+
 Eight consequences are owner-ratified and binding: caller-supplied display text and caller-supplied
 `paramsHash` **cannot** be independent authoritative inputs; the trusted boundary **must** derive the
 canonical intent and its digest from the structured snapshot; approval UI content **must** be
@@ -481,6 +491,38 @@ a decision must chain onto the hold it answers (ADR-0007 / the P1-4 binding) —
 ⚠ **Do not restate this as "the relay is safe because enrolment is closed."** Tightening enrolment
 narrows WHO may register a device; it never turns registration into authority. A reason resting on a
 configuration goes stale the day the configuration changes — this one rests on the invariant.
+
+
+### NC-6.8 — NOA never holds a customer's provider credentials (safe default applied 2026-08-04)
+
+**We do not claim, and will not build, a path in which NOA stores, forwards or otherwise takes
+custody of a customer's credentials for the systems it approves actions against.**
+
+The question arose as "stage-9 identity custody": should the pipeline hold provider credentials so it
+can observe or perform the execution it approved? The answer recorded here is **no**, and it is
+recorded as a decision rather than left open, because leaving it open is itself a position — an
+unanswered custody question is how custody arrives by default, one integration at a time.
+
+**Why no, in one line:** if those credentials leak, what is lost is not our secret but **the
+customer's account**. Every other failure in this system costs a refused approval; this one costs the
+thing the approval was protecting.
+
+**And it contradicts the product's own claim.** NOA's entire proposition is that it decides whether an
+action may proceed and does not perform it — the trust boundary is that the approver never becomes
+the actor. Taking custody erases exactly that line, and no amount of key hygiene restores it: a
+component that CAN act is in the blast radius of every question about whether it DID.
+
+⚠ **PROCEDURAL STATUS, stated plainly.** This is the KURAL 4 safe default for an irreversible fork
+— "don't" — applied and logged rather than parked. It is not a claim that the owner has ratified it.
+The owner may reverse it; reversal is an ADR, not an implementation detail, and it would have to
+answer the two paragraphs above rather than route around them. What this entry buys meanwhile is that
+the absence of custody is a stated property consumers can rely on, instead of an accident of the
+current roadmap.
+
+**What is NOT excluded by this entry**, so it cannot be read wider than it is: NOA holds its own
+signing keys, device secrets and enrolment credentials — those are NOA's, they authenticate parties
+to NOA, and none of them can act on a customer's provider. The exclusion is about credentials that
+grant power over systems belonging to someone else.
 
 
 ## 7. Changing this document

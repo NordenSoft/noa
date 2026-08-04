@@ -30,8 +30,25 @@ export type HoldStatus =
   | "CANCELLED_LOCAL_STATE_LOST";
 
 /** Machine-readable reason attached to a terminal transition (never free text / never PII). */
+/**
+ * ⚠ A SECOND COPY OF THE GATE'S UNION, and the compiler is what keeps them honest.
+ *
+ * Adding `HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND` to `gate/src/types.ts` broke THIS file — which
+ * is how the duplication surfaced. The relay cannot import the gate's types (the gate depends on the
+ * relay's wire shapes, not the other way round), so the copy stays. What must not happen is the two
+ * drifting silently, and they cannot: the relay writes tokens the gate's signed artifacts carry, so
+ * a member missing here fails to typecheck the moment it is used.
+ */
 export type HoldReasonCode =
   | "HUMAN_APPROVED"
+  /**
+   * See `gate/src/types.ts` for the full reasoning. In one line: the owner's invariant forbids
+   * claiming `HUMAN_APPROVED` until approval == grant == EXECUTION intent digests, and the
+   * execution leg has no admissible source. The relay establishes strictly LESS than the gate — an
+   * enrolled device's signature, and nothing about intent equality — so if the gate may not claim
+   * it, the relay certainly may not.
+   */
+  | "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND"
   | "HUMAN_DENIED"
   | "APPROVAL_TIMEOUT"
   | "LOCAL_STATE_LOST";

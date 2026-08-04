@@ -935,7 +935,16 @@ export class GateEngine {
       // carry an execution grant, because in RAW nothing derived the display the human saw — so the
       // receipt would attest an approval of something the boundary never computed.
       const enforced = hold.mode === "ENFORCED";
-      hold.reasonCode = enforced ? "HUMAN_APPROVED" : "HUMAN_ACK_UNENFORCED";
+      // OWNER AUTHORIZATION 2026-08-04. This line used to read `"HUMAN_APPROVED"`, and that token is
+      // forbidden by the owner's own invariant while the execution leg is unsourced (NON-CLAIMS.md,
+      // amended 2026-07-29): the approval, grant and EXECUTION intent digests must all be equal
+      // before any component claims it. Two of the three are established here; the third has no
+      // admissible source, and NC-6.8 declined one of the only two ways it could ever get one.
+      //
+      // So the gate now says the true thing instead of the strong thing. `HUMAN_APPROVED` remains
+      // in the union, reserved, and this is the line that moves back to it the day an execution
+      // witness exists.
+      hold.reasonCode = enforced ? "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND" : "HUMAN_ACK_UNENFORCED";
       // F10 Hold Resolution (trusted receivedAt).
       // ⚠ THIS LINE WAS THE DEFECT, AND ITS FIX IS NOW ENFORCED BY THE COMPILER. It read
       // `decisionArtifact,` — the live caller object — while the line below it correctly used the
@@ -952,7 +961,10 @@ export class GateEngine {
         decisionArtifact: daDoc,
         verdictReceipt: rDoc as unknown as Receipt,
         status: "APPROVED",
-        reasonCode: enforced ? "HUMAN_APPROVED" : "HUMAN_ACK_UNENFORCED",
+        // The SIGNED artifact carries the same token as the record above — deliberately identical,
+        // because a relying party reads the signed resolution, not the in-memory field. Letting
+        // these two disagree is how a false claim survives a corrected record.
+        reasonCode: enforced ? "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND" : "HUMAN_ACK_UNENFORCED",
         receivedAt,
         keyManifestVersion: this.trust.keyManifestVersion,
         keyManifestHash: this.trust.keyManifestHash,

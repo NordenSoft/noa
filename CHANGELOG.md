@@ -8,6 +8,39 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 _Nothing yet._
 
+## [0.6.1] - 2026-08-04
+
+**No behaviour change. Documentation only — and the version exists because 0.6.0 had to stop
+meaning two different things.**
+
+### Why this release exists
+
+`lint:release-parity` measured that the published `noa-receipt@0.6.0` tarball was **not** what this
+tree builds: nine shipped paths differed. One version number, two contents — so anyone installing
+0.6.0 received code this repository does not produce. A patch was the honest bump: stripping
+comment lines from `git diff v0.6.0 HEAD -- src/` leaves nothing, so no behaviour moved.
+
+### Documented
+
+- **`VerifyResult.signaturesVerified` and `.tailChecked` now carry their contract** (`src/verify.ts`).
+  Both are **completed-run success-qualifiers, not progress reports**: `false` on every non-`VALID`
+  verdict, including a failure at receipt N where receipts 1..N-1 authenticated cleanly and the
+  failure was not cryptographic at all. The rejected reading — "a keyring was supplied" — would let
+  a `TAMPERED` verdict carry `signaturesVerified: true`, a positive sub-claim riding a failed check.
+- The invariant that makes the success path exact rather than approximate is stated at the line that
+  depends on it: the signature loop has **no skip path**, so reaching the success return with a
+  keyring proves every receipt signature authenticated.
+- Pinned by `test/signatures-verified-contract.test.ts`, whose two cases are precisely where the two
+  readings disagree — a non-cryptographic failure after sound signatures, and a tampered checkpoint
+  over sound receipts.
+
+### Not yet released to the registry
+
+This version is tagged in the changelog but **not published**: publishing is an owner-authorised
+action. Until it is, `lint:release-parity` stays red with an accurate message — "0.6.1 has no tag
+and is not on the registry" — rather than the previous, wrong one. No `v0.6.1` git tag was created
+either: a tag with nothing published would assert a release that has not happened.
+
 ## [0.6.0] - 2026-08-01
 
 > **READ BEFORE UPGRADING.** This is a security release and it is deliberately stricter than 0.5.0.

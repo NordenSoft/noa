@@ -183,6 +183,19 @@ rotation-attestation yet (an open item tracked in THREAT-MODEL.md, "Cross-agent 
 - **No revocation list.** A leaked private key lets the holder re-sign a fabricated history
   bounded only by a checkpoint someone already holds. Treat key compromise as "rotate + audit
   every chain that key ever signed," not as something the format detects for you.
+- **If you gate on `tailChecked`, you must ALSO supply an `identityManifest`.** Without one the
+  tail check is **kid-level**: any key your keyring trusts can mint a checkpoint over any head, so
+  a co-trusted key holder can drop the most recent receipts, sign a checkpoint over the truncated
+  head, and the result is `VALID` with `tailChecked: true`. That verdict is correct for what was
+  checked — the checkpoint really did authenticate — and the library warns you at runtime. But a
+  pipeline that branches on the boolean and never reads the warnings will not see the difference.
+
+  This is the one gap here that is genuinely yours to close, and it costs one parameter: pass
+  `identityManifest` and the §5b genesis binding runs, tying checkpoint authority to the chain's
+  OPENER instead of to anyone in the keyring. Receipt spec §6 states the residual that remains even
+  then — the opener itself dropping a co-agent's tail — and that one needs the v1.0 external anchor,
+  not a parameter.
+
 - **The keyring/manifest are inputs you vouch for**, not something the library derives or
   authenticates on its own — get their distribution wrong and "VALID" stops meaning anything.
 

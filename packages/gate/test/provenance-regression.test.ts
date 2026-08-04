@@ -303,7 +303,15 @@ test("M2 anti-vacuity: an honestly-labelled action still succeeds for a sufficie
   });
   const res = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   assert.equal(res.status, 200, "a correctly-labelled CRITICAL action with a critical approver must work");
-  assert.equal(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED");
+  // The success marker is now the token the gate may HONESTLY emit. `HUMAN_APPROVED` asserts an
+    // equality that includes the EXECUTION intent digest, which has no admissible source — the
+    // owner's invariant (NON-CLAIMS.md, amended 2026-07-29) forbids claiming it until it does.
+    // Asserted in BOTH directions on purpose: the honest flow must reach the true token, AND the
+    // forbidden one must never appear. Checking only the first would let a future change reinstate
+    // the false claim while this control stayed green.
+    assert.equal(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND");
+    assert.notEqual(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED",
+      "the gate claimed HUMAN_APPROVED while the execution leg is unsourced");
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────────
@@ -1045,7 +1053,15 @@ test("bytes-in anti-vacuity: the identical documents AS BYTES complete the whole
   });
   const decided = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   assert.equal(decided.status, 200, "decide with BYTES must work");
-  assert.equal(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED");
+  // The success marker is now the token the gate may HONESTLY emit. `HUMAN_APPROVED` asserts an
+    // equality that includes the EXECUTION intent digest, which has no admissible source — the
+    // owner's invariant (NON-CLAIMS.md, amended 2026-07-29) forbids claiming it until it does.
+    // Asserted in BOTH directions on purpose: the honest flow must reach the true token, AND the
+    // forbidden one must never appear. Checking only the first would let a future change reinstate
+    // the false claim while this control stayed green.
+    assert.equal(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND");
+    assert.notEqual(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED",
+      "the gate claimed HUMAN_APPROVED while the execution leg is unsourced");
 
   const grantId = (decided.body as { grantId: string }).grantId;
   assert.equal(fx.engine.reserve(grantId, fx.agent).status, 200);
@@ -1304,5 +1320,13 @@ test("Slice 4 anti-vacuity: the APPROVER is still a recipient, and the honest fl
   });
   const decided = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
   assert.equal(decided.status, 200, `the honest approval must still succeed: ${JSON.stringify(decided.body)}`);
-  assert.equal(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED");
+  // The success marker is now the token the gate may HONESTLY emit. `HUMAN_APPROVED` asserts an
+    // equality that includes the EXECUTION intent digest, which has no admissible source — the
+    // owner's invariant (NON-CLAIMS.md, amended 2026-07-29) forbids claiming it until it does.
+    // Asserted in BOTH directions on purpose: the honest flow must reach the true token, AND the
+    // forbidden one must never appear. Checking only the first would let a future change reinstate
+    // the false claim while this control stayed green.
+    assert.equal(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND");
+    assert.notEqual(fx.store.getHold(holdId)?.reasonCode, "HUMAN_APPROVED",
+      "the gate claimed HUMAN_APPROVED while the execution leg is unsourced");
 });
