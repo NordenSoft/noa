@@ -41,6 +41,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
+import { DEPENDENCY_PROBES } from "./phone-core-probe.mjs";
 
 /**
  * CLOSED registry-entry schema. A spelling the runner does not implement is an ERROR, never inert
@@ -49,8 +50,11 @@ import { execFileSync } from "node:child_process";
  */
 export const KNOCKOUT_ENTRY_KEYS = new Set([
   "id", "control", "file", "find", "replace", "also", "andAlso", "companionFile", "kind",
-  "suite", "expectHang",
+  "suite", "expectHang", "requires",
 ]);
+
+/** Dependency names an entry may declare in `requires`. Authority: `phone-core-probe.mjs`. */
+const DECLARABLE_DEPENDENCIES = new Set(Object.keys(DEPENDENCY_PROBES));
 
 /** Validate the whole registry before any suite is allowed to run. Returns its unambiguous id map. */
 export function validateKnockoutRegistry(registry) {
@@ -79,6 +83,24 @@ export function validateKnockoutRegistry(registry) {
         throw new Error(
           `invalid knockout entry ${JSON.stringify(entry.id)}: ${key} must be a non-empty string`,
         );
+      }
+    }
+    if (entry.requires !== undefined) {
+      // Validated HERE, at registry load, not at partition time — an entry declaring a dependency
+      // nobody can probe would otherwise sit inert until the day that dependency went missing, and
+      // then quietly exclude itself from measurement instead of erroring.
+      if (!Array.isArray(entry.requires) || entry.requires.length === 0) {
+        throw new Error(
+          `invalid knockout entry ${JSON.stringify(entry.id)}: requires must be a non-empty array`,
+        );
+      }
+      for (const name of entry.requires) {
+        if (!DECLARABLE_DEPENDENCIES.has(name)) {
+          throw new Error(
+            `invalid knockout entry ${JSON.stringify(entry.id)}: unknown dependency ` +
+              `${JSON.stringify(name)}. Declarable: ${[...DECLARABLE_DEPENDENCIES].join(", ")}`,
+          );
+        }
       }
     }
     if (typeof entry.replace !== "string") {
@@ -199,7 +221,62 @@ export const VERDICT = {
   MUTATION_DID_NOT_BUILD: "MUTATION_DID_NOT_BUILD",
   /** the file could not be returned to its baseline bytes */
   RESTORATION_FAILED: "RESTORATION_FAILED",
+  /**
+   * a dependency this entry DECLARES was absent, so the suite was NOT RUN and nothing was measured.
+   *
+   * ── 2026-08-04, MEASURED — the gate that broke the rule this repository wrote ───────────────────
+   * `secrets.NOA_MOBILE_TOKEN` is not configured, so the private phone core is absent in CI. The
+   * `test` job has no phone-core checkout, yet this runner executed e2e-demo's suite anyway. Three
+   * suites failed at BASELINE, which turned TEN knockouts into `ANTI_VACUITY_FAILED` — each one
+   * truthfully reporting "the suite failed, but ONLY with the failures its baseline already had" —
+   * took the gate to `proven load-bearing 58/68`, exit 1, and blocked a merge. Every one of those
+   * ten controls is fine: locally, with the phone core present, the same run is 68/68 and exit 0.
+   *
+   * The standing rule is KURAL 29 refusal #3 — **dependencies missing ⇒ do NOT run the gate.** A RED
+   * that measures your own setup sends a human to the wrong place, and here it sent one to ten
+   * innocent controls. Refusal #4 is the other half: SKIPPED is not FAILED, so this verdict is
+   * neither a kill nor a finding — it is an admission that the experiment did not happen.
+   *
+   * DECLARED, NEVER INFERRED (the same rule as `MUTATION_DID_NOT_BUILD` above). Shape-inference
+   * cannot work here: e2e-demo's poisoned baseline is "exit 1 with 3 named failures", which is the
+   * exact shape of a legitimate owner-deferred red baseline elsewhere in the registry. A runner that
+   * guessed would excuse real failures. So an entry must say `requires: ["phone-core"]` itself.
+   */
+  SETUP_FAILED: "SETUP_FAILED",
 };
+
+/**
+ * Entries whose declared dependency is absent: `{ id, missing }`. NOT findings, NOT kills.
+ *
+ * Kept separate from both so the two counts stay honest — a SETUP_FAILED entry leaves the
+ * `proven X/Y` DENOMINATOR as well as the numerator, because a control that was never measured did
+ * not fail to prove itself; nobody asked it. Folding these into `Y` would quietly report a coverage
+ * level the run never reached.
+ */
+export function partitionByDependency(registry, repoRoot, probes) {
+  const runnable = [];
+  const setupFailed = [];
+  for (const entry of registry) {
+    const requires = entry.requires ?? [];
+    const missing = [];
+    for (let i = 0; i < requires.length; i++) {
+      const name = requires[i];
+      const probe = probes[name];
+      // An unknown dependency name is an ERROR, never a requirement that silently never holds:
+      // otherwise any entry could exclude itself from measurement by misspelling its own dependency.
+      if (typeof probe !== "function") {
+        throw new Error(
+          `knockout entry ${entry.id}: unknown dependency "${name}". Declarable names: ` +
+            `${Object.keys(probes).join(", ")}. Add a probe before declaring it.`,
+        );
+      }
+      if (probe(repoRoot) === null) missing[missing.length] = name;
+    }
+    if (missing.length > 0) setupFailed[setupFailed.length] = { id: entry.id, missing };
+    else runnable[runnable.length] = entry;
+  }
+  return { runnable, setupFailed };
+}
 
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 

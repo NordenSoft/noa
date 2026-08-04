@@ -44,8 +44,9 @@ import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
-  runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING,
+  runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING, partitionByDependency,
 } from "./lib/knockout-runner.mjs";
+import { DEPENDENCY_PROBES } from "./lib/phone-core-probe.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const WARN_ONLY = process.argv.includes("--warn");
@@ -189,6 +190,7 @@ const KNOCKOUTS = [
   // The older claim above remains preserved as history; this entry measures the current correction.
   {
     id: "g4-render-node-single-input",
+    requires: ["phone-core"],
     control: "ADR-0005 §7 G4 — the render node consumes the first canonical byte string. Re-canonicalizing the local snapshot lets a stateful post-load Object.keys replacement supply a different second key set, so the display/risk input can differ from the bytes hashed into paramsHash.",
     file: "packages/gate/src/projections.ts",
     find: "    const view = commandView(canonical);",
@@ -801,6 +803,7 @@ const KNOCKOUTS = [
   // inventory), and the proof-resolution rule (a claimed control stops running).
   {
     id: "p08-e2e-keyring-validfrom-carried",
+    requires: ["phone-core"],
     control: "P0-8 — the pairing live keyring carries the manifest-declared validFrom on every entry; dropping ONE entry's activation must fail the parity test [proof: RES-PAR-E2E-KEYRING]",
     file: "packages/e2e-demo/src/pairing.ts",
     find: "    [gate.kid]: { publicKey: gate.publicKey, type: 'GATE', roles: ['hold-signer', 'execution-signer'], validFrom: gateWindow.validFrom, revokedAt: gateWindow.revokedAt },",
@@ -810,6 +813,7 @@ const KNOCKOUTS = [
   },
   {
     id: "f2-e2e-keyring-window-from-manifest",
+    requires: ["phone-core"],
     control: "F-2 — a present manifest key's per-key activation/revocation wins over auth defaults; restoring the old auth-derived/null behaviour makes only the differing-manifest proof go RED. [proof: RES-PAR-E2E-KEYRING]",
     file: "packages/e2e-demo/src/pairing.ts",
     find: "    return declared === undefined\n      ? { validFrom: auth.validFrom, revokedAt: null }\n      : { validFrom: declared.validFrom, revokedAt: declared.revokedAt };",
@@ -819,6 +823,7 @@ const KNOCKOUTS = [
   },
   {
     id: "p08-e2e-tenantroot-validfrom-carried",
+    requires: ["phone-core"],
     control: "P0-8 — the pairing resolver carries the ROOT activation into the external tenant-root map; deleting it makes the tenant-root proof itself fail. [proof: RES-PAR-E2E-TENANTROOT]",
     file: "packages/e2e-demo/src/pairing.ts",
     find: "  const tenantRoot: Record<string, KeyEntry> = {\n    // P0-8, same change as the live keyring above: the external anchor carries the ROOT's declared\n    // activation, exactly as `gate/src/trust.ts` and the P0-1 fix do. [proof: RES-PAR-E2E-TENANTROOT]\n    [auth.root.kid]: { publicKey: auth.root.publicKey, type: 'ROOT', roles: [], validFrom: auth.validFrom, revokedAt: null },",
@@ -828,6 +833,7 @@ const KNOCKOUTS = [
   },
   {
     id: "p08-cross-resolver-equivalence",
+    requires: ["phone-core"],
     control: "P0-8 — the cross-resolver proof observes the assembled DELEGATED entry's activation at the real verifier; deleting that carried value makes the equivalence proof itself fail. [proof: RES-PAR-XRES-EQUIV]",
     file: "packages/e2e-demo/src/pairing.ts",
     find: "    [auth.authority.kid]: { publicKey: auth.authority.publicKey, type: 'DELEGATED', roles: ['key-manifest-sign'], validFrom: auth.validFrom, revokedAt: null },",
@@ -837,6 +843,7 @@ const KNOCKOUTS = [
   },
   {
     id: "res-inventory-reconcile-blocks",
+    requires: ["phone-core"],
     control: "P0-8 census — a resolver REMOVED from the inventory turns the reconciliation gate RED (the tree is re-derived from the AST on every run; the inventory is never trusted)",
     file: "scripts/resolver-inventory.json",
     find: '    {\n      "id": "e2e-demo-assemblegatetrust-tenantroot-0",\n      "package": "e2e-demo",\n      "file": "packages/e2e-demo/src/pairing.ts",\n      "scope": "assembleGateTrust>tenantRoot",\n      "ordinal": 0,\n      "line": 321,\n      "kind": "construct",\n      "class": "demo",\n      "input": "the demo authority\'s declared ROOT window",\n      "output": "KeyEntry (ROOT)",\n      "validFrom": "explicit",\n      "revokedAt": "explicit",\n      "missingValue": "not expressible: constructor always sets both fields (P0-8 fix)",\n      "malformedValue": "not expressible: clock-derived canonical toISOString",\n      "timestampParser": "new Date(ms).toISOString() at generation",\n      "consumer": "§13 verify-evidence external tenant root (F7a)",\n      "proofs": [\n        "RES-PAR-E2E-TENANTROOT"\n      ]\n    },\n',
@@ -846,6 +853,7 @@ const KNOCKOUTS = [
   },
   {
     id: "res-parity-proof-must-resolve",
+    requires: ["phone-core"],
     control: "P0-7 — a registered parity proof must RESOLVE to a live test; skipping it turns the reconciliation gate RED (a source claim about a control that does not run is the exact defect this batch adjudicated)",
     file: "packages/e2e-demo/test/keyring-resolver-parity.test.ts",
     find: "test('[PROOF:RES-PAR-E2E-TENANTROOT] the external tenant root map CARRIES the declared activation', async () => {",
@@ -868,6 +876,7 @@ const KNOCKOUTS = [
   },
   {
     id: "p13-proof-resolution-is-structural",
+    requires: ["phone-core"],
     control: "P0-13 — proof resolution reads the AST, so a control cannot be disabled by a spelling the matcher does not know. Defanging the options-object rule makes `test(name, { skip: true }, fn)` certify as live again — the exact measured bypass (gate: skipped 3, lint exit 0). Since P0-15 this AST tier is DIAGNOSIS; the selftest ahead of the gate is what turns this mutation red.",
     file: "scripts/lib/proof-resolve.mjs",
     find: 'if (v.kind === ts.SyntaxKind.TrueKeyword || ts.isStringLiteral(v)) return "disabled";',
@@ -883,6 +892,7 @@ const KNOCKOUTS = [
   // A knockout using a statically-visible spelling would prove the wrong tier.
   {
     id: "p15-proof-liveness-from-runner",
+    requires: ["phone-core"],
     control: "P0-15 — a registered proof must appear as a PASSING test in a REAL `node --test` run; a skip spelled so that no static parse can see it (indirect options object) is still refused, because the runner is ground truth and the parser is only a model of it.",
     file: "packages/e2e-demo/test/keyring-resolver-parity.test.ts",
     find: "test('[PROOF:RES-PAR-E2E-TENANTROOT] the external tenant root map CARRIES the declared activation', async () => {",
@@ -892,6 +902,7 @@ const KNOCKOUTS = [
   },
   {
     id: "res-proof-knockout-coverage-required",
+    requires: ["phone-core"],
     control: "F-4 — removing the sole declared knockout binding for one registered proof makes resolver parity fail with PROOF_WITHOUT_KNOCKOUT_BINDING. This meta-gate proves the binding rule only; requireNamedProofFailures separately checks behaviour when the tagged knockout executes.",
     file: "scripts/lint-control-knockout.mjs",
     find: '    control: "P0-6 — a non-canonical declared activation is refused instead of being normalised by Date.parse into a usable instant. [proof: RES-PAR-AA-STRICT]",\n    file: "packages/approval-artifacts/src/verify.ts",',
@@ -916,7 +927,20 @@ for (const k of KNOCKOUTS) {
 // Without this, "the suite failed" cannot be distinguished from "the suite was already failing".
 // `packages/gate` is exit 1 / 200 pass / 2 fail at HEAD — two owner-deferred ADR-0006 failures — and
 // the six entries targeting it were reporting a kill for that, not for their own controls.
-const selected = ONLY ? KNOCKOUTS.filter((k) => k.id === ONLY) : KNOCKOUTS;
+// ── DEPENDENCIES MISSING ⇒ DO NOT RUN THE GATE (KURAL 29 refusal #3) ──────────────────────────
+// Entries declaring a dependency that is absent are NOT RUN. Measured 2026-08-04: with the private
+// phone core absent in CI (`secrets.NOA_MOBILE_TOKEN` unset, and the `test` job has no checkout for
+// it), three e2e-demo suites failed at BASELINE, which turned TEN knockouts into
+// ANTI_VACUITY_FAILED — each truthfully reporting "the suite failed, but ONLY with the failures its
+// baseline already had" — and blocked a merge on ten controls that are, locally, all fine.
+//
+// The exclusion is DECLARED (`requires: [...]`), never inferred from the failure shape: e2e-demo's
+// poisoned baseline is "exit 1 with 3 named failures", the same shape as `packages/gate`'s
+// legitimate owner-deferred red baseline above. A runner that guessed would excuse real failures.
+const { runnable: DEPS_OK, setupFailed: DEPS_MISSING } = partitionByDependency(
+  KNOCKOUTS, ROOT, DEPENDENCY_PROBES,
+);
+const selected = ONLY ? DEPS_OK.filter((k) => k.id === ONLY) : DEPS_OK;
 
 // Snapshot the worktree BEFORE anything runs, so residue is measured as a DIFFERENCE.
 let WORKTREE_BEFORE = "";
@@ -971,6 +995,26 @@ for (const r of results) {
 const passed = results.filter((r) => PASSING.has(r.verdict));
 console.log(`\nproven load-bearing ${passed.length}/${results.length}`);
 
+// ── WHAT WAS NOT MEASURED, SAID OUT LOUD ───────────────────────────────────────────────────────
+// A silent exclusion is how a gate comes to report full coverage over a shrinking set. These
+// entries are absent from BOTH sides of the ratio above — a control nobody asked did not fail to
+// prove itself — so the only place their absence can be seen is here.
+if (DEPS_MISSING.length > 0 && !ONLY) {
+  const byDep = new Map();
+  for (const e of DEPS_MISSING) {
+    for (const d of e.missing) byDep.set(d, (byDep.get(d) ?? 0) + 1);
+  }
+  const summary = [...byDep].map(([d, n]) => `${n} × ${d}`).join(", ");
+  console.log(
+    `\n⚠ NOT MEASURED — ${DEPS_MISSING.length} control(s) were not run because a declared ` +
+    `dependency is absent (${summary}).`,
+  );
+  console.log(`  These are neither kills nor findings: the experiment did not happen.`);
+  for (const e of DEPS_MISSING) console.log(`  ${VERDICT.SETUP_FAILED.padEnd(26)} ${e.id} — needs ${e.missing.join(", ")}`);
+  console.log(`  To measure them, make the dependency reachable (phone-core: set NOA_MOBILE_SRC, or`);
+  console.log(`  check out NordenSoft/noa-mobile beside this repo / inside the workspace).`);
+}
+
 // ── RESIDUE: the worktree must be exactly as it was BEFORE the run ─────────────────────────────
 // Compared against the PRE-RUN snapshot, not against emptiness. A developer legitimately has
 // uncommitted work while running this; what must not change is anything the runner touched. Testing
@@ -997,6 +1041,17 @@ if (residue) {
   );
 }
 for (const [key] of unmeasurable) errors.push(`  BASELINE UNMEASURABLE      ${JSON.parse(key)[0]}`);
+
+// NO VERDICT IS NOT A PASS. Excusing an unmeasurable control is only honest while the rest of the
+// gate still measures something; a run where EVERY entry was excluded has produced no security
+// result at all, and exiting 0 there would report the strongest possible coverage from the weakest
+// possible run. "The check could not run" and "the check passed" must never share an exit code.
+if (results.length === 0 && DEPS_MISSING.length > 0) {
+  errors.push(
+    `  NOTHING MEASURED           all ${DEPS_MISSING.length} control(s) were excluded for absent ` +
+    `dependencies, so this run proves nothing. A gate that measures zero controls is not green.`,
+  );
+}
 
 if (errors.length) {
   console.error(`\n${errors.length} finding(s):`);

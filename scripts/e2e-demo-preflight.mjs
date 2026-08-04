@@ -31,29 +31,21 @@
 import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findPhoneCore as sharedFindPhoneCore } from "./lib/phone-core-probe.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PKG = join(ROOT, "packages", "e2e-demo");
 
 /**
- * Where the phone core may live, in priority order:
- *   1. `NOA_MOBILE_SRC` — an explicit override (CI, or a developer with a different layout).
- *   2. `<workspace>/noa-mobile` — a sibling checkout INSIDE the workspace (how CI clones it).
- *   3. `<repo>/../noa-mobile` — a sibling checkout next to this repo (the developer default).
+ * Where the phone core lives — ONE probe, shared with the knockout runner.
+ *
+ * These two lines used to be ~20 lines of candidate-root logic duplicated here and (later) needed
+ * by `scripts/lib/knockout-runner.mjs`. Two hand-copied probes is how a preflight and a gate come
+ * to disagree about the word present, and a disagreement there means one of them runs a suite the
+ * other declared unrunnable. Authority now lives in the shared module.
  */
-function candidateRoots() {
-  const out = [];
-  if (process.env.NOA_MOBILE_SRC) out.push(resolve(process.env.NOA_MOBILE_SRC));
-  out.push(join(ROOT, "noa-mobile"));
-  out.push(resolve(ROOT, "..", "noa-mobile"));
-  return out;
-}
-
 function findPhoneCore() {
-  for (const root of candidateRoots()) {
-    if (existsSync(join(root, "src", "core", "signer.ts"))) return root;
-  }
-  return null;
+  return sharedFindPhoneCore(ROOT);
 }
 
 function walk(dir, out = []) {

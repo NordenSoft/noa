@@ -29,7 +29,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds } from "./lib/knockout-runner.mjs";
+import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry } from "./lib/knockout-runner.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ko-selftest-"));
 let failures = 0;
@@ -174,6 +174,57 @@ check("failingTestIds reads BOTH reporters — spec on a TTY, TAP in CI", () => 
 check("restoration is proven byte-for-byte after every run above", () => {
   assert.equal(fs.readFileSync(path.join(root, "subject.js"), "utf8"), `${MARKER}\nexport default guard;\n`,
     "the runner did not restore the subject file — every later verdict in a real run would be about the residue");
+});
+
+/* ─── SETUP_FAILED: the dependency gate, BOTH directions ────────────────────────────────────────
+ *
+ * These four exist because the failure they prevent already happened. With the private phone core
+ * absent in CI, ten controls that need it were RUN anyway; their suites failed at baseline and every
+ * one was reported ANTI_VACUITY_FAILED, taking the gate to exit 1 and blocking a merge over controls
+ * that are, with the dependency present, all fine.
+ *
+ * One direction is not enough. A partition that excluded EVERYTHING would also make those ten stop
+ * being findings — while silently ceasing to measure the other 58. So absence is tested for
+ * exclusion AND presence is tested for inclusion, and the typo case is tested because an entry that
+ * can misspell its own dependency can opt out of ever being measured.
+ */
+const DEP_ENTRY = (id, requires) => ({
+  id, control: "c", file: "f", find: "a", replace: "b", ...(requires ? { requires } : {}),
+});
+const DEP_PRESENT = { "phone-core": () => "/somewhere/noa-mobile" };
+const DEP_ABSENT = { "phone-core": () => null };
+
+check("SETUP_FAILED: a declared dependency that is ABSENT excludes the entry from the run", () => {
+  const reg = [DEP_ENTRY("needs-phone", ["phone-core"]), DEP_ENTRY("plain")];
+  const { runnable, setupFailed } = partitionByDependency(reg, "/repo", DEP_ABSENT);
+  assert.deepEqual(runnable.map((e) => e.id), ["plain"],
+    "an entry whose dependency is missing was still going to be RUN — its baseline failure would be " +
+      "read as a finding about the control instead of about the checkout");
+  assert.deepEqual(setupFailed, [{ id: "needs-phone", missing: ["phone-core"] }]);
+});
+
+check("ANTI-VACUITY: the same entry IS run when the dependency is PRESENT", () => {
+  const reg = [DEP_ENTRY("needs-phone", ["phone-core"]), DEP_ENTRY("plain")];
+  const { runnable, setupFailed } = partitionByDependency(reg, "/repo", DEP_PRESENT);
+  assert.deepEqual(runnable.map((e) => e.id), ["needs-phone", "plain"],
+    "a SATISFIED requirement still excluded the entry — the exclusion would be permanent and " +
+      "invisible, which is the silent coverage loss this verdict exists to prevent");
+  assert.deepEqual(setupFailed, []);
+});
+
+check("an entry can NEVER exclude itself by misspelling its own dependency", () => {
+  assert.throws(() => partitionByDependency([DEP_ENTRY("typo", ["phone_core"])], "/repo", DEP_ABSENT),
+    /unknown dependency/,
+    "an unknown dependency name evaluated to 'absent', so any control could opt out of being " +
+      "measured with a typo — the opposite of a closed taxonomy");
+  assert.throws(() => validateKnockoutRegistry([DEP_ENTRY("typo", ["phone_core"])]),
+    /unknown dependency/,
+    "the registry validator accepted a dependency nobody can probe; it would sit inert until the " +
+      "day it mattered and then silently exclude the entry");
+});
+
+check("requires must be a NON-EMPTY array — an empty one declares nothing while looking careful", () => {
+  assert.throws(() => validateKnockoutRegistry([DEP_ENTRY("empty", [])]), /non-empty array/);
 });
 
 fs.rmSync(root, { recursive: true, force: true });

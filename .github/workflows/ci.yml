@@ -154,27 +154,22 @@ jobs:
       - name: framework-adapters tests
         run: cd packages/framework-adapters && npm ci && npm test
 
-  e2e-demo-golden-path:
-    # THE GOLDEN END-TO-END PATH, GATED — as far as a public runner can gate it.
+  e2e-demo-contract:
+    # THE HALF THAT IS ALWAYS OURS TO GATE — and it is now its OWN job, for a measured reason.
     #
     # `packages/e2e-demo` is the Instant-Tether demo: agent -> gate -> relay -> a REAL phone core ->
-    # grant -> exact execution -> an offline-verifiable Approval Evidence Bundle. It was in NONE of
-    # the jobs above, and its nine phone-core imports were deep relative specifiers that resolve only
-    # from the maintainer's directory layout. So the end-to-end path could be broken indefinitely
-    # while every check here stayed green: an unrun check and a passing check are the same value in a
-    # report and opposite facts in reality.
+    # grant -> exact execution -> an offline-verifiable Approval Evidence Bundle. Its nine phone-core
+    # imports were once deep relative specifiers that resolved only from the maintainer's directory
+    # layout, so the end-to-end path could have been broken indefinitely while every check stayed
+    # green. The contract check (one declared location, one import surface, no deep relative
+    # specifiers) tests defects in THIS repo, needs no credential, and is therefore unconditional.
     #
-    # The phone core is a PRIVATE sibling product (NordenSoft/noa-mobile) consumed as TypeScript
-    # source, and this repository is public, so a runner cannot fetch it without a credential. This
-    # job therefore has two honest states and no third:
-    #   • the CONTRACT check runs ALWAYS (one declared location, one import surface, no deep relative
-    #     specifiers) — those are defects in THIS repo and are gated unconditionally;
-    #   • the SUITE runs whenever the phone core is reachable — with the NOA_MOBILE_TOKEN secret
-    #     configured, or on any runner that already has it — and a failure is a hard failure.
-    # When it is not reachable the preflight prints one unmissable NOT EXECUTED line. It never
-    # reports a pass for something it did not run.
+    # It also PUBLISHES whether the phone core is reachable, which is what lets the suite below be
+    # skipped as a job rather than as eight separate steps.
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 10
+    outputs:
+      phone-core: ${{ steps.preflight.outputs.present }}
     env:
       # The `secrets` context is NOT available in a step-level `if:`; a job-level `env` is where it
       # can be read, so the presence of the credential becomes an ordinary string to branch on.
@@ -187,31 +182,86 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - name: Check out the private phone core (only when a credential is configured)
-        id: phone-core
-        if: env.HAS_PHONE_CORE_TOKEN == 'true'
-        continue-on-error: true
+      - name: Dependency contract (ALWAYS gated) + honest presence report
+        id: preflight
+        run: |
+          set -euo pipefail
+          node scripts/e2e-demo-preflight.mjs | tee preflight.out
+          if [ "${HAS_PHONE_CORE_TOKEN}" = "true" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+          { echo "### e2e-demo contract"; sed -n '1,20p' preflight.out; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Say out loud what will NOT be measured
+        # A silent skip is how a repository comes to believe it tests a path nobody has run since
+        # the credential lapsed. This warning appears on the PR checks page, next to the green ticks
+        # it is qualifying: 6 scenarios here, plus 10 knockout controls in the `test` job that
+        # declare `requires: ["phone-core"]` and are excluded as SETUP_FAILED.
+        if: steps.preflight.outputs.present != 'true'
+        run: |
+          echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_TOKEN secret to measure them."
+          { echo ""; echo "**NOT EXECUTED** — phone core unreachable. 6 golden-path scenarios and 10 knockout controls were not measured."; } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail closed when the owner has demanded the phone core
+        # Opt-in strictness, never the default. A gate that blocks EVERY push on an absence only the
+        # owner can cure is a gate someone eventually switches off — and then there is no gate. Set
+        # the repository variable REQUIRE_PHONE_CORE=true once the credential is permanent.
+        if: vars.REQUIRE_PHONE_CORE == 'true' && steps.preflight.outputs.present != 'true'
+        run: |
+          echo "::error title=Phone core required::REQUIRE_PHONE_CORE is set but the phone core is unreachable."
+          exit 1
+
+  e2e-demo-golden-path:
+    # THE SUITE. Skipped as a JOB when the phone core is unreachable, and that is the entire point.
+    #
+    # ⚠ WHAT THIS REPLACED, AND WHY (measured 2026-08-04) ⚠
+    # Every step here used to live in one job behind `if: steps.preflight.outputs.present == 'true'`.
+    # With `secrets.NOA_MOBILE_TOKEN` unconfigured, the checkout and all three suite steps were
+    # SKIPPED and the job concluded **SUCCESS** — a green tick for six scenarios that never ran. The
+    # repository's own rule is that "the check could not run" and "the check passed" must never share
+    # an exit code; this job was the counter-example, in the workflow layer.
+    #
+    # Actions has exactly one honest "did not run" state and it is a job-level skip. So the branch
+    # moved up: the contract job publishes reachability, and this job either RUNS AND MEANS IT or
+    # reports `skipped`. There is no third state, and no path to a pass it did not earn.
+    #
+    # `continue-on-error` is deliberately GONE from the checkout. It existed to keep the old job
+    # green when the token was absent; here the job only runs when the token exists, so a failed
+    # checkout means a credential the owner armed is broken — a hard red that measures a real fault.
+    needs: e2e-demo-contract
+    if: needs.e2e-demo-contract.outputs.phone-core == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - name: Check out the private phone core
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: NordenSoft/noa-mobile
           path: noa-mobile
           token: ${{ secrets.NOA_MOBILE_TOKEN }}
           persist-credentials: false
-      - name: Dependency contract (ALWAYS gated) + honest presence report
-        id: preflight
+      - name: Prove the phone core is actually here before claiming to test it
+        # The token can exist and the checkout still land nothing usable. Without this, a partial
+        # clone would fall through to a suite that skips its phone-dependent assertions and passes.
         run: |
           set -euo pipefail
           node scripts/e2e-demo-preflight.mjs | tee preflight.out
-          if grep -q "^phone-core: PRESENT" preflight.out; then echo "present=true" >> "$GITHUB_OUTPUT"; else echo "present=false" >> "$GITHUB_OUTPUT"; fi
-          { echo "### e2e-demo golden path"; sed -n '1,20p' preflight.out; } >> "$GITHUB_STEP_SUMMARY"
+          grep -q "^phone-core: PRESENT" preflight.out || {
+            echo "::error title=Phone core missing after checkout::the credential is configured but the phone core did not land"
+            exit 1
+          }
       - name: Build the in-repo dependencies
-        if: steps.preflight.outputs.present == 'true'
         run: cd packages/e2e-demo && npm ci && npm run build:deps
       - name: Typecheck the golden path
-        if: steps.preflight.outputs.present == 'true'
         run: cd packages/e2e-demo && npm run typecheck
       - name: Run the 6 golden-path scenarios
-        if: steps.preflight.outputs.present == 'true'
         run: cd packages/e2e-demo && npm test
 
   five-verifier-conformance:
@@ -262,9 +312,31 @@ jobs:
     strategy:
       matrix:
         node: [20, 22]
+    env:
+      # SELF-ARMING. Ten knockout controls declare `requires: ["phone-core"]` and this job never had
+      # a phone-core checkout, so `lint:knockout` ran their suites against a dependency that was not
+      # there: three suites failed at BASELINE, ten controls came back ANTI_VACUITY_FAILED, the gate
+      # went to `proven load-bearing 58/68` and blocked a merge — over ten controls that are all fine
+      # when the dependency is present.
+      #
+      # The runner now excludes them as SETUP_FAILED and says so loudly, which makes CI honest but
+      # leaves them unmeasured. This env + the conditional checkout below is the other half: inert
+      # today (the secret is unset, the step is skipped, nothing changes), and the moment the owner
+      # saves a read token as NOA_MOBILE_TOKEN all ten start being measured here with no further
+      # work. Recording "configure the secret later" in a document instead would mean the fix only
+      # lands if somebody remembers to come back and wire it.
+      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          persist-credentials: false
+      - name: Check out the private phone core (only when a credential is configured)
+        if: env.HAS_PHONE_CORE_TOKEN == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: NordenSoft/noa-mobile
+          path: noa-mobile
+          token: ${{ secrets.NOA_MOBILE_TOKEN }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
