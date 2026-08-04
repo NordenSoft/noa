@@ -1,6 +1,6 @@
 {
   "name": "noa-mcp-adapter-core",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Shared, testable MCP pre-flight decision engine — extracted from examples/mcp-preflight/preflight.mjs so any MCP integration (proxy, gateway, in-process guard) can call the same preCheck() instead of re-deriving it.",
   "keywords": [
     "ai-agent",
