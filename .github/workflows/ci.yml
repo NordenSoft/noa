@@ -259,6 +259,13 @@ jobs:
             echo "::error title=Phone core missing after checkout::the credential is configured but the phone core did not land"
             exit 1
           }
+      - name: Install the repo root first
+        # packages/e2e-demo depends on the repo root via `file:`; installing it runs the root
+        # `prepare` (tsc build), which needs the root devDependencies. Every developer machine has
+        # the root installed, so this could only ever fail in CI — and it did, the FIRST time this
+        # job ran for real (2026-08-04, run 30937117417: TS2688 "Cannot find type definition file
+        # for 'node'"). Until that run the job had only ever been skipped.
+        run: npm ci
       - name: Build the in-repo dependencies
         run: cd packages/e2e-demo && npm ci && npm run build:deps
       - name: Typecheck the golden path
