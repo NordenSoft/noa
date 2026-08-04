@@ -173,7 +173,9 @@ jobs:
     env:
       # The `secrets` context is NOT available in a step-level `if:`; a job-level `env` is where it
       # can be read, so the presence of the credential becomes an ordinary string to branch on.
-      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
+      # The credential is a READ-ONLY DEPLOY KEY on NordenSoft/noa-mobile (least privilege: it can
+      # read that one repository and nothing else), stored as the NOA_MOBILE_SSH_KEY secret.
+      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_SSH_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -200,7 +202,7 @@ jobs:
         # declare `requires: ["phone-core"]` and are excluded as SETUP_FAILED.
         if: steps.preflight.outputs.present != 'true'
         run: |
-          echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_TOKEN secret to measure them."
+          echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_SSH_KEY secret (read-only deploy key on NordenSoft/noa-mobile) to measure them."
           { echo ""; echo "**NOT EXECUTED** — phone core unreachable. 6 golden-path scenarios and 10 knockout controls were not measured."; } >> "$GITHUB_STEP_SUMMARY"
       - name: Fail closed when the owner has demanded the phone core
         # Opt-in strictness, never the default. A gate that blocks EVERY push on an absence only the
@@ -245,7 +247,7 @@ jobs:
         with:
           repository: NordenSoft/noa-mobile
           path: noa-mobile
-          token: ${{ secrets.NOA_MOBILE_TOKEN }}
+          ssh-key: ${{ secrets.NOA_MOBILE_SSH_KEY }}
           persist-credentials: false
       - name: Prove the phone core is actually here before claiming to test it
         # The token can exist and the checkout still land nothing usable. Without this, a partial
@@ -320,12 +322,12 @@ jobs:
       # when the dependency is present.
       #
       # The runner now excludes them as SETUP_FAILED and says so loudly, which makes CI honest but
-      # leaves them unmeasured. This env + the conditional checkout below is the other half: inert
-      # today (the secret is unset, the step is skipped, nothing changes), and the moment the owner
-      # saves a read token as NOA_MOBILE_TOKEN all ten start being measured here with no further
-      # work. Recording "configure the secret later" in a document instead would mean the fix only
-      # lands if somebody remembers to come back and wire it.
-      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_TOKEN != '' }}
+      # leaves them unmeasured. This env + the conditional checkout below is the other half: the
+      # moment a read credential for the sibling exists (NOA_MOBILE_SSH_KEY, a read-only deploy key
+      # on NordenSoft/noa-mobile) all ten start being measured here with no further work. Recording
+      # "configure the secret later" in a document instead would mean the fix only lands if somebody
+      # remembers to come back and wire it.
+      HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_SSH_KEY != '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -336,7 +338,7 @@ jobs:
         with:
           repository: NordenSoft/noa-mobile
           path: noa-mobile
-          token: ${{ secrets.NOA_MOBILE_TOKEN }}
+          ssh-key: ${{ secrets.NOA_MOBILE_SSH_KEY }}
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
