@@ -189,6 +189,23 @@ const KNOCKOUTS = [
   //
   // The older claim above remains preserved as history; this entry measures the current correction.
   {
+    id: "adr0007-untenanted-enrolment-dev-only",
+    control:
+      "ADR-0007 — a VALID enrolment secret must NOT open the untenanted device route. Constraint 3 " +
+      "gave DeviceRecord a tenant and made claimDevice match on it, but that match only fires when " +
+      "device.tenant !== null (engine.ts:254) and anonymous POST /v1/devices records tenant: null " +
+      "(engine.ts:212). So a correctly-authenticated PRODUCTION operator could still mint devices " +
+      "claimable by any tenant — the first-claimer-wins race constraint 3 closed, reopened through " +
+      "the side door by the same change that closed it. The route survives, confined to the loopback " +
+      "development opt-in where the demo, e2e and simulator flows live; production gets exactly one " +
+      "device-minting path, the one that stamps a tenant.",
+    file: "packages/relay/src/config.ts",
+    find: "  if (opts.untenanted === true) {",
+    replace: "  if (false) {",
+    kind: "tests",
+    suite: ["packages/relay", "npm", ["test"]],
+  },
+  {
     id: "adr0007-device-tenant-claim",
     control:
       "ADR-0007 constraint 3 — a device that DECLARES a tenant is claimable only by that tenant. " +

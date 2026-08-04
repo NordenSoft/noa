@@ -122,14 +122,38 @@ test("R-1 over HTTP: a configured secret gates the real /v1/devices route end to
     });
     assert.equal(wrong.status, 403);
 
-    // ANTI-VACUITY: the legitimate operator still enrols in the same run, so the refusals above are
-    // the gate biting rather than the route being broken.
-    const ok = await httpJson(port, "POST", "/v1/devices", {
+    // ⚠ THE VALID SECRET NO LONGER OPENS THIS ROUTE, AND THAT IS THE POINT (ADR-0007).
+    //
+    // This assertion used to read `201`. It was correct then and is wrong now: `/v1/devices` mints a
+    // device with `tenant: null` (`engine.ts:212`), and a tenant-less device bypasses the claim
+    // match at `engine.ts:254` — so every device minted here is claimable by ANY tenant on the
+    // relay. Letting a correctly-authenticated production operator through would reopen the exact
+    // first-claimer-wins race ADR-0007 constraint 3 closed.
+    //
+    // The route survives, confined to the loopback development opt-in, which is where the demo, the
+    // e2e flows and the simulator use it. Production gets one device-minting path: the one that
+    // stamps a tenant.
+    const withSecret = await httpJson(port, "POST", "/v1/devices", {
       headers: { "x-noa-enrolment-secret": "operator-secret" },
       body: device,
     });
-    assert.equal(ok.status, 201, `the operator must still be able to enrol: ${JSON.stringify(ok.json)}`);
-    assert.ok((ok.json as { deviceId?: string }).deviceId);
+    assert.equal(withSecret.status, 403,
+      `a valid secret opened the untenanted device route on a production relay: ${JSON.stringify(withSecret.json)}`);
+    assert.equal((withSecret.json as { error: string }).error, "UNTENANTED_ENROLMENT_IS_DEVELOPMENT_ONLY");
+
+    // ANTI-VACUITY, MOVED RATHER THAN DROPPED. The original version proved the refusals above were
+    // the gate biting rather than the route being broken, by having the legitimate operator enrol in
+    // the same run. That prover can no longer be `/v1/devices` — so it is `/v1/pairings`, which is
+    // tenanted, still open to a valid secret, and exercised with the SAME credential in the SAME
+    // run. Without this the three refusals above would also pass against a relay that refused
+    // everything.
+    const pairOk = await httpJson(port, "POST", "/v1/pairings", {
+      headers: { "x-noa-enrolment-secret": "operator-secret" },
+      body: { tenant: "tenant-a" },
+    });
+    assert.ok(pairOk.status === 200 || pairOk.status === 201,
+      `the operator must still be able to provision SOMETHING with this secret, or the refusals ` +
+        `above measure a broken relay rather than a working gate: ${JSON.stringify(pairOk.json)}`);
 
     // The pairing route — the one that mints AGENT keys — is gated by the same guard.
     const pairAnon = await httpJson(port, "POST", "/v1/pairings", { body: {} });

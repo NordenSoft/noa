@@ -254,7 +254,13 @@ async function handle(
   const isEnrolmentRoute =
     method === "POST" && (path === "/v1/pairings" || path === "/v1/pair" || path === "/v1/devices");
   if (isEnrolmentRoute) {
-    const refusal = enrolmentRefusal(config, header(req, "x-noa-enrolment-secret"));
+    // `/v1/devices` mints a device with NO tenant (`engine.ts:212`), and a tenant-less device is
+    // claimable by any tenant — the race ADR-0007 constraint 3 closed for devices that DO declare
+    // one. So this route is confined to the development opt-in MECHANICALLY: a valid enrolment
+    // secret does not open it. The decision itself lives in `enrolmentRefusal`, not here, so there is
+    // one expression deciding who may enrol rather than two that agree today.
+    const untenanted = path === "/v1/devices";
+    const refusal = enrolmentRefusal(config, header(req, "x-noa-enrolment-secret"), { untenanted });
     if (refusal) return sendJson(res, refusal.status, refusal.body);
   }
 
