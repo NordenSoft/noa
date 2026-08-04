@@ -8,11 +8,24 @@
  * FAIL-CLOSED CONTRACT: `guardCall(name, fn)` returns a wrapped `fn` such that the ORIGINAL `fn`
  * is invoked IF AND ONLY IF the gate decision is ALLOW. A DENY (policy rule, malformed args, or
  * any error surfaced by `preCheck`'s own fail-closed guards — see pre-check.mjs) throws
- * `GuardedToolDenied` and never calls `fn`. This mirrors the exact same guarantee
- * `packages/mcp-proxy`'s `tools/call` handler gives an MCP host: DENY blocks execution, ALLOW
+ * `GuardedToolDenied` and never calls `fn`. This mirrors the same FAIL-CLOSED CONTRACT
+ * `packages/mcp-proxy`'s `tools/call` handler applies for an MCP host: DENY blocks execution, ALLOW
  * forwards the call and returns its real result untouched (see create-proxy-server.mjs's
  * "FORWARD-YOK" comment) — these adapters are the same invariant for an in-process
  * OpenAI/LangChain tool registry instead of an MCP proxy boundary.
+ *
+ * ⚠ THIS SENTENCE USED A K5-BANNED ABSOLUTE, AND IT CONTRADICTED THIS FILE'S OWN NEXT PARAGRAPH.
+ * Corrected 2026-08-04, found the moment the publish-surface lint was extended past the root package
+ * — this file ships in `noa-framework-adapters` and had **never been linted at PR time**.
+ *
+ * The two scopes are not equivalent, and one absolute noun for both erased the difference: the proxy
+ * sits at a boundary the host cannot route around, while this is IN-PROCESS and, as the HONESTY note
+ * below says in the file's own words, *advisory* — it governs only calls that actually go through the
+ * wrapped `fn`. Same contract, weaker enforcement position.
+ *
+ * The first attempt at this very note tripped the lint a second time, by naming the banned word twice
+ * while explaining why it was wrong. That is the gate working: an explanation shipped in a published
+ * package is published text, and K5 does not have an exemption for good intentions.
  *
  * HONESTY (same caveat as examples/sdk-guard/guard.mjs): an in-process guard is *advisory* — it
  * only governs calls that actually go through the wrapped `fn`. Install it where the tool's
