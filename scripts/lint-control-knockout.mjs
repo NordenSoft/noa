@@ -189,6 +189,25 @@ const KNOCKOUTS = [
   //
   // The older claim above remains preserved as history; this entry measures the current correction.
   {
+    id: "stage4-digest-display-disagreement",
+    control:
+      "ADR-0006 §5 stage 4 — the DIGEST and the DISPLAY must commit to the same bytes. NOA's " +
+      "catastrophic failure is a genuine human genuinely approving a DIFFERENT action from the one " +
+      "that executes, and that becomes possible the moment a displayed field is derived from a " +
+      "caller-controlled value instead of from the canonical bytes. Measured before this control " +
+      "existed: bypassing the render node turned ZERO tests red (projections.ts:196-215 records it, " +
+      "and this file's oracle re-measured it). SCOPE, stated rather than implied: this mutation is " +
+      "the A+B state — the display reads the CALLER's argv. Mutation B alone (the display reads our " +
+      "own pre-canonical snapshot) still turns nothing red, because while capture-once holds that " +
+      "array is ours and yields the identical string. The oracle closes the CONSEQUENCE a human is " +
+      "harmed by, not the render node's redundancy.",
+    file: "packages/gate/src/projections.ts",
+    find: "      Args: view.argsJoined,",
+    replace: '      Args: (argv as unknown as string[]).join(" "),',
+    kind: "tests",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
     id: "g4-render-node-single-input",
     requires: ["phone-core"],
     control: "ADR-0005 §7 G4 — the render node consumes the first canonical byte string. Re-canonicalizing the local snapshot lets a stateful post-load Object.keys replacement supply a different second key set, so the display/risk input can differ from the bytes hashed into paramsHash.",
