@@ -410,3 +410,67 @@ unless a reproduced blocker cannot be closed inside the approved architecture.
 | **STAGE-4 ORACLE** | ✅ **BUILT 2026-08-04** — `packages/gate/test/stage4-digest-display-agreement.test.ts`. ADR-0006 §5 splits stage 3 into what the system COMMITS to (`sha256(bytes)`) and what the HUMAN IS SHOWN (`render(bytes)`); NOA's catastrophic failure is a genuine human genuinely approving a different action from the one that executes, which becomes possible the instant those two can disagree. Verdict is ORDINAL — `AGREE > REFUSED > DISAGREE` — because collapsing REFUSED into failure would push a future author toward making hostile input "work"; refusing a poisoned request is a correct answer, showing a human the wrong action is not. Every poison COUNTS ITS OWN READS: a poison nobody touched proves nothing, and the test says so instead of passing. | **proof:** 5/5 green; registered knockout `stage4-digest-display-disagreement` → **DETECTOR_TRIGGERED**, 5 new failures beyond baseline, restoration byte-verified; full registry now **69/69** load-bearing | **MET** — with the scope stated rather than implied, below. |
 | **STAGE-4 SCOPE** | ⚠ **AN OVERCLAIM I WROTE AND MY OWN KNOCKOUT REFUTED.** The first version of the oracle's header said "this file is the oracle that makes mutation B bite". Measured on this tree: **B alone (the display reads our own pre-canonical snapshot) → 0 tests red; A+B (the display reads the CALLER's argv) → 4 tests red.** The claim was false. It is corrected in place rather than deleted because the reason is the useful part: while capture-once holds, `argvSnapshot` is an array the module built by index walk, so reading it instead of the re-parsed canonical yields the identical string — the render node really is redundant against every split reachable today, exactly as `projections.ts:196-215` already said, and no honest test can turn B red without first removing capture-once. What the oracle DOES close is the CONSEQUENCE rather than the mechanism: the moment any displayed field derives from a caller-controlled value, four tests go red and name the divergence. | **proof:** the two knockout runs above, both recorded in the test file's header | the mechanism may be reimplemented; the consequence is the invariant, and it is now measured |
 | **ADR-0007** | 🔴 **OPEN — A PHONE CANNOT JOIN A REAL RELAY, AND THE GAP IS TOTAL.** Measured both sides: the app's only credential-minting call sends no headers and no credential (`noa-mobile/src/transport/relayClient.ts:286-289`; `x-noa-enrolment-secret` has **0 hits** in `noa-mobile/src`), while the relay gates all three minting routes (`server.ts:254-259`) and refuses without a secret. The development opt-in does not rescue it: `config.ts:161` requires `!declaredExposed && isLoopbackAddress(bindAddress)`, and a physical phone cannot reach a loopback bind except through the undeclared-proxy shape R8-07 exists to forbid. **The only working enrolment today is a simulator on the operator's own machine.** Class: functional completeness, NOT security — the gate fails closed, nobody can mint; what ships is a phone that cannot join. Decision: enrol through the pairing ceremony the operator already performs (zero new ceremony — the ACCEPTED bundle is the carrier), with eight binding constraints incl. disjoint token namespaces, a redemption route outside the enrolment gate (gating on body content would repeat the R8-07 ordering mistake), kid-bound tokens, and tenant-on-device. | **proof:** `docs/ADR-0007-device-enrolment-through-pairing.md` — every row cites the file:line it was measured at | ADR-0007 §3.2's six refusals PLUS the honest-path control (a route that refused everything would satisfy all six) |
+
+---
+
+## 2026-08-04 — Fable's enterprise ruling, executed. What landed, what is held, what the owner owes
+
+Appended per KURAL 26 (one plan, no rival file). The owner commissioned the ruling
+("Fable 5 kurumsal dev firmalarin disiplini ile karar versin") and then instructed uninterrupted
+execution. This section is the execution record; rows above it that contradict it are older.
+
+### Landed on `main`
+
+| what | where | why it mattered |
+|---|---|---|
+| **SR-2026-001 — the hono override was decoration** | `b37985a` (PR #22) | `overrides` declared by a DEPENDENCY are ignored by npm; a real `npm install noa-mcp-proxy` landed `@hono/node-server@1.19.17` (GHSA-frvp-7c67-39w9) with 3 moderate findings while the manifest read as patched. Fixed with SDK 1.30.0 **plus** a direct `^2.0.5` dependency — the SDK bump was required, since 1.29.0 allows only `^1.19.9`. Proven against a packed tarball: `2.1.0`, 0 vulnerabilities. |
+| **Five documents that misstated the project** | `b37985a` (PR #22) | the `0.6.0` release blocker, the `0.5.0` npm claim, the `0.4.0` pin claim, `VERSIONING`'s `0.3.0`, NON-CLAIMS' "every package README" (measured **0 of 11**), SECURITY's "single declared dependency", README's "14 attack vectors" (16). |
+| **Squash title policy** | repo setting | `COMMIT_OR_PR_TITLE` → `PR_TITLE` (+`PR_BODY`). The old value takes the COMMIT title on a single-commit PR — which is exactly how a commit called `test` became permanent on protected, signed `main`. |
+
+### Open, in review
+
+**PR #23** — a COSE proof that had stopped running, three dead references, and a PR-title gate.
+
+### The `0.6.0` blocker was not satisfied — and the defect is the blocker, not the release
+
+`noa-receipt@0.6.0` published 2026-08-03T18:19Z from `7ea6fe59`, where `ci` was **RED**. Every
+failing test at that SHA was in `packages/gate`, which is `private: true` and ships to nobody; the
+gates over what strangers download (`publish.yml` on the kernel suite, `publish-mcp.yml` on
+per-package suites) were green and correctly scoped. Nothing broken was published.
+
+The blocker was written **repo-wide** while the risk is **per-package**, so a red that cannot reach a
+consumer read as a violation. **Future release blockers name the artifact they guard** — a blocker
+that gets correctly overridden once is a blocker people learn to override.
+
+### Dependabot backlog — triaged, not merged blind
+
+| PR | verdict | measured blocker |
+|---|---|---|
+| #8 vitest 4, #11 typescript 7 (approval-artifacts) | green, **BEHIND** | rebase requested; `strict_required_status_checks_policy=true` correctly refuses a green measured at another revision |
+| #16 SDK 1.30.0 | **superseded** | the bump alone raises the ceiling and moves no resolution; closes itself when the manifest lands |
+| #17 / #18 `@types/node` 26 | **held** | 76 + 8 `TS2769`, one cause: `@types/node` 26 narrows `assert`'s `message`, and this repo passes `string \| null`. Remedy `?? undefined` — an improvement, since `null` never meant anything |
+| #7 typescript 7 (root) | **held, not mechanical** | `Cannot read properties of undefined (reading 'FunctionDeclaration')` — TS 7 restructures the compiler API and several **gates** walk the AST through it. Porting them means re-proving each still fails when it should |
+
+### Two instrument failures worth keeping
+
+1. **`gh pr merge` refused a mergeable PR.** `mergeStateStatus` read `BLOCKED` with all six required
+   checks green, zero code-scanning alerts, zero unresolved threads. Three hypotheses were tested and
+   **refuted by measurement** — the merge settings (reverted, still blocked), commit signatures (#21
+   merged unsigned), and the CodeQL merge-ref (#19/#20/#21 have the same shape and merged). The API
+   merged it on the first attempt. **The CLI gates on a cached status field; the API evaluates the
+   rules.**
+2. **A grep that matched the wrong thing twice.** I reported `publish.yml` had "no test run" — it runs
+   `npm test` at line 56; my pattern matched `npm ci` and missed the differently indented line. Then a
+   `FAIL`-hunting grep matched the word "fail" inside PASSING test *names*.
+
+### Still owed by the owner — exactly three, batched
+
+1. **Publish `0.6.1` or revert the bump.** `git tag v0.6.1 <sha> && git push origin v0.6.1` fires
+   `publish.yml`. Until then `SECURITY.md` correctly tells reporters to file against 0.6.0.
+   **The mcp-proxy hono fix also does not reach consumers until a proxy publish** — the repository is
+   fixed, the registry is not.
+2. **A fine-grained read token for `NordenSoft/noa-mobile`** → secret `NOA_MOBILE_TOKEN` + repo
+   variable `REQUIRE_PHONE_CORE=true`. 14-day deadline, after which the ten unmeasured controls are
+   recorded in NON-CLAIMS rather than deleted.
+3. **P1-12: does v1.0 claim external anchoring?** yes → a blocking roadmap epic now; no → a permanent
+   ratified NON-CLAIMS boundary. Illegitimate only: a 1.0 tag with the row still ⚪ OWNER-DECISION.
