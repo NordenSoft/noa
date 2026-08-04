@@ -67,10 +67,21 @@ Latest test result: TESTED locally on 2026-08-04 at `bf88f4f`: kernel `npm test`
 red at the `v0.6.0` tag. `lint:security-gates` and `lint:topology` both exit 0. This is still not a full
 conformance, package, CI, or release result. Previously, on 2026-08-03: `npm run typecheck:all` passed; `npm run lint:security-gates` passed with 393 warn-mode findings and zero blocking findings. This is not a full test, conformance, package, CI, or release result.
 
-Latest deploy: No deployment of this checkout is verified. The npm publication is distribution evidence
-only — not deployment, adoption, or production verification. Registry state measured 2026-08-04:
-`noa-receipt` **0.6.0** (published 2026-08-03T18:19Z), `noa-mcp-adapter-core` and `noa-mcp-proxy`
-**0.3.1**. `noa-receipt@0.6.1` exists in this tree and is **not** on the registry.
+Latest deploy: No deployment of this checkout is verified. The npm publication is distribution
+evidence only — not deployment, adoption, or production verification. Registry state re-measured
+**after the 2026-08-04 release**: `noa-receipt` **0.6.1**, `noa-mcp-adapter-core` **0.3.2**,
+`noa-mcp-proxy` **0.3.2**. Nothing in this tree is now unpublished.
+
+Verified from the registry rather than from the workflow's own verdict — `npm install noa-mcp-proxy`
+in an empty directory resolves `@hono/node-server` **2.1.0** with `npm audit` reporting **0**
+vulnerabilities at every severity, against 0.3.1's measured 1.19.17 and 3 moderate. The published
+manifest also carries `noa-mcp-adapter-core: ^0.3.2` rather than a `file:` path, so the release
+workflow's local-path rewrite did its job.
+
+`lint:release-parity` now reports **PARITY PASS**: selftest 9/9, every shipped path byte-identical
+between tag `v0.6.1` and HEAD, and all 72 files in the published tarball byte-identical to what this
+tree packs. That is the check that had been failing with "Release the kernel before the dependent
+packages".
 
 Next objective: Freeze the normative authority hierarchy, reconcile COSE wire and layered-verification semantics, and decide the additive Trust action-binding carrier; add cross-repository semantic vectors, then run revision-bound CI, conformance/security/package gates, and independent Codex review.
 

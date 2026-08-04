@@ -15,16 +15,28 @@ before spending time on a report.
 
 | package | published | supported |
 |---|---|---|
-| `noa-receipt` | **0.6.0** | yes — fixes land here |
-| `noa-mcp-adapter-core` | **0.3.1** | yes |
-| `noa-mcp-proxy` | **0.3.1** | yes |
+| `noa-receipt` | **0.6.1** | yes — fixes land here |
+| `noa-mcp-adapter-core` | **0.3.2** | yes |
+| `noa-mcp-proxy` | **0.3.2** | yes — **upgrade from 0.3.1**, see below |
 | everything older | — | **no**. Upgrade; 0.6.0 is deliberately stricter than 0.5.0 and artifacts that verified `VALID` under 0.5.0 can verify `REFUSE` or `TAMPERED` under it. That is the point of the release, and it is documented in `CHANGELOG.md`. |
 
-⚠ **`noa-receipt@0.6.1` exists in this repository and is NOT on the registry.** It is a
-documentation-only patch; no behaviour differs from 0.6.0. Report against 0.6.0 — that is what you
-can install. The version was bumped because the published 0.6.0 tarball had stopped matching what
-this tree builds, and `lint:release-parity` refuses to let a dependent package publish against a
-mismatched kernel.
+⚠ **`noa-mcp-proxy@0.3.1` shipped a vulnerable `@hono/node-server`. Upgrade to 0.3.2.**
+
+0.3.1's manifest declared `overrides: { "@hono/node-server": "^2.0.5" }`, and **npm ignores
+`overrides` declared by a dependency** — they apply in the root project only. So the entry read as
+a pin and protected nobody. Measured in a clean directory against 0.3.1: `@hono/node-server`
+**1.19.17** (GHSA-frvp-7c67-39w9, path traversal), `npm audit` **3 moderate**.
+
+Measured the same way against 0.3.2, after publication on 2026-08-04: `@hono/node-server` **2.1.0**,
+`npm audit` **0 vulnerabilities at every severity**. The fix required moving
+`@modelcontextprotocol/sdk` to 1.30.0 as well — 1.29.0 permits only `^1.19.9`.
+
+`noa-mcp-adapter-core@0.3.2` is behaviour-identical to 0.3.1; it moved only because the two
+packages release in lockstep.
+
+0.3.1 has not been unpublished. It is a real release whose own description is correct about the
+forgery fixes it shipped and wrong about this one, which is why the correction is written where an
+auditor would look.
 
 **Unpublished packages are out of scope for this table but not for a report.** `packages/gate` and
 `packages/relay` are `private: true` and ship to nobody — a finding in them is still very much

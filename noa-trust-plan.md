@@ -474,3 +474,81 @@ that gets correctly overridden once is a blocker people learn to override.
    recorded in NON-CLAIMS rather than deleted.
 3. **P1-12: does v1.0 claim external anchoring?** yes → a blocking roadmap epic now; no → a permanent
    ratified NON-CLAIMS boundary. Illegitimate only: a 1.0 tag with the row still ⚪ OWNER-DECISION.
+
+---
+
+## 2026-08-04 — RELEASE EXECUTED. The hono hole is closed for real, measured from the registry
+
+Owner instruction: *"yayınla"*. Both tags pushed, both workflows green, both results verified against
+npm rather than against the workflow's own verdict.
+
+### What shipped
+
+| package | was | now | tag |
+|---|---|---|---|
+| `noa-receipt` | 0.6.0 | **0.6.1** | `v0.6.1` |
+| `noa-mcp-adapter-core` | 0.3.1 | **0.3.2** | `mcp-v0.3.2` |
+| `noa-mcp-proxy` | 0.3.1 | **0.3.2** | `mcp-v0.3.2` |
+
+Nothing in the tree is unpublished any more.
+
+### The proof that matters — from the registry, in an empty directory
+
+```
+npm install noa-mcp-proxy
+  noa-mcp-proxy              0.3.2
+  noa-mcp-adapter-core       0.3.2
+  noa-receipt                0.6.1
+  @hono/node-server          2.1.0      ← was 1.19.17 (GHSA-frvp-7c67-39w9, path traversal)
+  @modelcontextprotocol/sdk  1.30.0
+
+npm audit: {"info":0,"low":0,"moderate":0,"high":0,"critical":0,"total":0}   ← was 3 moderate
+published manifest: "noa-mcp-adapter-core": "^0.3.2"                        ← no file: path leaked
+```
+
+A workflow reporting success is not evidence that the artifact is right. This is.
+
+### The ordering was enforced by the repository, not chosen
+
+`lint:release-parity` refused the dependent publish while the kernel was unpublished, and said so in
+those words: *"Release the kernel before the dependent packages."* After `v0.6.1` landed it reports
+
+```
+selftest 9/9
+git      : every shipped path byte-identical between v0.6.1 and HEAD
+registry : all 72 files in the published tarball byte-identical to this tree's pack
+PARITY PASS
+```
+
+That gate exists because these packages are TESTED against the kernel in this tree (`file:../..`) and
+SHIPPED depending on the kernel on the registry. Those are the same artifact only if the kernel went
+first.
+
+### A correction I owed and paid
+
+I told the owner repeatedly that publishing `0.6.1` would deliver the hono fix. **Wrong** — `v0.6.1`
+publishes the KERNEL; the fix lives in `noa-mcp-proxy`, released under a separate `mcp-v*` tag.
+Worse, the fix could not have been published at all: `packages/mcp-proxy/package.json` still read
+`0.3.1`, already on the registry, so the patch sat in the tree at a version nobody could install.
+That bump (PR #27) was a repository change, not an owner action, and belonged to me.
+
+### Owner items remaining: two, not three
+
+`0.6.1`/`0.3.2` is DONE. Still open:
+
+1. **A fine-grained read token for `NordenSoft/noa-mobile`** → secret `NOA_MOBILE_TOKEN` + repo
+   variable `REQUIRE_PHONE_CORE=true`. Ten controls currently return SETUP_FAILED — correct
+   behaviour, since "could not run" and "passed" must not share an exit code, but a holding state.
+   14-day deadline from 2026-08-04, after which they are written into NON-CLAIMS rather than deleted.
+2. **P1-12: does v1.0 claim external anchoring?** yes → a blocking roadmap epic; no → a permanent
+   ratified NON-CLAIMS boundary. The only illegitimate outcome is a 1.0 tag with the row still
+   OWNER-DECISION.
+
+### Dependabot backlog: ZERO
+
+Six open PRs at the start of the day, none now, each closed with its measured reason posted publicly:
+#16 superseded · #17/#18 auto-closed by the `@types/node` 26 fix (80 call sites, `?? ""` not
+`?? undefined`) · #8 superseded by the vitest 4 PR that also stopped it counting compiled copies as
+coverage · **#7/#11 closed because TypeScript 7.0 ships no compiler API at all** — 2 exports against
+5.9's 2244, `SyntaxKind` and `forEachChild` both undefined, and the `unstable/*` replacement has no
+syntax-node predicates. Revisited on a condition (a stable export path), not a date.
