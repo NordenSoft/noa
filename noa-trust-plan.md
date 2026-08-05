@@ -12,6 +12,7 @@
 | **State** | `git log -1` is the truth. **`git push` is ALLOWED since 2026-08-01** (owner lifted the ban); `npm publish` is not. **Convergence 0/2.** |
 | **Customers** | **NONE today** — 0 organizations, 0 users, 0 holds, measured. **Five arrive immediately ON LAUNCH.** So breaking changes are free right now and cost five migrations the day we ship; the window closes on *our own* trigger. |
 | **Mode** | BOUNDED DELIVERY. P1 and P2 are PAUSED until P0 = 0. |
+| **Vision** | §PRODUCT VISION & GTM (below) is the ONE authoritative vision text (consolidated 2026-08-06); the archived §FAZ-APP and all older vision docs are historical input |
 
 **⚠ SEAT RULE — IF FABLE 5 IS NOT IN THE LEAD SEAT, PUT IT BACK (owner dictate 2026-07-31):**
 *"Fable 5 lider koltugunda duserse yine lider koltuguna cagir."* Fable 5 runs as a **background agent**, so it does **not** survive a machine restart, a session close, or an agent crash — and nothing re-summons it automatically. **A seat picking this work up MUST first check whether a Fable 5 lead is alive, and re-summon it if not:**
@@ -417,6 +418,131 @@ unless a reproduced blocker cannot be closed inside the approved architecture.
 | **STAGE-4 ORACLE** | ✅ **BUILT 2026-08-04** — `packages/gate/test/stage4-digest-display-agreement.test.ts`. ADR-0006 §5 splits stage 3 into what the system COMMITS to (`sha256(bytes)`) and what the HUMAN IS SHOWN (`render(bytes)`); NOA's catastrophic failure is a genuine human genuinely approving a different action from the one that executes, which becomes possible the instant those two can disagree. Verdict is ORDINAL — `AGREE > REFUSED > DISAGREE` — because collapsing REFUSED into failure would push a future author toward making hostile input "work"; refusing a poisoned request is a correct answer, showing a human the wrong action is not. Every poison COUNTS ITS OWN READS: a poison nobody touched proves nothing, and the test says so instead of passing. | **proof:** 5/5 green; registered knockout `stage4-digest-display-disagreement` → **DETECTOR_TRIGGERED**, 5 new failures beyond baseline, restoration byte-verified; full registry now **69/69** load-bearing | **MET** — with the scope stated rather than implied, below. |
 | **STAGE-4 SCOPE** | ⚠ **AN OVERCLAIM I WROTE AND MY OWN KNOCKOUT REFUTED.** The first version of the oracle's header said "this file is the oracle that makes mutation B bite". Measured on this tree: **B alone (the display reads our own pre-canonical snapshot) → 0 tests red; A+B (the display reads the CALLER's argv) → 4 tests red.** The claim was false. It is corrected in place rather than deleted because the reason is the useful part: while capture-once holds, `argvSnapshot` is an array the module built by index walk, so reading it instead of the re-parsed canonical yields the identical string — the render node really is redundant against every split reachable today, exactly as `projections.ts:196-215` already said, and no honest test can turn B red without first removing capture-once. What the oracle DOES close is the CONSEQUENCE rather than the mechanism: the moment any displayed field derives from a caller-controlled value, four tests go red and name the divergence. | **proof:** the two knockout runs above, both recorded in the test file's header | the mechanism may be reimplemented; the consequence is the invariant, and it is now measured |
 | **ADR-0007** | 🔴 **OPEN — A PHONE CANNOT JOIN A REAL RELAY, AND THE GAP IS TOTAL.** Measured both sides: the app's only credential-minting call sends no headers and no credential (`noa-mobile/src/transport/relayClient.ts:286-289`; `x-noa-enrolment-secret` has **0 hits** in `noa-mobile/src`), while the relay gates all three minting routes (`server.ts:254-259`) and refuses without a secret. The development opt-in does not rescue it: `config.ts:161` requires `!declaredExposed && isLoopbackAddress(bindAddress)`, and a physical phone cannot reach a loopback bind except through the undeclared-proxy shape R8-07 exists to forbid. **The only working enrolment today is a simulator on the operator's own machine.** Class: functional completeness, NOT security — the gate fails closed, nobody can mint; what ships is a phone that cannot join. Decision: enrol through the pairing ceremony the operator already performs (zero new ceremony — the ACCEPTED bundle is the carrier), with eight binding constraints incl. disjoint token namespaces, a redemption route outside the enrolment gate (gating on body content would repeat the R8-07 ordering mistake), kid-bound tokens, and tenant-on-device. | **proof:** `docs/ADR-0007-device-enrolment-through-pairing.md` — every row cites the file:line it was measured at | ADR-0007 §3.2's six refusals PLUS the honest-path control (a route that refused everything would satisfy all six) |
+
+---
+
+## PRODUCT VISION & GTM — the ONE authoritative vision text (consolidated 2026-08-06)
+
+**Why this section exists.** The owner's 2026-07-22 consolidation directive (recorded in
+`~/noa-trust/.plan/_archive/NOA-TRUST-MASTER-PLAN.md`, header box, line 6-7) ordered every
+product/app planning document merged into ONE authoritative plan. The vision itself had been
+orphaned in that archived master plan's §FAZ-APP (lines 268-360) since the 2026-07-28 plan
+consolidation. This section executes the directive: it is now the single vision text in force
+(KURAL 26/28-1). The archived §FAZ-APP and every other older vision document are **historical
+input only**; where they conflict with this section, this section wins.
+
+### V1 — The vision spine (owner, verbatim, 2026-08-06 ~00:50)
+
+The platform half of the vision was never on disk until the owner restated it; recorded
+word-for-word (source: memory `urun-vizyonu-ana-omurga-2026-08-06`):
+
+> Planın omurgası şuydu:
+> - Telegram'daki gibi kullanıcılar, özel mesajlar, gruplar ve kanallar olacaktı.
+> - Ancak gruplara klasik botlar değil, kimliği doğrulanmış gerçek AI ajanları katılacaktı.
+> - Her ajanın dijital pasaportu, sahibi, yetkileri, güven puanı ve işlem geçmişi bulunacaktı.
+> - Kullanıcı, bir mesaj yazar gibi ajana görev verebilecekti.
+> - Para transferi, kod çalıştırma, dosya erişimi veya sistem değişikliği gibi riskli işlemlerde
+>   insan onayı istenecekti.
+> - Yapılan işlemler NOA Trust receipt ile kanıtlanacak ve denetlenebilir olacaktı.
+> - AI toplulukları, geliştiriciler, ajan üreticileri ve normal kullanıcılar aynı uygulamada
+>   buluşacaktı.
+> - Telegram'daki AI gruplarını sadece "gelin başka yerde sohbet edin" diyerek değil; ajan
+>   çalıştırma, birlikte görev yürütme, güvenli paylaşım ve gelir kazanma gibi Telegram'ın
+>   veremediği özelliklerle uygulamaya çekmek istiyorduk.
+> - Uzun vadede bunun içinde ajan mağazası, ajan profilleri, doğrulanmış geliştiriciler, ücretli
+>   topluluklar ve ajanlar arası iletişim ekonomisi kurulacaktı.
+>
+> Yani hedefimiz Telegram'ın kopyasını yapmak değildi. Telegram insan iletişimi için neyse, NOA
+> Trust'u insanlar ile AI ajanlarının güvenli iletişimi ve iş birliği için o yapmak istiyorduk.
+
+**In English, one paragraph:** NOA Trust is to human↔AI-agent communication what Telegram is to
+human↔human communication — users, DMs, groups and channels, except the participants that matter
+are VERIFIED AI agents, each carrying a digital passport (owner, permissions, trust score,
+verifiable action history). You task an agent the way you write a message; risky operations
+(money, code execution, file access, system changes) stop for human approval; everything an agent
+does is proven by a signed NOA Trust receipt. Long-term the same app hosts an agent store, agent
+profiles, verified developers, paid communities and an inter-agent economy. The goal is not a
+Telegram clone — it is the trusted collaboration layer between people and agents.
+
+**How the spine maps onto what is already built** (it is the foundation, not a detour):
+agent "digital passport" = the pairing/manifest/delegation identity chain already shipped;
+"action history + trust score" = the receipt chain (verifiable history is the only honest input
+to a trust score); "human approval on risky ops" = the approval loop E2E-proven in the iOS
+simulator 2026-08-05; "live watching" = the Live Activity Feed (V5); the store/economy layer is
+the long-horizon phase and must be PLANNED as phases here, never improvised.
+
+### V2 — The fırın/bakkal doctrine (owner clarification 2026-07-11, transcript `fa63d03d` line 6388)
+
+We do not open a stall inside the grocer's shop (a bot/mini-app inside Telegram). We build the
+real bakery and the grocer's customers come to us. Concretely: the product and the signing
+surface live ONLY in our own app; Telegram's agent-operator audience is won by product gravity —
+on-phone Approve/Deny that actually gates execution, sealed receipts, offline verifiability —
+things a chat message can never be. "Telegram shows you a message; NOA stops the action, gets
+your approval, and leaves sealed proof."
+
+### V3 — The 2026-07-22 ruling (WINS over everything older)
+
+Owner directive, 2026-07-22 (archived master plan, header box): **no campaign, message, bridge,
+or external action toward Telegram users or communities — ever.** All earlier Telegram-outreach /
+P3-bridge execution items (campaign drafts, 5-minute migration guides, notify-only bridges,
+sunset mechanics) are SUPERSEDED. Telegram is competitive/market context only. The strategy is to
+build NOA standalone as the world's strongest, most secure, easiest-to-use AI-agent
+action-authority product, depending on no third-party platform for acquisition.
+
+### V4 — What survives from the archived §FAZ-APP (carried forward as binding tenets)
+
+1. **Own-app shape.** One product (the NOA app) on our own surfaces, portable signing core
+   (`noa-signer`, byte-identical across kernel and phone), React Native on both platforms.
+2. **Onboarding ≤60s.** Magic-link/QR invite → app opens → first approval in under a minute.
+   The bar is Telegram's zero-install ease, met inside our own app.
+3. **Login = real product identity** (owner mandate 2026-07-14): individual magic-link accounts
+   and org-bound SSO (OIDC/SAML + SCIM). The identity↔signature split is a red line: login and
+   biometrics only authenticate and unlock locally; receipts are signed ONLY by the device key.
+4. **Viral loop.** A developer installs, invites their approver by magic-link/QR (zero account
+   burden); the approver's curiosity converts them into the next installer.
+5. **Pricing.** Launch = free single-approver (adoption engine, zero payment stack). Money comes
+   later via enterprise (Stripe, lead-triggered). **Never per-approval pricing.**
+6. **The 13 red lines** (verbatim-faithful, translated): (1) signatures only by the device key
+   inside OUR app — no chat tap is ever a signature; (2) the product/signing surface never lives
+   inside a third-party platform — chat is at most notify+deep-link; (3) the relay never signs;
+   private keys never on a server or in a backup; (4) bridging a WebAuthn assertion into a
+   receipt signature is forbidden; (5) no new fields in the frozen schema; custody tier lives
+   only in keyring metadata; (6) no silent fallback/downgrade; TTL expiry is its own terminal
+   verdict; (7) a keyring-less gate stays fail-closed; (8) "hardware-backed/bank-grade"
+   marketing without proof is forbidden; (9) announcing a free tier before the relay is live is
+   forbidden; (10) demoing as live what is not live is forbidden; (11) one-tap silent re-enroll
+   is forbidden; (12) raw parameters in notification channels are forbidden; (13) casino
+   language is forbidden.
+7. **Honest open-source / claim discipline.** Every public claim is evidence-bound (K5);
+   shipped vs alpha vs roadmap always labeled; the protocol stays independently implementable
+   and verifiable (this repo's charter).
+
+### V5 — Live Activity Feed (owner dictate 2026-08-05) — the watching habit
+
+The app must fully replace the Telegram habit for agent operators: not only approving risky
+holds but WATCHING everything their agents/projects do, live. The data already exists by design —
+every action cuts a signed receipt into the tenant's hash-linked chain; the missing part was the
+surface. **Implementation is Phase E in `~/noa-mobile/PLAN.md`** (feed client → dev plane →
+screens/tab shell → verify-on-tap + chain-gap detection → console endpoint), feeding from the
+receipt stream with honest per-row verification badges. In V1 terms, the feed is the seed of the
+group/channel timeline.
+
+### V6 — Long-horizon phase ladder (derived from V1; each step is a future planned phase)
+
+trust core (shipped) → approval app store-ready (in flight, `noa-mobile` Phases C-D) → live
+activity feed (Phase E) → messaging/groups/channels with verified agents → public agent passports
+(identity + history + trust score surfaced) → agent store, paid communities, agent economy.
+Steps beyond Phase E enter this plan as designed phases when their turn comes; nothing there is
+committed scope today.
+
+### V7 — Research corpus pointers (NOT copies; unreviewed against current state)
+
+The June 2026 strategy corpus predates the trust-core pivot's completion and the 07-22 ruling; it
+is pointer-only input, to be re-reviewed before any of it is acted on:
+- `~/madexpres-v2/docs/research/2026-06-22-NOA-MASTER-STRATEGY-AND-PLAN.md` (master strategy)
+- `~/madexpres-v2/docs/research/2026-06-13-NOA-GTM-Ordeliya-Ajan-Pazari.md` (agent-market GTM)
+- `~/madexpres-v2/docs/research/2026-06-20-NOA-Global-Adoption-Strategy-Roadmap.md` (adoption)
+These live in a local corpus outside this repository. Marked UNREVIEWED-AGAINST-CURRENT-STATE.
 
 ---
 
