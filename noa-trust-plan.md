@@ -12,7 +12,7 @@
 | **State** | `git log -1` is the truth. **`git push` is ALLOWED since 2026-08-01** (owner lifted the ban); `npm publish` is not. **Convergence 0/2.** |
 | **Customers** | **NONE today** — 0 organizations, 0 users, 0 holds, measured. **Five arrive immediately ON LAUNCH.** So breaking changes are free right now and cost five migrations the day we ship; the window closes on *our own* trigger. |
 | **Mode** | BOUNDED DELIVERY. P1 and P2 are PAUSED until P0 = 0. |
-| **Vision** | §PRODUCT VISION & GTM (below) is the ONE authoritative vision text (consolidated 2026-08-06); the archived §FAZ-APP and all older vision docs are historical input |
+| **Vision** | §PRODUCT VISION & GTM (below) is the ONE authoritative vision text (consolidated 2026-08-06); its §V6 carries the owner-APPROVED 4-step strategy ladder (2026-08-06 ~01:05) — the governing roadmap. The archived §FAZ-APP and all older vision docs are historical input |
 
 **⚠ SEAT RULE — IF FABLE 5 IS NOT IN THE LEAD SEAT, PUT IT BACK (owner dictate 2026-07-31):**
 *"Fable 5 lider koltugunda duserse yine lider koltuguna cagir."* Fable 5 runs as a **background agent**, so it does **not** survive a machine restart, a session close, or an agent crash — and nothing re-summons it automatically. **A seat picking this work up MUST first check whether a Fable 5 lead is alive, and re-summon it if not:**
@@ -527,13 +527,54 @@ screens/tab shell → verify-on-tap + chain-gap detection → console endpoint),
 receipt stream with honest per-row verification badges. In V1 terms, the feed is the seed of the
 group/channel timeline.
 
-### V6 — Long-horizon phase ladder (derived from V1; each step is a future planned phase)
+### V6 — THE APPROVED STRATEGY LADDER (owner decision 2026-08-06 ~01:05 — the governing roadmap)
 
-trust core (shipped) → approval app store-ready (in flight, `noa-mobile` Phases C-D) → live
-activity feed (Phase E) → messaging/groups/channels with verified agents → public agent passports
-(identity + history + trust score surfaced) → agent store, paid communities, agent economy.
-Steps beyond Phase E enter this plan as designed phases when their turn comes; nothing there is
-committed scope today.
+Four steps, strictly ordered. A step does not start until the one before it is saturated (an
+implementer reading only this section must know exactly what comes next and why). Analytical
+basis: the 28 July leadership report `~/NOA-TRUST-DERIN-ANALIZ-2026-07-28.md`; product spine:
+V1 above (owner verbatim, memory `urun-vizyonu-ana-omurga-2026-08-06`).
+
+**STEP 1 — SHIP NOW.** The CURRENT system and app go to the stores 100% working, in their
+current scope. No feature is added to reach this gate. Execution detail (implementer-grade
+phases, per-slice briefs): `~/noa-mobile/PLAN.md` §"Step 1 — SHIP TRACK". Remaining inputs that
+are genuinely owner-hand (Apple support letter, Play service-account JSON, iOS distribution
+signing, reviewer demo account, content ratings) are listed there with exact commands/clicks —
+everything agent-side is done first.
+
+**STEP 2 — THE SIXTY-SECOND DOOR + PUSH.** Everything between "operator hears about NOA" and
+"first verified approval on their phone" collapses to under a minute, and the app gains a real
+push channel:
+- **QR pairing TRANSPORT.** The pairing ceremony's two blobs move by QR display/scan instead of
+  copy-paste. Security rationale, recorded verbatim: *the paste channel was never a security
+  control, the channel is hostile-by-design, the SAS 3-word compare is the sole human security
+  step and STAYS.* QR changes transport ergonomics only; the paste channel remains as fallback.
+- **Universal-link login** (magic link opens the app directly; AASA + entitlements completed).
+- **Tiered custody with honest labels** per the D9 custody-tier doctrine (§FAZ-APP archive):
+  hardware-backed where the device provides it, software-native otherwise, the tier always
+  named truthfully in the UI, silent downgrade forbidden (red line 6).
+- **Push** (APNs first — note the Apple dependency; FCM after), replacing foreground-poll-only
+  liveness. Red line 12 holds: opaque ids only, never raw parameters.
+- **Public receipt-verification portal** (console side): anyone can paste/upload a receipt or
+  chain and verify it without an account — the "you don't have to trust us" proof surface.
+
+**STEP 3 — REVENUE ENGINE.** 3-5 EU design partners onboarded hands-on; the pitch anchors on
+EU AI Act Art. 12 (record-keeping/logging) + Art. 14 (human oversight) — NOA is the
+action-authority + evidence layer that makes an agent deployment defensible; Stripe billing;
+self-serve signup. Pricing keeps the V4 tenet: launch-free single approver, never per-approval.
+
+**STEP 4 — PLATFORM PHASES** (the V1 spine, built on captured habits, in this order):
+task-by-message → verified-agent groups → in-product agent passports (derived from the
+pairing/manifest identity chain + receipt history — never a new identity primitive) → agent
+store / paid communities / agent economy. Trust scores are ONLY receipt-derived and
+explainable — no opaque reputation number ever ships.
+
+**VETOES (owner, recorded so they cannot be relitigated implicitly):**
+1. NO global-identity product — the passport stays an in-product artifact derived from the
+   existing identity chain; NOA does not become an identity provider.
+2. NO messaging/groups before the push + live-feed habits are demonstrably captured (Step 2
+   shipped and used) — a chat surface without the watching/approving habit is a ghost town.
+3. NO perfection-delay — Step 1 ships the current scope as-is; hardening beyond the release
+   gates queues behind shipping, not in front of it.
 
 ### V7 — Research corpus pointers (NOT copies; unreviewed against current state)
 
