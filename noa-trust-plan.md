@@ -28,6 +28,54 @@ It is the LEAD: it decides, approves, and does not ask the owner. Never let the 
 **NO QA rounds until every task is done.** Fable supervises codex by **reading the actual `git diff`**, never its report, and corrects it when it wanders.
 **Mechanical gates still run on EVERY batch** — package suites · `npm run typecheck:all` · `node scripts/lint-resolver-parity.mjs` · the relevant knockouts · RED-before-fix evidence per fix. Removing QA removed a *review round*, not verification.
 
+## 2026-08-05 — FAZ B (mobile app + console) — punch-list CLOSED, two prod releases, next phases named
+
+**Where this happened:** `~/noa-mobile` (app) + `~/noa-trust` (console; deployed as noa-site). Full
+evidence per item lives in the session reports and `~/noa-release-evidence/`; this is the plan-of-record
+summary (KURAL 26).
+
+**Closed and shipped:**
+- **PIN-save defect (owner-observed on device) root-caused and fixed** — the save raced a 2s store
+  timeout against its own ~1-2s scrypt; KDF-honest budget + busy state + operation-keyed re-entrancy
+  guard; repro + mutation-proven tests. noa-mobile `316c8a7` + `b7f712b` (pushed).
+- **Universal links, both halves** — real team id `29B9269H97` wired into the Xcode target
+  (`4ca7895`); AASA served as an app route with `application/json` (noatrust PR #11). Fresh signed
+  archive `ios/build/NoaMobile5.xcarchive` + IPA exported.
+- **Pairing timestamp parser interop defect** (schema-narrower grammar refused valid artifacts)
+  fixed at nanosecond-bigint honesty (`68bfcaa`); 18 red relay/pairing tests → suite 669/669; kernel
+  drift gate added (`.kernel-pin` at `52ee116`).
+- **Console origin defects, BOTH measured in prod and fixed via full release ceremonies:**
+  (1) every console POST 403'd — same-origin check was proxy-blind (noatrust PR #11, release
+  `e4d8679`, PROMOTED, RLL 0C/0E/0W, evidence `release-evidence-e4d8679.json`); (2) pre-auth
+  invite-accept demanded an Origin the edge drops on navigation POSTs (PR #12; rides release
+  `0ec06fc` with the housekeeping sweep PR #13). Backup bound: the 2026-08-04T19:58Z drilled dump,
+  inside the contract's 24h window.
+
+**Owner dictates recorded 2026-08-05:**
+- *Pairing ceremony DEFERRED to FINAL ACCEPTANCE* (~12:30) — development proceeds on the
+  loopback/test pairing harness; the prepared ceremony materials (runbook
+  `~/noa-mobile/.plan/PAIRING-CEREMONY-RUNBOOK.md`, offline operator CLI, console state) stay parked;
+  +console/+noa-ops invitations go out at final acceptance, not before. Zero owner involvement until then.
+- *Everything pushed, tree clean, clonable elsewhere* (~12:10) — executed across noa-mobile,
+  ~/.claude, noatrust (PR #13).
+
+**Next phases, in order:**
+1. **APPROVAL SCREEN E2E (open now)** — prove `login → pairing(harness) → inbox → hold display →
+   decision submit` on the simulator against the loopback relay + test pairing
+   (`src/navigation/routeGuard.ts`, spec §12/§15; protocol green in the kernel). Same discipline:
+   implementer slices, lead audit, gates before commit, independent QA on material changes, ONE push.
+2. **LIVE ACTIVITY / PROJECT FEED (design first, after phase 1 proves out)** — owner product dictate
+   2026-08-05: the app must FULLY replace the Telegram habit for AI-agent operators — live
+   project/agent activity (started/finished/failed/waiting) fed by the signed receipt stream, not
+   only approval holds. Dictate + gap analysis:
+   `~/.claude/projects/-Users-toratoraman-noa-trust/memory/urun-vizyonu-canli-proje-takibi.md`.
+   Design lands INSIDE this plan as a phase spec before any code; the Telegram capture campaign stays
+   gated until the app absorbs the *watching* habit, not just the approving one.
+
+**Open tails (tracked, not blocking):** restore-drill TLS posture vs Railway's self-signed proxy
+(task chip); manifestChain timestamp parity (task chip); noa-mobile has NO CI workflows (flagged);
+TestFlight blocked on Apple's own contract contradiction (support request drafted, owner sends).
+
 ## P0-14 — third attempt landed, 12 surfaces closed, ONE gate left · state at 2026-08-01
 
 **Superseded, verbatim, both of them.** First: *"✅ P0 = 0 — where the work stopped, 2026-08-01"* —
