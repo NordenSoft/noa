@@ -1,5 +1,8 @@
 # NOA — Agent Action Receipt
 
+> The open kernel of the **NOA Mandate** family — the receipt protocol, reference
+> implementations and conformance suite that NOA Mandate products build on.
+
 [![CI](https://github.com/NordenSoft/noa/actions/workflows/ci.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/ci.yml)
 
 **1891 tests green** across nine suites, including TS↔Python cross-implementation conformance in CI
