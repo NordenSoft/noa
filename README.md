@@ -3,160 +3,49 @@
 > The open kernel of the **NOA Mandate** family — the receipt protocol, reference
 > implementations and conformance suite that NOA Mandate products build on.
 
+**NOA Receipt is an open protocol for signed, independently verifiable receipts of AI-agent
+actions: before an agent does something real, a governance layer decides *allow · hold for a human ·
+block*, and emits a tamper-evident, hash-chained record that anyone can verify offline — no account,
+no network, no dependency on us.** This repository is the kernel: the protocol, the reference
+implementations, and the conformance suite that holds every one of them to the identical verdict on
+every vector.
+
 [![CI](https://github.com/NordenSoft/noa/actions/workflows/ci.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/ci.yml)
+[![doc-truth](https://github.com/NordenSoft/noa/actions/workflows/doc-truth.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/doc-truth.yml)
+[![npm noa-receipt](https://img.shields.io/npm/v/noa-receipt?label=noa-receipt)](https://www.npmjs.com/package/noa-receipt)
+[![npm noa-mcp-adapter-core](https://img.shields.io/npm/v/noa-mcp-adapter-core?label=noa-mcp-adapter-core)](https://www.npmjs.com/package/noa-mcp-adapter-core)
+[![npm noa-mcp-proxy](https://img.shields.io/npm/v/noa-mcp-proxy?label=noa-mcp-proxy)](https://www.npmjs.com/package/noa-mcp-proxy)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-**1891 tests green** across nine suites, including TS↔Python cross-implementation conformance in CI
-— the independent Python reference verifier is required to agree with the TS verifier on every
-conformance vector. Counted 2026-08-04 by running every suite: kernel 534 · gate 241 · relay 166 ·
-approval-artifacts 179 · evidence 130 · signer-core 79 · adapter-core 332 · mcp-proxy 104 ·
-framework-adapters 126.
+> Every version number on this page comes from a self-updating registry badge, and every claim below
+> is checked mechanically on each push by [`scripts/lint-doc-truth.mjs`](scripts/lint-doc-truth.mjs):
+> the quickstart is *executed*, the counts are re-derived from the repository, and a stale version
+> literal fails the build. A README that can drift silently is a README nobody can rely on.
 
-**Published on npm (Apache-2.0):** `noa-receipt` 0.6.0 · `noa-mcp-adapter-core` 0.3.1 · `noa-mcp-proxy` 0.3.1
-— install and use today, no account. `npx noa-receipt verify <chain>` verifies offline.
-
-> **What this repo is:** the open-source of **one organ** of NOA — the **governance &
-> receipt layer**: the part that gates an AI agent's real-world actions and issues a
-> tamper-evident, independently verifiable receipt.
->
-> ⚠ **Read "gates" precisely (2026-07-29).** It gates **an honest integration**. This package cannot
-> stop a compromised caller from calling the provider directly, and in the gate's RAW mode the
-> description a human approves is not cryptographically bound to the action that executes. Both are
-> measured, not theoretical — see the trust-boundary box below, [NON-CLAIMS.md](NON-CLAIMS.md)
-> NC-6.6, and `packages/gate/README.md`. A pre-action control that an attacker can route around is a
-> **safety** feature against mistakes, not yet a **security** control against adversaries.
->
-> **What NOA is:** a *brain* for AI agents — an agent-cognition OS (memory, identity,
-> homeostasis, governance) that you connect your own agent to. This repository opens
-> **the governance organ only**, under Apache-2.0. The rest of the brain is the product.
-
-**The receipt every AI action leaves behind. Verifiable by anyone. Owned by no one.**
-
-> *Tamper-**evident** provenance: it proves a record was produced under the stated rules and
-> wasn't altered — not that the action was right, and not proof-of-action. [Honest limits →](THREAT-MODEL.md) · [What this does NOT prove →](NON-CLAIMS.md)*
+> *Tamper-**evident** provenance: it proves a record was produced under the stated rules and was not
+> altered afterwards — never that the action was right, and never that the action happened.
+> [What we deliberately do not claim →](#what-we-deliberately-do-not-claim)*
 
 ---
 
-## The organ, concretely
+## 60-second quickstart
 
-Before an agent takes a real-world action — pay, refund, email, delete, deploy, write to
-a database — this layer decides:
-
-> **safe → allow · risky → human approval · forbidden → block**
-
-…and emits a **tamper-evident, hash-chained receipt** you can verify yourself, **offline**,
-with no dependency on us.
-
-> 🌐 [noatrust.com](https://noatrust.com) · 📜 Apache-2.0 · 🧪 Early access
-
-## Why
-
-AI agents are starting to *do* things, not just answer. Once a wrong action runs, it's done.
-Observability tools tell you what happened — *afterwards*. This layer decides what *should*
-happen **before** it runs, and leaves an independently verifiable provenance record.
-
-> **What it is, precisely:** tamper-*evident* provenance — it proves a record was produced under
-> the stated rules and not edited mid-chain. It is **not** proof-of-action, non-repudiation, or a
-> freshness guarantee, and it can't detect an action for which no receipt was emitted. In a keyring
-> with more than one trusted key it proves *a trusted key signed this*, not *which `agent.id` acted*.
-> The honest limits (replay, key compromise, fork/equivocation, tail-truncation, cross-agent
-> attribution in multi-key keyrings) are written down in
-> [THREAT-MODEL.md](THREAT-MODEL.md) and, consolidated and normative,
-> [NON-CLAIMS.md](NON-CLAIMS.md) — read them before you rely on this.
-
-> ### ⚠ Where this TypeScript package sits in the trust boundary (2026-07-29)
->
-> **This package is a best-effort compatibility and orchestration layer. It does not meet the
-> in-realm security objective, and it no longer claims to.**
->
-> If an attacker can run code in the same JavaScript realm — a dependency, a bundler shim, an
-> instrumentation hook, anything evaluated before or alongside this library — they can influence a
-> verdict. Four independent cross-vendor adversarial rounds each closed the sites a review named and
-> each found the same class one call further out, every time while the project's own gates reported
-> green. The conclusion is structural, not a backlog item: *in a shared realm, the set of operations
-> trusted code performs is not enumerable by that trusted code.*
->
-> **What to use instead, today.** The isolated Go kernel is **specified in
-> [ADR-0002](docs/ADR-0002-isolated-native-trust-boundary.md) and NOT YET BUILT** — do not plan
-> around it as if it shipped. What *does* ship is the CLI: `npx noa verify <receipts.json>
-> [keyring.json]` runs in a **separate process with no third-party dependencies**
-> (`"dependencies": {}`), so a hostile *document* has no way to poison that process's realm — there
-> is no host module loaded before it. For an attacker who controls only the data you verify, the
-> CLI boundary holds today.
->
-> Its ceiling, stated with it: the CLI's **output is not authenticated**, so a compromised caller can
-> still discard or misreport a correct verdict. That is the consumption-integrity limit in
-> [NON-CLAIMS.md](NON-CLAIMS.md) NC-6.2.
->
-> **This sentence used to end "…and it is what the kernel's signed-response envelope is for." That
-> was withdrawn on 2026-07-29.** A signed verdict returned *into* a compromised caller is not an
-> enforcement control: the caller's transport and its signature check are both poisonable, and both
-> were measured to be
-> ([ROUND5-FINDINGS.md](docs/ROUND5-FINDINGS.md) R5-01, [T7-trust-root.md](docs/T7-trust-root.md) §1).
-> An envelope tells an *honest* caller that an answer is genuine. It does nothing for a caller that
-> has already been taken over — and that caller was the one we claimed to protect.
->
-> **What replaces it:** a critical action must be *technically impossible* without authority held by
-> the independent boundary — credentials the kernel holds and uses on your behalf, or a short-lived
-> single-use grant the third party validates itself. Not a verdict handed back to code that may be
-> lying to itself. See [NON-CLAIMS.md](NON-CLAIMS.md) NC-6.6.
->
-> Use the in-process API for development, tooling, and contexts where you already trust every line of
-> code in the process.
->
-> The receipt **format** is unaffected: receipts signed today keep verifying, and all independent
-> verifiers still agree on them.
-
-## The Receipt
-
-A small, append-only, hash-chained record: *which agent, what action, under which policy,
-what verdict, reversible-how* — link-hashed to the previous one, so altering any past record
-breaks the chain. Params are never carried raw — only their hash. (Caller-supplied identifiers
-are opaque and must not contain PII; the format can't enforce that — see THREAT-MODEL.)
-
-```json
-{
-  "spec": "noa.receipt/0.1",
-  "action": { "canonical": "payment.refund", "riskClass": "HIGH" },
-  "governance": { "verdict": "EXECUTED", "approval": { "by": "approver_01J9X4Q2" } },
-  "chain": { "seq": 42, "prevHash": "sha256:…", "hash": "sha256:…" }
-}
-```
-
-Full format: [`docs/receipt-spec.md`](docs/receipt-spec.md). Signatures are **mandatory** (Ed25519),
-the signing key is bound into the hash, and verification runs **offline** — no account, no network.
-Production key management: [docs/trust-root-checklist.md](https://github.com/NordenSoft/noa/blob/main/docs/trust-root-checklist.md).
-
-## Verify a chain offline (no account, no network)
+Copy-paste, in an empty directory. Nothing here contacts NOA, and every block below is executed by
+CI on every push — if one of them stops working, the build goes red.
 
 ```bash
-npm install          # zero runtime deps (Node ≥ 20 stdlib only; @types/node is type-only)
-npm test             # build + generate conformance vectors + run the full conformance suite
-
-# verify a signed chain against a keyring + checkpoint
-node dist/src/cli.js verify conformance/vectors/valid-chain.json \
-  --keyring conformance/vectors/keyring.json \
-  --checkpoint conformance/vectors/checkpoint.json
-# -> { "status": "VALID", "signaturesVerified": true, "tailChecked": true, ... }   exit 0
+mkdir -p noa-quickstart && cd noa-quickstart
+npm init -y > /dev/null
+npm install noa-receipt        # no runtime dependencies; Node >= 20 stdlib only
 ```
 
-Exit codes are CI-ready: `0` VALID · `1` unverified-sig (no keyring) · `2` TAMPERED · `3`
-MALFORMED · `4` usage · `5` UNTRUSTED (identity binding failed). Every tampered/forged/truncated/key-swapped vector under
-[`conformance/`](https://github.com/NordenSoft/noa/tree/main/conformance/vectors) is rejected — and the verifier is honest: without a
-keyring it will **not** claim VALID, and without a checkpoint it **warns** that tail-truncation
-can't be detected offline.
-
-## Your first receipt (copy, paste, run)
-
-In your own project — no clone, no build step, just the published package:
-
 ```bash
-npm install noa-receipt
+# Sign a receipt for an action, then write the chain and the PUBLIC keyring to disk.
 node --input-type=module <<'EOF'
-import { generateKeyPair, buildReceipt, verifyChain } from "noa-receipt";
+import { writeFileSync } from "node:fs";
+import { generateKeyPair, buildReceipt } from "noa-receipt";
 
 const kp = generateKeyPair("demo-key-1");
-const signer = { kid: kp.kid, privateKey: kp.privateKey };
-const keyring = { [kp.kid]: kp.publicKey };
 
 const receipt = buildReceipt(
   {
@@ -174,47 +63,191 @@ const receipt = buildReceipt(
     },
     governance: { mode: "on", verdict: "EXECUTED", ruleId: "low-risk-auto", approval: null, sandboxed: false },
   },
-  null, // no previous receipt: this is the genesis of the chain
-  signer,
+  null,                                        // no previous receipt: this is the genesis of the chain
+  { kid: kp.kid, privateKey: kp.privateKey },
 );
 
-// Verifier inputs are BYTES or JSON TEXT, never caller-owned objects: an object's getters
-// would run inside the trust boundary. A JSON string is accepted directly.
-const result = verifyChain(JSON.stringify([receipt]), { keyring: JSON.stringify(keyring) });
-console.log(result.status); // -> "VALID"
+writeFileSync("chain.json", JSON.stringify([receipt], null, 2));
+writeFileSync("keyring.json", JSON.stringify({ [kp.kid]: kp.publicKey }, null, 2));
+console.log("wrote chain.json + keyring.json");
 EOF
-# -> VALID
 ```
 
-Cut the receipt *before* the action runs, verify it *offline*, and the signed hash-chain proves it
-wasn't altered — the same building block the [killer demo](https://github.com/NordenSoft/noa/blob/main/examples/killer-demo/demo.mjs) chains
-into a full deferred → rejected → executed story.
+```bash
+# Verify it offline, in a separate process. Prints status VALID and exits 0.
+./node_modules/.bin/noa verify chain.json --keyring keyring.json
+```
 
-## Status (honest)
+```bash
+# Now alter one field of the signed record and watch the chain reject it.
+sed 's/"quickstart-agent"/"someone-elses-agent"/' chain.json > tampered.json
+if ./node_modules/.bin/noa verify tampered.json --keyring keyring.json; then
+  echo "UNEXPECTED: a tampered chain verified"; exit 1
+else
+  echo "rejected as expected, exit code $? (2 = TAMPERED)"
+fi
+```
 
-- ✅ **Receipt spec (v0.1)** — mandatory Ed25519, key-pinning, genesis + tail-truncation rules.
-- ✅ **Offline verifier** — library + `noa verify` CLI, zero runtime deps, hostile-input hardened.
-- ✅ **JSON-Schema + conformance suite** — 16 attack + 9 malformed vectors, all rejected. (Counted in `conformance/vectors/` on 2026-08-04; the figure had read `14` since two vectors were added.)
-- ✅ **MCP proxy (`noa-mcp-proxy`) + tool-gating SDK core (`noa-mcp-adapter-core`)** — live on npm (0.3.1), including the runtime **human-approval gate** (`--approval-rules`: a risky call is held as a signed DEFERRED receipt until a human approves, producing a DEFERRED→ALLOWED→EXECUTED chain).
-- 🚧 **Hosted control-plane + the one-tap approval app** — on the roadmap, not shipped.
-- ⚠️ **0.2.0 (breaking):** COSE_Sign1 alg-id `-8` (generic EdDSA) → `-19` (Ed25519, RFC 9864) — closes the Ed448 alg-confusion surface; old `{1:-8}` envelopes no longer verify.
-- This is **early access**, and it is **one organ** of NOA — not the whole brain. The full
-  agent-cognition platform (cognition, memory, BYO-agent hosting) is separate and proprietary.
+Exit codes are CI-ready: `0` VALID · `1` UNVERIFIED (no keyring supplied) · `2` TAMPERED · `3`
+MALFORMED · `4` usage · `5` UNTRUSTED (identity binding failed) · `6` witness quorum incomplete.
 
-## The standard
+> ⚠ **The CLI binary is called `noa`, but the npm package named `noa` is not ours** — it belongs to
+> an unrelated third party. Run the local binary as above, or `npx --package noa-receipt noa verify
+> …`, which names the package explicitly. This README is linted for that mistake.
 
-A receipt is only as valuable as the breadth of parties who accept it — so it must be
-**vendor-neutral**. The goal is an open standard — the intended home is a neutral foundation
-(e.g. the Linux Foundation's Agentic AI Foundation), not a NOA-owned format. No single vendor
-can be the neutral steward
-auditors, insurers, and counterparties trust — which is exactly why this organ is open.
+The verifier is honest about its own limits in the same output: without a keyring it will not claim
+VALID, and without a checkpoint it *warns* that tail-truncation cannot be detected offline.
 
-## Get involved
+## How it works
 
-- ⭐ Star to follow the organ/SDK/verifier releases.
-- 📨 [Request early access](https://noatrust.com/#early-access).
-- 🧩 Issues/discussions welcome — emitters and acceptors especially.
+- **Decide before, not observe after.** A policy classifies an action — safe, risky, forbidden — and
+  the governance layer allows it, holds it for a human, or blocks it.
+- **Commit to the decision.** A receipt records *which agent · what action · under which policy ·
+  what verdict · reversible how*, signed with Ed25519. Signatures are mandatory and the signing key
+  is bound into the hash.
+- **Chain it.** Each receipt link-hashes the previous one, so altering any past record breaks every
+  record after it.
+- **Never carry raw parameters.** Only `action.paramsHash` travels, so a receipt is publishable
+  without leaking the payload.
+- **Verify anywhere.** Verification is a pure function of bytes: offline, no account, no network, and
+  five independent implementations are held to the same verdicts in CI — with the exact per-class
+  coverage, caveats included, in [`conformance/MATRIX.md`](conformance/MATRIX.md).
+
+```json
+{
+  "spec": "noa.receipt/0.1",
+  "action": { "canonical": "payment.refund", "riskClass": "HIGH" },
+  "governance": { "verdict": "EXECUTED", "approval": { "by": "approver_01J9X4Q2" } },
+  "chain": { "seq": 42, "prevHash": "sha256:…", "hash": "sha256:…" }
+}
+```
+
+Full wire format: [`docs/receipt-spec.md`](docs/receipt-spec.md). Production key handling:
+[`docs/trust-root-checklist.md`](docs/trust-root-checklist.md). A worked
+deferred → rejected → executed story: [`examples/killer-demo/demo.mjs`](examples/killer-demo/demo.mjs).
+
+## What we deliberately do NOT claim
+
+This is the part of the project that took the most engineering to be able to state precisely, and it
+is normative: **[NON-CLAIMS.md](NON-CLAIMS.md)**. Past overclaims are not edited away — they are kept
+in [CORRECTIONS.md](CORRECTIONS.md).
+
+- A signature proves *someone said this*, never *this is true* (NC-1.1) and never *this is still
+  true* (NC-1.2).
+- A receipt does **not** prove the described action actually occurred; the remote system of record is
+  the only witness to a side effect, and it does not sign our receipts (NC-1.3).
+- A valid chain does **not** prove completeness — it cannot prove no receipt was withheld (NC-1.5).
+- An approval proves a key holder authorized these bytes; not that a human understood them (NC-3.1),
+  and not that the approval screen was ever rendered (NC-3.4).
+- The same-realm TypeScript verifier does **not** meet the security objective against an attacker who
+  runs code in your process; the separate-process CLI is what holds today (NC-6.0, NC-6.2).
+- A verdict handed back to a compromised caller is **not** an enforcement control (NC-6.6).
+- No certification is claimed or in progress — no SOC 2, no ISO 27001, no FedRAMP (NC-5.3).
+- `v1.0` does **not** claim external anchoring; nothing here contacts a witness or a log (NC-4.3,
+  NC-4.5).
+
+Read [THREAT-MODEL.md](THREAT-MODEL.md) before you rely on any of this.
+
+## What is live, and what is roadmap
+
+**Live — measured in this repository, gated on every push:**
+
+- The `noa.receipt/0.1` wire format, **frozen**, with a JSON Schema and a published spec.
+- Three packages on npm under Apache-2.0 (the badges above are the live versions).
+- **five** independent verifier implementations, cross-checked against each other in CI — see the
+  table below and [`conformance/MATRIX.md`](conformance/MATRIX.md).
+- A conformance corpus of **16** attack vectors and **9** malformed vectors that the verifiers must
+  reject on every push — with the per-class coverage, and the two classes the cross-implementation
+  runner does not tag for TypeScript, written down in `conformance/MATRIX.md` rather than glossed.
+- An offline CLI verifier that runs in its own process with no third-party dependencies.
+- A runtime human-approval gate in the MCP proxy: a risky call is held as a signed `DEFERRED`
+  receipt until a human approves it, producing a `DEFERRED → ALLOWED → EXECUTED` chain
+  (`--approval-rules`).
+
+**Roadmap — specified, decided or planned, and NOT shipped.** The decision roadmap is
+[04_ROADMAP.md](04_ROADMAP.md); the volatile execution state is
+[00_CURRENT_STATE.md](00_CURRENT_STATE.md).
+
+- A semantic interoperability contract for consumers, and an externally reproducible conformance
+  profile (roadmap §1–§2).
+- Resolution of the documented protocol-quality gaps — canonical encoding, COSE companion behaviour,
+  error taxonomy, key lifecycle, revocation and freshness (§3).
+- Standards engagement. An individual Internet-Draft `-00` exists; that is **not** working-group
+  adoption, and this project does not call itself standardized (§4).
+- A controlled pilot with a real relying-party decision. Package downloads are distribution evidence,
+  never adoption evidence (§5).
+- The isolated native trust boundary is **specified and not built**
+  ([ADR-0002](docs/ADR-0002-isolated-native-trust-boundary.md)) — do not plan around it as if it
+  shipped. Likewise the hosted control-plane and the one-tap approval app.
+
+Project status, in the vocabulary [AGENTS.md](AGENTS.md) defines: `PROTOTYPE`, with active
+`SPECIFICATION` work. Not `PILOT`, not `STANDARDIZATION`, not `PRODUCTION`.
+
+## Packages
+
+| Package | npm | What it does |
+|---|---|---|
+| `noa-receipt` | [npm](https://www.npmjs.com/package/noa-receipt) | The kernel: build, sign, hash-chain and verify receipts, plus the `noa verify` CLI. No runtime dependencies. |
+| `noa-mcp-adapter-core` | [npm](https://www.npmjs.com/package/noa-mcp-adapter-core) | The shared pre-flight decision engine — one `preCheck()` every MCP integration calls instead of re-deriving the policy. |
+| `noa-mcp-proxy` | [npm](https://www.npmjs.com/package/noa-mcp-proxy) | A transparent MCP proxy in front of an existing, unmodified tool server: reflects its tool surface and gates every `tools/call`, fail-closed. |
+
+Further modules live under [`packages/`](packages/) — gate, relay, evidence, approval artifacts,
+framework adapters, signer sidecar, TSA anchor. They are part of this repository's gates but are
+**not published to npm**, and this README does not present them as if they were.
+
+## Independent implementations
+
+Five verifiers, written separately, held to one bar: for every conformance vector an implementation
+must produce the **identical verdict** to the reference. One mismatch fails the whole class — no
+partial credit, because a single silently-accepted attack is a complete security failure regardless
+of how many adjacent checks still pass.
+
+| Implementation | Path | Conformance parity |
+|---|---|---|
+| TypeScript (reference) | [`src/`](src/) | Emits the signed vectors; agreement with the independent Python verifier is asserted on every push ([`impl-py/conformance.mjs`](impl-py/conformance.mjs)). |
+| Python | [`impl-py/`](impl-py/) | Own JCS, own from-scratch RFC 8032 Ed25519, zero shared crypto with TS. Ground truth for the Go, Rust and C# verifiers below. |
+| Go | [`impl-go/`](impl-go/) | Exit code must match the Python reference on every vector ([`impl-go/conformance_test.sh`](impl-go/conformance_test.sh)). |
+| Rust | [`impl-rust/`](impl-rust/) | Same bar, same corpus ([`impl-rust/conformance.sh`](impl-rust/conformance.sh)). |
+| C# | [`impl-csharp/`](impl-csharp/) | Same bar, same corpus ([`impl-csharp/conformance.sh`](impl-csharp/conformance.sh)). |
+
+All five run in the `five-verifier-conformance` job of
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) on every push and pull request. What this
+proves is implementation independence on identical bytes; it does not prove *organizational*
+independence, and this project does not claim it.
+
+## Working in this repository
+
+```
+npm ci
+npm run build                  # tsc
+npm test                       # build + regenerate vectors + the kernel suite
+node dist/src/cli.js verify conformance/vectors/valid-chain.json \
+  --keyring conformance/vectors/keyring.json \
+  --checkpoint conformance/vectors/checkpoint.json
+```
+
+Test counts are deliberately **not** printed in this file: a number here would be stale the day after
+it was typed, and the doc-truth gate rejects one. CI is the live count.
+
+## Security
+
+Report privately through
+[GitHub security advisories](https://github.com/NordenSoft/noa/security/advisories/new); the policy,
+the supported-version table and the disclosure expectations are in [SECURITY.md](SECURITY.md). The
+adversarial history — what was found, what was fixed, and what was withdrawn as unachievable — is in
+[THREAT-MODEL.md](THREAT-MODEL.md) and [NON-CLAIMS.md](NON-CLAIMS.md).
+
+## Contributing
+
+Start with [AGENTS.md](AGENTS.md) — it defines the evidence vocabulary this project argues in
+(`NORMATIVE`, `OBSERVED`, `VERIFIED`, `ASSUMED`, `SOURCE_ABSENT`, `NON-CLAIM`) and the source-authority
+order. Then [CONTRIBUTING.md](CONTRIBUTING.md), [VERSIONING.md](VERSIONING.md) and
+[CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Issues and discussions are welcome — emitters and acceptors
+of receipts especially.
+
+The one rule worth stating here: **a claim in this repository is a measurement, not an aspiration.**
+Adding a non-claim is an ordinary commit; removing one is a reviewed event that has to run the proof.
 
 ## License
 
-[Apache-2.0](LICENSE).
+[Apache-2.0](LICENSE) · [NOTICE](NOTICE) · [noatrust.com](https://noatrust.com)
