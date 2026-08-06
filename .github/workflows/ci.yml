@@ -173,7 +173,7 @@ jobs:
     env:
       # The `secrets` context is NOT available in a step-level `if:`; a job-level `env` is where it
       # can be read, so the presence of the credential becomes an ordinary string to branch on.
-      # The credential is a READ-ONLY DEPLOY KEY on NordenSoft/noa-mobile (least privilege: it can
+      # The credential is a READ-ONLY DEPLOY KEY on NordenSoft/noamandate-mobile (least privilege: it can
       # read that one repository and nothing else), stored as the NOA_MOBILE_SSH_KEY secret.
       HAS_PHONE_CORE_TOKEN: ${{ secrets.NOA_MOBILE_SSH_KEY != '' }}
     steps:
@@ -202,7 +202,7 @@ jobs:
         # declare `requires: ["phone-core"]` and are excluded as SETUP_FAILED.
         if: steps.preflight.outputs.present != 'true'
         run: |
-          echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_SSH_KEY secret (read-only deploy key on NordenSoft/noa-mobile) to measure them."
+          echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_SSH_KEY secret (read-only deploy key on NordenSoft/noamandate-mobile) to measure them."
           { echo ""; echo "**NOT EXECUTED** — phone core unreachable. 6 golden-path scenarios and 10 knockout controls were not measured."; } >> "$GITHUB_STEP_SUMMARY"
       - name: Fail closed when the owner has demanded the phone core
         # Opt-in strictness, never the default. A gate that blocks EVERY push on an absence only the
@@ -254,7 +254,7 @@ jobs:
       - name: Check out the private phone core
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          repository: NordenSoft/noa-mobile
+          repository: NordenSoft/noamandate-mobile
           path: noa-mobile
           ssh-key: ${{ secrets.NOA_MOBILE_SSH_KEY }}
           persist-credentials: false
