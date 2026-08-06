@@ -53,3 +53,11 @@ explicitly as excluded.
 
 - [`BouncyCastle.Cryptography`](https://www.nuget.org/packages/BouncyCastle.Cryptography) `2.6.1`
   (pinned in `impl-csharp.csproj`) — the .NET BCL has no Ed25519. `dotnet restore` fetches it.
+
+## Tenant-boundary enforcement
+
+The verifier enforces **chain-wide `scope.tenant` consistency, fail-closed** (`src/Verify.cs`):
+two *different present* tenant values anywhere in one chain are a cross-tenant splice and map to
+the same verdict class as a chain-partition split. The walk is in SEQ order and carries the
+**last present** tenant across absences, so an omitted optional field can never reset the
+boundary; absence alone is never fatal. Shared vectors: `conformance/vectors/tenant-*.json`.

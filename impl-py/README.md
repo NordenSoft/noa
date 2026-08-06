@@ -59,3 +59,12 @@ deployer using this as their independent verifier gets verdict parity on the rec
 across the conformance corpus + the documented controls; parity is **not** an absolute claim over all
 possible inputs — it is continuously hardened via the cross-impl conformance suite (adversarial vectors
 are added over time and the verdict is pinned).
+
+## Tenant-boundary enforcement
+
+The verifier enforces **chain-wide `scope.tenant` consistency, fail-closed** (`noa_verify.py`
+step 3b): two *different present* tenant values anywhere in one chain are a cross-tenant splice
+and map to the same verdict class as a chain-partition split. The walk is in SEQ order (not input
+order) and carries the **last present** tenant across absences, so an omitted optional field can
+never reset the boundary; absence alone is never fatal. Shared vectors:
+`conformance/vectors/tenant-*.json`.

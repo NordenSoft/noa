@@ -24,5 +24,10 @@ the code:
   same signed policy over the recorded inputs, byte-for-byte. It self-verifies on run (exits
   non-zero on any assertion failure).
 
+- **Documents are bytes at the security boundary** — the examples hand `evaluate`/`verifyChain`
+  UTF-8 bytes (`TextEncoder`), not convenience objects, because an example is the first thing a
+  new caller copies and the byte form is the verified entry-point contract (ADR §3.1). The
+  keyring is required: a hash proof over an unauthenticated receipt proves nothing.
+
 The cryptographic core they rely on (`buildReceipt`, `verifyChain`, hashing, signing) is the
 tested, zero-dependency library in [`../src`](../src).

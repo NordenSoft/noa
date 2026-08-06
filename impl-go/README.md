@@ -48,3 +48,12 @@ process **exit codes match**. One mismatch fails the run.
 Byte-parity of the JCS canonicalizer on non-ASCII / astral / control-char / UTF-16-sort inputs the
 ASCII-only vectors don't exercise is pinned by `go test` (`jcs_test.go`), whose expected SHA-256 is
 the independent digest printed by impl-py's own `jcs()`.
+
+## Tenant-boundary enforcement
+
+The verifier enforces **chain-wide `scope.tenant` consistency, fail-closed** (`verify.go`): two
+*different present* tenant values anywhere in one chain are a cross-tenant splice and map to the
+same verdict class as a chain-partition split. The walk is in SEQ order and carries the **last
+present** tenant across absences — `acme → (absent) → globex` is refused exactly like
+`acme → globex` — while absence alone is never fatal (an optional field a producer omits is not
+tampering). Shared vectors: `conformance/vectors/tenant-*.json`.
