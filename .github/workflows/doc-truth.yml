@@ -1,13 +1,17 @@
 name: doc-truth
 
 # The README is the one document a stranger reads before they trust anything else here, and until
-# now it was the only claim surface in this repository that no machine checked. It drifted exactly
+# 634a043 it was the only claim surface in this repository that no machine checked. It drifted exactly
 # the way an unchecked document drifts: it advertised `noa-receipt` 0.6.0 while the registry served
 # 0.6.2, it carried a hand-counted test total, and it told readers to run `npx noa` — a package name
 # that belongs to an unrelated third party. Every one of those was written honestly and became false
-# while CI stayed green. This gate reads the file the way a reader does: it resolves the links, it
-# re-derives the counts from the repository, it asks the registry for the versions, and it EXECUTES
-# the quickstart against the published package.
+# while CI stayed green. SECURITY.md drifted the exact same way for the exact same reason (it stated
+# `noa-receipt` 0.6.1 while the registry served 0.6.2), so `scripts/lint-doc-truth.mjs` now judges
+# every document listed in its own `GATED_DOCUMENTS` constant, not just the README — this workflow's
+# two commands are unchanged; only the script's internal scope grew. It reads each file the way a
+# reader does: it resolves the links, it re-derives the counts from the repository, it asks the
+# registry for the versions, and it EXECUTES the quickstart against the published package (the README
+# only — no other gated document currently claims one).
 #
 # It lives in its own workflow rather than inside `ci.yml`, on the pr-title.yml pattern: it is small
 # and fast (~1 minute, dominated by one npm install), it needs the npm registry but none of the
@@ -55,6 +59,7 @@ jobs:
         run: node scripts/lint-doc-truth.mjs --selftest
 
       # No `--no-network` escape hatch: the registry IS the truth for a published version, so an
-      # unreachable registry exits 2 (could-not-run), never 0.
-      - name: Judge README.md against the repository, the registry and a real shell
+      # unreachable registry exits 2 (could-not-run), never 0. This judges every document in
+      # GATED_DOCUMENTS (currently README.md and SECURITY.md) and exits non-zero if ANY of them fails.
+      - name: Judge every gated document against the repository, the registry and a real shell
         run: node scripts/lint-doc-truth.mjs
