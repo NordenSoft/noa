@@ -20,7 +20,7 @@ before spending time on a report.
 | `noa-mcp-proxy` | **0.3.2** | yes — **upgrade from 0.3.1**, see below |
 | everything older | — | **no**. Upgrade; 0.6.0 is deliberately stricter than 0.5.0 and artifacts that verified `VALID` under 0.5.0 can verify `REFUSE` or `TAMPERED` under it. That is the point of the release, and it is documented in `CHANGELOG.md`. |
 
-⚠ **`noa-mcp-proxy@0.3.1` shipped a vulnerable `@hono/node-server`. Upgrade to 0.3.2.**
+⚠ **The `noa-mcp-proxy` release published as 0.3.1 shipped a vulnerable `@hono/node-server`. Upgrade to 0.3.2.**
 
 0.3.1's manifest declared `overrides: { "@hono/node-server": "^2.0.5" }`, and **npm ignores
 `overrides` declared by a dependency** — they apply in the root project only. So the entry read as
