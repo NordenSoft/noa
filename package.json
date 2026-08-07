@@ -56,6 +56,7 @@
     "test": "npm run build && npm run gen:vectors && npm run gen:l2-vectors && npm run gen:federation-vectors && node --test $(find dist/test -name '*.test.js' -not -path '*/dogfood/*')",
     "test:dogfood": "vitest run test/dogfood/",
     "lint:publish-surface": "node scripts/lint-published-surface.mjs --selftest && node scripts/lint-published-surface.mjs",
+    "lint:doc-truth": "node scripts/lint-doc-truth.mjs --selftest && node scripts/lint-doc-truth.mjs",
     "verify": "node dist/src/cli.js verify",
     "check:matrix": "node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md",
     "prepare": "npm run build && node scripts/install-hooks.mjs",

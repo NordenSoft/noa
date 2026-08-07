@@ -1,0 +1,60 @@
+name: doc-truth
+
+# The README is the one document a stranger reads before they trust anything else here, and until
+# now it was the only claim surface in this repository that no machine checked. It drifted exactly
+# the way an unchecked document drifts: it advertised `noa-receipt` 0.6.0 while the registry served
+# 0.6.2, it carried a hand-counted test total, and it told readers to run `npx noa` — a package name
+# that belongs to an unrelated third party. Every one of those was written honestly and became false
+# while CI stayed green. This gate reads the file the way a reader does: it resolves the links, it
+# re-derives the counts from the repository, it asks the registry for the versions, and it EXECUTES
+# the quickstart against the published package.
+#
+# It lives in its own workflow rather than inside `ci.yml`, on the pr-title.yml pattern: it is small
+# and fast (~1 minute, dominated by one npm install), it needs the npm registry but none of the
+# matrix's toolchains, and a README-only edit should not have to wait for the five-language
+# conformance matrix to say whether the front page is honest.
+
+on:
+  pull_request:
+    # `edited` is not available for file content, so `synchronize` is what re-runs this after a
+    # README fix. `opened`/`reopened` cover the rest.
+    types: [opened, reopened, synchronize]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: doc-truth-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  doc-truth:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+
+      # Anti-vacuity, and it runs FIRST. The fixtures are hermetic — no network, no filesystem, no
+      # shell — and they run in BOTH directions: READMEs that must be rejected AND READMEs that must
+      # be accepted. The must-pass half is what stops an over-eager regex from blocking honest text
+      # such as the spec id `noa.receipt/0.1` or the sentence that WARNS about `npx noa`. Each
+      # must-fail fixture also has to be caught by EXACTLY the rule it was written for, so a fixture
+      # cannot keep passing for an unrelated reason after its rule is deleted.
+      #
+      # If any of that misbehaves the job stops here and renders NO verdict on the real README: a
+      # check that could not run and a check that passed must never share an exit code.
+      - name: Prove the gate can fail before letting it judge
+        run: node scripts/lint-doc-truth.mjs --selftest
+
+      # No `--no-network` escape hatch: the registry IS the truth for a published version, so an
+      # unreachable registry exits 2 (could-not-run), never 0.
+      - name: Judge README.md against the repository, the registry and a real shell
+        run: node scripts/lint-doc-truth.mjs
