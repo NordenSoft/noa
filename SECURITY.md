@@ -15,7 +15,7 @@ before spending time on a report.
 
 | package | published | supported |
 |---|---|---|
-| `noa-receipt` | **0.6.1** | yes — fixes land here |
+| `noa-receipt` | **0.6.2** | yes — fixes land here |
 | `noa-mcp-adapter-core` | **0.3.2** | yes |
 | `noa-mcp-proxy` | **0.3.2** | yes — **upgrade from 0.3.1**, see below |
 | everything older | — | **no**. Upgrade; 0.6.0 is deliberately stricter than 0.5.0 and artifacts that verified `VALID` under 0.5.0 can verify `REFUSE` or `TAMPERED` under it. That is the point of the release, and it is documented in `CHANGELOG.md`. |

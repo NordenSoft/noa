@@ -38,3 +38,6 @@ scratchpad/
 # The private phone core, when checked out INSIDE this repo (CI does this; developers use a
 # sibling). Untracked here so the whole-tree clean-worktree gate measures THIS repo only.
 /noa-mobile/
+
+# Browser-automation page snapshots (MCP scratch). Never belongs in the PUBLIC kernel repo.
+.playwright-mcp/
