@@ -133,47 +133,66 @@ export function buildResolvedKeyring(
   delegation: DelegationDoc,
   manifest: ManifestDoc,
 ): Record<string, KeyEntry> {
-  // TODO(bytes-in): the snapshot that used to stand here is GONE and nothing replaces it for a
-  // DIRECT caller. Inside this package the three arguments are no longer caller-owned objects:
-  // `rootKeyring` is `asRootKeyEntryMap`'s own output over a parsed byte document, and `delegation`
-  // and `manifest` are sub-trees of the bundle the kernel's parser produced — none of them can
-  // carry a getter, so re-snapshotting them was already a no-op on this path. But `index.ts`
-  // publishes this function, and a direct caller may still hand it three live objects; the old
-  // comment said as much ("NOT safe when called directly, which the package entry point permits").
-  // These are INTERMEDIATE VALUES, not documents — re-serializing a sub-tree of an
-  // already-parsed bundle just to re-parse it here would be theatre — so the honest answer is that
-  // the direct-call hazard is now the caller's, and closing it properly means either the kernel
-  // publishing its options/ingest boundary or this function ceasing to be public. Reported.
+  // BYTES-IN RESIDUAL — and what now stands where the deleted snapshot stood, because a comment
+  // that only says "nothing replaces it" is a defense claim nobody can act on.
+  //
+  // On this package's own path the three arguments are not caller-owned objects: `rootKeyring` is
+  // `asRootKeyEntryMap`'s output over a parsed byte document, and `delegation`/`manifest` are
+  // sub-trees of the bundle the kernel's parser produced, so no getter is expressible. But
+  // `index.ts` publishes this function, and a DIRECT caller may still hand it three live objects.
+  // Re-serializing an already-parsed sub-tree just to re-parse it here would be theatre, so the
+  // guard is the one that actually costs nothing and closes the actual hazard:
+  //
+  //   EVERY caller-owned field is read EXACTLY ONCE, into a local, before it is used. A flipping
+  //   getter cannot be validated as one value and installed as another, because no field is read
+  //   twice. What this function returns is then a FRESH graph of primitives and fresh arrays —
+  //   it shares no object with the caller's input, so a post-return mutation of the manifest cannot
+  //   reach the keyring downstream verification is performed against.
+  //
+  // What this does NOT close, stated rather than implied: the caller still chooses what to pass,
+  // and a `kid` is used as an object key (see `buildReceiptKeyring`'s note). This is a snapshot of
+  // VALUES, not an authorization check.
   const out: Record<string, KeyEntry> = { ...rootKeyring };
-  // The two shape checks the deleted snapshot used to make redundant: a delegation or manifest that
-  // is not a plain object with the expected members yields the fail-closed empty/partial keyring
+  // The shape checks the deleted snapshot used to make redundant: a delegation or manifest that is
+  // not a plain object with the expected members yields the fail-closed empty/partial keyring
   // instead of a TypeError escaping this function.
   if (delegation === null || typeof delegation !== "object") return {};
   // the root-delegated manifest-signing key (verifies the Key Manifest; role per F15).
-  out[delegation.delegatedKid] = {
-    publicKey: delegation.delegatedPublicKey,
+  const delegatedKid = delegation.delegatedKid;
+  const delegatedPublicKey = delegation.delegatedPublicKey;
+  const permissions = delegation.permissions;
+  // `delegation.validFrom` IS this key's activation time — the same lifecycle field every manifest
+  // key below carries. `verifyArtifact` evaluates it only at caller-owned `authorizationTime` or
+  // `now`; it never treats the manifest's signed `issuedAt` as an activation witness.
+  //
+  // This was previously left unapplied, with the shipped fixtures cited as the reason to defer the
+  // question (their manifest `issuedAt` 09:30 precedes this delegation's `validFrom` 10:00). The
+  // fixture was corrected (delegation opens 10:00, manifest issued 10:30), but signer-chosen
+  // `issuedAt` is only a chronology constraint inside the delegation document model; it is not
+  // the trusted time used by the generic key-activation check.
+  const delegationValidFrom = delegation.validFrom;
+  out[delegatedKid] = {
+    publicKey: delegatedPublicKey,
     type: "DELEGATED",
-    roles: Array.isArray(delegation.permissions) ? [...delegation.permissions] : [],
-    // `delegation.validFrom` IS this key's activation time — the same lifecycle field every manifest
-    // key below carries. `verifyArtifact` evaluates it only at caller-owned `authorizationTime` or
-    // `now`; it never treats the manifest's signed `issuedAt` as an activation witness.
-    //
-    // This was previously left unapplied, with the shipped fixtures cited as the reason to defer the
-    // question (their manifest `issuedAt` 09:30 precedes this delegation's `validFrom` 10:00). The
-    // fixture was corrected (delegation opens 10:00, manifest issued 10:30), but signer-chosen
-    // `issuedAt` is only a chronology constraint inside the delegation document model; it is not
-    // the trusted time used by the generic key-activation check.
-    validFrom: delegation.validFrom ?? null,
+    roles: Array.isArray(permissions) ? [...permissions] : [],
+    validFrom: delegationValidFrom ?? null,
   };
   // the gate/approver/audit keys the manifest lists.
-  if (manifest === null || typeof manifest !== "object" || !Array.isArray(manifest.keys)) return out;
-  for (const k of manifest.keys) {
-    if (typeof k.publicKey === "string") {
-      // validFrom is carried through (it was previously DROPPED here, so a manifest key's activation
-      // time never reached verifyArtifact and pre-activation signatures verified clean).
-      out[k.kid] = { publicKey: k.publicKey, type: k.type, roles: Array.isArray(k.roles) ? [...k.roles] : [], validFrom: k.validFrom ?? null, revokedAt: k.revokedAt ?? null };
-    }
+  const keys = manifest === null || typeof manifest !== "object" ? undefined : manifest.keys;
+  if (!Array.isArray(keys)) return out;
+  for (const k of keys) {
+    if (k === null || typeof k !== "object") continue;
+    const publicKey = k.publicKey;
     // AUDIT keys have no ed25519 publicKey (hpke-only, never a signer) — omitted from the signer keyring.
+    if (typeof publicKey !== "string") continue;
+    const kid = k.kid;
+    const type = k.type;
+    const roles = k.roles;
+    // validFrom is carried through (it was previously DROPPED here, so a manifest key's activation
+    // time never reached verifyArtifact and pre-activation signatures verified clean).
+    const validFrom = k.validFrom;
+    const revokedAt = k.revokedAt;
+    out[kid] = { publicKey, type, roles: Array.isArray(roles) ? [...roles] : [], validFrom: validFrom ?? null, revokedAt: revokedAt ?? null };
   }
   return out;
 }
@@ -188,18 +207,28 @@ export function buildResolvedKeyring(
  * are two independent trust roots.
  */
 export function buildReceiptKeyring(manifest: ManifestDoc): SigningKeyLifecycle {
-  // TODO(bytes-in): same residual as `buildResolvedKeyring` above — on this package's own path the
-  // manifest is a sub-tree of the kernel-parsed bundle and carries no getters, but the function is
-  // published and a direct caller can still pass a live object. An empty keyring stays the
-  // fail-closed outcome for anything this loop cannot read.
+  // BYTES-IN RESIDUAL — same guard as `buildResolvedKeyring` above, for the same reason. On this
+  // package's own path the manifest is a sub-tree of the kernel-parsed bundle and carries no
+  // getters; the function is published, so a direct caller can still pass a live object. Every
+  // caller-owned field below is therefore read EXACTLY ONCE into a local — `type` and `publicKey`
+  // used to be read twice each (check, then use), which is the flipping-getter window by
+  // definition — and the returned keyring is a fresh graph of primitives that shares nothing with
+  // the caller's object. An empty keyring stays the fail-closed outcome for anything this loop
+  // cannot read.
   const out: Record<string, { publicKey: string; retiredAt: string | null }> = {};
-  if (manifest === null || typeof manifest !== "object" || !Array.isArray(manifest.keys)) {
+  const keys = manifest === null || typeof manifest !== "object" ? undefined : manifest.keys;
+  if (!Array.isArray(keys)) {
     return { spec: SIGNING_KEY_LIFECYCLE_SPEC, keys: out };
   }
-  for (const k of manifest.keys) {
-    if ((k.type === "GATE" || k.type === "APPROVER") && typeof k.publicKey === "string") {
-      out[k.kid] = { publicKey: k.publicKey, retiredAt: k.revokedAt ?? null };
-    }
+  for (const k of keys) {
+    if (k === null || typeof k !== "object") continue;
+    const type = k.type;
+    if (type !== "GATE" && type !== "APPROVER") continue;
+    const publicKey = k.publicKey;
+    if (typeof publicKey !== "string") continue;
+    const kid = k.kid;
+    const revokedAt = k.revokedAt;
+    out[kid] = { publicKey, retiredAt: revokedAt ?? null };
   }
   return { spec: SIGNING_KEY_LIFECYCLE_SPEC, keys: out };
 }

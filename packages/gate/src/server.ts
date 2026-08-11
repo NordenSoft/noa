@@ -12,7 +12,7 @@ import { resolveGateConfig, isLoopbackAddress, type GateConfig } from "./config.
 import { InMemoryStore, type Store } from "./store.js";
 import { GateEngine, type EngineResult, type DisplaySealer } from "./engine.js";
 import { loadSchemas } from "./schemas.js";
-import { parseBearer } from "./auth.js";
+import { parseBearer, hashSecret } from "./auth.js";
 import { RateLimiter } from "./ratelimit.js";
 import type { GateTrust } from "./trust.js";
 
@@ -119,12 +119,35 @@ async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEng
     return sendJson(res, 200, { ok: true, service: "noa-gate", role: "trusted-signer" });
   }
 
+  // ── R8-13 (relay 2026-07-31, gate 2026-08-11): THE PEER ALWAYS PAYS FIRST ────────────────────
+  // This used to read `bearer ? k:${bearer.secret} : ip:${addr}` — the bucket key was the caller's
+  // OWN token string, taken off the wire before `resolveAgent` below had said whether it names any
+  // agent at all. So an unauthenticated stranger escaped the limiter by changing a header: measured
+  // on this package, 40 requests under 40 distinct invalid bearers were throttled ZERO times, and 30
+  // POSTs to `/v1/holds` — the route that HPKE-seals the display and Ed25519-signs the Hold Envelope
+  // — were likewise never throttled. The 401 that followed did not undo the work spent reaching it.
+  // The gate is the TRUSTED SIGNER, so unmetered work in front of the credential check is
+  // unauthenticated compute-DoS against the one component here that holds a private key.
+  //
+  // The peer address is spent UNCONDITIONALLY and FIRST, so rotating a header cannot buy a fresh
+  // allowance. The per-credential bucket below is retained on top — it is the tighter of the two for
+  // an honest caller, and it now costs a SECOND token rather than replacing the first.
+  const peerKey = `ip:${req.socket.remoteAddress ?? "unknown"}`;
+  const peerRl = limiter.take(peerKey);
+  if (!peerRl.ok) {
+    res.setHeader("Retry-After", String(peerRl.retryAfterSec));
+    return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: peerRl.retryAfterSec });
+  }
+
   const bearer = parseBearer(req.headers["authorization"]);
-  const rateKey = bearer ? `k:${bearer.secret}` : `ip:${req.socket.remoteAddress ?? "unknown"}`;
-  const rl = limiter.take(rateKey);
-  if (!rl.ok) {
-    res.setHeader("Retry-After", String(rl.retryAfterSec));
-    return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: rl.retryAfterSec });
+  if (bearer) {
+    // Keyed on the presented secret's HASH rather than the secret, so the limiter never holds
+    // credential material, and a wrong guess cannot mine the bucket table for a right one.
+    const rl = limiter.take(`k:${hashSecret(bearer.secret)}`);
+    if (!rl.ok) {
+      res.setHeader("Retry-After", String(rl.retryAfterSec));
+      return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: rl.retryAfterSec });
+    }
   }
 
   // All non-health routes are agent-authenticated (per-agent API key, F29).

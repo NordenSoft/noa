@@ -85,7 +85,11 @@ const PARAMS_HASH = "sha256:" + "a".repeat(64);
 // ─── external trust roots (the F7a inputs) ───────────────────────────────────────────────────────
 const TENANT_ROOT: J = { "tenant-authority-1": { publicKey: KEYS["tenant-authority-1"]!.publicKey, type: "ROOT", roles: [] } };
 const TENANT_ROOT_FOREIGN: J = { "tenant-authority-EVIL": { publicKey: KEYS["tenant-authority-EVIL"]!.publicKey, type: "ROOT", roles: [] } };
-const CHECKPOINT_KEYRING: J = { "gate-prod-1": KEYS["gate-prod-1"]!.publicKey };
+// NO fixed CORRECT checkpoint keyring constant here, deliberately. `buildWorld` derives the right
+// one from whoever actually signed the checkpoint (`defaultCpKeyring`, below), so a fixture that
+// overrides `checkpointKid` still gets a keyring naming its real signer. A hardcoded
+// `{ "gate-prod-1": … }` default would have silently mismatched those fixtures — it was declared
+// and never used, and deriving it is the correct answer rather than wiring the constant in.
 const CHECKPOINT_KEYRING_WRONG: J = { "some-other-witness": KEYS["approver-crit-5"]!.publicKey };
 
 // ─── manifest keys (constant) + delegation + manifest ────────────────────────────────────────────
