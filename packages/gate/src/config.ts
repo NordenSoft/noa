@@ -31,6 +31,17 @@ export interface GateConfig {
   rateLimitBurst: number;
   rateLimitRefillPerMin: number;
 
+  /** R8-13 follow-up (2026-08-12): the PRE-AUTH peer (per-IP) meter, split from the per-key F29
+   *  numbers above. The gate binds loopback by default, so `ip:127.0.0.1` aggregates EVERY local
+   *  agent into one bucket — at the shared 10/60 defaults, TWO busy honest agents already hit 429
+   *  inside allowances F29 promises them individually (measured: {"404":10,"429":2}). The peer
+   *  meter exists to make unauthenticated bearer-rotation pay, not to meter honest authenticated
+   *  traffic, so its defaults budget a host fleet: 10× the per-key numbers (≈ ten concurrently
+   *  busy agents). The relay deliberately keeps ONE shared number — there IP ≈ one remote peer;
+   *  here IP ≈ the whole host. That divergent invariant is why this is not a mirror. */
+  peerRateLimitBurst: number;
+  peerRateLimitRefillPerMin: number;
+
   /** Max concurrent PENDING holds per agent (alert-fatigue / DoS bound). */
   maxPendingPerAgent: number;
 
@@ -64,6 +75,8 @@ export const DEFAULT_GATE_CONFIG: GateConfig = {
   uncertaintySweepWindowMs: 5 * 60 * 1000,
   rateLimitBurst: 10,
   rateLimitRefillPerMin: 60,
+  peerRateLimitBurst: 100,
+  peerRateLimitRefillPerMin: 600,
   maxPendingPerAgent: 100,
   expirySweepMs: 30 * 1000,
   maxBodyBytes: 256 * 1024,
