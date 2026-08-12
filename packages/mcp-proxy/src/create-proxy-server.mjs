@@ -85,7 +85,7 @@ import { intrinsics } from "noa-mcp-adapter-core";
 // module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
 // who adds one, so the builtins come from the kernel's module-load capture whether or not each site
 // is reachable today. Reachability is a property of the surrounding code, and that changes.
-const { isArray, objectKeys } = intrinsics;
+const { isArray, objectKeys, arrayPush, objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 import { buildOutcomeReceipt, buildOutcomeReceiptAsync } from "./outcome-receipt.mjs";
 
@@ -537,12 +537,19 @@ export async function createProxyServer({
     // tears down its per-request progress handler the instant the result lands — would drop every
     // progress event that arrives after it. Awaiting the relays first preserves the intended order
     // (all settled progress sends, THEN the result) on the same ordered transport.
+    // Inert from its first write, appended through the captured `arrayPush` (an inert prototype
+    // deliberately omits the mutators). This one carries no verdict — a swallowed entry means a
+    // progress relay is not awaited, not that a decision moves — but it is the same `[[Set]]`
+    // walking the same prototype chain, and the pattern this week is that the container nobody
+    // looked at is the one that mattered.
     const pendingProgressRelays = [];
+    objectSetPrototypeOf(pendingProgressRelays, INERT_ARRAY_PROTOTYPE);
     const forwardOptions =
       hostProgressToken !== undefined && hostProgressToken !== null
         ? {
             onprogress: (progress) => {
-              pendingProgressRelays.push(
+              arrayPush(
+                pendingProgressRelays,
                 server
                   .notification({ method: "notifications/progress", params: { ...progress, progressToken: hostProgressToken } })
                   .catch((err) => console.error(`noa-mcp-proxy: session "${sessionId}" — failed to relay downstream progress to host (${describeThrown(err)})`)),

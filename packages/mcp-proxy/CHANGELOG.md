@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Security — one approval could authorise a different amount (holed params hash)
+
+`noa-mcp-adapter-core`'s `canonicalParamsHash` fallback could be made to drop the serialized
+`amountMinor` component, so two different amounts produced ONE hash — and this proxy compares exactly
+that hash to match a retry to an outstanding hold (`create-proxy-server.mjs`), verifies the signed
+approval against it, and suppresses the human hold on the strength of it. Measured: 5,000 approved,
+99,999,999 authorised by the same signature. Fixed in adapter-core; not a demonstrated remote exploit
+(JSON over stdio/HTTP cannot carry the accessor it needs), real for in-process and plugin callers.
+
+Three accumulators in THIS package had the same shape and got the same one-line fix — inert from
+their first write, appended through the captured `arrayPush`: the HTTP request-body chunks (a
+swallowed chunk means the request this proxy governs is not the request the host sent), the
+progress-relay list, and `rotatable-signer`'s retired-key list (a retired signing key reported as
+never retired).
+
 ### Security — the human-approval gate could be turned off by a rule file that was not a rule set
 
 **Reproduced against the shipped CLI on 2026-08-12, with the symlink guard below already in place.**

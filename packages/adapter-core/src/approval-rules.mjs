@@ -124,6 +124,14 @@ function isPlainRecord(v) {
 // way; this is that answer applied to a container that note never reached. L2 and L8 cannot help
 // here — they model dispatch as a call or a read and have NO GRAMMAR FOR A WRITE, which is why this
 // file contributes zero findings to either budget and still had a hole in it.
+//
+// AND THAT BLINDNESS HAS A SECOND SHAPE, measured the same week: NO GRAMMAR FOR A CALLBACK THE
+// SERIALIZER INVOKES. A `toJSON` on a proposed policy rule replaces no builtin and writes nothing —
+// `JSON.stringify` calls it by spec — and it made a real policy weakening report "nothing changed"
+// (see `policy-change-guard.mjs`'s `sortKeysDeep`). The two belong side by side: a gate indexed by
+// call-and-read SITES is blind both to what a program WRITES and to what the runtime CALLS on its
+// behalf. `scripts/lint-verdict-differential.mjs` is the gate that can see either, because it is
+// indexed by outcome rather than by site.
 function inertArray() {
   // Re-rooted while still EMPTY: no element has been written yet, so no `[[Set]]` has walked the
   // ordinary chain. Every push after this line resolves against a frozen, null-rooted prototype.

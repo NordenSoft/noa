@@ -38,13 +38,19 @@ import { intrinsics } from "noa-mcp-adapter-core";
 // module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
 // who adds one, so the builtins come from the kernel's module-load capture whether or not each site
 // is reachable today. Reachability is a property of the surrounding code, and that changes.
-const { jsonParse, jsonStringify } = intrinsics;
+const { jsonParse, jsonStringify, arrayPush, objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — fail closed on anything larger, never buffer unbounded
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
+    // INERT FROM ITS FIRST WRITE, and appended through the captured `arrayPush`. `push` performs
+    // `[[Set]]`, which walks the receiver's prototype chain: an accessor on `Object.prototype`
+    // swallows a body chunk while `length` still advances, so the request this proxy governs would
+    // not be the request the host sent. (An inert prototype deliberately omits the mutators, which
+    // is why the append below is `arrayPush` rather than `chunks.push`.)
     const chunks = [];
+    objectSetPrototypeOf(chunks, INERT_ARRAY_PROTOTYPE);
     let size = 0;
     req.on("data", (c) => {
       size += c.length;
@@ -53,7 +59,7 @@ function readJsonBody(req) {
         req.destroy();
         return;
       }
-      chunks.push(c);
+      arrayPush(chunks, c);
     });
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");

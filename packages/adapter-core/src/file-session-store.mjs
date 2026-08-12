@@ -167,7 +167,7 @@ import { intrinsics } from "noa-receipt";
 // So the builtins are taken from the kernel's module-load capture here too, whether or not each
 // individual site is reachable today. Reachability is a property of the surrounding code, and the
 // surrounding code changes.
-const { isInteger, jsonParse, jsonStringify } = intrinsics;
+const { isInteger, jsonParse, jsonStringify, arrayPush, objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 
 const LOCK_FILENAME = ".lock";
@@ -297,7 +297,14 @@ function appendLineSync(filePath, obj) {
 }
 
 function reloadAll(dir) {
+  // INERT FROM ITS FIRST WRITE. `push` performs `[[Set]]`, which walks the receiver's prototype
+  // chain, so an accessor on `Object.prototype` swallows an entry while `length` still advances —
+  // here that silently drops a live session from a restart, breaking the chain continuity this store
+  // exists to provide. The same class was measured producing an approval substitution in
+  // `pre-check.mjs`; this container is on the recovery path rather than the verdict path, and is
+  // fixed for the same reason rather than after its own incident.
   const seedSessions = [];
+  objectSetPrototypeOf(seedSessions, INERT_ARRAY_PROTOTYPE);
   let segmentCounterFloor = 0;
   for (const name of readdirSync(dir)) {
     if (!name.startsWith("tenant-") || !name.endsWith(".jsonl")) continue;
@@ -347,7 +354,7 @@ function reloadAll(dir) {
       live.set(parsed.sessionId, { tenant: parsed.tenant, segmentId: parsed.segmentId, receipt });
     });
     for (const [sessionId, state] of live) {
-      seedSessions.push({ tenant: state.tenant, sessionId, segmentId: state.segmentId, prev: state.receipt, seq: state.receipt.chain.seq + 1 });
+      arrayPush(seedSessions, { tenant: state.tenant, sessionId, segmentId: state.segmentId, prev: state.receipt, seq: state.receipt.chain.seq + 1 });
     }
   }
   return { seedSessions, segmentCounterFloor };

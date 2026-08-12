@@ -1,4 +1,9 @@
 import { parseCanonicalInstant, SIGNING_KEY_LIFECYCLE_SPEC } from "./outcome-receipt.mjs";
+import { intrinsics } from "noa-mcp-adapter-core";
+
+// The kernel's module-load capture, for the ONE thing this file cannot capture for itself: an array
+// prototype with no `Object.prototype` at the end of it (see `retiredKids` below).
+const { objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 // Capture the default clock when this module loads, so replacing Date.now afterwards cannot move a
 // retirement bound. This defends post-load mutation only: a Date.now poisoned before module
@@ -162,7 +167,12 @@ export function createRotatableSigner(initialKeyPair, options = {}) {
       return lifecycleHandle;
     },
     retiredKids() {
+      // INERT FROM ITS FIRST WRITE: `kids[kids.length] = kid` is a `[[Set]]`, and `[[Set]]` walks
+      // the receiver's prototype chain. An accessor at `Object.prototype["0"]` swallows the first
+      // retired kid while `length` still advances, so a retired signing key would be reported as
+      // never retired. Same class as the params-hash substitution measured in adapter-core.
       const kids = [];
+      objectSetPrototypeOf(kids, INERT_ARRAY_PROTOTYPE);
       forEachMapEntryCaptured(retired, (kid) => {
         kids[kids.length] = kid;
       });

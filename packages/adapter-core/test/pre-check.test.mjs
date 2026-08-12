@@ -973,6 +973,75 @@ test("the package's OWN decision entry points fail closed on an unusable rule se
   assert.equal(preCheck(call, { signer, policy: REFUND_GUARD_POLICY, approvalRules: [] }).decision, "ALLOW", "an empty rule set gates nothing, by design");
 });
 
+// ── APPROVAL SUBSTITUTION THROUGH A HOLED PARAMS HASH (2026-08-12) ───────────────────────────────
+// `stableStringifyFallback` built its `items`/`parts` accumulators as ordinary arrays. `arrayPush`
+// captures the METHOD; the element write that method performs is still a `[[Set]]` walking the
+// RECEIVER'S prototype chain, and an ordinary array's chain ends at the mutable `Object.prototype`.
+//
+// A TIMED, self-removing accessor at `Object.prototype["0"]` swallowed the serialized `amountMinor`
+// component, so two different amounts produced ONE params hash and the approval minted for the small
+// one verified for the large one. `create-proxy-server.mjs` compares exactly this hash to match a
+// retry to an outstanding hold, verifies the signed approval against it, and suppresses the human
+// hold on the strength of it — so the consequence is not a crash, it is approval substitution.
+//
+// Reachability, stated rather than implied: JSON over stdio/HTTP cannot carry an accessor, so this is
+// not a demonstrated REMOTE exploit; it is a real defect for in-process and plugin callers.
+test("canonicalParamsHash: a timed prototype-write cannot collapse two different amounts onto one hash", async () => {
+  const { canonicalParamsHash } = await import("../src/pre-check.mjs");
+  const { verifyApprovalReceipt } = await import("../src/approval-decision.mjs");
+
+  // A nested float is the documented, legitimate way to reach the fallback: the hardened JCS
+  // canonicalizer refuses non-integer numbers. Sorted keys put "amountMinor" at index 0.
+  const LOW = { amountMinor: 5000, meta: { rate: 1.5 } };
+  const HIGH = { amountMinor: 99999999, meta: { rate: 1.5 } };
+
+  const withPoison = (fn) => {
+    Object.defineProperty(Object.prototype, "0", { configurable: true, set() {}, get() { return undefined; } });
+    try {
+      return fn();
+    } finally {
+      delete Object.prototype[0];
+    }
+  };
+
+  const cleanLow = canonicalParamsHash(LOW);
+  const cleanHigh = canonicalParamsHash(HIGH);
+  assert.notEqual(cleanLow, cleanHigh, "control: the two amounts must hash differently with nothing poisoned");
+
+  const poisonedLow = withPoison(() => canonicalParamsHash(LOW));
+  const poisonedHigh = withPoison(() => canonicalParamsHash(HIGH));
+  assert.notEqual(poisonedLow, poisonedHigh, "pre-fix these collapsed onto ONE hash — 5,000 approved, 99,999,999 authorised by it");
+  assert.equal(poisonedLow, cleanLow, "and the hash must be UNCHANGED by the poison, not merely different from its sibling");
+  assert.equal(poisonedHigh, cleanHigh);
+
+  // The consequence the hash carries: an approval bound to the small amount must not authorise the
+  // large one. This is the exact binding create-proxy-server.mjs checks before suppressing a hold.
+  const { signer } = signerAndKeyring("test-key-substitution-agent");
+  const approverKp = generateKeyPair("test-key-substitution-approver");
+  const low = withPoison(() => preCheck({ name: "payment.refund", args: LOW }, { signer, policy: REFUND_GUARD_POLICY }));
+  const high = withPoison(() => preCheck({ name: "payment.refund", args: HIGH }, { signer, policy: REFUND_GUARD_POLICY }));
+  assert.notEqual(low.receipt.action.paramsHash, high.receipt.action.paramsHash, "the two receipts must not share an action binding");
+
+  const { receipt: allowed } = buildApprovalReceipt({
+    deferredReceipt: low.receipt,
+    by: "HUMAN:hmac-sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    ts: "2026-08-12T11:00:00.000Z",
+    signer: { kid: approverKp.kid, privateKey: approverKp.privateKey },
+  });
+  const forHigh = verifyApprovalReceipt(allowed, {
+    approverKeyring: { [approverKp.kid]: approverKp.publicKey },
+    expectedAction: { id: "payment.refund", paramsHash: high.receipt.action.paramsHash },
+  });
+  assert.equal(forHigh.ok, false, "an approval for 5,000 must not verify for 99,999,999 — it did, pre-fix");
+
+  // CONTROL: the same approval still authorises the action it was actually minted for.
+  const forLow = verifyApprovalReceipt(allowed, {
+    approverKeyring: { [approverKp.kid]: approverKp.publicKey },
+    expectedAction: { id: "payment.refund", paramsHash: low.receipt.action.paramsHash },
+  });
+  assert.equal(forLow.ok, true, "control: a genuine approval must still authorise its own action");
+});
+
 test("index.mjs: R4 public surface is exported from the package root", async () => {
   const pkg = await import("../src/index.mjs");
   for (const name of [

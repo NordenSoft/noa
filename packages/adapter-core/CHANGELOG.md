@@ -6,6 +6,62 @@ consumer upgrading to `0.3.0` would see a silent version bump and no reason to h
 
 ## [Unreleased]
 
+### Security — a holed params hash let ONE approval authorise a DIFFERENT amount
+
+**Reproduced 2026-08-12.** `stableStringifyFallback` (the `canonicalParamsHash` fallback for arg
+shapes JCS refuses — a float, a bigint, a value past the depth bound) built its `items`/`parts`
+accumulators as ordinary arrays. Capturing `Array.prototype.push` does not help: the element write
+that method performs is still a `[[Set]]` walking the RECEIVER'S prototype chain. A TIMED,
+self-removing accessor at `Object.prototype["0"]` swallowed the serialized `amountMinor` component:
+
+```
+approved 5,000 · retried 99,999,999 · allHashesEqual true · lowApprovalVerifiesForHigh true
+```
+
+Not a crash — **approval substitution**. `noa-mcp-proxy` compares exactly this hash to match a retry
+to an outstanding hold, verifies the signed approval against it, and suppresses the human hold on the
+strength of it. Fixed the same way as the compiler's containers: inert from the first write.
+
+**Reachability, stated rather than implied:** JSON over stdio/HTTP cannot carry an accessor, so this
+is NOT a demonstrated remote exploit. It is a real defect for in-process and plugin callers, and it
+is distinct from the declared residual about handing `preCheck` a fresh live rule array per call.
+
+The same one-line container fix went to every sibling accumulator found by sweeping both packages for
+`= []` on a decision or recovery path: `file-session-store.mjs`'s restart-recovery list (a swallowed
+entry silently drops a live session from a restart) and — in `noa-mcp-proxy` — the HTTP request-body
+chunks, the progress-relay list and the retired-signing-key list.
+
+### Security — `toJSON` made a policy WEAKENING report "nothing changed"
+
+**Reproduced 2026-08-12, and PRE-EXISTING — identical against the previous commit.** `sortKeysDeep`
+rebuilt each rule keeping every own enumerable key, `toJSON` included, and `JSON.stringify` INVOKES
+`toJSON` (SerializeJSONProperty). A proposal raising a threshold 5,000 -> 99,999,999 with one added
+`toJSON` returning the CURRENT rule's bytes:
+
+```
+changed=false · ok=true · no approval requested · installed threshold 99,999,999
+a 7,000-unit transfer then forwarded with NO HUMAN
+```
+
+A plain getter does NOT do this — the accessor key survives into the canonical form and `changed`
+correctly computes true. **`toJSON` is the one channel that erases itself from the serialization
+while scripting what appears in its place**, which is a new shape rather than a variant of the
+prototype-write class. The two belong side by side: a gate indexed by call-and-read SITES has no
+grammar for a WRITE *and* none for a CALLBACK THE SERIALIZER INVOKES.
+
+**Fixed** by binding the verdict to the snapshot — `applyPolicyChange` compiles BOTH sides and diffs
+the compiled snapshots, never the caller's live objects (a compiled rule carries own data only, so no
+callable reaches the serializer). `sortKeysDeep` additionally drops callable-valued keys, covering the
+exported canonicalizer for callers that reach it directly. Confirmed in the same run: the
+human-visible diff and `request.paramsHash` now describe the same content, which closes the secondary
+see-X-sign-Y split for a human who *does* approve.
+
+**Calibration, so this is not read at either extreme:** `applyPolicyChange` has no caller in the
+shipped proxy or examples — it is the SDK's exported §19.3 enforcement point, reached by any console
+or CLI built on it — and the proposal must be a LIVE object carrying `toJSON`, which `JSON.parse`
+output cannot be. Zero production tenants today. Under the threat model these reviews have used
+throughout it is a full bypass; scoped to JSON input it is theoretical.
+
 ### Security — the snapshot could be compiled as a BRANDED HOLE (a property WRITE, CWE-1321)
 
 **Reproduced against the snapshot fix below, end to end.** `compileApprovalRules` filled an ORDINARY

@@ -1119,10 +1119,16 @@ const LINTS = [
   // the caller's object, and the hand-rolled validator it replaced is gone.
   // RATCHETED 146 -> 145 later the same day: `policy-change-guard.mjs`'s refusal message stopped
   // calling `.join` on a live array and now goes through the captured `arrayJoin`.
+  // RATCHETED 145 -> 144: `file-session-store.mjs`'s recovery accumulator is inert from its first
+  // write and appended with the captured `arrayPush` instead of `seedSessions.push(...)`.
   { id: "L8-adapter-core", name: "L8 dispatch-surface AST gate on adapter-core decision paths",
-    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 145 },
+    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 144 },
+  // RATCHETED 49 -> 47 on 2026-08-12 (measured): the request-body and progress-relay accumulators in
+  // `http-server.mjs` and `create-proxy-server.mjs` are inert from their first write, so their
+  // `chunks.push(...)` / `pendingProgressRelays.push(...)` became captured `arrayPush` calls. An
+  // inert prototype omits the mutators, so the container fix and the dispatch fix are one change.
   { id: "L8-mcp-proxy", name: "L8 dispatch-surface AST gate on mcp-proxy decision paths",
-    run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 49 },
+    run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 47 },
   // 212 -> 97 when the package was enrolled, then 97 -> 95 in the round-2 fix commit. The
   // reduction is not spread evenly and the split is the point:
   //   equivocation.mjs  93 -> 0   the NEW decision path — the file this whole enrolment exists for.

@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair } from "noa-receipt";
-import { preCheck } from "../src/pre-check.mjs";
+import { preCheck, canonicalParamsHash } from "../src/pre-check.mjs";
 import { isCompiledApprovalRules, matchApprovalRule } from "../src/approval-rules.mjs";
 import { buildApprovalReceipt } from "../src/approval-decision.mjs";
 import { opaqueApproverId } from "../src/opaque-id.mjs";
@@ -105,6 +105,55 @@ test("§19.3: an APPLIED policy cannot be re-aimed by mutating the array that wa
 
   assert.equal(gatedBefore?.id, gatedAfter?.id, "the applied ruleset must not move when the proposal it came from is rewritten");
   assert.notEqual(gatedAfter, null, "and it must still gate the action it was approved to gate");
+});
+
+// ── `toJSON` MADE A WEAKENING LOOK LIKE "NO CHANGE AT ALL" (fourth review, 2026-08-12) ───────────
+// `sortKeysDeep` rebuilt each rule keeping every own enumerable key, `toJSON` included, and
+// `JSON.stringify` INVOKES `toJSON`. A proposal that raises a threshold and adds a `toJSON` returning
+// the CURRENT rule's bytes measured as `changed:false, ok:true` — so no approval was ever requested —
+// while `activeRules` held the real, weakened threshold and a 7,000-unit transfer then forwarded with
+// no human at all.
+//
+// A plain getter cannot do this: the accessor key survives into the canonical form and `changed`
+// correctly computes true. `toJSON` is the one channel that ERASES ITSELF from the serialization
+// while scripting what is serialized in its place.
+//
+// This also pins the property the round-3 test reversal lost: `changed` must be computed over THE
+// SAME CONTENT the returned snapshot holds.
+test("§19.3: a `toJSON` cannot make a weakening look like no change, and what is diffed is what is installed", () => {
+  const canonicalCurrent = { id: "big-refund", match: { action: "payment.refund", type: "exact" }, threshold: { op: "ge", path: "amountMinor", value: 4000 } };
+
+  const thresholdWithToJSON = { path: "amountMinor", op: "ge", value: 99999999 };
+  thresholdWithToJSON.toJSON = () => canonicalCurrent.threshold;
+  const proposedA = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: thresholdWithToJSON }];
+
+  const ruleWithToJSON = { id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 99999999 } };
+  ruleWithToJSON.toJSON = () => canonicalCurrent;
+  const proposedB = [ruleWithToJSON];
+
+  for (const [label, proposed] of [["threshold.toJSON", proposedA], ["rule.toJSON", proposedB]]) {
+    const req = buildPolicyChangeRequest(C, proposed);
+    assert.equal(req.changed, true, `${label}: the raise must be seen as a change — it reported false, so no approval was ever requested`);
+    assert.equal(req.weakens, true, `${label}: raising a threshold reduces hold coverage`);
+
+    // No approval supplied -> refused. Pre-fix this returned ok:true with changed:false and applied.
+    const unapproved = applyPolicyChange({ currentRules: C, proposedRules: proposed });
+    assert.equal(unapproved.ok, false, `${label}: a weakening must never apply without an approval`);
+    assert.equal(unapproved.code, "approval-required");
+
+    // SEE-X-SIGN-Y: the diff a human reads and the diff the approval is bound to are ONE artifact.
+    assert.equal(canonicalParamsHash(req.diff), req.paramsHash, `${label}: the shown diff must be the hashed diff`);
+    assert.match(JSON.stringify(req.diff), /99999999/, `${label}: the human-visible diff must show the REAL proposed value, not the one toJSON substituted`);
+  }
+
+  // With a genuine approval + step-up, what gets INSTALLED is what was diffed: no callable survives
+  // into the snapshot, and the snapshot gates on the real (weakened) threshold.
+  const { allowed, approverKeyring } = mintPolicyApproval(C, proposedA, "tojson");
+  const applied = applyPolicyChange({ currentRules: C, proposedRules: proposedA, approval: allowed, approverKeyring, stepUpVerified: true });
+  assert.equal(applied.ok, true);
+  assert.equal(applied.activeRules[0].threshold.value, 99999999, "the installed rule is the real one, not the one toJSON described");
+  assert.equal(applied.activeRules[0].toJSON, undefined, "no callable survives into an installed ruleset");
+  assert.equal(matchApprovalRule(applied.activeRules, "payment.refund", { amountMinor: 7000 }), null, "and the approved weakening genuinely applies");
 });
 
 test("§19.3: a WEAKENING change needs BOTH approval AND step-up (D4) — approval alone is refused", () => {
