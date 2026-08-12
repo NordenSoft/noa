@@ -10,6 +10,11 @@
  * host would have spawned it itself. The downstream file is never edited, never re-imported,
  * never made aware a proxy exists — the host's config line is the only thing that changes.
  *
+ * `proxy.mjs init [--dir <path>] [--force]` is a SEPARATE subcommand (see src/init.mjs) that
+ * scaffolds the human-approval gate's inputs (approval-rules.json, pending-store.jsonl, an
+ * approver keypair) into a target directory. It is scaffolding, not activation — read init.mjs's
+ * own doc comment before assuming a clean exit means anything is protected yet.
+ *
  * Flags (all optional):
  *   --session-id <id>          receipt-chain session id (default: a fresh randomUUID())
  *   --tenant <name>            receipt scope.tenant (default: "default-tenant")
@@ -120,7 +125,8 @@ function parseArgs(argv) {
         "[--session-idle-ttl-ms <n>] [--max-sessions <n>] [--session-dir <path>] " +
         "[--approval-rules <path>] [--pending-store <path>] [--approver-keyring <path>] [--approver-identity <path>] " +
         "[--http-port <n>] [--http-host <host>] " +
-        "-- <downstream-command> [downstream-args...]",
+        "-- <downstream-command> [downstream-args...]\n" +
+        "       proxy.mjs init [--dir <path>] [--force]   (scaffolds the approval-gate inputs above — see init.mjs)",
     );
   }
   const own = argv.slice(0, sepIndex);
@@ -210,6 +216,16 @@ function createSequentialFileAppender(path) {
 }
 
 async function main() {
+  // `noa-mcp-proxy init [--dir <path>] [--force]` — a distinct subcommand, dispatched BEFORE
+  // parseArgs (which requires the `--` downstream-command separator and would reject "init" as an
+  // unknown flag). Scaffolds the human-approval gate's inputs; see src/init.mjs's own doc comment
+  // for exactly what it does and does not do — it is NOT "one command and you're done".
+  if (process.argv[2] === "init") {
+    const { runInitCli } = await import("./init.mjs");
+    process.exitCode = await runInitCli(process.argv.slice(3));
+    return;
+  }
+
   const { opts, downstreamCommand, downstreamArgs } = parseArgs(process.argv.slice(2));
   const sessionId = opts.sessionId ?? randomUUID();
   const keyFile = opts.keyFile ?? process.env.NOA_MCP_PROXY_KEY_FILE ?? null;
