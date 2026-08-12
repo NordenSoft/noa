@@ -1321,6 +1321,7 @@
     }
   ],
   "vocabularyFiles": {
+    "packages/mcp-proxy/test/init.test.mjs": "test for `proxy.mjs init`: string-keyring consumer. It names the generated approver-keyring.json and asserts its { [kid]: publicKey } shape; it constructs no KeyEntry and never reads validFrom/revokedAt/roles or calls resolveVerificationKey (measured: all zero occurrences). Same classification as the sibling string-keyring consumers in this census.",
     "conformance/cose-3rd-party/gen-vector.mjs": "example/conformance driver: string-keyring consumer",
     "docs/reproductions/repro-P0-14-retired-key-forgery.mjs": "standalone reproduction of P0-14 (task #84): calls createRotatableSigner().keyring() and verifyOutcomeReceipt to demonstrate that a RETIRED signing key still mints new evidence. A string-keyring CONSUMER that constructs no KeyEntry. Kept in the repo deliberately so the reproduction survives a machine restart; it is evidence, not product code, and must be updated or deleted when P0-14 is fixed.",
     "examples/killer-demo/demo.mjs": "example/conformance driver: string-keyring consumer",
