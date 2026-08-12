@@ -3,6 +3,11 @@ export { createChainSessionStore, preCheckSession, prepareSessionReceipt, prepar
 export { createFileSessionStore } from "./file-session-store.mjs";
 export { REFUND_GUARD_POLICY } from "./policy.mjs";
 export { loadOrCreateKeyFile } from "./key-file.mjs";
+// The ONE hardened open/read/append/write path for a security-bearing CONFIG artifact (approval
+// rules, approver keyring, approver identity manifest, pending store). Re-exported because the
+// mcp-proxy CLI is a consumer: its `--approval-rules`/`--approver-keyring`/`--approver-identity`
+// reads were the measured symlink-redirect bypass this module closes.
+export { readConfigArtifact, readConfigJson, appendConfigArtifact, writeConfigArtifact, ConfigArtifactError } from "./config-artifact.mjs";
 export { matchApprovalRule, validateApprovalRules, tryIdentifyToolCallForTicketLookup } from "./approval-rules.mjs";
 export { recordDeferred, recordApproved, recordDenied, consumeApprovalTicket, findOutstanding, loadPendingIndex, PendingStoreError } from "./pending-store.mjs";
 export { buildApprovalReceipt, buildDenialReceipt, verifyApprovalReceipt, DEFAULT_APPROVAL_TICKET_TTL_MS } from "./approval-decision.mjs";

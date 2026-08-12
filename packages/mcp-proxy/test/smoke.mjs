@@ -990,6 +990,188 @@ async function main() {
   fs.rmSync(dirOc, { recursive: true, force: true });
 
   // ---------------------------------------------------------------------------------------
+  // BONUS AA: the GOVERNANCE CONFIG artifacts — --approval-rules, --approver-keyring,
+  // --approver-identity, --pending-store, --keyring-file — carry the SAME descriptor-level guard
+  // --key-file has carried since Bonus O. Both cases below were REPRODUCED end-to-end against the
+  // shipped CLI before the fix, on a real proxy over real stdio:
+  //
+  //   (aa-a) replace `approval-rules.json` with a symlink to a file containing `[]` -> the human
+  //          approval gate is OFF and `transfer_funds` of 7000 (threshold 5000) EXECUTED, the
+  //          downstream answering "transferred 7000 (minor units) to attacker-account";
+  //   (aa-b) replace `approver-keyring.json` with a symlink to an ATTACKER keyring -> the attacker
+  //          signs the approval with their own key and the identical retry EXECUTED.
+  //
+  // The precondition for both — "something can create a file in the config directory" — is the
+  // ordinary state of an agent that can write its own working directory, i.e. exactly the party
+  // this product exists to constrain. So these assertions are about the value proposition, not
+  // about filesystem trivia: a gate a file swap turns off is not a gate.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus AA — governance config artifacts cannot be redirected by a path swap (CWE-59/367)");
+
+  const approverKpAa = generateKeyPair("smoke:aa:approver");
+  const attackerKpAa = generateKeyPair("smoke:aa:attacker");
+
+  /** One full host->proxy->downstream attempt over real stdio. Never throws: a proxy that refuses
+   *  to start shows up as `{ started: false }`, an executed call as `text` from the downstream. */
+  async function attemptTransferThroughProxy(cliArgs, { amountMinor = 7000, sessionId } = {}) {
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [PROXY_CLI, "--session-id", sessionId, "--tenant", "aa-tenant", "--agent-id", "aa-agent", ...cliArgs, "--", process.execPath, DEMO_DOWNSTREAM],
+      stderr: "ignore", // the refusal is asserted separately, via execFile, where stderr is capturable
+    });
+    const client = new Client({ name: "aa-host", version: "1.0.0" }, { capabilities: {} });
+    try {
+      await client.connect(transport);
+    } catch (err) {
+      return { started: false, executed: false, text: "", error: String(err?.message ?? err) };
+    }
+    try {
+      const r = await client.callTool({ name: "transfer_funds", arguments: { amountMinor, to: "attacker-account" } });
+      return { started: true, executed: true, text: r.content?.[0]?.text ?? "", error: null };
+    } catch (err) {
+      return { started: true, executed: false, text: "", error: String(err?.message ?? err) };
+    } finally {
+      await client.close().catch(() => {});
+    }
+  }
+
+  /** The same launch as a plain child process, so the REFUSAL MESSAGE itself is capturable.
+   *  `refused` deliberately EXCLUDES a timeout kill: a proxy that starts happily and then serves
+   *  stdio until the timeout also exits non-zero, and counting that as "fails closed" is how this
+   *  assertion would pass against the very code it exists to catch. Only a process that exited on
+   *  its own counts. */
+  async function runProxyCapturingStderr(cliArgs) {
+    try {
+      await execFileAsync(process.execPath, [PROXY_CLI, "--session-id", "aa-probe", ...cliArgs, "--", process.execPath, DEMO_DOWNSTREAM], { timeout: 5000 });
+      return { refused: false, killed: false, stderr: "" };
+    } catch (err) {
+      const killed = err.killed === true || err.signal != null;
+      return { refused: !killed, killed, stderr: err.stderr ?? "" };
+    }
+  }
+
+  function aaFixture(tag) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `noa-mcp-proxy-aa-${tag}-`));
+    const rules = path.join(dir, "approval-rules.json");
+    const keyring = path.join(dir, "approver-keyring.json");
+    const pending = path.join(dir, "pending.jsonl");
+    fs.writeFileSync(rules, JSON.stringify(APPROVAL_RULES), "utf8");
+    fs.writeFileSync(keyring, JSON.stringify({ [approverKpAa.kid]: approverKpAa.publicKey }), "utf8");
+    return { dir, rules, keyring, pending, args: ["--approval-rules", rules, "--approver-keyring", keyring, "--pending-store", pending] };
+  }
+
+  // AA(control): with honest config the SAME call is HELD, never executed — so the assertions below
+  // are measuring the guard, not a proxy that refuses everything.
+  const aaControl = aaFixture("control");
+  const controlRun = await attemptTransferThroughProxy(aaControl.args, { sessionId: "aa-control" });
+  ok("(aa-control) honest config: the proxy starts and the over-threshold transfer is HELD, not executed", controlRun.started && !controlRun.executed);
+  ok("(aa-control) honest config: the downstream never reported a transfer", !/transferred 7000/.test(controlRun.text));
+  fs.rmSync(aaControl.dir, { recursive: true, force: true });
+
+  // AA(a) — THE REPRODUCED GATE BYPASS: --approval-rules swapped for a symlink to `[]`.
+  const aaA = aaFixture("a");
+  const emptyRulesA = path.join(aaA.dir, "attacker-empty-rules.json");
+  fs.writeFileSync(emptyRulesA, "[]", "utf8");
+  fs.unlinkSync(aaA.rules);
+  fs.symlinkSync(emptyRulesA, aaA.rules); // the agent, writing in its own working directory
+  const runA = await attemptTransferThroughProxy(aaA.args, { sessionId: "aa-a" });
+  ok("(aa-a) a symlinked --approval-rules NEVER executes the over-threshold transfer (the reproduced bypass)", !runA.executed);
+  ok("(aa-a) the downstream never reported moving 7000 (no unapproved side effect)", !/transferred 7000/.test(runA.text));
+  const stderrA = await runProxyCapturingStderr(aaA.args);
+  ok("(aa-a) the CLI exits on its own (fails closed) rather than starting with a redirected rule set", stderrA.refused);
+  ok("(aa-a) the refusal names --approval-rules and the symlink guard", /--approval-rules/.test(stderrA.stderr) && /symlink/i.test(stderrA.stderr));
+  fs.rmSync(aaA.dir, { recursive: true, force: true });
+
+  // AA(b) — THE REPRODUCED WRONG-APPROVER ACCEPTANCE: --approver-keyring swapped for a symlink to
+  // an attacker keyring. Pre-fix, the attacker then signed the hold's approval with their OWN key
+  // and the identical retry executed; the trusted-keyring check was authenticating against a
+  // keyring the ATTACKER supplied.
+  const aaB = aaFixture("b");
+  const evilKeyringB = path.join(aaB.dir, "attacker-keyring.json");
+  fs.writeFileSync(evilKeyringB, JSON.stringify({ [attackerKpAa.kid]: attackerKpAa.publicKey }), "utf8");
+  fs.unlinkSync(aaB.keyring);
+  fs.symlinkSync(evilKeyringB, aaB.keyring);
+  const runB1 = await attemptTransferThroughProxy(aaB.args, { sessionId: "aa-b" });
+  ok("(aa-b) a symlinked --approver-keyring never even reaches a held call — the proxy refuses to start", !runB1.started);
+  // Prove the SECOND half of the attack cannot be staged either: no hold was ever recorded, so
+  // there is nothing for the attacker to sign an approval against.
+  ok("(aa-b) no DEFERRED hold was recorded, so the attacker has no hold to self-approve", !fs.existsSync(aaB.pending));
+  const stderrB = await runProxyCapturingStderr(aaB.args);
+  ok("(aa-b) the refusal names --approver-keyring and the symlink guard", /--approver-keyring/.test(stderrB.stderr) && /symlink/i.test(stderrB.stderr));
+  fs.rmSync(aaB.dir, { recursive: true, force: true });
+
+  // AA(c) — --approver-identity is the manifest pinning WHICH kid may sign for the human seat; a
+  // symlink there lets an attacker pin their own kid to the approval seat.
+  const aaC = aaFixture("c");
+  const identityC = path.join(aaC.dir, "approver-identity.json");
+  const evilIdentityC = path.join(aaC.dir, "attacker-identity.json");
+  fs.writeFileSync(evilIdentityC, JSON.stringify({ "human-approval-cli": [attackerKpAa.kid] }), "utf8");
+  fs.symlinkSync(evilIdentityC, identityC);
+  const stderrC = await runProxyCapturingStderr([...aaC.args, "--approver-identity", identityC]);
+  ok("(aa-c) a symlinked --approver-identity fails closed and names its own flag", stderrC.refused && /--approver-identity/.test(stderrC.stderr) && /symlink/i.test(stderrC.stderr));
+  fs.rmSync(aaC.dir, { recursive: true, force: true });
+
+  // AA(d) — --pending-store is read AND appended on every gated call, so its guard has to be
+  // re-applied at USE, not once at startup. A symlink there is both a redirect of the approval
+  // state and an arbitrary-file APPEND primitive.
+  const aaD = aaFixture("d");
+  // An EMPTY target on purpose: pre-fix, an empty file folds to an empty pending index, so the
+  // gate proceeds and APPENDS its DEFERRED record straight through the symlink — which is the
+  // arbitrary-file append this asserts against. A target with junk in it would make the old code
+  // refuse for an unrelated reason (unparseable line) and the test would pass without the fix.
+  const victimD = path.join(aaD.dir, "victim-append-target.log");
+  fs.writeFileSync(victimD, "", { mode: 0o600 });
+  fs.symlinkSync(victimD, aaD.pending);
+  const beforeD = fs.readFileSync(victimD, "utf8");
+  const runD = await attemptTransferThroughProxy(aaD.args, { sessionId: "aa-d" });
+  const afterD = fs.readFileSync(victimD, "utf8");
+  ok("(aa-d) a symlinked --pending-store never forwards the call", !runD.executed && !/transferred 7000/.test(runD.text));
+  ok("(aa-d) the symlink target is byte-for-byte unchanged — no arbitrary-file append primitive", beforeD === afterD && afterD === "");
+  fs.rmSync(aaD.dir, { recursive: true, force: true });
+
+  // AA(e) — a NON-REGULAR file is the same bug with a longer fuse: a FIFO can hand honest rules to
+  // the startup read and an empty rule set to the next one. The guard is `fstat` on the descriptor,
+  // not a name check, so it catches this without knowing the trick.
+  const aaE = aaFixture("e");
+  fs.unlinkSync(aaE.rules);
+  let fifoMade = false;
+  try {
+    await execFileAsync("mkfifo", [aaE.rules], { timeout: 5000 });
+    fifoMade = true;
+  } catch {
+    fifoMade = false; // no mkfifo on this platform — the assertion below degrades to a skip, loudly
+  }
+  if (fifoMade) {
+    const stderrE = await runProxyCapturingStderr(aaE.args);
+    ok("(aa-e) a FIFO at --approval-rules is refused as not a regular file", stderrE.refused && /not a regular file/i.test(stderrE.stderr));
+  } else {
+    ok("(aa-e) a FIFO at --approval-rules is refused as not a regular file (skipped: mkfifo unavailable)", true);
+  }
+  fs.rmSync(aaE.dir, { recursive: true, force: true });
+
+  // AA(f) — a world-writable rule set is not a rule set: anyone in that set can turn the gate off
+  // without needing a symlink at all.
+  const aaF = aaFixture("f");
+  fs.chmodSync(aaF.rules, 0o666);
+  const stderrF = await runProxyCapturingStderr(aaF.args);
+  ok("(aa-f) a group/world-WRITABLE --approval-rules is refused", stderrF.refused && /writable by group or others/i.test(stderrF.stderr));
+  fs.rmSync(aaF.dir, { recursive: true, force: true });
+
+  // AA(g) — --keyring-file is a WRITE the proxy performs at startup; a symlink there turns it into
+  // "clobber any file this process can write" (the Bonus O(b) primitive, on a different flag).
+  const aaG = aaFixture("g");
+  const victimG = path.join(aaG.dir, "victim-config.yaml");
+  const keyringOutG = path.join(aaG.dir, "published-keyring.json");
+  fs.writeFileSync(victimG, "important: operator-config\n", { mode: 0o644 });
+  fs.symlinkSync(victimG, keyringOutG);
+  const beforeG = readTextAndModeNoFollow(victimG);
+  const stderrG = await runProxyCapturingStderr(["--keyring-file", keyringOutG]);
+  const afterG = readTextAndModeNoFollow(victimG);
+  ok("(aa-g) a symlinked --keyring-file fails closed instead of publishing through the link", stderrG.refused && /symlink/i.test(stderrG.stderr));
+  ok("(aa-g) the symlink target is byte-for-byte unchanged (no clobber)", beforeG.content === afterG.content && beforeG.mode === afterG.mode);
+  fs.rmSync(aaG.dir, { recursive: true, force: true });
+
+  // ---------------------------------------------------------------------------------------
   // BONUS G: downstream connection failure at proxy STARTUP must fail closed (non-zero exit,
   // never a half-serving proxy).
   // ---------------------------------------------------------------------------------------

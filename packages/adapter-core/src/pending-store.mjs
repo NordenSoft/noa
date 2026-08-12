@@ -11,6 +11,18 @@
  * `createChainSessionStore`'s in-memory `advance()`, in `packages/adapter-core/src/session-store.mjs`
  * (`adoptApprovedReceipt`).
  *
+ * SYMLINK / TOCTOU HARDENING (CWE-59/CWE-367, 2026-08-12): every read and every append goes
+ * through config-artifact.mjs's descriptor-level guard — `O_NOFOLLOW` open, `fstat` on the
+ * DESCRIPTOR (regular file, owned by this process or root, not group/other-writable), then the I/O
+ * on THAT SAME descriptor. The previous path-based `existsSync` + `readFileSync(path)` +
+ * `appendFileSync(path)` followed a symlink, so anyone able to create a file in the store's
+ * directory could redirect BOTH the outstanding-approval state this gate reads AND the append that
+ * records a hold. The guard is re-applied on EVERY call, not once at startup: `loadPendingIndex`
+ * runs per tool call, and a check that is not repeated at the moment of use is a TOCTOU wearing a
+ * hat. Honest limit, unchanged by this: an attacker who rewrites the file's CONTENT IN PLACE as the
+ * same uid is not stopped here — the signed receipt chain, not this index, is the cryptographic
+ * record (see the paragraph above).
+ *
  * FAIL-CLOSED LOADING: any corrupt NON-EMPTY line makes the whole load refuse (PendingStoreError)
  * — never a silent skip. "Corrupt" includes a line that does not parse as JSON, one missing a
  * string `id`, AND one naming an `event` this store does not recognize (see KNOWN_EVENTS). The
@@ -21,7 +33,7 @@
  * policy the sibling file-backed session store uses: on a security-bearing file, an unreadable
  * store must halt, never guess.
  */
-import { appendFileSync, readFileSync, existsSync } from "node:fs";
+import { appendConfigArtifact, readConfigArtifact } from "./config-artifact.mjs";
 import { describeThrown } from "./safe-throw.mjs";
 
 import { intrinsics } from "noa-receipt";
@@ -36,7 +48,7 @@ import { intrinsics } from "noa-receipt";
 // So the builtins are taken from the kernel's module-load capture here too, whether or not each
 // individual site is reachable today. Reachability is a property of the surrounding code, and the
 // surrounding code changes.
-const { dateParse, isFiniteNumber, jsonParse, jsonStringify, arrayPush, setHas, mapHas, mapGet, mapSet } = intrinsics;
+const { dateParse, isFiniteNumber, jsonParse, jsonStringify, arrayPush, setHas, mapHas, mapGet, mapSet, strSplit, strTrim } = intrinsics;
 // ROUND 4 / R4-06, R4-07. The remaining live reads on this file's decision paths: `Set.prototype.has`
 // deciding whether an event name is known (a poisoned `has` admits a line the loader must refuse),
 // `Map.prototype.has/get` deciding which rules were added, removed or modified, and
@@ -78,7 +90,10 @@ function recordKeyOf(ev) {
 
 function appendEvent(path, event) {
   try {
-    appendFileSync(path, jsonStringify(event) + "\n", "utf8");
+    // Through a verified descriptor (config-artifact.mjs): a symlink planted at `path` would
+    // otherwise make this an arbitrary-file append primitive AND move the hold record out of the
+    // store the approver reads.
+    appendConfigArtifact(path, jsonStringify(event) + "\n", { label: "--pending-store" });
   } catch (err) {
     // FAIL-CLOSED (R4 rule): never let a write failure escape as a raw fs error — always a typed,
     // greppable PendingStoreError the caller can catch and turn into a DENY.
@@ -151,12 +166,24 @@ function foldEvents(events) {
  * consume, or execute anything until an operator repairs it.
  */
 export function loadPendingIndex(path) {
-  if (!existsSync(path)) return new Map();
+  // ONE hardened open replaces `existsSync(path)` + `readFileSync(path)`: it is simultaneously the
+  // "does something exist here" test and the read, with no check-then-open gap, and it refuses a
+  // symlink / non-regular file / foreign-owned / group-writable store outright (config-artifact.mjs).
+  // `null` means the file genuinely does not exist yet — the pre-fix empty-Map behavior, unchanged.
+  let text;
+  try {
+    text = readConfigArtifact(path, { label: "--pending-store" });
+  } catch (err) {
+    // FAIL-CLOSED, and keep this module's typed contract: every caller (the proxy gate, noa-approve)
+    // already catches PendingStoreError and turns it into a DENY.
+    throw new PendingStoreError(`pending-store: could not read "${path}" (${describeThrown(err)})`);
+  }
+  if (text === null) return new Map();
   const byId = new Map();
-  const lines = readFileSync(path, "utf8").split("\n");
+  const lines = strSplit(text, "\n");
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    if (line.trim().length === 0) continue;
+    if (strTrim(line).length === 0) continue;
     let ev;
     try {
       ev = jsonParse(line);

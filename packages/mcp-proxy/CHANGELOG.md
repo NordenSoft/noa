@@ -1,5 +1,45 @@
 # Changelog — `noa-mcp-proxy`
 
+## [Unreleased]
+
+### Security — the human-approval gate could be turned off by a file swap (CWE-59 / CWE-367)
+
+**Reproduced end to end against the shipped CLI on 2026-08-12, twice, before any code changed.**
+
+`--approval-rules`, `--approver-keyring` and `--approver-identity` were read with a path-based
+`readFileSync`, which FOLLOWS A SYMLINK. No inode, owner or regular-file check stood behind them.
+
+1. **Full gate bypass.** Replace `approval-rules.json` with a symlink to a file containing `[]`.
+   A `transfer_funds` of 7000 minor units — above the configured 5000 threshold — was then
+   forwarded and **executed with no human approval at all**; the downstream answered
+   `transferred 7000 (minor units) to attacker-account`.
+2. **Wrong approver accepted.** Replace `approver-keyring.json` with a symlink to an
+   attacker-controlled keyring. The attacker signed the hold's approval with their own key and the
+   identical retry **executed**.
+
+Why this is severe rather than exotic: in most real deployments the agent process can write its own
+working directory, so the party the gate exists to constrain is the party that can plant the
+symlink. An enforcement boundary a file swap turns off is not a boundary.
+
+**Fixed** by routing every one of these artifacts — plus `--pending-store` (read AND appended) and
+the `--keyring-file` write — through `noa-mcp-adapter-core`'s new `config-artifact.mjs`: one
+`O_NOFOLLOW` open, `fstat` on the DESCRIPTOR (regular file, owned by this process or root, no
+group/other write bits), and the I/O on that same descriptor. The path is never re-opened. The
+pending store re-applies the guard on every call, not once at startup.
+
+**Honest edges, measured against the FIXED code** and written up in the README's new
+"Config-artifact integrity" section + NON-CLAIMS.md NC-6.9. Two things still execute the same
+unapproved transfer: an in-place content rewrite as the same uid (`printf '[]' > rules.json` — no
+symlink, no mode change, nothing for the guard to see), and an **ancestor-directory** repoint,
+because `O_NOFOLLOW` guards only the final path component and Node exposes no `openat`. Mitigate
+the second operationally: keep these artifacts under a directory whose every ancestor only the
+operator can write. `--receipt-log`/`--outcome-log` (append-only outputs) and `--session-dir` are
+unchanged by this release.
+
+Regression coverage: `test/smoke.mjs` "Bonus AA" — 16 assertions, 13 of which fail against the
+pre-fix code, including both reproduced attacks, the FIFO variant, and a group/world-writable rule
+set.
+
 ## [0.3.2] - 2026-08-04
 
 > **SECURITY PATCH. Upgrade from 0.3.1.** If you installed `noa-mcp-proxy@0.3.1` you received a
