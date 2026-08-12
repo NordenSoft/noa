@@ -702,6 +702,52 @@ const MCP_PROXY_OUT_OF_TCB = {
     "demo/test-support MCP server; it is the governed downstream and makes no proxy verdict",
 };
 
+// ── THE THIRD PUBLISHED PACKAGE: tsa-anchor ─────────────────────────────────────────────────────
+// `noa-tsa-anchor` is a publishable artifact (`private` is not set) and `packages/tsa-anchor/src`
+// was covered by NOTHING until 2026-08-12 — the identical gap this file records for
+// `packages/relay/src` and then for adapter-core/mcp-proxy, arriving a third time by the same
+// route: a package is added, no inventory mentions it, and every layer above keeps printing green
+// about the files it does walk. It is enrolled here on the commit that gives the package a verdict
+// worth attacking, rather than after someone notices.
+//
+// THE CLASSIFICATION IS A JUDGMENT, so it is argued rather than asserted. The question this package
+// answers is "is this history the one independent parties observed?", and a relying party ACTS on
+// that answer. Everything that contributes to the answer is IN, including the parsers — a verdict
+// is only as trustworthy as the bytes it was computed from, and every byte here arrives from a
+// remote TSA or from a pool submitted by whoever benefits from the verdict.
+const TSA_ANCHOR_TCB = [
+  // The equivocation verdict itself: admits an anchor (structure + pinning + Ed25519), decides
+  // whether published statements contradict each other, and decides whether a checkpoint's endorsed
+  // head was independently observed. A relying party detects a rewritten history from this or not.
+  "packages/tsa-anchor/src/equivocation.mjs",
+  // Decides whether a stored .tsr actually covers the anchor it is filed under. A verdict.
+  "packages/tsa-anchor/src/verify.mjs",
+  // Computes the exact preimage that BINDS a stamp to an anchor. Not a helper: if this disagreed
+  // with itself across two reads, verify.mjs's comparison would be comparing nothing.
+  "packages/tsa-anchor/src/anchor-hash.mjs",
+  // Parses attacker-supplied DER — a TSA's response, and a .tsr file presented by the party under
+  // adjudication. Its output IS the value the verdict is computed on.
+  "packages/tsa-anchor/src/der.mjs",
+  // Turns a TimeStampResp into {granted, hashAlgOid, hashedMessage, nonce, genTime}; verify.mjs and
+  // client.mjs branch on every one of those fields.
+  "packages/tsa-anchor/src/tsq.mjs",
+  // Fail-closed acceptance of a TSA response: rejects a non-grant, a wrong hashAlgorithm, a
+  // messageImprint that diverges from what was submitted, and a nonce that was not echoed. Those
+  // are refusals, not transport.
+  "packages/tsa-anchor/src/client.mjs",
+  // THE EXIT CODE IS THE VERDICT AS AN OPERATOR CONSUMES IT. A pipeline branches on `fork-scan`
+  // returning 5 rather than 0, so a mapping defect here defeats the monitor above it just as
+  // completely as a wrong answer would. It is also the ONLY place the freshness policy is
+  // assembled from flags, and half a policy silently treated as "no freshness" would re-open the
+  // replay gap. Classified IN for those two reasons, not by analogy with the root `src/cli.ts`
+  // (which is OUT because it genuinely only forwards a verdict computed elsewhere).
+  "packages/tsa-anchor/src/cli.mjs",
+];
+const TSA_ANCHOR_OUT_OF_TCB = {
+  "packages/tsa-anchor/src/index.mjs":
+    "re-export surface only; declares no rule and makes no runtime decision (same basis as the root src/index.ts and packages/adapter-core/src/index.mjs)",
+};
+
 const PUBLISHED_MODULE = /\.(?:mjs|ts)$/;
 
 function reconcilePublishedPackage({ lint, label, dir, tcb, outOfTcb }) {
@@ -987,6 +1033,8 @@ const LINTS = [
     run: () => reconcilePublishedPackage({ lint: "adapter-core-reconcile", label: "adapter-core", dir: "packages/adapter-core/src", tcb: ADAPTER_CORE_TCB, outOfTcb: ADAPTER_CORE_OUT_OF_TCB }), mode: "block" },
   { id: "mcp-proxy-reconcile", name: "mcp-proxy TCB coverage (every published src .mjs/.ts file is classified)",
     run: () => reconcilePublishedPackage({ lint: "mcp-proxy-reconcile", label: "mcp-proxy", dir: "packages/mcp-proxy/src", tcb: MCP_PROXY_TCB, outOfTcb: MCP_PROXY_OUT_OF_TCB }), mode: "block" },
+  { id: "tsa-anchor-reconcile", name: "tsa-anchor TCB coverage (every published src .mjs/.ts file is classified)",
+    run: () => reconcilePublishedPackage({ lint: "tsa-anchor-reconcile", label: "tsa-anchor", dir: "packages/tsa-anchor/src", tcb: TSA_ANCHOR_TCB, outOfTcb: TSA_ANCHOR_OUT_OF_TCB }), mode: "block" },
   // MEASURED on first coverage, 2026-08-02: these two published packages contain 355 existing
   // L2/L3/L8 findings. RATCHETED 2026-08-03 after the decision paths were hardened:
   //   round 2: adapter-core L2 38->34, L8 246->200 · mcp-proxy L8 62->49 · total warn 396->330
@@ -1005,6 +1053,21 @@ const LINTS = [
     run: () => publishedL2("L2-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 21 },
   { id: "L2-mcp-proxy", name: "L2 primitive allowlist on mcp-proxy decision paths",
     run: () => publishedL2("L2-mcp-proxy", "mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 3 },
+  // MEASURED ON FIRST COVERAGE, 2026-08-12: L2 22, L3 2, L8 212 across the eight tsa-anchor
+  // modules. Those numbers are recorded because the ones below are what is LEFT after the same
+  // commit fixed them, and a budget whose starting point nobody wrote down is a number that can
+  // only be argued with.
+  //
+  // L2 and L3 ENTER AT BLOCK WITH NO BUDGET, because they were driven to 0 rather than budgeted:
+  // the new decision path (equivocation.mjs) was rewritten onto `noa-receipt`'s captured intrinsics
+  // and index walks, and the six pre-existing L2/L3 sites were fixed in place — der.mjs's OID and
+  // INTEGER walks, its GeneralizedTime REGEX LITERAL (C-02(f): `exec` is a dynamic Get on the
+  // receiver) replaced by a hand scanner, client.mjs's content-type `String.prototype.includes`,
+  // cli.mjs's flag-set `Set.prototype.has` and two `for…of` walks over the anchor list, and the two
+  // module-level tables `PKI_STATUS`/`EXIT` rebuilt with `frozenTable`. A zero-count gate ships
+  // blocking with the budget DELETED, per the rule at the top of this file.
+  { id: "L2-tsa-anchor", name: "L2 primitive allowlist on tsa-anchor decision paths",
+    run: () => publishedL2("L2-tsa-anchor", "tsa-anchor", TSA_ANCHOR_TCB), mode: "block" },
   // Reconciliation BLOCKS and is deliberately not budgeted — see reconcileRelay()'s comment.
   { id: "L10-reconcile", name: "relay TCB coverage (every packages/relay/src file is classified)", run: reconcileRelay, mode: "block" },
   // 39 -> 38 on 2026-07-30. The CRITICAL-1 device-authorization fix rewrote `listPending` from an
@@ -1022,6 +1085,8 @@ const LINTS = [
     run: () => publishedL3("L3-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 4 },
   { id: "L3-mcp-proxy", name: "L3 no mutable policy state on mcp-proxy decision paths",
     run: () => publishedL3("L3-mcp-proxy", "mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 2 },
+  { id: "L3-tsa-anchor", name: "L3 no mutable policy state on tsa-anchor decision paths",
+    run: () => publishedL3("L3-tsa-anchor", "tsa-anchor", TSA_ANCHOR_TCB), mode: "block" },
   { id: "L4", name: "mutation-observable (control knockout)", run: () => 0, mode: "external",
     ratchet: "run by `npm run lint:knockout` — a separate process because each control must be knocked out and the suite re-run." },
   { id: "L5", name: "verdicts pinned by exact value", run: L5, mode: "block" },
@@ -1043,6 +1108,31 @@ const LINTS = [
     run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 153 },
   { id: "L8-mcp-proxy", name: "L8 dispatch-surface AST gate on mcp-proxy decision paths",
     run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 49 },
+  // 212 -> 97 when the package was enrolled, then 97 -> 95 in the round-2 fix commit. The
+  // reduction is not spread evenly and the split is the point:
+  //   equivocation.mjs  93 -> 0   the NEW decision path — the file this whole enrolment exists for.
+  //                              It carries the verdict a relying party acts on, so it is held to
+  //                              the root TCB's standard exactly, not to a migration budget.
+  //   cli.mjs (monitor) 18 -> 3   the three left are `process.stdout/stderr.write`. There is no
+  //                              captured wrapper for `process` in src/intrinsics.ts, and the
+  //                              pre-existing commands in the same file write the identical way;
+  //                              inventing a local wrapper for one half of one file would be
+  //                              cosmetics, not a control.
+  //   der/tsq/client/verify/anchor-hash + the older CLI commands: the residue. These are modules
+  //   that predate this coverage, and a budget is the documented way to bring code under a gate
+  //   without either weakening the rule or blocking on a migration that has nothing to do with the
+  //   change in hand — the same route adapter-core and mcp-proxy took at 355.
+  // ROUND 2 MOVED IT DOWN AGAIN, and the route there is worth recording because it briefly went
+  // UP. Closing the review's H5 added a real fail-closed path to the CLI (verify the presented
+  // chain, refuse a partially-read history), and every refusal is a `process.stderr.write` +
+  // `process.exit` pair the AST gate counts: 97 -> 102. Raising the budget to fit was the wrong
+  // instinct and refusing to add the safety check was worse. Both were avoided by routing the
+  // serialisation through the captured `jsonStringify` and collapsing every fatal exit in the file
+  // into ONE `fail(code, msg)` helper — which is better code for its own sake and leaves the gate
+  // at 95, two BELOW where the package entered.
+  // The number may only fall. It is written back here the day it is measured.
+  { id: "L8-tsa-anchor", name: "L8 dispatch-surface AST gate on tsa-anchor decision paths",
+    run: () => publishedL8("L8-tsa-anchor", TSA_ANCHOR_TCB), mode: "warn", budget: 95 },
 ];
 
 // The legacy regex self-test that stood here was DELETED with the regexes it tested (round-4, A5).

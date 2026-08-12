@@ -35,7 +35,7 @@
  * @license Apache-2.0
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, readdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, readdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -60,6 +60,60 @@ function isLocalPath(spec) {
     spec.startsWith('/') ||
     spec.startsWith('~/')
   );
+}
+
+/**
+ * `--manifest` reads `package.json` ON DISK instead of packing a tarball, and exists for exactly
+ * one caller: a package's own `prepublishOnly`.
+ *
+ * MEASURED, 2026-08-12. Wiring the normal (packing) mode into `prepublishOnly` produced a hook that
+ * blocks EVERY publish, including a correct one: `npm publish` runs `prepublishOnly`, which runs
+ * `npm pack` inside it, and the nested pack's output cannot be read back — the gate then fails
+ * closed on "could not inspect the artifact", which is the right instinct and the wrong answer.
+ * A release gate that can never pass is not a gate, it is an outage.
+ *
+ * So the two modes divide by WHERE they can run:
+ *   default (`npm pack`)  the artifact itself. Standalone, in CI, where nesting is not a factor.
+ *   `--manifest`          the file that is about to BE the artifact. No subprocess, so it is safe
+ *                         inside a publish lifecycle.
+ * The manifest is strictly weaker evidence than the tarball — it proves intent, not outcome — so
+ * this flag never replaces the workflow's tarball gate. It is the last line of defence for the
+ * case the workflow cannot cover at all: a human running `npm publish` by hand from a dev tree.
+ */
+const MANIFEST_ONLY = args.includes('--manifest');
+
+if (MANIFEST_ONLY) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(PKG_DIR, 'package.json'), 'utf8'));
+  } catch (e) {
+    console.error(`MANIFEST DEPENDENCY GATE FAIL: could not read ${PKG_DIR}/package.json: ${e.message}`);
+    console.error('  A gate that cannot inspect the manifest must not report PASS.');
+    process.exit(1);
+  }
+  const FIELDS_M = ['dependencies', 'optionalDependencies', 'peerDependencies'];
+  const local = [];
+  for (const field of FIELDS_M) {
+    for (const [name, spec] of Object.entries(manifest[field] ?? {})) {
+      if (isLocalPath(spec)) local.push({ field, name, spec });
+    }
+  }
+  console.log('MANIFEST DEPENDENCY GATE (prepublishOnly)');
+  console.log(`  package        : ${manifest.name}@${manifest.version}`);
+  console.log(`  local-path deps: ${local.length}`);
+  for (const d of local) console.log(`      ${d.field}.${d.name} = "${d.spec}"`);
+  if (local.length > 0) {
+    console.error('\nMANIFEST DEPENDENCY GATE FAIL:');
+    console.error(
+      `  ${manifest.name}@${manifest.version} still declares ${local.length} local-path dependency(ies).\n` +
+        '  Publishing now would upload a package no consumer can install. Rewrite each specifier to a\n' +
+        '  registry range first (`npm pkg set <field>.<name>=^<version>`) — the publish workflow does\n' +
+        '  this for you, which is why a TAGGED release is the supported path.',
+    );
+    process.exit(1);
+  }
+  console.log('\nMANIFEST DEPENDENCY GATE PASS: no local-path dependency is declared.');
+  process.exit(0);
 }
 
 const scratch = mkdtempSync(join(tmpdir(), 'noa-tarball-gate-'));

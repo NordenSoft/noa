@@ -6,7 +6,130 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [Unreleased]
 
-_Nothing yet._
+**No behaviour change in `noa-receipt`.** Not one file under `src/`, `schema/` or `conformance/`
+moved: the work below lives in the opt-in, disjoint `packages/tsa-anchor` (its own npm package, its
+own version) and in two documents the kernel tarball ships. It is listed here because those two
+documents are part of what a stranger installing `noa-receipt` receives, and a shipped document that
+has gone stale is the failure this changelog exists to prevent.
+
+### Documented
+
+- **`NON-CLAIMS.md` NC-4.3** — revised in place. The claim ("there is no transparency log in this
+  repository") is unchanged and nothing is retracted. Added: what the new offline witness-quorum
+  monitor in `packages/tsa-anchor` does and, in four bullets, what still separates it from a
+  transparency log (no Merkle log, no fetching, nothing published or deployed, and a
+  height-extending rewrite is invisible from anchors alone). Also **one correction**: "nothing here
+  contacts a witness or a network" was exact about the verification path and imprecise about the
+  producer side — `noa-tsa stamp` has always used `fetch`, reaching a **TSA, never a witness**.
+- **`NON-CLAIMS.md` NC-4.5** — revised in place. The non-claim survives, because the published
+  format did not move: no field was added to `noa.checkpoint/0.1` and none to the frozen
+  `noa.receipt/0.1`. Added: a checkpoint's endorsed head can now be *checked against* independent
+  observation offline (`checkpointCorroboration`), together with the four reasons that is a check a
+  verifier runs and not a property of the format.
+- **`THREAT-MODEL.md`** — a new residual-risk bullet on **equivocation** (one signer, two histories),
+  stating the opt-in detection that now exists and, in the same breath, that detection is not
+  prevention: it does not adjudicate which branch is true, it sees only what was published, and a
+  rewrite that also extends the chain needs the presented chain to catch.
+
+### Fixed (independent adversarial review — every defect reproduced before it was fixed)
+
+The review's own summary of what held is worth keeping: head comparison is canonical — accepted
+heads are exactly lowercase `sha256:<64 hex>`, sequences are safe integers, signed frontier bytes
+are JCS — and no casing or numeric-encoding collision merges two different heads or splits one. The
+defects were all in the layers above that comparison, and three of them were the same failure in
+different clothes: **the detector saying nothing is wrong.**
+
+- **A real fork could return `CLEAN`.** Bounds accepted zero, so `maxFindings:0` marked detected
+  contradictions "truncated" while `findings.length === 0` drove `clean:true`. Bounds are DoS
+  ceilings, never switches: each now has a floor (`maxBranches` ≥ 2, since a proof carrying fewer
+  than two anchors demonstrates nothing) and a degenerate value is refused, not clamped.
+- **An honest chain could be convicted by an unrelated one.** The presented history was keyed by
+  SEQUENCE alone, so `chain-B` was reported as contradicting `chain-A`'s history, and a valid
+  `chain-A` checkpoint became `EQUIVOCATION` purely because `chain-B` had forked. Keyed by
+  `(chain, seq)` now, and `checkpointCorroboration` only ever scans the checkpoint's own chain. For
+  a tool whose output is an accusation this was the worst of the set.
+- **"Checked, found nothing" and "could not check" shared one answer.** Empty and all-rejected pools
+  returned `CLEAN` with exit 0. There are now five verdicts — `EQUIVOCATION`, `CLEAN`,
+  `NO_EVIDENCE`, `INCOMPLETE_POOL`, `INVALID_INPUT` — rejections are classified
+  (`unpinned` / `malformed` / `badSignature`, the last an attack signal), and **exit 0 means CLEAN
+  and nothing else**. `stamp` and `verify` also refuse an empty anchor array instead of reporting
+  success for doing nothing.
+- **`--chain` neither verified nor hashed the presented chain** while reporting
+  `historyChecked:true`; `[{}]` was accepted. It is now run through the kernel's unchanged offline
+  `verifyChain`, and the derivation must be total.
+- **An emitted proof could fail its own verifier** at `maxBranches:1`. Closed by the branch floor.
+- **Attribution transferred at a label, not a key.** `sig.kid` is not in the signed bytes, so the
+  same signatures could be re-attributed by relabelling a trust-set. Findings now carry
+  `attributedToPubkey` and a `trustSetDigest`, and say plainly that the name is the reader's own.
+- **TSA evidence inside a proof was an unauthenticated claim** — a `{verified:true}` summary with a
+  forged time and URL passed. Proofs carry the token bytes and the verifier re-derives from them,
+  reporting `stampClaimsRefuted` rather than letting a bad stamp destroy a genuine fork proof.
+- **"Never throws" was false**; throwing getters escaped from anchors, options, proofs, checkpoints
+  and trust-sets. All entry points now hold the contract.
+- **`--now` claimed RFC 3339 but used lenient `Date.parse`**, accepting `2026`.
+- **An anchor with a smuggled `sig` member was double-keyed** (`anchorHash` covers the whole `sig`),
+  so its stamp could never attach. The `sig` schema is closed, as the kernel's checkpoint sig is.
+- **Release blockers.** `prepublishOnly` ran the tests but not the dependency gate, so a hand-run
+  `npm publish` would have uploaded a tarball still declaring `file:../..`; the OIDC-first first
+  release was impossible as documented (npm needs the package to exist before a trusted publisher
+  can be configured) and pinned Node 20 against a ≥ 22.14 requirement; and `workflow_dispatch` could
+  reach `npm publish` on an arbitrary branch, because the version/tag comparison only ran under
+  `refs/tags/*`. The publish job is now gated on the tag condition itself.
+
+### Fixed (adversarial review, second pass — the mirror defects)
+
+Every finding in this pass had one shape: **the previous fix created its opposite.** A detector that
+refuses honest input is not safer than one that accepts hostile input — in an accusation tool a
+standing false alarm costs as much as a missed fork, because it teaches the reader to ignore the
+output.
+
+- **A forward-compatible anchor condemned an honest pool.** Closing the `sig` schema to stop
+  double-keying made any anchor carrying an unknown `sig` member "malformed", and the verdict ladder
+  turned ONE such entry in a 10,000-anchor honest pool into a permanent `INCOMPLETE_POOL` / exit 1.
+  Fixed where the defect actually was: `anchorHash` now normalises `sig` to `{alg,kid,value}`, so one
+  anchor has one lookup key and the extra member — covered by neither the Ed25519 signature nor the
+  TSA token — cannot re-key it. Unknown members are admitted (matching the kernel's own reference
+  verifier) and counted under `extensions.sigMembers`, distinct from corruption.
+- **The release was bound to a tag NAME, not to reviewed history.** Anyone with write access could
+  tag an arbitrary unreviewed commit `tsa-v9.9.9`, bump the version on it, and the workflow would
+  publish it with OIDC provenance — provenance faithfully attesting a commit nobody reviewed. The
+  tagged commit must now be an **ancestor of `main`**, the job runs in an `npm-publish` environment
+  whose required reviewers are part of the setup instructions (which previously told the operator to
+  leave it blank), and the released SHA is printed into the run log and job summary.
+- **The workflow comment overclaimed twice**, including the H13 invariant itself: a dispatcher can
+  select a *tag* as the ref and reach `npm publish`, and a branch dispatch runs no gates at all
+  because the job-level `if` skips the whole job. Both now stated as they are.
+- **A valid proof died at an organisational boundary.** `attributedTo` mismatching the reader's label
+  hard-failed a cryptographically perfect proof, and admission resolved witnesses by `kid` — so a
+  proof only ever verified inside the naming domain that produced it. Proof verification now resolves
+  the witness **by key**, reports `labelMismatch` and `attributedToClaimed`, and speaks the reader's
+  names. The trust-set digest also covers `quorum` now.
+- **A TSA URL was laundered into re-derived evidence**: it is not inside a token and cannot be
+  re-derived, so it is carried as `tsaUrlClaimed` and never next to `verified:true`.
+- **Bound truncation was invisible** — reported as `truncated.{findings,branches}` and forces
+  `clean:false`. **An unverified history** is reported as `historyVerified:false` rather than implied
+  trustworthy by `historyChecked:true`. **Exit 6** now separates "the scan examined nothing" from a
+  substantive negative. Dead `return` statements after a fatal `fail()` removed.
+
+**Compatibility breaks, disclosed:** history entries supplied to `scanForEquivocation` now require a
+`chain` field (a history without chain identity cannot be compared safely); `corroborate` over an
+empty anchor array moved from exit 1 to exit 4; and `fork-scan` NO_EVIDENCE / INCOMPLETE_POOL moved
+from exit 1 to exit 6.
+
+**Residual gaps are named in `NON-CLAIMS.md` NC-4.3a**, not left in a review thread: pool
+completeness is unauthenticated, the trust-set digest is an integrity hint rather than an
+authentication, and a force-moved tag can still republish different content under one tag name.
+
+### Gated
+
+- **`packages/tsa-anchor/src` is now inside the security-gate inventory** (`scripts/lint-security-gates.mjs`).
+  It was covered by NOTHING — the third instance of the gap this repository already recorded for
+  `packages/relay/src` and then for adapter-core/mcp-proxy, and it arrives the same way every time: a
+  package is added, no inventory names it, and every layer above keeps printing green about the files
+  it does walk. Measured on first coverage: **L2 22, L3 2, L8 212**. Of those, L2 and L3 were driven
+  to **0** and enter BLOCKING with no budget; L8 stands at **97** as a ratcheted warn budget covering
+  modules that predate the coverage. The new decision path itself (`equivocation.mjs`) is at **0/0/0**.
+  Nothing in `src/`, `schema/` or `conformance/` was touched to achieve that.
 
 ## [0.6.2] - 2026-08-04
 

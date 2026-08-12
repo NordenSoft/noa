@@ -5,8 +5,13 @@
  * built-in `fetch` (stable since Node 18/20) — zero extra runtime dependencies.
  */
 import { randomBytes } from "node:crypto";
+import { intrinsics } from "noa-receipt";
 import { buildTimeStampReq, parseTimeStampResp, SHA256_OID } from "./tsq.mjs";
 import { anchorHash, anchorHashDigest } from "./anchor-hash.mjs";
+
+// Captured at load: `String.prototype.includes` is rewritable, and the content-type check below
+// is a fail-closed refusal, not a formatting step.
+const { strIncludes } = intrinsics;
 
 export class TsaError extends Error {
   constructor(m) {
@@ -52,7 +57,7 @@ export async function stampAnchor(anchor, opts) {
   }
   if (!res.ok) throw new TsaError(`stampAnchor: TSA ${opts.tsaUrl} returned HTTP ${res.status}`);
   const ct = res.headers.get("content-type") ?? "";
-  if (!ct.includes(TSR_CONTENT_TYPE)) {
+  if (!strIncludes(ct, TSR_CONTENT_TYPE)) {
     throw new TsaError(`stampAnchor: unexpected content-type "${ct}" from ${opts.tsaUrl} (expected ${TSR_CONTENT_TYPE})`);
   }
   const raw = Buffer.from(await res.arrayBuffer());

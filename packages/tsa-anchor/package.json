@@ -1,7 +1,7 @@
 {
   "name": "noa-tsa-anchor",
   "version": "0.1.0",
-  "description": "Opt-in RFC 3161 trusted-timestamp sidecar for noa-receipt witness anchors — an independent Time-Stamping Authority's proof that a signed anchor existed by time T, alongside (never replacing) the anchor's own signer-asserted ts.",
+  "description": "Opt-in independent anchoring for noa-receipt witness anchors: RFC 3161 trusted timestamps from a third-party TSA, plus a witness-quorum monitor that finds signed contradictions in a public anchor pool and emits a proof a third party can re-check offline.",
   "keywords": [
     "ai-agent",
     "governance",
@@ -10,7 +10,9 @@
     "provenance",
     "rfc3161",
     "timestamping",
-    "witness"
+    "witness",
+    "equivocation",
+    "transparency"
   ],
   "homepage": "https://noatrust.com",
   "repository": {
@@ -42,7 +44,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "prepublishOnly": "npm test"
+    "check:tarball": "node ../../scripts/lint-publish-tarball-deps.mjs --dir . --manifest",
+    "prepublishOnly": "npm test && npm run check:tarball"
   },
   "dependencies": {
     "noa-receipt": "file:../.."

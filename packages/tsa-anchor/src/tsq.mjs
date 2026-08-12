@@ -5,11 +5,15 @@
  * documented `openssl ts -verify` command that does).
  */
 import { DerError, encInteger, encOid, encNull, encOctetString, encBoolean, encSequence, derDecode, readInteger, readIntegerBig, readOid, readGeneralizedTime } from "./der.mjs";
+import { frozenTable } from "noa-receipt";
 
 export const SHA256_OID = "2.16.840.1.101.3.4.2.1";
 const ID_SIGNED_DATA = "1.2.840.113549.1.7.2";
 const ID_CT_TST_INFO = "1.2.840.113549.1.9.16.1.4";
-const PKI_STATUS = { 0: "granted", 1: "grantedWithMods", 2: "rejection", 3: "waiting", 4: "revocationWarning", 5: "revocationNotification" };
+// Frozen + null-rooted at construction (ADR §5.6): this table names the PKIStatus a caller
+// branches on, so a writable `Object.prototype[2]` or a mutated entry would let "rejection"
+// read back as something else for every caller at once.
+const PKI_STATUS = frozenTable({ 0: "granted", 1: "grantedWithMods", 2: "rejection", 3: "waiting", 4: "revocationWarning", 5: "revocationNotification" });
 
 /**
  * Build a DER-encoded RFC 3161 TimeStampReq over an ALREADY-COMPUTED digest. `hashedMessage` MUST
