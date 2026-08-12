@@ -1110,6 +1110,48 @@ const KNOCKOUTS = [
     kind: "gate",
     suite: [".", "node", ["scripts/lint-resolver-parity.mjs"]],
   },
+  // ── L11 — INERT-BEFORE-WRITE (2026-08-12) ─────────────────────────────────────────────────────
+  // A class that no gate in this repository could express until now. `scripts/lint-security-gates.mjs`
+  // models dispatch as a CALL or a READ; `packages/adapter-core/src/policy-change-guard.mjs:58-60`
+  // states it in the source: L2 and L8 "have no grammar for a write". So an ordinary `[]` or `{}`
+  // filled on a decision path contributed ZERO findings to either budget, and the three files that
+  // got fixed got fixed because a human read them.
+  //
+  // The two entries below are deliberately of DIFFERENT kinds, because they measure different
+  // controls. The first is the fix itself and is measured by TESTS. The second is the ORDERING —
+  // creation-time versus fill-time — and is measured by the GATE, because the two orderings are
+  // behaviourally identical on every honest input and only differ while a poison is installed
+  // mid-fill.
+  {
+    id: "l11-precheck-fallback-container-inert",
+    control:
+      "L11 — canonicalParamsHash's fallback stringifier builds its `parts`/`items` containers INERT " +
+      "BEFORE the first write. The captured `arrayPush` applies the PRISTINE push, but push is " +
+      "defined as Set(O, \"0\", v) and [[Set]] walks the RECEIVER's prototype chain, so an accessor at " +
+      "Object.prototype[\"0\"] swallows the first element while `length` still moves. MEASURED: two " +
+      "different tool calls collapsed onto ONE paramsHash, so an approval minted for a 10-unit " +
+      "transfer authorises a 900,000-unit one — with NO builtin replaced at all.",
+    file: "packages/adapter-core/src/pre-check.mjs",
+    find: "    const parts = [];\n    objectSetPrototypeOf(parts, INERT_ARRAY_PROTOTYPE);",
+    replace: "    const parts = [];",
+    kind: "tests",
+    suite: ["packages/adapter-core", "npm", ["test"]],
+  },
+  {
+    id: "l11-reroot-at-creation-not-after-fill",
+    control:
+      "L11 — a container is re-rooted at CREATION, never after the fill. This is the distinction the " +
+      "whole layer exists for, and it is not hypothetical: the fix that shipped for this class once " +
+      "re-derived the house pattern and got it wrong by re-rooting AFTER the loop. The mutation moves " +
+      "`objectSetPrototypeOf` below the fill — identical output on every honest input — and " +
+      "`lint:inert-containers` must report it as L11-B. A gate that scored both orderings the same " +
+      "way would pass the exact code that shipped the defect.",
+    file: "packages/adapter-core/src/policy-change-guard.mjs",
+    find: "  const canon = [];\n  objectSetPrototypeOf(canon, INERT_ARRAY_PROTOTYPE);\n  for (let i = 0; i < arr.length; i += 1) arrayPush(canon, sortKeysDeep(arr[i]));",
+    replace: "  const canon = [];\n  for (let i = 0; i < arr.length; i += 1) arrayPush(canon, sortKeysDeep(arr[i]));\n  objectSetPrototypeOf(canon, INERT_ARRAY_PROTOTYPE);",
+    kind: "gate",
+    suite: [".", "npm", ["run", "lint:inert-containers"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment

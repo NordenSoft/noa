@@ -115,7 +115,12 @@ import { intrinsics } from "noa-mcp-adapter-core";
 // module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
 // who adds one, so the builtins come from the kernel's module-load capture whether or not each site
 // is reachable today. Reachability is a property of the surrounding code, and that changes.
-const { isFiniteNumber, jsonParse, jsonStringify, arrayIndexOf, arraySlice, toNumber, strIncludes } = intrinsics;
+// `objectSetPrototypeOf` closes the WRITE half of the same argument (L11): `opts.keyFile = value`
+// is a [[Set]] that walks the receiver's prototype chain, so an accessor on Object.prototype can
+// swallow a parsed flag and answer the read with a path of its own choosing — with no builtin
+// replaced at all. See scripts/lint-inert-containers.mjs.
+const { isFiniteNumber, jsonParse, jsonStringify, arrayIndexOf, arraySlice, toNumber, strIncludes,
+        objectSetPrototypeOf } = intrinsics;
 
 // Captured ONCE at module load, same reasoning as the intrinsics destructure just above: `process`
 // and `Promise` have no wrapper in the shared intrinsics bundle (host object / language builtin the
@@ -160,6 +165,13 @@ function parseArgs(argv) {
     httpPort: null,
     httpHost: "127.0.0.1",
   };
+  // NULL-ROOTED BEFORE THE FIRST FLAG IS APPLIED (L11). Four of the fields below name the files that
+  // decide who may approve (`--approver-keyring`, `--approver-identity`, `--approval-rules`) and
+  // which key this proxy signs with (`--key-file`). Each assignment is a [[Set]] that walks the
+  // prototype chain, so an accessor at e.g. `Object.prototype.approverKeyringFile` swallows the
+  // operator's flag and answers every later read with a keyring the attacker chose — the flag looks
+  // parsed, `--help` looks right, and no builtin was replaced. A null-prototype object has no chain.
+  objectSetPrototypeOf(opts, null);
   for (let i = 0; i < own.length; i++) {
     const flag = own[i];
     const value = own[++i];

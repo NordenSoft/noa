@@ -82,7 +82,10 @@ import { APPROVAL_RULES } from "./policy.mjs";
 // file in this TCB (see proxy.mjs's own REDTEAM 2026-08-03 note): a decision path — and refusing to
 // write through a symlink onto the gate's own trust anchor IS one — must not resolve `.filter`,
 // `.push`, `JSON.stringify` etc. through a prototype slot an attacker in this realm could replace.
-const { jsonStringify, arrayPush } = intrinsics;
+// `objectSetPrototypeOf` + `INERT_ARRAY_PROTOTYPE` close the WRITE half of the same argument
+// (L11): capturing `push` protects the METHOD, not the RECEIVER, and push is defined as
+// Set(O, "0", v) — a [[Set]] that walks the receiver's chain to the mutable Object.prototype.
+const { jsonStringify, arrayPush, objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 // Captured ONCE at module load — every `process.std*.write` inside a function called later reads
 // this local binding, never the live global. `process` itself has no wrapper in the shared
@@ -329,7 +332,13 @@ function joinLines(items) {
 }
 
 function parseArgs(argv) {
+  // NULL-ROOTED BEFORE THE FIRST FLAG IS APPLIED (L11). `--dir` decides where this command mints the
+  // approver private key and writes the PUBLIC keyring the proxy calls its trust anchor. An accessor
+  // at `Object.prototype.dir` swallows `opts.dir = value` and answers every later read with the
+  // attacker's directory — the same class as the symlink-redirect this file already defends against,
+  // reached through the option object instead of the filesystem.
   const opts = { dir: ".", force: false, help: false };
+  objectSetPrototypeOf(opts, null);
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     if (flag === "--dir") {
@@ -435,7 +444,11 @@ export function runInitCli(argv) {
   // throws" contract, rather than escaping uncaught. An index loop (not `.filter`) over a plain
   // array (not `for…of`) — both are prototype/iterator dispatches on this decision path.
   const allTargets = [rulesPath, pendingStorePath, approverKeyPath, approverKeyringPath];
+  // Inert before the first write (L11): `preexisting.length > 0` is the refusal, and a swallowed
+  // FIRST element leaves the count intact while `joinLines` reports the attacker's getter value —
+  // the refusal message would then name a file that was never in the way.
   const preexisting = [];
+  objectSetPrototypeOf(preexisting, INERT_ARRAY_PROTOTYPE);
   try {
     for (let i = 0; i < allTargets.length; i++) {
       if (pathOccupied(allTargets[i])) arrayPush(preexisting, allTargets[i]);
@@ -497,7 +510,11 @@ export function runInitCli(argv) {
   // BEFORE that SAME target is recreated — never all four removed upfront. A failure at step N
   // therefore leaves steps 1..N-1 holding their NEW content and steps N..4 holding their OLD
   // (untouched, still-working) content — never "all four destroyed, nothing replaced".
+  // Inert before the first write (L11): this list is the partial-progress report a failed scaffold
+  // hands the operator. A swallowed element makes it name the wrong file, which is the one thing
+  // this list exists to get right.
   const confirmed = [];
+  objectSetPrototypeOf(confirmed, INERT_ARRAY_PROTOTYPE);
   try {
     removeIfForced(rulesPath, opts.force);
     createFileExclusive(rulesPath, jsonStringify(APPROVAL_RULES, null, 2) + "\n");

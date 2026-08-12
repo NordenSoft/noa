@@ -74,7 +74,7 @@ import { intrinsics } from "noa-receipt";
 // So the builtins are taken from the kernel's module-load capture here too, whether or not each
 // individual site is reachable today. Reachability is a property of the surrounding code, and the
 // surrounding code changes.
-const { objectKeys } = intrinsics;
+const { objectKeys, objectDefineProperty } = intrinsics;
 
 export const SIDE_EFFECT_STATES = deepFreeze({
   /** Nothing has been dispatched. The gate may still deny; no side effect is possible. */
@@ -188,9 +188,15 @@ export class IllegalSideEffectTransition extends Error {
         `an unmodelled observation must not be resolved by guessing a state (that is how an ` +
         `indeterminate outcome becomes a determinate lie)`,
     );
+    // L11: DEFINED, NOT ASSIGNED. `this.state = state` is a [[Set]] on an ordinary instance, and
+    // [[Set]] walks the chain to the mutable `Object.prototype`; an accessor at
+    // `Object.prototype.state` swallows it, so the error that exists to say WHICH unmodelled
+    // observation was refused reports the attacker's pair instead. `[[DefineOwnProperty]]` consults
+    // no prototype. `this.name` keeps its assignment: `Error.prototype.name` is a writable data
+    // property, so that walk terminates before `Object.prototype`.
     this.name = "IllegalSideEffectTransition";
-    this.state = state;
-    this.event = event;
+    objectDefineProperty(this, "state", { value: state, writable: true, enumerable: true, configurable: true });
+    objectDefineProperty(this, "event", { value: event, writable: true, enumerable: true, configurable: true });
   }
 }
 
