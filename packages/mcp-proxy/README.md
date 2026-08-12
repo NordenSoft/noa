@@ -105,6 +105,26 @@ Enable the gate by giving `--approval-rules`, `--pending-store`, and (required) 
    live chain, and forwards the call. The final `DEFERRED -> ALLOWED -> EXECUTED` chain verifies
    `VALID` offline. A forged or untrusted-signed approval is refused and never executes.
 
+### Getting started: `proxy.mjs init`
+
+`node src/proxy.mjs init [--dir <path>] [--force]` scaffolds the four inputs the gate above needs
+to START — `approval-rules.json` (a starter rule matching the bundled demo's `transfer_funds`
+tool), `pending-store.jsonl` (empty), and a fresh `approver-key.json` / `approver-keyring.json`
+identity pair (private key mode `0600`, written through the same hardened key-file loader
+`packages/signer-sidecar` uses). Refuses to touch a directory that already has any of the four
+files unless `--force` is given, in which case it regenerates all four, including a brand-new
+approver identity.
+
+**This is scaffolding, not activation — read this before running it.** `init` does not wire an MCP
+host's config, does not adapt the starter rule to your own tools' action ids, and does not perform
+any approval. Turning the gate on for real still needs, in order: (1) an MCP host actually launched
+with this proxy wrapping your downstream, pointed at the generated files; (2) your OWN
+`approval-rules.json` matching your OWN tools (the generated rule matches nothing you own until you
+edit it); (3) a real human running `noa-approve` out-of-band, holding `approver-key.json`, for every
+held call; (4) the agent retrying the *identical* call once approved. Skipping any of the four means
+nothing is protected. `init`'s own `--help` output repeats this exact sequence with the literal
+paths it just generated.
+
 ## Layout
 
 - `src/demo-downstream.mjs` — a small ordinary MCP server (3 tools: `echo`, `read_data`,
@@ -114,7 +134,11 @@ Enable the gate by giving `--approval-rules`, `--pending-store`, and (required) 
   connected downstream `Client`. Both `proxy.mjs` and the smoke test use this exact module. Emits
   the decision receipt AND (R2) the post-execution outcome receipt, and forwards
   `tools/list_changed` + streaming progress.
-- `src/proxy.mjs` — the CLI entrypoint (`command: node`, `args: [proxy.mjs, --, ...]`).
+- `src/proxy.mjs` — the CLI entrypoint (`command: node`, `args: [proxy.mjs, --, ...]`); also
+  dispatches the `init` subcommand below.
+- `src/init.mjs` — `proxy.mjs init`: scaffolds the human-approval gate's four inputs (see "Getting
+  started" above). Scaffolding, not activation — its own doc comment states exactly what still has
+  to happen for real.
 - `src/http-server.mjs` — (R2) the HTTP+SSE (Streamable HTTP) front transport; a pure transport
   adapter that fronts the SAME `createProxyServer` gate as stdio (the gate is not forked per
   transport).

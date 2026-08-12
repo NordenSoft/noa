@@ -697,6 +697,15 @@ const ADAPTER_CORE_OUT_OF_TCB = {
 const MCP_PROXY_TCB = [
   "packages/mcp-proxy/src/create-proxy-server.mjs", // authorization, approval adoption and forwarding verdicts
   "packages/mcp-proxy/src/http-server.mjs",        // caller session ID selects the isolated proxy/session authority
+  // PROVISIONS THE APPROVER IDENTITY AND THE TRUSTED KEYRING (added when `init` shipped). `init.mjs`
+  // mints the private key the human-approval seat signs with and writes the PUBLIC keyring
+  // --approver-keyring feeds the proxy — the file the gate's README calls its trust anchor, and
+  // refuses to start without ("a gate that could adopt unverifiable approvals would be fail-open").
+  // A symlink-follow defect in exactly this file once let that keyring be written to an
+  // attacker-chosen path outside --dir; OUT_OF_TCB would have exempted the very file whose
+  // vulnerability was just repaired from the L2/L3/L8 lints that exist to catch this class — that is
+  // using a classification to dodge a gate, not a legitimate exemption.
+  "packages/mcp-proxy/src/init.mjs",
   "packages/mcp-proxy/src/outcome-receipt.mjs",     // signed outcome construction and verification
   "packages/mcp-proxy/src/policy.mjs",              // shipped proxy governance and approval policy
   "packages/mcp-proxy/src/proxy.mjs",               // key handling and fail-closed authorization configuration
