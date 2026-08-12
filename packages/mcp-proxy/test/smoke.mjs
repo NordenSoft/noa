@@ -1254,7 +1254,13 @@ async function main() {
   // the proxy AND still HOLD the over-threshold call for a human.
   const abControl = abFixture("control", JSON.stringify(APPROVAL_RULES));
   const abControlRun = await attemptTransferThroughProxy(abControl.args, { sessionId: "ab-control" });
-  ok("(ab-control) an honest rule set still starts the proxy and still HOLDS the over-threshold transfer", abControlRun.started && !abControlRun.executed);
+  // `held` is asserted explicitly, not inferred from `!executed`: an unrelated startup failure also
+  // produces "started and did not execute", and a control that a broken proxy satisfies is not a
+  // control. The DEFERRED path is the one that must still work.
+  ok(
+    "(ab-control) an honest rule set still starts the proxy and the over-threshold transfer is HELD for a human (not merely un-executed)",
+    abControlRun.started && !abControlRun.executed && /held for human approval/.test(abControlRun.error ?? ""),
+  );
   fs.rmSync(abControl.dir, { recursive: true, force: true });
 
   for (const payload of AB_PAYLOADS) {
@@ -1326,6 +1332,101 @@ async function main() {
   ok("(ab-http) startHttpProxy refuses to bind at all with a non-array `approvalRules`", abHttpRefusal !== "" && /approvalRules/.test(abHttpRefusal));
   if (abHttp) await abHttp.close();
   fs.rmSync(abLibDir, { recursive: true, force: true });
+
+  // ---------------------------------------------------------------------------------------
+  // BONUS AC — THE VALIDATED RULE SET MUST BE THE RULE SET THAT IS USED.
+  //
+  // Bonus AB made every load path CALL the validator. An adversarial review then walked past the
+  // validated gate three times on that patched code, each ending in an executed 7000-unit transfer
+  // with no human, because `requireValidApprovalRules` returned the CALLER'S OWN ARRAY and the
+  // matcher read it again later with ordinary property access:
+  //
+  //   (ac-a) a rule whose own data gates every transfer_funds, with `threshold` INHERITED from its
+  //          prototype and aimed at a path that is never in `inputs` — validation read the inherited
+  //          value and called it well-formed, the matcher then skipped the rule and forwarded;
+  //   (ac-b) an honest rule set MUTATED after createProxyServer had validated it;
+  //   (ac-c) a `match` GETTER returning valid data on its first read and a different action on its
+  //          second (`getterReads: 2`).
+  //
+  // All three are one defect — nothing bound the object that was checked to the object that was
+  // used, which is the check-then-use gap config-artifact.mjs closed on the filesystem, relocated
+  // into the object graph. The gate now holds a compiled, frozen, own-data-only SNAPSHOT.
+  //
+  // These run against a REAL downstream child process behind the REAL createProxyServer factory; the
+  // host hop is the SDK's own InMemoryTransport (as in scenarios A/D/E). Execution is counted by
+  // demo-downstream.mjs itself, on the far side of the gate.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus AC — the rule set that was validated is the rule set that is used (binding)");
+
+  const acKeyring = (() => { const kp = generateKeyPair("smoke:ac:approver"); return { [kp.kid]: kp.publicKey }; })();
+  const acDir = fs.mkdtempSync(path.join(os.tmpdir(), "noa-mcp-proxy-ac-"));
+
+  /** Starts a real session with `rules`, optionally mutates them after the factory returned, then
+   *  attempts the over-threshold transfer. Never throws: a refused factory is `{ started:false }`. */
+  async function acAttempt(tag, rules, mutateAfterValidation) {
+    const countsFile = path.join(acDir, `${tag}-counts.json`);
+    let session = null;
+    try {
+      session = await makeSession({
+        sessionId: `ac-${tag}`,
+        store: createChainSessionStore(),
+        countsFile,
+        approvalRules: rules,
+        approverKeyring: acKeyring,
+        pendingStorePath: path.join(acDir, `${tag}-pending.jsonl`),
+      });
+    } catch (err) {
+      return { started: false, refusal: String(err?.message ?? err), executed: 0, downstreamStarted: fs.existsSync(countsFile) };
+    }
+    if (mutateAfterValidation) mutateAfterValidation();
+    let held = false;
+    try {
+      await session.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 7000, to: "attacker-account" } });
+    } catch (err) {
+      held = /held for human approval/.test(String(err?.message ?? err));
+    }
+    await session.close();
+    return { started: true, refusal: "", held, executed: readCounts(countsFile).transfer_funds, downstreamStarted: true };
+  }
+
+  // (ac-a) INHERITED THRESHOLD.
+  const acInherited = Object.create({ threshold: { path: "never-in-inputs", op: "ge", value: 0 } });
+  acInherited.id = "transfer-needs-human";
+  acInherited.match = { type: "exact", action: "transfer_funds" };
+  const acA = await acAttempt("a-inherited", [acInherited]);
+  ok("(ac-a) an INHERITED threshold is refused at the factory — the proxy never starts", !acA.started && /OWN DATA property/.test(acA.refusal));
+  ok("(ac-a) the transfer never executed and the downstream was never even spawned", acA.executed === 0 && !acA.downstreamStarted);
+
+  // (ac-b) MUTATED AFTER VALIDATION — the factory accepts an honest rule set, the caller then
+  // rewrites it. The snapshot is frozen and was taken at validation time, so the gate does not move.
+  const acLive = [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }];
+  const acB = await acAttempt("b-mutated", acLive, () => {
+    acLive[0].match.action = "something-else";
+    acLive[0].threshold.value = 999_999_999;
+    acLive.length = 0;
+  });
+  ok("(ac-b) an honest rule set MUTATED after validation still HOLDS the over-threshold transfer", acB.started && acB.held);
+  ok("(ac-b) and the downstream executed nothing (the reproduced bypass)", acB.executed === 0);
+
+  // (ac-c) SUCCESSIVE GETTER.
+  let acGetterReads = 0;
+  const acGetterRule = {
+    id: "transfer-needs-human",
+    get match() {
+      acGetterReads += 1;
+      return acGetterReads <= 1 ? { type: "exact", action: "transfer_funds" } : { type: "exact", action: "not-this-tool" };
+    },
+  };
+  const acC = await acAttempt("c-getter", [acGetterRule]);
+  ok("(ac-c) a GETTER-backed rule field is refused at the factory — the proxy never starts", !acC.started && /OWN DATA property/.test(acC.refusal));
+  ok("(ac-c) the getter was never invoked at all, so it never got a second answer", acGetterReads === 0);
+  ok("(ac-c) the transfer never executed", acC.executed === 0 && !acC.downstreamStarted);
+
+  // (ac-control) The same real session with an honest, untouched rule set must still HOLD — the
+  // three refusals above are worth nothing if the gate has simply stopped working.
+  const acControl = await acAttempt("control", [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }]);
+  ok("(ac-control) an honest rule set still starts the proxy and still holds the transfer for a human", acControl.started && acControl.held && acControl.executed === 0);
+  fs.rmSync(acDir, { recursive: true, force: true });
 
   // ---------------------------------------------------------------------------------------
   // BONUS G: downstream connection failure at proxy STARTUP must fail closed (non-zero exit,

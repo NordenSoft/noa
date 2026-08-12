@@ -109,7 +109,13 @@ export async function startHttpProxy(config) {
   // below would refuse every individual session anyway (it applies the identical check), but a
   // process that binds a port and then fails every call is an operator staring at 502s; a process
   // that never starts is an operator reading the actual reason. Same fail-closed direction, earlier.
-  if (proxyConfig.approvalRules !== undefined) requireValidApprovalRules(proxyConfig.approvalRules, "startHttpProxy: `approvalRules`");
+  // Compiled ONCE, here, and the SNAPSHOT is stored back: `proxyConfig` is this function's own
+  // rest-destructured object, so every session receives the frozen snapshot rather than the caller's
+  // live rule array — including a session opened long after the caller mutated that array.
+  // createProxyServer re-checks per session and finds an already-compiled snapshot (idempotent).
+  if (proxyConfig.approvalRules !== undefined) {
+    proxyConfig.approvalRules = requireValidApprovalRules(proxyConfig.approvalRules, "startHttpProxy: `approvalRules`");
+  }
 
   // mcpSessionId -> { transport, proxy }
   const sessions = new Map();

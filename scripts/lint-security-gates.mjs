@@ -1054,8 +1054,12 @@ const LINTS = [
   // Each package/layer therefore gets its OWN exact measured budget: no package can spend another
   // package's cleanup and no layer can trade against another. Reconciliation above stays BLOCKING
   // and unbudgeted; every new/moved file must be classified before any residue number can matter.
+  // RATCHETED 21 -> 18 on 2026-08-12 (measured). The approval-rule COMPILER replaced the old
+  // reporting validator, and its `Set` membership tests go through the kernel's captured `setHas`
+  // rather than `MATCH_TYPES.has(...)` / `seenIds.has(...)` on the live prototype. Budgets move
+  // DOWNWARD only; writing the reduction back the same day is what stops a later change spending it.
   { id: "L2-adapter-core", name: "L2 primitive allowlist on adapter-core decision paths",
-    run: () => publishedL2("L2-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 21 },
+    run: () => publishedL2("L2-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 18 },
   { id: "L2-mcp-proxy", name: "L2 primitive allowlist on mcp-proxy decision paths",
     run: () => publishedL2("L2-mcp-proxy", "mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 3 },
   // MEASURED ON FIRST COVERAGE, 2026-08-12: L2 22, L3 2, L8 212 across the eight tsa-anchor
@@ -1109,8 +1113,12 @@ const LINTS = [
   // Runs BEFORE L8 in the table so a defanged rule is reported before its count of 0 is printed.
   { id: "L8-selftest", name: "evasion matrix — every construct bites its positive sample, none fires on the captured form", run: L8SelfTest, mode: "block" },
   { id: "L8", name: "dispatch-surface AST gate (compiler-API walk: node kinds + resolved symbols)", run: L8, mode: "block" },
+  // RATCHETED 153 -> 146 on 2026-08-12 (measured), same commit and same cause as L2-adapter-core
+  // above: the approval-rule compiler reads every field through captured wrappers
+  // (`getOwnPropertyDescriptor`, `setHas`, `arrayLength`, `objectFreeze`) instead of dispatching on
+  // the caller's object, and the hand-rolled validator it replaced is gone.
   { id: "L8-adapter-core", name: "L8 dispatch-surface AST gate on adapter-core decision paths",
-    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 153 },
+    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 146 },
   { id: "L8-mcp-proxy", name: "L8 dispatch-surface AST gate on mcp-proxy decision paths",
     run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 49 },
   // 212 -> 97 when the package was enrolled, then 97 -> 95 in the round-2 fix commit. The

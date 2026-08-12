@@ -175,8 +175,20 @@ The bytes were validated as JSON and never validated as a RULE SET: `matchApprov
 `null`, a bare string, a number, a malformed threshold and a partially-invalid array were each
 measured executing it. Every boundary that loads a rule set — this CLI, `createProxyServer` and
 `startHttpProxy` — now refuses anything that is not an array of valid rules, in full and before any
-downstream is spawned. Pinned by `test/smoke.mjs` "Bonus AB" (18 assertions, 16 of which fail
-against the pre-fix code).
+downstream is spawned. Pinned by `test/smoke.mjs` "Bonus AB" (18 assertions — 15 over real CLI proxy
+processes, 3 in-process at the library/HTTP boundary — 16 of which fail against the pre-fix code).
+
+**And the rule set that was VALIDATED is now the rule set that is USED.** A follow-up review walked
+past the fix above three times: a `threshold` INHERITED from a rule's prototype (validation resolved
+it and called the rule well-formed, the matcher then skipped the rule and forwarded), an honest rule
+set MUTATED after the proxy had validated it, and a `match` GETTER answering one way while checked
+and another while used. Each executed the same 7000-unit transfer with no human. All three are one
+defect: validation returned the caller's own object and the matcher read that object again later —
+the check-then-use gap above, relocated from the filesystem into the object graph. The gate now
+compiles an inert SNAPSHOT — own data properties only, inherited and getter-backed rule fields
+refused rather than resolved, frozen and null-prototype at every level — and the snapshot, never
+your object, is what each session reads. Pinned by `test/smoke.mjs` "Bonus AC" (8 assertions against
+a real downstream child process; 7 fail against the pre-fix code, the eighth being the control).
 
 **What is NOT fixed — measured against the FIXED code, not reasoned about.** Two things still
 execute the same unapproved 7000 transfer:

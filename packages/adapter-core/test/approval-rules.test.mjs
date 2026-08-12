@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { validateApprovalRules, requireValidApprovalRules, matchApprovalRule, tryIdentifyToolCallForTicketLookup } from "../src/approval-rules.mjs";
+import { validateApprovalRules, requireValidApprovalRules, compileApprovalRules, isCompiledApprovalRules, matchApprovalRule, tryIdentifyToolCallForTicketLookup } from "../src/approval-rules.mjs";
 import { canonicalParamsHash } from "../src/pre-check.mjs";
 
 test("validateApprovalRules: undefined/null/empty are valid; rejects non-array, missing id, bad match.type, duplicate id, bad threshold", () => {
@@ -46,10 +46,104 @@ test("requireValidApprovalRules: a PARTIALLY-invalid array is refused in full, a
   assert.throws(() => requireValidApprovalRules(partiallyValid, "--approval-rules"), /structurally invalid/);
 });
 
-test("requireValidApprovalRules: an honest rule set passes through unchanged (the control — a validator that refused everything would pass every test above)", () => {
+test("requireValidApprovalRules: an honest rule set is accepted and returned as a COMPILED SNAPSHOT, not as the caller's own object", () => {
   const honest = [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }];
-  assert.equal(requireValidApprovalRules(honest, "--approval-rules"), honest);
+  const snapshot = requireValidApprovalRules(honest, "--approval-rules");
+
+  // The CONTROL first: a compiler that refused everything would pass every rejection test in this
+  // file while destroying the product. The honest rule still gates the action it names.
+  assert.equal(matchApprovalRule(snapshot, "transfer_funds", { amountMinor: 7000 })?.id, "transfer-needs-human");
+  assert.equal(matchApprovalRule(snapshot, "transfer_funds", { amountMinor: 10 }), null, "below the threshold is still a genuine no-match");
   assert.equal(requireValidApprovalRules([], "--approval-rules").length, 0, "an EMPTY array is a deliberate, valid rule set — it just gates nothing");
+
+  // ROUND 2: the returned value must NOT be the caller's array. It used to be, and that identity WAS
+  // the defect — validation and use were then two reads of one object anyone could change between.
+  assert.notEqual(snapshot, honest, "returning the caller's array is what let a post-validation mutation re-open the gate");
+  assert.ok(isCompiledApprovalRules(snapshot), "the snapshot must be branded as compiled by this package");
+  assert.ok(!isCompiledApprovalRules(honest), "the caller's own array is not, and must never become, a snapshot");
+  assert.ok(Object.isFrozen(snapshot) && Object.isFrozen(snapshot[0]) && Object.isFrozen(snapshot[0].match), "frozen at every level a decision reads");
+  assert.equal(Object.getPrototypeOf(snapshot[0]), null, "each compiled rule is null-prototype, so no inherited field can answer for a missing one");
+
+  // Idempotent: re-validating a snapshot yields THAT SAME snapshot. The CLI validates and so does
+  // createProxyServer; the second call must not manufacture a second object.
+  assert.equal(requireValidApprovalRules(snapshot, "createProxyServer: `approvalRules`"), snapshot);
+});
+
+test("requireValidApprovalRules: MUTATING the caller's rules after validation cannot change what the snapshot gates (reproduced bypass)", () => {
+  const live = [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }];
+  const snapshot = requireValidApprovalRules(live, "--approval-rules");
+
+  live[0].match.action = "something-else"; // the measured attack: validated honest, then rewritten
+  live[0].threshold.value = 999_999_999;
+  live.length = 0;
+
+  assert.equal(
+    matchApprovalRule(snapshot, "transfer_funds", { amountMinor: 7000 })?.id,
+    "transfer-needs-human",
+    "the snapshot still gates: pre-fix this exact mutation executed an unapproved 7000-unit transfer through a real proxy",
+  );
+});
+
+test("compileApprovalRules: an INHERITED critical field is refused, never resolved (reproduced bypass)", () => {
+  // The rule's OWN data says "gate every transfer_funds". Its prototype supplies a threshold aimed at
+  // a path that is never in `inputs`, which turns "hold every match" into "hold nothing" while
+  // validation reports the rule well-formed.
+  const inherited = Object.create({ threshold: { path: "never-in-inputs", op: "ge", value: 0 } });
+  inherited.id = "transfer-needs-human";
+  inherited.match = { type: "exact", action: "transfer_funds" };
+  assert.equal(Object.prototype.hasOwnProperty.call(inherited, "threshold"), false);
+  assert.notEqual(inherited.threshold, undefined, "the inherited value IS what ordinary property access returns — that is the whole trick");
+
+  const compiled = compileApprovalRules([inherited]);
+  assert.equal(compiled.ok, false);
+  assert.match(compiled.errors.join("; "), /threshold: must be an OWN DATA property/);
+  assert.throws(() => requireValidApprovalRules([inherited], "--approval-rules"), /OWN DATA property/);
+
+  // The same trick from Object.prototype itself, which is where a prototype-pollution gadget lands.
+  const plain = { id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" } };
+  Object.prototype.threshold = { path: "never-in-inputs", op: "ge", value: 0 };
+  try {
+    assert.equal(compileApprovalRules([plain]).ok, false, "a polluted Object.prototype must refuse the rule set, not quietly re-aim it");
+    assert.equal(matchApprovalRule([plain], "transfer_funds", { amountMinor: 7000 })?.id, "approval-rules-unusable", "and the matcher must HOLD rather than report no-match");
+  } finally {
+    delete Object.prototype.threshold;
+  }
+});
+
+test("compileApprovalRules: an ACCESSOR-backed critical field is refused WITHOUT the getter ever running (reproduced bypass)", () => {
+  let getterReads = 0;
+  const twoFaced = {
+    id: "transfer-needs-human",
+    get match() {
+      getterReads += 1;
+      return getterReads <= 1 ? { type: "exact", action: "transfer_funds" } : { type: "exact", action: "not-this-tool" };
+    },
+  };
+
+  const compiled = compileApprovalRules([twoFaced]);
+  assert.equal(compiled.ok, false);
+  assert.match(compiled.errors.join("; "), /match: must be an OWN DATA property .*getter\/setter/);
+  assert.equal(getterReads, 0, "refused by its DESCRIPTOR — a getter that is never invoked cannot answer twice");
+
+  // An accessor ELEMENT of the array itself is the same trick one level out.
+  const sneakyArray = [];
+  Object.defineProperty(sneakyArray, 0, { enumerable: true, configurable: true, get() { return { id: "r", match: { type: "exact", action: "transfer_funds" } }; } });
+  assert.equal(compileApprovalRules(sneakyArray).ok, false);
+  assert.match(compileApprovalRules(sneakyArray).errors.join("; "), /OWN DATA element/);
+});
+
+test("compileApprovalRules: a Proxy is refused wherever it appears, and own-data scalar extras survive compilation", () => {
+  const rule = { id: "r", match: { type: "exact", action: "x" } };
+  assert.equal(compileApprovalRules(new Proxy([rule], {})).ok, false, "a Proxy rule SET can answer differently on every read");
+  assert.equal(compileApprovalRules([new Proxy(rule, {})]).ok, false, "and so can a Proxy rule");
+
+  // DEFAULT_APPROVAL_RULES carries a `risk` field that consumers read off the MATCHED rule, so the
+  // compiler must carry own-data scalars through rather than reduce every rule to id/match/threshold.
+  const withExtras = compileApprovalRules([{ id: "r", risk: "MONEY", weight: 3, urgent: true, match: { type: "exact", action: "x" } }]);
+  assert.equal(withExtras.ok, true);
+  assert.equal(withExtras.rules[0].risk, "MONEY");
+  assert.equal(withExtras.rules[0].weight, 3);
+  assert.equal(withExtras.rules[0].urgent, true);
 });
 
 test("matchApprovalRule: exact match / prefix match (the feature dsl.ts cannot express) / no match", () => {
@@ -79,14 +173,45 @@ test("matchApprovalRule: threshold ge/gt first-match-wins; absent path -> no mat
   assert.equal(matchApprovalRule([{ id: "r", match: { type: "exact", action: "x" }, threshold: { path: "amount", op: "ge", value: 1 } }], "x", { amount: "0.5" })?.id, "r");
 });
 
-test("matchApprovalRule: never throws on a malformed rule mid-array, still scans the rest; empty/undefined/null approvalRules never match", () => {
+// ⚠ THIS TEST'S EXPECTATION WAS DELIBERATELY REVERSED ON 2026-08-12 (round 2), and the old one is
+// written out here rather than deleted, because it looked exactly like safety.
+//
+// It used to assert that a hostile rule mid-array is SKIPPED and the scan continues — `?.id ===
+// "good"`. That is a partial accept: the rule set as a whole was never trustworthy, and continuing
+// past the part that could not be read is how "some of your rules are live" gets reported as a
+// working gate. An adversarial review then used exactly this tolerance — a `match` GETTER answering
+// one way while validated and another way while used — to execute an unapproved 7000-unit transfer
+// through a real proxy. A rule set with an unreadable rule in it is now refused WHOLE, and the
+// matcher's answer for it is a HOLD, not a no-match.
+//
+// What is unchanged, and still asserted: it never throws, and "no rules configured" still matches
+// nothing.
+test("matchApprovalRule: a malformed rule anywhere makes the WHOLE rule set unusable -> HOLD (never a silent skip); empty/undefined/null still never match", () => {
   const evil = {};
   Object.defineProperty(evil, "match", { enumerable: true, get() { throw new Error("boom"); } });
   const rules = [evil, { id: "good", match: { type: "exact", action: "x" } }];
+
   assert.doesNotThrow(() => matchApprovalRule(rules, "x", {}));
-  assert.equal(matchApprovalRule(rules, "x", {})?.id, "good");
+  const held = matchApprovalRule(rules, "x", {});
+  assert.equal(held?.id, "approval-rules-unusable", "the hostile rule condemns the whole set; the action is held for a human");
+  assert.notEqual(held?.id, "good", "the pre-2026-08-12 expectation — skip the bad rule, keep matching — is withdrawn as unsafe");
+
+  // "No approval rules configured" is a different statement from "your rule set is broken", and only
+  // the second one gates. Gating on the first would hold every call for every caller who never
+  // enabled the feature.
   assert.equal(matchApprovalRule([], "x", {}), null);
   assert.equal(matchApprovalRule(undefined, "x", {}), null);
+  assert.equal(matchApprovalRule(null, "x", {}), null);
+});
+
+test("matchApprovalRule: a non-array rule set HOLDS instead of forwarding — the five public decision APIs inherit this from one line", () => {
+  for (const bad of [{}, "nope", 5, true, new Proxy([], {})]) {
+    assert.equal(
+      matchApprovalRule(bad, "transfer_funds", { amountMinor: 7000 })?.id,
+      "approval-rules-unusable",
+      `${JSON.stringify(bad) ?? String(bad)} must hold the action, not report "no rule matched" (which the caller reads as "forward it")`,
+    );
+  }
 });
 
 test("tryIdentifyToolCallForTicketLookup: resolves actionId+paramsHash identically to preCheck; null on non-string/empty/throwing name, never throws", () => {

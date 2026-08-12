@@ -147,7 +147,15 @@ export async function createProxyServer({
   // behavior). An explicit `null` is REFUSED rather than treated as "none": `null` is what a
   // corrupted/attacker-written config file parses to, and "the caller deliberately passed nothing"
   // and "the caller's rule file was emptied" must not share an answer. Omit the option instead.
-  if (approvalRules !== undefined) requireValidApprovalRules(approvalRules, "createProxyServer: `approvalRules`");
+  //
+  // THE PARAMETER IS REBOUND TO THE COMPILED SNAPSHOT, and that assignment IS the fix, not a
+  // formality. An adversarial review took an honest rule set this factory had already validated,
+  // mutated it afterwards, and watched the same 7000-unit transfer execute; a `match` getter
+  // answering differently on its second read did the same. Holding the caller's live array means the
+  // object that was checked and the object that is used are two different values that merely agreed
+  // for one instant. The snapshot is frozen, built only from own data properties, and refuses
+  // inherited or getter-backed rule fields outright.
+  if (approvalRules !== undefined) approvalRules = requireValidApprovalRules(approvalRules, "createProxyServer: `approvalRules`");
   // The human-approval gate (enabled by `approvalRules` and/or a
   // `pendingStorePath`) can adopt an approver's ALLOWED receipt onto the live chain and forward the
   // held action. That adoption MUST verify the approver's signature (see `verifyApprovalReceipt`),

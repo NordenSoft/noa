@@ -34,10 +34,42 @@ server and never binds a port. The refusal is all-or-nothing; a partially valid 
 partially honoured. `--approval-rules` pointing at a file that parses to `null` is now a startup
 error rather than a silently absent gate.
 
-Regression coverage: `test/smoke.mjs` **"Bonus AB"** — 18 assertions over real proxy processes, 16
-of which fail against the pre-fix code. The two that pass pre-fix are stated as such in the test
-text: the honest-rule-set control, and one payload (an invalid threshold operator) that happened to
-still gate, for which the startup refusal is the regression.
+Regression coverage: `test/smoke.mjs` **"Bonus AB"** — 18 assertions, of which **15 run against real
+CLI proxy processes over real stdio** and 3 are in-process at the library/HTTP boundary (two on
+`createProxyServer`, one on `startHttpProxy`). 16 of the 18 fail against the pre-fix code. The two
+that pass pre-fix are stated as such in the test text: the honest-rule-set control, and one payload
+(an invalid threshold operator) that happened to still gate, for which the startup refusal is the
+regression. (An earlier draft of this entry called all 18 "over real proxy processes". Corrected in
+place: an evidence count that overstates its own instrument is the one error this file cannot
+afford.)
+
+### Security — the VALIDATED rule set was not the rule set that got USED
+
+**Reproduced against the fix above, three separate ways, each ending in an executed 7000-unit
+transfer with no human.** `requireValidApprovalRules` returned the CALLER'S OWN ARRAY and the matcher
+later read that array again with ordinary property access, so validation and use were two reads of
+one object that anything could change in between:
+
+1. **Inherited field.** A rule whose own data gates every `transfer_funds`, with `threshold`
+   inherited from its prototype and aimed at a path that is never in the policy inputs. Validation
+   read the inherited value and called the rule well-formed; the matcher then found no such input,
+   skipped the rule, and forwarded. The same trick from `Object.prototype` measured `ALLOW`.
+2. **Mutation after validation.** An honest rule set rewritten after `createProxyServer` accepted it.
+3. **Successive getter.** A `match` getter returning valid data on its first read and a non-matching
+   action on its second.
+
+This is the check-then-use gap `config-artifact.mjs` closed on the filesystem, relocated into the
+object graph — a check that does not bind to the value it checked is not a check. **Fixed** by
+compiling the rule set into an inert snapshot at every load boundary: each field read through its own
+property descriptor (an inherited or accessor-backed critical field is REFUSED, not resolved — the
+getter above is now never invoked at all), each rule frozen and null-prototype, the array frozen and
+re-rooted onto the kernel's inert array prototype, and the result branded in a module-private
+WeakSet. `requireValidApprovalRules` returns that snapshot, all three boundaries pass the snapshot
+down, and `matchApprovalRule` reads nothing else.
+
+Regression coverage: `test/smoke.mjs` **"Bonus AC"** — 8 assertions against a real downstream child
+process behind the real `createProxyServer`. 7 fail against the pre-fix code; the eighth is the
+control (an honest rule set must still hold the transfer — it does, before and after).
 
 ### Security — the human-approval gate could be turned off by a file swap (CWE-59 / CWE-367)
 

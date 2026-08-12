@@ -313,10 +313,16 @@ async function main() {
   // serving the host with the gate silently absent. createProxyServer/startHttpProxy apply the
   // identical check on their own inputs (a library consumer must not be able to skip it by not
   // using this CLI); this call is what gives the OPERATOR the flag-named error.
+  // THE RETURN VALUE is what travels on: a frozen, inert snapshot compiled from own data properties
+  // only. Keeping the parsed object instead would keep the bug — a rule set whose fields are
+  // inherited or computed, or one mutated after this line, was measured executing the same
+  // unapproved 7000-unit transfer (see `requireValidApprovalRules`' own note).
   let approvalRules;
   if (opts.approvalRulesFile) {
-    approvalRules = readConfigJson(opts.approvalRulesFile, { label: "--approval-rules" });
-    requireValidApprovalRules(approvalRules, `--approval-rules "${opts.approvalRulesFile}"`);
+    approvalRules = requireValidApprovalRules(
+      readConfigJson(opts.approvalRulesFile, { label: "--approval-rules" }),
+      `--approval-rules "${opts.approvalRulesFile}"`,
+    );
   }
 
   // FAIL-CLOSED at startup: the human-approval gate (--approval-rules and/or --pending-store) can

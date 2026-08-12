@@ -46,7 +46,7 @@
  * NON-CLAIMS.md NC-7.0. What is closed here is the REDIRECTION class: the path the operator
  * configured no longer decides which BYTES the process reads.
  */
-import { openSync, fstatSync, readSync, writeFileSync, ftruncateSync, closeSync, constants as fsConstants } from "node:fs";
+import { openSync, fstatSync, readSync, writeFileSync, fsyncSync, fchmodSync, renameSync, unlinkSync, closeSync, constants as fsConstants } from "node:fs";
 import { describeThrown, thrownCode } from "./safe-throw.mjs";
 
 import { intrinsics } from "noa-receipt";
@@ -54,13 +54,18 @@ import { intrinsics } from "noa-receipt";
 // REDTEAM 2026-08-03 — the builtins come from the kernel's module-load capture on every published
 // decision path, whether or not each individual site is reachable today (see key-file.mjs's own
 // note). Reachability is a property of the surrounding code, and the surrounding code changes.
-const { jsonParse, numToString, arrayPush, bufferAlloc, bufferConcat, bufSubarray, bufToString } = intrinsics;
+const { jsonParse, numToString, arrayPush, bufferAlloc, bufferConcat, bufferFrom, bufSubarray, bufToString, isSafeInteger, dateNow } = intrinsics;
 
 // Captured at MODULE-EVALUATION time, before any caller-supplied value has been read: the effective
 // uid this process is allowed to trust a security artifact from. `null` on a platform with no POSIX
 // uid model (Windows), where the ownership test is skipped and DOCUMENTED as skipped rather than
 // silently reported as passed — O_NOFOLLOW and the regular-file test still apply there.
 const PROCESS_EUID = typeof process.geteuid === "function" ? process.geteuid() : null;
+
+// Read at MODULE-EVALUATION time for the same reason as the uid above, and used only to name this
+// process's own temporary files. A counter makes two writes in the same millisecond distinct.
+const PROCESS_PID = typeof process.pid === "number" ? process.pid : 0;
+let tmpCounter = 0;
 
 // O_NOFOLLOW is POSIX-only; `0` on a platform lacking it, where this degrades to a plain open — no
 // worse than the pre-fix behavior there, and the regular-file/owner/mode tests still run.
@@ -172,7 +177,7 @@ function openVerified(pathname, label, flags, mode, { singleLink = false, exists
     closeSync(fd);
     throw new ConfigArtifactError(reason);
   }
-  return { fd, size: st.size };
+  return { fd, size: st.size, mode: st.mode };
 }
 
 /**
@@ -188,13 +193,16 @@ function openVerified(pathname, label, flags, mode, { singleLink = false, exists
  * value is not a limit on what this process actually allocates.
  */
 function readAllBounded(fd, pathname, label, maxBytes) {
+  // ONE scratch buffer for the whole read, and each short read is COPIED into a right-sized chunk.
+  // The first version allocated a fresh 64 KiB buffer per `readSync`, which bounds the RETURNED
+  // bytes correctly and bounds peak allocation not at all: a review forced a short-read schedule and
+  // measured 1,024 returned bytes against 67,174,400 allocated — 65,600×. `maxBytes` is supposed to
+  // bound what this process allocates, and a counter that is only right about the answer is not that.
+  const scratch = bufferAlloc(READ_CHUNK_BYTES);
   const chunks = [];
   let total = 0;
   for (;;) {
-    // A FRESH buffer per chunk: a reused scratch buffer would have to be copied before being
-    // retained anyway, and a missed copy is a silent content corruption rather than a loud failure.
-    const chunk = bufferAlloc(READ_CHUNK_BYTES);
-    const n = readSync(fd, chunk, 0, READ_CHUNK_BYTES, null);
+    const n = readSync(fd, scratch, 0, READ_CHUNK_BYTES, null);
     if (n === 0) break;
     total += n;
     if (total > maxBytes) {
@@ -202,11 +210,30 @@ function readAllBounded(fd, pathname, label, maxBytes) {
         `${label} "${pathname}" is larger than the ${numToString(maxBytes, 10)}-byte cap (already read ${numToString(total, 10)} bytes) — refusing to load it. A file that grew while it was being read is a file something else is writing right now.`,
       );
     }
-    arrayPush(chunks, n === READ_CHUNK_BYTES ? chunk : bufSubarray(chunk, 0, n));
+    // `bufferFrom` COPIES; `bufSubarray` alone would hand back a view onto the scratch buffer that
+    // the next iteration overwrites, which is a silent content corruption rather than a loud failure.
+    arrayPush(chunks, bufferFrom(bufSubarray(scratch, 0, n)));
   }
   // Decoded AFTER concatenation, never per chunk: a multi-byte UTF-8 sequence straddling a chunk
   // boundary would otherwise decode as two replacement characters.
   return bufToString(bufferConcat(chunks), "utf8");
+}
+
+/**
+ * The cap is a SECURITY parameter, so a value that cannot bound anything is refused rather than
+ * used. Measured on the first version of this module: `NaN`, `Infinity` and the STRING `"12504"` all
+ * sailed past `size > maxBytes` and `total > maxBytes` (every comparison with NaN is false; a string
+ * compares by coercion) and returned the whole file with the cap silently disabled. `null` reached
+ * the error formatter and produced a `Number.prototype.toString` type error instead of an
+ * explanation. A limit that can be switched off by passing a plausible-looking value is not a limit.
+ */
+function requireByteCap(maxBytes, label) {
+  if (typeof maxBytes !== "number" || !isSafeInteger(maxBytes) || maxBytes < 0) {
+    throw new ConfigArtifactError(
+      `${label}: maxBytes must be a finite, non-negative safe integer — refusing to read with a cap that cannot bound anything (NaN, Infinity, a numeric string and null all silently disable the comparison)`,
+    );
+  }
+  return maxBytes;
 }
 
 /**
@@ -220,6 +247,7 @@ function readAllBounded(fd, pathname, label, maxBytes) {
  * @param {{ label?: string, maxBytes?: number, required?: boolean }} [options]
  */
 export function readConfigArtifact(pathname, { label = "config file", maxBytes = DEFAULT_MAX_BYTES, required = false } = {}) {
+  requireByteCap(maxBytes, label);
   const opened = openVerified(pathname, label, READ_FLAGS, undefined);
   if (opened === null) {
     if (required) throw new ConfigArtifactError(`${label} "${pathname}" does not exist`);
@@ -286,47 +314,91 @@ export function appendConfigArtifact(pathname, text, { label = "config file" } =
  * routine startup write into "clobber any file this process can write" — the same primitive
  * loadOrCreateKeyFile already refuses for `--key-file`.
  *
- * ORDER OF OPERATIONS, AND WHY IT IS THE WHOLE POINT (fixed 2026-08-12): open WITHOUT truncating →
- * verify the descriptor → truncate THROUGH the descriptor that was verified → write. The previous
- * single `O_CREAT|O_TRUNC` open truncated inside the `open` itself, so every refusal below used to
- * fire on a file this function had already emptied. Now a refused write leaves the target byte-for-
- * byte as it was found, and a hard-linked target is refused outright rather than replacing the
- * content of whatever else shares that inode.
+ * ── HOW IT WRITES, AND WHY NOT IN PLACE (2026-08-12, round 2) ───────────────────────────────────
+ * VERIFY the existing artifact through a descriptor → write the replacement to a SIBLING temp file
+ * (`O_CREAT|O_EXCL|O_NOFOLLOW`) → `fsync` → atomic `rename` over the target.
+ *
+ * Round 1 fixed the destructive half of this: the open no longer carries `O_TRUNC`, so a REFUSED
+ * write leaves its target byte-for-byte unchanged (it used to empty the file inside the `open`, then
+ * refuse). But an ACCEPTED write was still destructive and non-atomic — `ftruncate` emptied the
+ * artifact before the replacement was durable, so an ENOSPC, a crash or a short write left the
+ * approver keyring EMPTY or half-written, and a hard link created AFTER the `nlink` check still
+ * aliased the verified inode. Writing a new inode and swapping the directory entry removes both: the
+ * target is either entirely the old content or entirely the new one, this process never writes into
+ * an inode a second name can be attached to, and a symlink planted in the window is REPLACED rather
+ * than written through (`rename` acts on the entry, never on what it points at).
+ *
+ * The residual, stated rather than implied: `rename` replaces whatever the path holds at that
+ * instant, so the verification and the swap are not one atomic step. What that window can cost is
+ * "this process published its own artifact over something that appeared in between" — never "this
+ * process wrote through a link into a file it never verified", which is the class that mattered.
  *
  * @param {string} pathname
  * @param {string} text
  * @param {{ label?: string, mode?: number }} [options]
  */
 export function writeConfigArtifact(pathname, text, { label = "config file", mode = 0o600 } = {}) {
-  // Two attempts, not a loop: the only way BOTH branches decline is that the file existed for one
-  // open and did not exist for the other, i.e. something is creating and removing it right now. One
-  // retry absorbs a single benign race; a second identical outcome is a state this function refuses
-  // to keep guessing at.
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const existing = openVerified(pathname, label, REPLACE_EXISTING_FLAGS, undefined, { singleLink: true });
-    if (existing !== null) {
-      try {
-        // Through the ALREADY-VERIFIED descriptor. The file position is still 0, so the write below
-        // starts at the beginning; `ftruncate` is what stops a shorter replacement from leaving the
-        // tail of the previous content behind.
-        ftruncateSync(existing.fd, 0);
-        writeFileSync(existing.fd, text, "utf8");
-      } finally {
-        closeSync(existing.fd);
-      }
-      return;
-    }
-    const created = openVerified(pathname, label, CREATE_EXCLUSIVE_FLAGS, mode, { singleLink: true, existsIsSoft: true });
-    if (created !== null) {
-      try {
-        writeFileSync(created.fd, text, "utf8");
-      } finally {
-        closeSync(created.fd);
-      }
-      return;
+  // The existing artifact is still opened and verified FIRST, so every refusal this module makes
+  // (symlink, FIFO, foreign owner, group/other-writable, hard-linked) happens before anything is
+  // written anywhere — and its mode is carried onto the replacement, so publishing does not silently
+  // re-open an artifact the operator had tightened.
+  let preserveMode = null;
+  const existing = openVerified(pathname, label, REPLACE_EXISTING_FLAGS, undefined, { singleLink: true });
+  if (existing !== null) {
+    try {
+      preserveMode = existing.mode & 0o7777;
+    } finally {
+      closeSync(existing.fd);
     }
   }
+
+  // A SIBLING temp path (suffix on the same name) is in the same directory by construction, which is
+  // what `rename` requires, without this module having to parse a path. The name is predictable, and
+  // that is not a weakness here: the open is `O_EXCL|O_NOFOLLOW`, so anything already sitting at that
+  // name — regular file, symlink, anything — fails the open and this function refuses. The worst a
+  // squatter achieves is a loud startup failure.
+  let lastError = null;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    tmpCounter += 1;
+    const tmpPath = `${pathname}.noa-tmp-${numToString(PROCESS_PID, 10)}-${numToString(dateNow(), 10)}-${numToString(tmpCounter, 10)}`;
+    let tmp;
+    try {
+      tmp = openVerified(tmpPath, label, CREATE_EXCLUSIVE_FLAGS, mode, { singleLink: true, existsIsSoft: true });
+    } catch (err) {
+      lastError = err;
+      continue;
+    }
+    if (tmp === null) continue; // something is already at that name — take a new one
+    try {
+      writeFileSync(tmp.fd, text, "utf8");
+      // Durable BEFORE the swap: without this the rename can be visible while the bytes are not, and
+      // the artifact that decides whether a human approved would come back from a crash empty.
+      fsyncSync(tmp.fd);
+      if (preserveMode !== null) fchmodSync(tmp.fd, preserveMode);
+    } catch (err) {
+      closeSync(tmp.fd);
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        /* the temp file is already gone or unreachable; the original is untouched either way */
+      }
+      throw new ConfigArtifactError(`${label} "${pathname}" could not be written (${describeThrown(err)}) — the existing artifact is unchanged`);
+    }
+    closeSync(tmp.fd);
+    try {
+      renameSync(tmpPath, pathname);
+    } catch (err) {
+      try {
+        unlinkSync(tmpPath);
+      } catch {
+        /* see above */
+      }
+      throw new ConfigArtifactError(`${label} "${pathname}" could not be replaced (${describeThrown(err)}) — the existing artifact is unchanged`);
+    }
+    return;
+  }
   throw new ConfigArtifactError(
-    `${label} "${pathname}" is being created and removed by something else while this process is writing it — refusing to keep re-trying (fail-closed: a governance artifact whose existence flickers is not one this process can publish safely)`,
+    `${label} "${pathname}" could not be given a private temporary file to write through` +
+      `${lastError === null ? "" : ` (${describeThrown(lastError)})`} — refusing to write in place (fail-closed: an in-place write leaves this artifact empty if it fails halfway)`,
   );
 }

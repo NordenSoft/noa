@@ -6,6 +6,57 @@ consumer upgrading to `0.3.0` would see a silent version bump and no reason to h
 
 ## [Unreleased]
 
+### Security — validation did not BIND to the value it validated (CWE-367 in the object graph)
+
+**Reproduced three ways against the fix below, each ending in an executed 7000-unit transfer with no
+human.** `requireValidApprovalRules` returned the caller's own array, and both the validator and the
+matcher read it with ordinary property access — so the object that was checked and the object that
+was used were two reads of one thing that anything could change in between:
+
+1. **Inherited field.** A rule whose own data gates every `transfer_funds`, with `threshold`
+   inherited from its prototype and aimed at a path that is never in the policy inputs. Validation
+   resolved the inherited value and called the rule well-formed; the matcher then found no such
+   input, skipped the rule and forwarded. The same trick from `Object.prototype` measured `ALLOW`.
+2. **Mutation after validation.** An honest rule set rewritten once validation had returned.
+3. **Successive getter.** A `match` getter answering with valid data while checked and with a
+   different action while used.
+
+**`compileApprovalRules` (new, exported) is the answer, and it is the same one `src/verify.ts` gave
+when it stopped accepting live objects rather than cloning them: do not hold a caller's object.** It
+walks the input ONCE and builds an inert snapshot — every field read through its own-property
+descriptor (`getOwnPropertyDescriptor`), an inherited or accessor-backed critical field REFUSED
+rather than resolved, a `Proxy` refused wherever it appears, each rule frozen and null-prototype,
+own-data scalar extras (e.g. `DEFAULT_APPROVAL_RULES`' `risk`) carried through, the array frozen and
+re-rooted onto the kernel's `INERT_ARRAY_PROTOTYPE`, and the result branded in a module-private
+`WeakSet`. The accessor case never runs the getter at all: it is refused by its descriptor.
+
+`requireValidApprovalRules` now RETURNS that snapshot (a caller that keeps its own object keeps the
+bug), `validateApprovalRules` is the same compiler with the throw removed — one definition of what a
+rule set is, rather than two that drift — and `matchApprovalRule` reads a snapshot or compiles one on
+the spot.
+
+**Behaviour changes, all fail-closed:**
+- `matchApprovalRule` given a rule set it cannot compile now returns a real rule
+  (`approval-rules-unusable`) so the caller HOLDS the action. It used to return `null`, which every
+  caller reads as "no approval needed". This is what makes the five public decision entry points
+  below fail closed from one line instead of five guards.
+- A malformed rule ANYWHERE condemns the whole set. The previous behaviour — skip the unreadable
+  rule, keep scanning — is a partial accept, and it is exactly what the successive-getter attack
+  used. The test that asserted the old behaviour was reversed in place, with the reasoning kept
+  beside it.
+- A matched rule comes back as a frozen null-prototype record. Own-data scalars survive; object-
+  valued extras the gate does not use are dropped rather than deep-copied.
+
+### Security — the package's own decision APIs bypassed every proxy-side guard
+
+`preCheck`, `preCheckAsync`, `prepareSessionReceipt`, `prepareSessionReceiptAsync` and
+`preCheckSession` each returned **ALLOW** for `approvalRules: {}` — the proxy's three boundaries do
+not cover this package's own published surface, which is precisely what an embedding gateway or
+in-process guard calls. All five now hold the action, inherited from `matchApprovalRule`'s single
+fail-closed line rather than from five separate checks. The receipt records
+`governance.ruleId: "approval:approval-rules-unusable"` — an ordinary string in an existing field, so
+no schema moves.
+
 ### Security — a rule set that was not an ARRAY switched the approval gate off (CWE-20, fail-open)
 
 **Reproduced against the shipped proxy on 2026-08-12, with a REGULAR, mode-0600, correctly-owned
@@ -35,6 +86,27 @@ still meant writing *plausible* rules. It did not. NC-6.9's own statement is unc
 true: `printf '[]' > approval-rules.json` remains an unclosed residual, because `[]` is a valid
 rule set that gates nothing.
 
+### Security — `writeConfigArtifact` is now atomic, and `maxBytes` must be a real bound
+
+Two follow-ups from the same review, both measured:
+
+- An ACCEPTED write was still destructive: `ftruncate` emptied the artifact before the replacement
+  was durable, so an ENOSPC, a crash or a short write left the approver keyring empty or partial —
+  and a hard link created after the `nlink` check still aliased the verified inode. The write now
+  goes to a sibling temp file (`O_CREAT|O_EXCL|O_NOFOLLOW`), is `fsync`ed, and is swapped in with an
+  atomic `rename`; the existing artifact's mode is carried across. This process never writes into an
+  inode a second name can be attached to, and a symlink planted in the window is replaced rather than
+  written through. Residual, stated rather than implied: verification and the swap are not one atomic
+  step, so the window costs "published over something that appeared in between", never "wrote through
+  a link into a file it never verified".
+- `maxBytes: NaN`, `Infinity` and the string `"12504"` all silently disabled the cap and returned the
+  whole file (every comparison with NaN is false; a string compares by coercion), and `null` produced
+  a `Number.prototype.toString` type error instead of an explanation. A finite non-negative safe
+  integer is now required. Separately, the bounded reader allocated a fresh 64 KiB buffer per
+  `readSync` — correct about the returned bytes, unbounded in peak allocation (a forced short-read
+  schedule measured 1,024 bytes returned against 67,174,400 allocated). It now uses one scratch
+  buffer and copies each short read into a right-sized chunk.
+
 ### Security — `writeConfigArtifact` truncated its target BEFORE verifying it, and followed hard links
 
 Two more, both reproduced 2026-08-12:
@@ -59,8 +131,19 @@ the cap; the `fstat` comparison is kept as an early refusal that avoids reading 
 all. Multi-byte characters straddling a chunk boundary are decoded after concatenation, so content
 round-trips byte-for-byte.
 
-Regression coverage: `test/config-artifact.test.mjs` (8 tests, 4 of which fail against the pre-fix
-module) and `test/approval-rules.test.mjs`'s three `requireValidApprovalRules` cases.
+Regression coverage: `test/config-artifact.test.mjs` (10 tests) and `test/approval-rules.test.mjs`.
+Against the source each fix replaced: 4 of the config-artifact tests fail on the original module
+(truncate-then-refuse, hard-linked write, hard-linked append, bounded read) and 2 more on the
+first-round module (atomic write, `maxBytes` table).
+
+**A test was REMOVED from this file and it is worth saying why.** The first round shipped a
+"growing file under a concurrent writer" probe whose second assertion was `refusals + 1 > 0` — true
+for every possible value, so it could never go red, and its own comment admitted the race might not
+occur. A test that cannot fail is worse than no test: it holds the slot a real one would occupy. The
+post-read bound cannot be triggered deterministically through this module's public surface (it needs
+a write to land between the `fstat` and the `read`, and there is no injection point for that by
+design), so it was replaced with the deterministic `maxBytes` table, which measures the half that can
+be pinned exactly. The bounded-read behaviour itself stays covered by the multi-chunk round-trip.
 
 ### Security — `--pending-store` followed symlinks on both read and append (CWE-59 / CWE-367)
 

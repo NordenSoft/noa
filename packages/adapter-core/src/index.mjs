@@ -9,9 +9,19 @@ export { loadOrCreateKeyFile } from "./key-file.mjs";
 // reads were the measured symlink-redirect bypass this module closes.
 export { readConfigArtifact, readConfigJson, appendConfigArtifact, writeConfigArtifact, ConfigArtifactError } from "./config-artifact.mjs";
 // `requireValidApprovalRules` is the THROWING form every rule-set LOAD path must call before it
-// serves anything. `validateApprovalRules` alone only REPORTS, and a report nobody reads is what
-// let a `{}` rule file switch the human-approval gate off (see that function's own note).
-export { matchApprovalRule, validateApprovalRules, requireValidApprovalRules, tryIdentifyToolCallForTicketLookup } from "./approval-rules.mjs";
+// serves anything, and it RETURNS THE COMPILED SNAPSHOT the matcher reads — a caller that keeps its
+// own object instead has kept the bug this closes. `validateApprovalRules` alone only REPORTS, and a
+// report nobody reads is what let a `{}` rule file switch the human-approval gate off;
+// `compileApprovalRules` is the same compiler without the throw, for a caller that wants the errors
+// as data; `isCompiledApprovalRules` answers whether a value is a snapshot this package built.
+export {
+  matchApprovalRule,
+  validateApprovalRules,
+  compileApprovalRules,
+  isCompiledApprovalRules,
+  requireValidApprovalRules,
+  tryIdentifyToolCallForTicketLookup,
+} from "./approval-rules.mjs";
 export { recordDeferred, recordApproved, recordDenied, consumeApprovalTicket, findOutstanding, loadPendingIndex, PendingStoreError } from "./pending-store.mjs";
 export { buildApprovalReceipt, buildDenialReceipt, verifyApprovalReceipt, DEFAULT_APPROVAL_TICKET_TTL_MS } from "./approval-decision.mjs";
 export { opaqueApproverId, assertOpaqueApproverBy } from "./opaque-id.mjs";

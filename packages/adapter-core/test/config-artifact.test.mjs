@@ -22,7 +22,6 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawn } from "node:child_process";
 import { readConfigArtifact, writeConfigArtifact, appendConfigArtifact, ConfigArtifactError } from "../src/config-artifact.mjs";
 
 function tmpDir(tag) {
@@ -86,7 +85,7 @@ test("writeConfigArtifact: a symlinked output is still refused, and its target i
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("writeConfigArtifact: the CONTROL — it still creates, still replaces, and still truncates a longer previous content", () => {
+test("writeConfigArtifact: the CONTROL — it still creates, still replaces, and leaves no tail of a longer previous content", () => {
   const dir = tmpDir("control");
   const target = path.join(dir, "keyring.json");
 
@@ -94,8 +93,8 @@ test("writeConfigArtifact: the CONTROL — it still creates, still replaces, and
   assert.equal(readNoFollow(target), "a-long-first-generation-of-this-file");
   assert.equal(fs.statSync(target).mode & 0o777, 0o600, "a newly created artifact keeps its requested mode");
 
-  // SHORTER than what is already there: without the ftruncate through the verified descriptor this
-  // would leave the tail of the previous generation behind.
+  // SHORTER than what is already there: a replacement that left the old tail behind would be a
+  // keyring with two generations of keys in it.
   writeConfigArtifact(target, "short", { label: "--keyring-file", mode: 0o600 });
   assert.equal(readNoFollow(target), "short");
   assert.equal(fs.statSync(target).size, 5);
@@ -104,6 +103,34 @@ test("writeConfigArtifact: the CONTROL — it still creates, still replaces, and
   const pub = path.join(dir, "public-keyring.json");
   writeConfigArtifact(pub, '{"kid":"pub"}', { label: "--keyring-file", mode: 0o644 });
   assert.equal(fs.statSync(pub).mode & 0o777, 0o644);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("writeConfigArtifact: an accepted write is ATOMIC — a fresh inode swapped in, never an in-place truncate", () => {
+  const dir = tmpDir("atomic");
+  const target = path.join(dir, "keyring.json");
+  writeConfigArtifact(target, "generation-one", { label: "--keyring-file", mode: 0o640 });
+  const before = fs.statSync(target);
+
+  writeConfigArtifact(target, "generation-two", { label: "--keyring-file", mode: 0o600 });
+  const after = fs.statSync(target);
+
+  assert.equal(readNoFollow(target), "generation-two");
+  assert.notEqual(after.ino, before.ino, "a rename-based write publishes a NEW inode; an in-place write would reuse the old one and be empty in between");
+  assert.equal(after.mode & 0o777, 0o640, "the mode the operator set on the existing artifact is carried across the replacement, not reset from the caller's default");
+  assert.equal(fs.readdirSync(dir).length, 1, "no temporary file is left behind");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("writeConfigArtifact: a refused write leaves no temporary file behind either", () => {
+  const dir = tmpDir("no-litter");
+  const target = path.join(dir, "keyring.json");
+  fs.writeFileSync(target, "original", { mode: 0o600 });
+  fs.chmodSync(target, 0o664);
+
+  assert.throws(() => writeConfigArtifact(target, "replacement", { label: "--keyring-file" }), ConfigArtifactError);
+  assert.deepEqual(fs.readdirSync(dir), ["keyring.json"], "a refusal must not litter the config directory with half-written temporary artifacts");
+  assert.equal(readNoFollow(target), "original");
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
@@ -157,37 +184,34 @@ test("readConfigArtifact: an oversized file is refused before a byte of it is re
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("readConfigArtifact: a file GROWING under a concurrent writer never returns more than maxBytes", async () => {
-  // HONEST LABEL: this is a race probe, not a deterministic reproduction. Post-fix it cannot
-  // false-fail — the bound is checked against bytes actually read, so no interleaving can produce an
-  // over-cap return. Pre-fix it fails only when the appender wins the window, which is exactly how
-  // the 1.2 MB return was originally measured. The deterministic half of this fix is the chunked
-  // round-trip test above; this one pins the property the cap is supposed to express.
-  const dir = tmpDir("growing");
+// ⚠ WHAT USED TO BE HERE, AND WHY IT IS GONE (2026-08-12, round 2). This slot held a "growing file
+// under a concurrent writer" probe whose second assertion was `refusals + 1 > 0` — a statement that
+// is true for every possible value of `refusals`. It could not go red. Its own comment admitted the
+// race might never occur, and it did not check the child's exit status either. A test that cannot
+// fail is worse than no test: it occupies the slot where a real one would go, and it reports green
+// about a property nobody measured. The post-read bound cannot be triggered deterministically
+// through this module's public surface (it needs a write to land between `fstat` and `read`, and
+// there is no injection point for that by design), so the honest replacement is the table below,
+// which measures the half that CAN be pinned exactly: a cap that is not a usable number is refused
+// rather than silently ignored.
+test("readConfigArtifact: maxBytes must be a real bound — NaN, Infinity, a numeric string and null are refused, not accepted as 'no limit'", () => {
+  const dir = tmpDir("cap-table");
   const file = path.join(dir, "rules.json");
-  const cap = 1024 * 1024;
-  fs.writeFileSync(file, "a".repeat(512 * 1024), { mode: 0o600 });
+  fs.writeFileSync(file, "z".repeat(12504), { mode: 0o600 });
 
-  const appender = spawn(
-    process.execPath,
-    ["-e", `const fs=require("node:fs");const f=${JSON.stringify(file)};const b="b".repeat(256*1024);for(let i=0;i<40;i++)fs.appendFileSync(f,b);`],
-    { stdio: "ignore" },
-  );
-
-  let biggest = 0;
-  let refusals = 0;
-  for (let i = 0; i < 200; i += 1) {
-    try {
-      const text = readConfigArtifact(file, { label: "rules", maxBytes: cap, required: true });
-      if (text.length > biggest) biggest = text.length;
-    } catch (err) {
-      if (!(err instanceof ConfigArtifactError)) throw err;
-      refusals += 1;
-    }
+  // Every one of these RETURNED THE WHOLE 12,504-byte file before this fix: NaN fails every
+  // comparison, Infinity is never exceeded, and "12504" compares by string coercion.
+  for (const bad of [NaN, Infinity, -Infinity, "12504", null, -1, 1.5, undefined === null ? 0 : 2 ** 60]) {
+    assert.throws(
+      () => readConfigArtifact(file, { label: "rules", maxBytes: bad, required: true }),
+      (err) => err instanceof ConfigArtifactError && /maxBytes must be a finite, non-negative safe integer/.test(err.message),
+      `maxBytes=${String(bad)} must be refused as a cap that cannot bound anything`,
+    );
   }
-  await new Promise((resolve) => appender.on("exit", resolve));
 
-  assert.ok(biggest <= cap, `a successful read returned ${biggest} bytes against a ${cap}-byte cap`);
-  assert.ok(refusals + 1 > 0, "refusals are expected once the file passes the cap — they are the correct outcome, not a failure");
+  // CONTROLS: real caps still work in both directions, and 0 is a legitimate (if useless) bound.
+  assert.equal(readConfigArtifact(file, { label: "rules", maxBytes: 12504, required: true }).length, 12504);
+  assert.throws(() => readConfigArtifact(file, { label: "rules", maxBytes: 12503, required: true }), ConfigArtifactError);
+  assert.throws(() => readConfigArtifact(file, { label: "rules", maxBytes: 0, required: true }), ConfigArtifactError);
   fs.rmSync(dir, { recursive: true, force: true });
 });

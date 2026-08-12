@@ -935,10 +935,49 @@ test("adoptApprovedReceipt: refuses (returns null, never throws) when the sessio
   assert.equal(adopted, null, "seq has moved past what the ALLOWED receipt expects -> refuse, never silently graft");
 });
 
+// ROUND 2, 2026-08-12. The three proxy boundaries validate their rule set; THESE five do not, and
+// they are this package's own documented decision surface for "any MCP integration: proxy, gateway,
+// in-process guard". An adversarial review called each directly with `approvalRules: {}` and measured
+// ALLOW five times — which makes the proxy-side guards cosmetic for exactly the embedders this
+// package is published for. The fix is not five more guards: `matchApprovalRule` refuses to read
+// anything but a compiled snapshot and answers a HOLD when it cannot compile one, so every path that
+// reaches it inherits the fail-closed behaviour from one line.
+test("the package's OWN decision entry points fail closed on an unusable rule set (no proxy involved)", async () => {
+  const { signer } = signerAndKeyring("test-key-round2-public-api");
+  const { preCheckAsync } = await import("../src/pre-check.mjs");
+  const { prepareSessionReceiptAsync } = await import("../src/session-store.mjs");
+  const call = { name: "payment.refund", args: { amountMinor: 4200 } };
+
+  for (const rules of [{}, "nope", 5, true]) {
+    const opts = { signer, policy: REFUND_GUARD_POLICY, approvalRules: rules };
+    const store = createChainSessionStore();
+    const shape = JSON.stringify(rules) ?? String(rules);
+
+    assert.equal(preCheck(call, opts).decision, "DEFERRED", `preCheck must hold for approvalRules=${shape}`);
+    assert.equal((await preCheckAsync(call, opts)).decision, "DEFERRED", `preCheckAsync must hold for approvalRules=${shape}`);
+    assert.equal(prepareSessionReceipt(call, { sessionId: "s-a", store, ...opts }).decision, "DEFERRED", `prepareSessionReceipt must hold for approvalRules=${shape}`);
+    assert.equal((await prepareSessionReceiptAsync(call, { sessionId: "s-b", store, ...opts })).decision, "DEFERRED", `prepareSessionReceiptAsync must hold for approvalRules=${shape}`);
+    assert.equal(preCheckSession(call, { sessionId: "s-c", store, ...opts }).decision, "DEFERRED", `preCheckSession must hold for approvalRules=${shape}`);
+  }
+
+  // The receipt says WHY, in an existing field — no schema moves to carry this.
+  const held = preCheck(call, { signer, policy: REFUND_GUARD_POLICY, approvalRules: {} });
+  assert.equal(held.receipt.governance.ruleId, "approval:approval-rules-unusable");
+
+  // CONTROLS, so this cannot pass by holding everything: an honest rule set still decides both ways,
+  // and a caller who configured no approval rules at all still proceeds.
+  const honest = [{ id: "big-refund", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } }];
+  assert.equal(preCheck(call, { signer, policy: REFUND_GUARD_POLICY, approvalRules: honest }).decision, "DEFERRED");
+  assert.equal(preCheck({ name: "payment.refund", args: { amountMinor: 10 } }, { signer, policy: REFUND_GUARD_POLICY, approvalRules: honest }).decision, "ALLOW");
+  assert.equal(preCheck(call, { signer, policy: REFUND_GUARD_POLICY }).decision, "ALLOW", "no approvalRules configured is not a broken rule set");
+  assert.equal(preCheck(call, { signer, policy: REFUND_GUARD_POLICY, approvalRules: [] }).decision, "ALLOW", "an empty rule set gates nothing, by design");
+});
+
 test("index.mjs: R4 public surface is exported from the package root", async () => {
   const pkg = await import("../src/index.mjs");
   for (const name of [
-    "matchApprovalRule", "validateApprovalRules", "requireValidApprovalRules", "tryIdentifyToolCallForTicketLookup",
+    "matchApprovalRule", "validateApprovalRules", "compileApprovalRules", "isCompiledApprovalRules",
+    "requireValidApprovalRules", "tryIdentifyToolCallForTicketLookup",
     "recordDeferred", "recordApproved", "recordDenied", "consumeApprovalTicket", "findOutstanding", "loadPendingIndex",
     "buildApprovalReceipt", "buildDenialReceipt", "adoptApprovedReceipt", "canonicalParamsHash",
   ]) {
