@@ -20,7 +20,6 @@
  * authorized, never for an outcome it witnessed.
  */
 
-import { canonicalize, sha256Prefixed } from "noa-approval-artifacts";
 // BOUNDARY 2 — the ONE conversion from an arbitrary thrown value to a safe descriptor, and the ONE
 // type meaning "it already ran and the record could not be written". Both live in
 // noa-mcp-adapter-core so gate, mcp-proxy and framework-adapters share them instead of each

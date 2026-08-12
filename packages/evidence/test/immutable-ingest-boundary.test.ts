@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
 import { assertReceiptRole, RECEIPT_ROLE_VERDICTS, MANDATORY_RECEIPT_ROLES, type ReceiptRole } from "../src/receipt-roles.js";
+import { buildResolvedKeyring, buildReceiptKeyring } from "../src/trust.js";
 import type { EvidenceBundle } from "../src/types.js";
 import { b } from "./helpers/bytes.js";
 
@@ -200,4 +201,90 @@ test("H3: AUDIT refuses an expired MANIFEST window at verifier-controlled now", 
   assert.equal(res.failedStep, "STEP_1_HOLD_ENVELOPE");
   assert.equal(res.code, "E_HOLD_ENVELOPE");
   assert.equal(res.dimensions.authorization, "EXPIRED_NOW", "the audit dimension must report the manifest is EXPIRED_NOW even though the delegation is still open at `now`");
+});
+
+// ── BYTES-IN RESIDUAL — the guards that replaced three `TODO(bytes-in)` comments ──────────────────
+//
+// Those comments described an ABSENT defense on PUBLISHED functions ("the snapshot that used to
+// stand here is GONE and nothing replaces it"). A comment claiming a defense nobody can exercise is
+// the same defect class as a gate nobody runs, so each site now carries the smallest guard that is
+// real — and each guard is pinned here. Every arm is paired with a control, so none of them can
+// pass on a function that simply refuses everything.
+
+test("BYTES-IN: assertReceiptRole REFUSES an accessor-backed role — it never reads it", () => {
+  let reads = 0;
+  const hostile: Record<string, unknown> = {};
+  Object.defineProperty(hostile, "allowedReceipt", {
+    enumerable: true,
+    configurable: true,
+    // The C1 exploit shape: fit verdict on the read this module makes, unfit on every read after.
+    get() { reads++; return { governance: { verdict: reads === 1 ? "ALLOWED" : "BLOCKED" } }; },
+  });
+  const asserted = new Set<ReceiptRole>();
+  const r = assertReceiptRole(hostile, "allowedReceipt", asserted);
+  assert.equal(r.ok, false, "an accessor-backed role must be refused, not read");
+  assert.equal(reads, 0, "the getter must not fire at all — refusing after reading is still reading");
+  assert.equal(asserted.has("allowedReceipt"), false, "a refused role is not recorded as covered");
+
+  // CONTROL: the SAME content as a plain data property is accepted, so the refusal above is about
+  // the accessor and this arm is not passing against a function that refuses everything.
+  const honest = { allowedReceipt: { governance: { verdict: "ALLOWED" } } } as unknown as Record<string, unknown>;
+  const ok = assertReceiptRole(honest, "allowedReceipt", new Set<ReceiptRole>());
+  assert.equal(ok.ok, true);
+});
+
+test("BYTES-IN: assertReceiptRole REFUSES an accessor-backed governance / verdict", () => {
+  const receiptWithGovGetter: Record<string, unknown> = {};
+  let govReads = 0;
+  Object.defineProperty(receiptWithGovGetter, "governance", {
+    enumerable: true, configurable: true,
+    get() { govReads++; return { verdict: govReads === 1 ? "ALLOWED" : "BLOCKED" }; },
+  });
+  const r1 = assertReceiptRole({ allowedReceipt: receiptWithGovGetter }, "allowedReceipt", new Set<ReceiptRole>());
+  assert.equal(r1.ok, false, "an accessor-backed governance must be refused");
+  assert.equal(govReads, 0, "…and never read");
+
+  const governanceWithVerdictGetter: Record<string, unknown> = {};
+  let vReads = 0;
+  Object.defineProperty(governanceWithVerdictGetter, "verdict", {
+    enumerable: true, configurable: true,
+    get() { vReads++; return vReads === 1 ? "ALLOWED" : "BLOCKED"; },
+  });
+  const r2 = assertReceiptRole({ allowedReceipt: { governance: governanceWithVerdictGetter } }, "allowedReceipt", new Set<ReceiptRole>());
+  assert.equal(r2.ok, false, "an accessor-backed verdict must be refused");
+  assert.equal(vReads, 0, "…and never read");
+});
+
+test("BYTES-IN: a flipping getter cannot install a key different from the one checked", () => {
+  // The check-then-use window: `typeof k.publicKey === "string"` validated read #1 and
+  // `publicKey: k.publicKey` installed read #2. Every caller-owned field is now read ONCE, so the
+  // value checked IS the value installed — whatever the getter answers afterwards.
+  const CHECKED = "AAAA-the-key-that-was-checked";
+  const SWAPPED = "BBBB-the-key-that-would-have-been-installed";
+  const makeKey = () => {
+    const k: Record<string, unknown> = { kid: "gate-1", type: "GATE", roles: ["hold-signer"], validFrom: null, revokedAt: null };
+    let n = 0;
+    Object.defineProperty(k, "publicKey", { enumerable: true, configurable: true, get() { n++; return n === 1 ? CHECKED : SWAPPED; } });
+    return k;
+  };
+
+  const receipts = buildReceiptKeyring({ keys: [makeKey()] } as never);
+  assert.equal(receipts.keys["gate-1"]?.publicKey, CHECKED, "the receipt keyring installed a key it never checked");
+
+  const resolved = buildResolvedKeyring(
+    {},
+    { delegatedKid: "man-1", delegatedPublicKey: "MMMM", permissions: ["key-manifest-sign"], validFrom: null } as never,
+    { keys: [makeKey()] } as never,
+  );
+  assert.equal(resolved["gate-1"]?.publicKey, CHECKED, "the resolved keyring installed a key it never checked");
+
+  // The returned graph shares nothing with the caller's input: mutating the source afterwards
+  // cannot change what downstream verification is performed against.
+  const roles = ["hold-signer"];
+  const src = { keys: [{ kid: "gate-2", type: "GATE", roles, publicKey: "CCCC", validFrom: null, revokedAt: null }] };
+  const snap = buildResolvedKeyring({}, { delegatedKid: "man-1", delegatedPublicKey: "MMMM", permissions: [], validFrom: null } as never, src as never);
+  roles.push("execution-signer");
+  src.keys[0]!.publicKey = "DDDD";
+  assert.deepEqual(snap["gate-2"]?.roles, ["hold-signer"], "the keyring aliased the caller's array");
+  assert.equal(snap["gate-2"]?.publicKey, "CCCC", "the keyring re-read the caller's object after returning it");
 });

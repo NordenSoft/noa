@@ -122,6 +122,21 @@ function asObject(v: unknown): Record<string, unknown> | null {
 }
 
 /**
+ * Read an own DATA property, or REFUSE. An accessor-backed field is the only way a value this
+ * module checks can differ from the value a later reader sees, so it is not read at all: the
+ * descriptor is inspected with the pristine intrinsic and a getter yields `{ ok: false }`.
+ *
+ * A missing property is `{ ok: true, value: undefined }` — absence is a fact, not a refusal, and
+ * the caller below distinguishes the two.
+ */
+function dataProperty(o: object, key: string): { ok: true; value: unknown } | { ok: false } {
+  const d = intrinsics.getOwnPropertyDescriptor(o, key);
+  if (d === undefined) return { ok: true, value: undefined };
+  if (!intrinsics.hasOwn(d, "value")) return { ok: false };
+  return { ok: true, value: (d as { value: unknown }).value };
+}
+
+/**
  * THE CHOKEPOINT. Fetch the receipt the bundle assigns to `role`, having proven its signer attested
  * a verdict appropriate to that role — the two are one operation and cannot be taken apart.
  *
@@ -138,18 +153,32 @@ export function assertReceiptRole(
   role: ReceiptRole,
   asserted: Set<ReceiptRole>,
 ): RoleAssertion {
-  // TODO(bytes-in): the snapshot that stood here is GONE. On this package's own path the bundle is
-  // now the KERNEL'S parser output (`verifyEvidence` takes the bundle as bytes), so it carries no
-  // getters and the role read and the verdict read below cannot be split by a flipping accessor —
-  // the property this boundary existed to guarantee now holds by construction. `index.ts` still
-  // advertises the chokepoint "for downstream reuse", though, and a direct caller can hand it a
-  // live object; the bundle is not a document at THIS signature (it is one field of an
-  // already-parsed bundle away), so re-serializing to re-parse would be theatre. The shape guard
-  // below keeps the never-throws contract. Reported.
+  // BYTES-IN — what stands here in place of the deleted snapshot, rather than a note saying nothing
+  // does. On this package's own path the bundle is the KERNEL'S parser output (`verifyEvidence`
+  // takes the bundle as bytes), so it carries no getters and the property below holds by
+  // construction. `index.ts` advertises this chokepoint "for downstream reuse" though, and a DIRECT
+  // caller can hand it a live object. The bundle is not a document at THIS signature (it is one
+  // field of an already-parsed bundle away), so re-serializing to re-parse would be theatre. The
+  // guard that is neither theatre nor absent:
+  //
+  //   THE ROLE, ITS `governance` AND ITS `verdict` MUST BE OWN DATA PROPERTIES. An accessor is
+  //   REFUSED, never read. That is the whole flipping-getter class at this boundary: it is the only
+  //   mechanism by which the verdict this function proves fit for the role could differ from the
+  //   verdict a later reader of the SAME returned receipt sees. It also removes a real throw path —
+  //   a getter on the role field used to escape this "never throws" function as a raw exception.
+  //
+  // What this does NOT close, stated rather than implied: the returned `receipt` is still the
+  // caller's own object on the direct-call path, so a caller that mutates it AFTER this returns
+  // sees its own mutation. Closing that needs a copy this boundary deliberately does not make (the
+  // hashes downstream must be over the bundle's own bytes). Not a getter, and not silent.
   if (bundle === null || typeof bundle !== "object") {
     return { ok: false, reason: `${role} could not be read: the bundle is not an object` };
   }
-  const raw = bundle[role];
+  const rawRead = dataProperty(bundle, role);
+  if (!rawRead.ok) {
+    return { ok: false, reason: `${role} is exposed through an accessor rather than a value — a field that can answer differently on a second read cannot be attested` };
+  }
+  const raw = rawRead.value;
   if (raw === undefined || raw === null) {
     if (arrayIncludes(MANDATORY_RECEIPT_ROLES, role)) {
       // A mandatory role that is absent is a FAILED assertion — do NOT record it as covered.
@@ -161,8 +190,16 @@ export function assertReceiptRole(
   }
   const receipt = asObject(raw);
   if (!receipt) return { ok: false, reason: `${role} is present but is not an object` };
-  const governance = asObject(receipt.governance);
-  const verdict = governance ? governance.verdict : undefined;
+  const govRead = dataProperty(receipt, "governance");
+  if (!govRead.ok) {
+    return { ok: false, reason: `${role}.governance is exposed through an accessor rather than a value — a field that can answer differently on a second read cannot be attested` };
+  }
+  const governance = asObject(govRead.value);
+  const verdictRead = governance ? dataProperty(governance, "verdict") : ({ ok: true, value: undefined } as const);
+  if (!verdictRead.ok) {
+    return { ok: false, reason: `${role}.governance.verdict is exposed through an accessor rather than a value — the verdict proven fit for this role must be the verdict every later reader sees` };
+  }
+  const verdict = verdictRead.value;
   const allowed = RECEIPT_ROLE_VERDICTS[role];
   if (typeof verdict !== "string" || !arrayIncludes(allowed, verdict)) {
     // The signer attested a verdict UNFIT for the role. This is a FAILED assertion — the coverage
