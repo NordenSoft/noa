@@ -996,7 +996,7 @@ const KNOCKOUTS = [
     find: '  if (governance["verdict"] !== AUTHORIZING_VERDICT) {',
     replace: '  if (governance["verdict"] === "\\u0000never") {',
     kind: "tests",
-    suite: [".", "npm", ["test"]],
+    suite: [".", "npm", ["run", "test:action-digest"]],
   },
   {
     id: "ad-scope-identifier-not-blank",
@@ -1005,7 +1005,7 @@ const KNOCKOUTS = [
     find: '  if (strTrim(v).length === 0) return "blank";\n  if (strTrim(v) !== v) return "padded";',
     replace: '  if (v.length === 0) return "blank";',
     kind: "tests",
-    suite: [".", "npm", ["test"]],
+    suite: [".", "npm", ["run", "test:action-digest"]],
   },
   {
     id: "ad-chain-must-authenticate",
@@ -1014,7 +1014,7 @@ const KNOCKOUTS = [
     find: '  if (chainVerdict.status !== "VALID" || chainVerdict.signaturesVerified !== true) {',
     replace: '  if (chainVerdict.count === -1) {',
     kind: "tests",
-    suite: [".", "npm", ["test"]],
+    suite: [".", "npm", ["run", "test:action-digest"]],
   },
   {
     id: "ad-grant-signature-verified",
@@ -1023,7 +1023,7 @@ const KNOCKOUTS = [
     find: '  if (!verifyEd25519(grantKey.publicKey, signingMessage(GRANT_SIG_DOMAIN, canonicalize(grantWithoutSig)), grantSig["value"])) {',
     replace: '  if (grantSig["value"] === "\\u0000never") {',
     kind: "tests",
-    suite: [".", "npm", ["test"]],
+    suite: [".", "npm", ["run", "test:action-digest"]],
   },
   {
     id: "ad-grant-sig-object-is-closed",
@@ -1032,7 +1032,7 @@ const KNOCKOUTS = [
     find: '    if (!arrayIncludes(GRANT_SIG_KEYS, k)) {',
     replace: '    if (k === "\\u0000never") {',
     kind: "tests",
-    suite: [".", "npm", ["test"]],
+    suite: [".", "npm", ["run", "test:action-digest"]],
   },
   {
     id: "ad-authorization-selected-by-grant-binding",
@@ -1041,7 +1041,7 @@ const KNOCKOUTS = [
     find: '    if (sha256Prefixed(receiptHashInput(candidate as unknown as Receipt)) === wanted) {',
     replace: '    if (true) {',
     kind: "tests",
-    suite: [".", "npm", ["test"]],
+    suite: [".", "npm", ["run", "test:action-digest"]],
   },
   {
     id: "ad-expected-scope-enforced",
@@ -1050,7 +1050,7 @@ const KNOCKOUTS = [
     find: '  if (built.projection.tenant !== expect["tenant"]) {',
     replace: '  if (built.projection.tenant === "\\u0000never") {',
     kind: "tests",
-    suite: [".", "npm", ["test"]],
+    suite: [".", "npm", ["run", "test:action-digest"]],
   },
   {
     id: "ad-domain-separation-applied",
@@ -1059,7 +1059,7 @@ const KNOCKOUTS = [
     find: 'export const ACTION_DIGEST_DOMAIN = "NOA-ActionDigest-v0.1-dig";',
     replace: 'export const ACTION_DIGEST_DOMAIN = "NOA-Receipt-v0.1-sig";',
     kind: "tests",
-    suite: [".", "npm", ["test"]],
+    suite: [".", "npm", ["run", "test:action-digest"]],
   },
   // ── P0-12 / P0-13 (2026-07-31, micro-batch B): HARDENING WHAT BATCH A BUILT ────────────────────
   // Both entries below exist because a control that batch A added did not hold: ROOT activation was
