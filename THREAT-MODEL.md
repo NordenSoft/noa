@@ -189,20 +189,51 @@ truth or safety.
   receipt over inputs it fabricated (e.g. "balance read = 0"). Closing this needs source/tool
   co-signatures over the read-set (a v1.0 witnessed-input goal); today L2 certifies *consistency of a
   self-reported decision on an authenticated carrier*, not the truth of its inputs.
-- **Enforcement bypass:** see SECURITY.md — `noa.guard()` is advisory unless placed at the
-  credential/write boundary; the MCP proxy must fail-closed.
-- **In-process-API hostile-getter residual (declared known-limitation, v0.1):** the documented,
-  deployed verifier surfaces — the CLI, `verifyChainText`, and the independent Python verifier — consume
-  parsed JSON (no accessors) and are immune. The in-process JS object APIs (`verifyChain(obj)`,
-  `verifyCheckpoint(obj)`, `verifyReceiptCompliance(obj)`) accept caller-supplied LIVE objects; v0.1
-  snapshots every such input once (`structuredClone`) and is fail-closed, so all *known* flipping-accessor /
-  throwing-accessor / non-cloneable vectors yield `MALFORMED`, never a wrong VALID and never a raw throw.
-  Because any future property read on a live object is a *potential* new accessor surface, this class is
-  treated as **continuous hardening, not a release blocker**: after extensive adversarial security review
-  (every confirmed finding fixed in BOTH implementations with a regression probe + cross-impl
-  conformance), the v0.1 correctness surface is **declared hardened**. Callers passing attacker-influenced
-  *live JS objects* directly to the in-process API should pre-parse via `verifyChainText` / `JSON.parse`
-  New same-class in-process-getter findings are tracked and fixed, not gated on.
+- **Enforcement bypass — general (see SECURITY.md):** `noa.guard()` is advisory unless placed at the
+  credential/write boundary.
+- **Enforcement bypass — config-artifact redirection (NON-CLAIMS.md NC-6.9):** until 2026-08-12 the
+  MCP proxy read its own gate config (`--approval-rules`, `--approver-keyring`, `--approver-identity`,
+  `--pending-store`) by path, so a symlink swap turned human approval off entirely — a `transfer_funds`
+  above the configured threshold was forwarded and executed with no approval at all. `config-artifact.mjs`
+  now opens that config through one `O_NOFOLLOW` descriptor, closing the symlink path. Two measured
+  bypasses still execute the identical unapproved transfer against the FIXED code and are **not**
+  closed: an **in-place content rewrite as the same uid** (`printf '[]' > approval-rules.json` — no
+  symlink, no unlink, no mode change, so nothing for `O_NOFOLLOW`, the owner check or the mode check to
+  catch), and an **ancestor-directory repoint** (`O_NOFOLLOW` guards only the FINAL path component, so
+  redirecting an ancestor directory is not caught). Full statement and scope: NC-6.9.
+- **In-process-API hostile-getter class — CLOSED in `0.6.0`, not an ongoing residual:** through
+  `0.5.0`, `verifyChain`, `verifyCheckpoint` and `verifyReceiptCompliance` accepted a caller-supplied
+  LIVE object and defended it by snapshotting every such input once via `structuredClone`. As of
+  `0.6.0` (CHANGELOG, "the public verifiers take BYTES, not objects") those entry points no longer
+  accept an object at all — every one of them takes `Uint8Array | string` only, and `verifyChainText`
+  is not a separate, narrower-guarantee path anymore: both route through the same `parseDocument`, so
+  a document is parsed once into a null-prototype, accessor-free tree before any verifier logic runs.
+  There is no live caller object left below the boundary to read twice, which is why the
+  `structuredClone` snapshot machinery this file used to carry was DELETED rather than kept as a second
+  line of defence (`src/verify.ts:33-38`; confirmed at the call site, `src/verify.ts:205-207`: "there
+  is no live caller object anywhere below this line"). That closes the hostile-ACCESSOR class (class A,
+  `docs/ADR-0001-trust-kernel-vnext.md` §2.2) at the source — a getter or Proxy trap can only run
+  during traversal of a live object, and no live object reaches the boundary anymore.
+
+  This does **not** close the intrinsic-POISONING class (class B — an attacker who already has code
+  execution in the realm, e.g. a rewritten `Array.prototype.includes`); per ADR §5.2, nothing a
+  library does closes that class, and it is not declared fixed here. What did land against it is
+  defence-in-depth: the specific sink this section used to point at — cross-agent-authorization
+  membership resolved through a live, writable `Array.prototype.includes` — no longer dispatches
+  through that global slot. It resolves through `arrayIncludes`, a copy of `Array.prototype.includes`
+  captured at module load and invoked via a captured `Reflect.apply`, so reassigning the global no
+  longer changes the decision (`src/verify.ts:543-548`, `src/intrinsics.ts:403`). New same-class
+  in-process-getter or intrinsic-poisoning findings are still tracked and fixed on discovery — that
+  practice continues; it is just no longer gating an open "declared known-limitation."
+
+  > **RESOLVED (`0.6.0`), superseding the review correction below.** That correction measured
+  > `verifyChainText` as it existed before `0.6.0`, when it forwarded into an object-accepting
+  > `verifyChain` — its citations to `src/verify.ts:178` and `:426` are accurate for that commit, not
+  > this one. As of `0.6.0`, `verifyChainText` is a pure alias of `verifyChain`
+  > (`src/verify.ts:712-718`): there is only one entry point left, it takes bytes/text only, and it no
+  > longer "deep-copies through the live global `structuredClone`" because that machinery does not exist
+  > (`src/verify.ts:33-38`, `:205-207`). The note below is kept unedited as the record of what that
+  > review found and when.
 
   > **CORRECTION (review #7, 2026-07-28) — this paragraph called `verifyChainText` "the immune path".
   > It is not immune; it is immune to ONE of the two classes.** Measured, not argued: a probe against
