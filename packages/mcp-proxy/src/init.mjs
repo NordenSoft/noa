@@ -150,7 +150,7 @@ function removeIfForced(path, force) {
  * caller via `describeThrown`, per this package's thrown-value-handling boundary).
  *
  * ROUND 2 / MEDIUM 7 FIX: `O_CREAT` makes the file exist the moment `openSync` succeeds — BEFORE
- * a single byte of `content` is written. Codex measured that a write failure after that point
+ * a single byte of `content` is written. An independent review measured that a write failure after that point
  * (reproduced with `EFBIG`; any `writeFileSync` failure is the same shape) left an EMPTY file on
  * disk while the caller's own bookkeeping said "0 files were written" — the on-disk reality and
  * the printed claim disagreed. The write is now wrapped so a failure `unlinkSync`s the just-created
@@ -193,7 +193,7 @@ export function createFileExclusive(path, content, mode = 0o644) {
  * ROUND 2 / HIGH 4 FIX. `O_NOFOLLOW` on each of the four writes above protects only the FINAL path
  * component — `--dir root/parent-link/child` still resolves through `parent-link` if it is a
  * symlink, because `mkdirSync`/`openSync` follow every ANCESTOR component the same way a plain
- * shell `cd` would. Codex measured this placing all four artifacts, including the private key,
+ * shell `cd` would. An independent review measured this placing all four artifacts, including the private key,
  * outside the requested tree while every message still printed the harmless-looking lexical path.
  *
  * Fails closed if the REAL (symlink-resolved) location of `dir` differs from its LEXICAL
@@ -221,7 +221,7 @@ function assertNoAncestorSymlink(dir) {
  * macOS: a directory carrying an INHERITABLE ACL (`chmod +a "everyone allow read,file_inherit,...`)
  * propagates that ACL to a file created inside it REGARDLESS of the mode the creator requested, and
  * neither `stat`'s mode field nor a plain `ls -l` reveals it — `ls -le` (or an ACL-aware API) is the
- * only way to see it. Codex measured a file reporting `-rw-------` that was still readable by
+ * only way to see it. An independent review measured a file reporting `-rw-------` that was still readable by
  * `everyone` via exactly this mechanism. Theft of the approver key is full approval authority, so
  * this strips any ACL unconditionally after creating the key and then VERIFIES none remains —
  * fail-closed (throws) rather than silently trusting that the strip worked.
@@ -271,7 +271,7 @@ function stripInheritedAclOrFail(path) {
  * between this package's own preflight check and this call (two OTHER files are written
  * synchronously in between — a real window, not a theoretical one), the LOAD branch returns that
  * key WITHOUT ever invoking `mintKeyPair` — silently adopting whatever identity is sitting there.
- * Codex reproduced this racing both a fresh `init` and `--force`: both exited 0 having adopted an
+ * An independent review reproduced this racing both a fresh `init` and `--force`: both exited 0 having adopted an
  * attacker-planted `kid`.
  *
  * This wraps the SAME hardened helper (never a hand-rolled key write — the file's own doc-comment
@@ -455,7 +455,7 @@ export function runInitCli(argv) {
   }
   // ROUND 2 / MEDIUM 6 FIX (part 1): refuse the WHOLE run, before touching ANYTHING, if any
   // preexisting target is something --force could never turn back into a generated file (a
-  // directory sitting where a file belongs). Codex measured the OLD code deleting the rules,
+  // directory sitting where a file belongs). An independent review measured the OLD code deleting the rules,
   // pending store and private key, in that order, before discovering the 4th target could not be
   // removed as a file — stranding the operator with the old identity destroyed and nothing new.
   if (opts.force) {

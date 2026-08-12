@@ -238,7 +238,7 @@ test("init --force removes a dangling symlink at a target path and writes a REAL
 });
 
 // ---------------------------------------------------------------------------------------------
-// ROUND 2 — Codex (cross-family) reproduced three CRITICALs and four lower-severity findings
+// ROUND 2 — an independent review (cross-family) reproduced three CRITICALs and four lower-severity findings
 // end-to-end against the round-1 fix. Each test below reproduces the STATE the finding depends
 // on (not necessarily the exact timing mechanism, where that would make the test flaky) and
 // proves the code's response to that state, per the "verify by reproducing" instruction.
