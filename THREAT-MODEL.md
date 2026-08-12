@@ -157,11 +157,14 @@ truth or safety.
   signature verifies on both, and a verifier holding one branch sees nothing wrong
   (`docs/federation-spec.md` §7). `packages/tsa-anchor`'s `scanForEquivocation` is the monitor for
   the case where the two views MEET: given a pool of published anchors and a pinned trust-set it
-  finds the contradiction and emits a proof a third party re-checks offline. What that buys,
-  precisely: it raises the cost of a rewrite — every party who saw the old head must stay silent, or
-  the views must never be compared — and it does not make history immutable. It shows two signed
-  statements conflict; it does not adjudicate which is the true history; it sees only what was
-  published (omission, again); and from anchors alone a rewrite that also EXTENDS the chain is
+  finds the contradiction and emits a proof a third party re-checks offline. What that buys is
+  narrower than it first sounds, and the limit is not a footnote: **nothing authenticates that a
+  pool is COMPLETE**, so the scanner cannot tell an incomplete pool from a complete one. Withholding
+  a single anchor therefore makes a forked chain read clean, and doing so needs **no compromised
+  signer and no forged signature** — only control over what reaches the verifier. Detection is
+  real for whoever ends up holding both halves; making that happen is a distribution problem this
+  code does not solve. It also does not adjudicate which branch is true, it sees only what was
+  published (omission, again), and from anchors alone a rewrite that also EXTENDS the chain is
   indistinguishable from ordinary growth, so catching that additionally needs the presented chain.
   Nothing in this repository collects the pool — the verifier does (NON-CLAIMS NC-4.3).
 - **Keyring is the root of trust:** every property above stops holding if the verifier's keyring

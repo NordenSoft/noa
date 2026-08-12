@@ -192,3 +192,87 @@ test("CLI fork-scan / corroborate: missing required flags exit 4", async () => {
   assert.equal((await run(["fork-scan"])).status, 4);
   assert.equal((await run(["corroborate"])).status, 4);
 });
+
+// ── round-2 regressions at the CLI boundary ─────────────────────────────────────────────────────
+// The exit code is what a pipeline branches on, so "the scan could not run" reaching exit 0 is the
+// same defect as the library reporting CLEAN — one layer further out, and harder to notice.
+
+test("H4 — fork-scan does NOT exit 0 for a pool it could not examine", async () => {
+  const chain = buildChainOf(["p0", "p1", "p2"]);
+  const good = anchorFor(W1, chain, 2, "2026-06-23T10:00:00Z");
+  const forged = JSON.parse(JSON.stringify(anchorFor(W2, chain, 2, "2026-06-23T10:00:01Z")));
+  forged.headHash = "sha256:" + "c".repeat(64); // pinned kid, signature no longer covers it
+
+  const empty = writeAll({ anchors: [], trustset: TRUST_SET });
+  const e = await run(["fork-scan", "--anchors", empty.anchors, "--trust-set", empty.trustset]);
+  assert.equal(e.status, 4, `an empty pool must not exit 0: ${e.stdout}${e.stderr}`);
+
+  const outsider = generateKeyPair("cli-outsider");
+  const p = writeAll({
+    unpinnedOnly: [anchorFor(outsider, chain, 2, "2026-06-23T10:00:00Z")],
+    forgedPool: [good, forged],
+    trustset: TRUST_SET,
+  });
+  const u = await run(["fork-scan", "--anchors", p.unpinnedOnly, "--trust-set", p.trustset]);
+  assert.equal(u.status, 1, "nothing admitted is not a clean bill");
+  assert.equal(JSON.parse(u.stdout).verdict, "NO_EVIDENCE");
+
+  const f = await run(["fork-scan", "--anchors", p.forgedPool, "--trust-set", p.trustset]);
+  assert.equal(f.status, 1, "a forgery under a pinned key is not a clean bill");
+  assert.equal(JSON.parse(f.stdout).verdict, "INCOMPLETE_POOL");
+});
+
+test("H4 — stamp and verify refuse an empty anchor array instead of exiting 0", async () => {
+  const p = writeAll({ anchors: [], trustset: TRUST_SET, tsr: {} });
+  // Unroutable TSA on purpose: exit 0 here previously said nothing about whether it was reached.
+  const stamp = await run(["stamp", "--anchors", p.anchors, "--tsa-url", "http://127.0.0.1:1"]);
+  assert.equal(stamp.status, 4, stamp.stdout + stamp.stderr);
+  assert.match(stamp.stderr, /empty array/);
+
+  const verify = await run(["verify", "--anchors", p.anchors, "--tsr", p.tsr]);
+  assert.equal(verify.status, 4, verify.stdout + verify.stderr);
+});
+
+test("H5 — --chain is verified, so an unreadable chain cannot pass as historyChecked", async () => {
+  const chain = buildChainOf(["p0", "p1", "p2"]);
+  const p = writeAll({
+    anchors: [anchorFor(W1, chain, 2, "2026-06-23T10:00:00Z"), anchorFor(W2, chain, 2, "2026-06-23T10:00:01Z")],
+    trustset: TRUST_SET,
+    junkChain: [{}],
+    goodChain: chain,
+  });
+
+  const junk = await run(["fork-scan", "--anchors", p.anchors, "--trust-set", p.trustset, "--chain", p.junkChain]);
+  assert.equal(junk.status, 3, `a chain that does not verify must not be compared against: ${junk.stdout}${junk.stderr}`);
+  assert.doesNotMatch(junk.stdout, /"historyChecked": true/);
+
+  // A tampered-but-well-formed chain is refused for the same reason.
+  const tampered = JSON.parse(JSON.stringify(chain));
+  tampered[2].chain.prevHash = "sha256:" + "0".repeat(64);
+  const t = writeAll({ tamperedChain: tampered });
+  const bad = await run(["fork-scan", "--anchors", p.anchors, "--trust-set", p.trustset, "--chain", t.tamperedChain]);
+  assert.equal(bad.status, 3, bad.stdout + bad.stderr);
+
+  // ...and the honest chain still works, so the check is not simply "reject everything".
+  const ok = await run(["fork-scan", "--anchors", p.anchors, "--trust-set", p.trustset, "--chain", p.goodChain]);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  assert.equal(JSON.parse(ok.stdout).historyChecked, true);
+});
+
+test("M9 — --now is parsed as RFC 3339, not by lenient Date.parse", async () => {
+  const chain = buildChainOf(["p0", "p1", "p2"]);
+  const p = writeAll({
+    checkpoint: buildCheckpoint(chain[2], "2026-06-23T10:00:00Z", AUTHOR_SIGNER),
+    anchors: [anchorFor(W1, chain, 2, "2026-06-23T10:00:00Z"), anchorFor(W2, chain, 2, "2026-06-23T10:00:01Z")],
+    trustset: TRUST_SET,
+  });
+  const base = ["corroborate", "--checkpoint", p.checkpoint, "--anchors", p.anchors, "--trust-set", p.trustset, "--max-age-ms", "86400000"];
+
+  for (const bad of ["2026", "Jun 23 2026", "2026-06-23", "2026-06-23T10:30:00"]) {
+    const res = await run([...base, "--now", bad]);
+    assert.equal(res.status, 4, `--now ${bad} must be refused: ${res.stdout}${res.stderr}`);
+    assert.match(res.stderr, /RFC 3339/);
+  }
+  const good = await run([...base, "--now", "2026-06-23T10:30:00Z"]);
+  assert.equal(good.status, 0, good.stdout + good.stderr);
+});

@@ -214,9 +214,13 @@ It is still **not** a transparency log, and the difference is not cosmetic:
 
 - **No log.** No Merkle tree, no inclusion proof, no consistency proof. The witness wire layer stays
   dormant (`docs/federation-spec.md` §10).
-- **Nothing fetches anything.** The monitor is a pure function over a caller-supplied pool. Whoever
-  runs it must obtain the anchors themselves, and a pool holding only one party's view finds nothing
-  — which is exactly the position a lone verifier is in (federation-spec §7).
+- **Nothing fetches anything, and nothing authenticates COMPLETENESS.** The monitor is a pure
+  function over a caller-supplied pool. Whoever runs it must obtain the anchors themselves, and a
+  pool holding only one party's view finds nothing — exactly the position a lone verifier is in
+  (federation-spec §7). Stated at full strength, because the weaker phrasing invites the wrong
+  conclusion: **the scan cannot distinguish an incomplete pool from a complete one**, so withholding
+  one anchor is enough to make a forked chain read clean, and that costs an attacker no compromised
+  key and no forgery at all.
 - **Nothing is deployed and nothing is published.** `noa-tsa-anchor` is release-gated
   (`.github/workflows/publish-tsa.yml`) and has never been published to npm.
 - **A rewrite that also extends the chain is invisible from anchors alone**, because anchors at two

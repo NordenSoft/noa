@@ -103,8 +103,13 @@ result reports `transferable` separately from `ok` (see the honest limits below)
 
 ### What this does NOT buy you
 
-- **It does not make history immutable.** It raises the cost of rewriting it: to get away with a
-  rewrite you now need every party who saw the old head to stay silent, or never to be compared.
+- **Nothing authenticates that a pool is COMPLETE, and that is the cheapest evasion.** This scanner
+  cannot distinguish an incomplete pool from a complete one, so withholding a single anchor is
+  enough to make a forked chain read `CLEAN` — and it requires **no compromised signer and no forged
+  signature at all**, only control over what reaches the verifier. Everything below is downstream of
+  this one.
+- **It does not make history immutable.** It makes a fork *detectable by whoever ends up holding
+  both halves*. Whether they do is a distribution question this code does not touch.
 - **It does not say which branch is true.** A proof shows two signed statements contradict each
   other. Deciding which is the real history needs evidence this package never sees.
 - **It only sees what was published.** A branch shown to nobody leaves no anchor
@@ -114,9 +119,28 @@ result reports `transferable` separately from `ok` (see the honest limits below)
   proofs of federation-spec §10, which are dormant.
 - **Witness independence is an assumption, not a check.** This code enforces distinct *keys*; whether
   those keys belong to distinct organisations is operational (`NON-CLAIMS.md` NC-4.1).
+- **A name in a finding is the reader's own label.** `sig.kid` is not inside the bytes a witness
+  signs, so attribution transfers at the **public key** (`attributedToPubkey`), never at the `kid`.
+  Findings carry a `trustSetDigest` so a recipient can see they are reading someone else's labels.
 
 Every result object carries these limits in its own `undetected` array, including a `CLEAN` one —
 which is exactly when a reader is most likely to over-read the answer.
+
+### Verdicts, and why "nothing found" is not one word
+
+`scanForEquivocation` returns one of five, and **`clean` is true for `CLEAN` alone**:
+
+| verdict | meaning |
+| --- | --- |
+| `EQUIVOCATION` | a signed contradiction was found. Outranks a dirty pool — junk alongside a real fork does not make the fork less true |
+| `CLEAN` | every admitted anchor was examined and they agree |
+| `NO_EVIDENCE` | nothing was admitted, so nothing was examined. **Not** a clean bill |
+| `INCOMPLETE_POOL` | entries were unusable, or a **pinned** kid's signature failed — the latter is an attack signal |
+| `INVALID_INPUT` | the scan did not run: bad trust-set, malformed history, or a degenerate bound |
+
+Bounds are DoS ceilings, never switches: `maxAnchors`/`maxHistory`/`maxFindings` must be ≥ 1 and
+`maxBranches` ≥ 2 (a proof carrying fewer than two anchors demonstrates nothing). A value below the
+floor is **refused**, not silently clamped.
 
 ## API
 
@@ -152,10 +176,19 @@ noa-tsa corroborate --checkpoint checkpoint.json --anchors pool.json --trust-set
                     [--now 2026-06-23T10:30:00Z --max-age-ms 86400000] [--tsr anchors.tsr.json]
 ```
 
-Exit codes: `0` OK · `1` MISMATCH (verify: an anchor is unstamped or its stamp does not match;
-corroborate: quorum not met) · `2` TRANSPORT (stamp: the TSA request failed) · `3` MALFORMED (bad
-JSON/DER input, or an unusable trust-set) · `4` USAGE · `5` EQUIVOCATION (a signed contradiction was
-found — deliberately distinct from `0`, so a pipeline can branch on it).
+Exit codes: **`0` means CLEAN and nothing else** · `1` MISMATCH (verify: an anchor is unstamped or
+its stamp does not match; corroborate: quorum not met; fork-scan: `NO_EVIDENCE` or
+`INCOMPLETE_POOL` — the scan ran but earned no clean result) · `2` TRANSPORT (stamp: the TSA request
+failed) · `3` MALFORMED (bad JSON/DER input, an unusable trust-set, or a `--chain` that does not
+verify) · `4` USAGE, including an empty `--anchors` array — "did nothing" is not "succeeded" ·
+`5` EQUIVOCATION (a signed contradiction was found — deliberately distinct from `0`).
+
+`--chain` is **verified, not trusted**: the presented receipts are run through the kernel's own
+offline `verifyChain` and the (chain, seq, hash) derivation must be total. A chain that does not
+verify, or one only partly readable, exits `3` rather than quietly narrowing the comparison.
+
+`--now` is parsed as strict RFC 3339 (`2026-06-23T10:30:00Z`); `2026` and `2026-06-23` are refused
+rather than silently anchoring the freshness window to the start of a year.
 
 `--now` and `--max-age-ms` must be supplied together: half a freshness policy is an operator error,
 and treating it as "no freshness" would silently re-open the replay gap the flag exists to close.

@@ -1107,8 +1107,8 @@ const LINTS = [
     run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 153 },
   { id: "L8-mcp-proxy", name: "L8 dispatch-surface AST gate on mcp-proxy decision paths",
     run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 49 },
-  // 212 -> 97 in the commit that enrolled the package. The reduction is not spread evenly and the
-  // split is the point:
+  // 212 -> 97 when the package was enrolled, then 97 -> 95 in the round-2 fix commit. The
+  // reduction is not spread evenly and the split is the point:
   //   equivocation.mjs  93 -> 0   the NEW decision path — the file this whole enrolment exists for.
   //                              It carries the verdict a relying party acts on, so it is held to
   //                              the root TCB's standard exactly, not to a migration budget.
@@ -1121,9 +1121,17 @@ const LINTS = [
   //   that predate this coverage, and a budget is the documented way to bring code under a gate
   //   without either weakening the rule or blocking on a migration that has nothing to do with the
   //   change in hand — the same route adapter-core and mcp-proxy took at 355.
+  // ROUND 2 MOVED IT DOWN AGAIN, and the route there is worth recording because it briefly went
+  // UP. Closing the review's H5 added a real fail-closed path to the CLI (verify the presented
+  // chain, refuse a partially-read history), and every refusal is a `process.stderr.write` +
+  // `process.exit` pair the AST gate counts: 97 -> 102. Raising the budget to fit was the wrong
+  // instinct and refusing to add the safety check was worse. Both were avoided by routing the
+  // serialisation through the captured `jsonStringify` and collapsing every fatal exit in the file
+  // into ONE `fail(code, msg)` helper — which is better code for its own sake and leaves the gate
+  // at 95, two BELOW where the package entered.
   // The number may only fall. It is written back here the day it is measured.
   { id: "L8-tsa-anchor", name: "L8 dispatch-surface AST gate on tsa-anchor decision paths",
-    run: () => publishedL8("L8-tsa-anchor", TSA_ANCHOR_TCB), mode: "warn", budget: 97 },
+    run: () => publishedL8("L8-tsa-anchor", TSA_ANCHOR_TCB), mode: "warn", budget: 95 },
 ];
 
 // The legacy regex self-test that stood here was DELETED with the regexes it tested (round-4, A5).

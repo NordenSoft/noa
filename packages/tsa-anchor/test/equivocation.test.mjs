@@ -186,18 +186,28 @@ test("GATE 1e — an unpinned or unsigned anchor cannot MANUFACTURE a fork findi
   const branchB = buildChainOf(["p0", "p1", "p2-BETA"]);
   const outsider = generateKeyPair("not-pinned");
 
-  // (i) an anchor from a key the verifier never pinned
+  // (i) an anchor from a key the verifier never pinned. Not addressed to this verifier, so it is
+  // dropped and the remaining admitted anchor is genuinely uncontradicted.
   const unpinned = witnessAnchor(outsider, branchB, 2, "2026-06-23T10:00:05Z");
   let res = scanForEquivocation([witnessAnchor(W1, branchA, 2, "2026-06-23T10:00:00Z"), unpinned], TRUST_SET);
-  assert.equal(res.verdict, "CLEAN", `unpinned witness must be dropped: ${res.reason}`);
+  assert.equal(res.equivocationFound, false, `an unpinned witness must not manufacture a fork: ${res.reason}`);
+  assert.equal(res.verdict, "CLEAN", res.reason);
   assert.equal(res.dropped, 1);
+  assert.equal(res.rejected.unpinned, 1);
 
-  // (ii) a PINNED witness's kid with a forged signature body
+  // (ii) a PINNED witness's kid carrying a forged signature body. Still no fork — but this is NOT
+  // the same situation as (i) and must no longer read the same. A signature that fails under a key
+  // this verifier deliberately pinned is an attack signal, so the pool is reported unreadable
+  // rather than clean (round-2 H4: "checked and found nothing" is not "could not check").
   const forged = structuredClone(witnessAnchor(W2, branchB, 2, "2026-06-23T10:00:05Z"));
   forged.headHash = "sha256:" + "c".repeat(64); // signature no longer covers this frontier
   res = scanForEquivocation([witnessAnchor(W1, branchA, 2, "2026-06-23T10:00:00Z"), forged], TRUST_SET);
-  assert.equal(res.verdict, "CLEAN", `a bad signature must be dropped, not counted: ${res.reason}`);
+  assert.equal(res.equivocationFound, false, `a bad signature must never be counted as a branch: ${res.reason}`);
+  assert.equal(res.findings.length, 0);
   assert.equal(res.dropped, 1);
+  assert.equal(res.rejected.badSignature, 1);
+  assert.equal(res.verdict, "INCOMPLETE_POOL");
+  assert.equal(res.clean, false, "a forgery under a pinned key is not a clean bill of health");
 });
 
 test("GATE 1f — no false positives on an honest pool", () => {

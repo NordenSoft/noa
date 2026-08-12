@@ -2,15 +2,30 @@ name: publish-tsa
 
 # Trusted Publishing (OIDC) — NO NPM_TOKEN, no expiring secret to rotate. Same mechanism as
 # publish.yml / publish-mcp.yml, for the single package packages/tsa-anchor (npm name:
-# noa-tsa-anchor). Because this is its OWN npm package name, it needs its OWN one-time registry-side
-# setup on npmjs.com before the first tag push will work:
-#   noa-tsa-anchor → Settings → Publishing access / Trusted Publisher → GitHub Actions
-#     Organization or user: NordenSoft
-#     Repository:           noa
-#     Workflow filename:    publish-tsa.yml
-#     (Environment:         leave blank)
-# After that, ship a release with NO token, ever:
-#   git tag tsa-v0.1.0 && git push origin tsa-v0.1.0
+# noa-tsa-anchor).
+#
+# ─── THE FIRST RELEASE CANNOT USE THIS WORKFLOW, AND SAYING OTHERWISE WOULD WASTE A RELEASE ──────
+# `noa-tsa-anchor` does not exist on the registry, and npm requires a package to EXIST before a
+# trusted publisher can be configured for it. So the OIDC-first ordering is impossible for v0.1.0:
+#
+#   STEP 1 (once, by hand, by the lead — this workflow cannot do it):
+#     cd packages/tsa-anchor
+#     npm pkg set "dependencies.noa-receipt=^$(node -p "require('../../package.json').version")"
+#     npm publish --access public          # prepublishOnly runs the suite AND the tarball gate
+#     git checkout -- package.json         # put the file: dependency back for local development
+#
+#   STEP 2 (once, on npmjs.com, after the package exists):
+#     noa-tsa-anchor → Settings → Publishing access / Trusted Publisher → GitHub Actions
+#       Organization or user: NordenSoft
+#       Repository:           noa
+#       Workflow filename:    publish-tsa.yml
+#       (Environment:         leave blank)
+#
+#   STEP 3 (every release after that, with no token, ever):
+#     git tag tsa-v0.1.1 && git push origin tsa-v0.1.1
+#
+# Node is pinned to 22, not 20: npm's trusted publishing requires Node >= 22.14, and a node-20
+# runner would fail the OIDC exchange after every gate below had already passed.
 #
 # WHY A SEPARATE WORKFLOW rather than a third package inside publish-mcp.yml: that workflow releases
 # adapter-core and mcp-proxy IN LOCKSTEP under one version, because mcp-proxy depends on
@@ -21,7 +36,12 @@ on:
   push:
     tags:
       - 'tsa-v*'
-  workflow_dispatch: {}   # also allow a manual run from the Actions tab
+  # A manual run is useful for exercising the gates, and it must NEVER be able to publish. The
+  # version/tag comparison below only runs under `refs/tags/*`, so on a branch it was vacuously
+  # satisfied and the job walked straight into `npm publish` with nothing checking WHAT it shipped.
+  # The job-level `if` closes that at the condition itself rather than in a later step: on anything
+  # that is not a tsa-v* tag the publish job does not run at all.
+  workflow_dispatch: {}
 
 concurrency:
   group: npm-publish-tsa-${{ github.ref }}
@@ -34,6 +54,8 @@ permissions:
 
 jobs:
   publish:
+    # THE ONLY WAY THIS JOB RUNS IS A tsa-v* TAG. Not a branch, not a manual dispatch, not a fork.
+    if: startsWith(github.ref, 'refs/tags/tsa-v')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -48,7 +70,7 @@ jobs:
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 20
+          node-version: 22
           registry-url: 'https://registry.npmjs.org'
           cache: npm
           cache-dependency-path: |
@@ -56,9 +78,7 @@ jobs:
             packages/tsa-anchor/package-lock.json
 
       # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node still ships npm 10.x.
-      # Pin to the 11.x line: `npm@latest` is now npm@12, which requires node >= 22 (EBADENGINE on
-      # this node-20 runner). npm 11.x is >= 11.5.1 (OIDC-capable) AND node-20-compatible.
-      - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1; pin 11.x — npm 12 needs node 22+)
+      - name: Upgrade npm (OIDC trusted publishing needs npm >= 11.5.1 on Node >= 22.14)
         run: npm install -g npm@11.18.0
 
       - name: Build the root kernel (tsa-anchor links it via file:../..)
@@ -71,20 +91,18 @@ jobs:
           npm ci
           npm run build
 
-      - name: Gate — on a tag run, the tag matches the package version
+      - name: Gate — the tag matches the package version
         # A mistagged push (tag says 0.2.0, package.json still 0.1.0) would otherwise publish a
-        # stale or duplicate version. Fail fast instead.
+        # stale or duplicate version. UNCONDITIONAL: the job's own `if` already guarantees a tag,
+        # so there is no non-tag case to skip for — and a `case` that silently matched nothing was
+        # exactly how a branch run used to sail past this gate.
         run: |
           V="$(node -p "require('./packages/tsa-anchor/package.json').version")"
-          case "$GITHUB_REF" in
-            refs/tags/*)
-              TAG="${GITHUB_REF_NAME#tsa-v}"
-              if [ "$TAG" != "$V" ]; then
-                echo "::error::tag tsa-v$TAG does not match package version $V"
-                exit 1
-              fi
-              ;;
-          esac
+          TAG="${GITHUB_REF_NAME#tsa-v}"
+          if [ "$TAG" != "$V" ]; then
+            echo "::error::tag tsa-v$TAG does not match package version $V"
+            exit 1
+          fi
 
       - name: Gate — the kernel on the registry is the kernel this package was tested against
         # tsa-anchor is TESTED against the kernel in this tree (`file:../..`) and SHIPPED depending

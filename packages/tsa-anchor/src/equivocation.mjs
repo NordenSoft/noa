@@ -63,7 +63,7 @@
  * No function in this file throws.
  */
 
-import { verifyEd25519, anchorSigningInput, intrinsics } from "noa-receipt";
+import { verifyEd25519, anchorSigningInput, canonicalize, sha256Hex, intrinsics } from "noa-receipt";
 import { anchorHash } from "./anchor-hash.mjs";
 import { verifyStamp } from "./verify.mjs";
 
@@ -89,7 +89,10 @@ const {
   mapValuesToArray,
   mapEntriesToArray,
   hasOwn,
+  objectKeys,
   objectFreeze,
+  arrayIncludes,
+  arraySort,
   jsonStringify,
   strSlice,
   strCharCodeAt,
@@ -112,8 +115,20 @@ const DEFAULT_MAX_BRANCHES = 16;
  *  back apart and (seq=12, chain="abc") can never collide with (seq=1, chain="2:abc"). */
 const frontierKey = (chain, seq) => seq + ":" + chain;
 
-/** The bound names, walked by index rather than `for…of` over a literal. */
+/**
+ * The bound names and their MINIMA, index-aligned and walked by index.
+ *
+ * A bound is a DoS ceiling, never a switch. Accepting 0 made every one of them a way to turn the
+ * detector off silently: `maxFindings:0` let a reproduced two-anchor fork come back
+ * `clean:true / CLEAN`, because contradictions were counted as "truncated" and the verdict was
+ * derived from `findings.length`. `maxBranches` has a floor of TWO rather than one, because a
+ * proof of disagreement that carries fewer than two anchors demonstrates nothing — at
+ * `maxBranches:1` the scanner emitted an EQUIVOCATION whose own `verifyEquivocationProof` then
+ * rejected it. Refusing a degenerate bound is the fix; clamping it silently would be the same
+ * defect with better manners.
+ */
 const BOUND_NAMES = objectFreeze(["maxAnchors", "maxHistory", "maxFindings", "maxBranches"]);
+const BOUND_MINIMA = objectFreeze([1, 1, 1, 2]);
 
 /**
  * The honest limits, attached to EVERY result — including a CLEAN one, which is exactly when a
@@ -124,6 +139,10 @@ const UNDETECTED = objectFreeze([
   "HEIGHT-EXTENDING REWRITE, ANCHORS ONLY: two anchors at different heights are indistinguishable " +
     "from a chain that simply grew. Pass `history` (the presented chain's seq -> hash map) to catch " +
     "it, or use the witness inclusion/consistency proofs of federation-spec section 10, which are dormant.",
+  "INCOMPLETE POOL: nothing authenticates that a pool is COMPLETE, so this scan cannot distinguish " +
+    "an incomplete pool from a complete one. Withholding one anchor is therefore enough to make a " +
+    "forked chain read CLEAN, and it requires no compromised signer and no forged signature at all - " +
+    "only control over what reaches the verifier. This is the cheapest evasion of everything below.",
   "OMISSION: a branch that was never shown to any witness leaves no anchor. Nothing here can prove " +
     "a negative about a record that was never published (THREAT-MODEL: 'Omission is not tampering').",
   "WITNESS INDEPENDENCE: whether the pinned witnesses are genuinely separate parties is operational, " +
@@ -178,7 +197,7 @@ function charAt(s, i) {
  * "Jun 23 2026", so a non-RFC3339 ts must be rejected on SHAPE before it is parsed — otherwise a
  * garbage timestamp silently coerces into a freshness PASS. Mirrors the kernel's parseAnchorTsMs.
  */
-function rfc3339ToMs(ts) {
+export function rfc3339ToMs(ts) {
   if (typeof ts !== "string" || ts.length < 20) return null;
   if (!isDigits(ts, 0, 4) || charAt(ts, 4) !== "-" || !isDigits(ts, 5, 2) || charAt(ts, 7) !== "-" || !isDigits(ts, 8, 2)) return null;
   const t = charAt(ts, 10);
@@ -260,7 +279,15 @@ function admitTrustSet(trustSet) {
     mapSet(byKid, kid, pubkey);
     setAdd(seenPubkeys, pubkey);
   }
-  return { ok: true, byKid, k, quorum: q };
+  // A finding is read by someone who pinned their OWN trust-set, and `sig.kid` is NOT inside the
+  // signed anchor bytes — so the name a finding attributes to is the label of whoever produced it,
+  // not something the signer committed to. The digest lets a recipient say "this proof was produced
+  // against a DIFFERENT pinned mapping than mine" instead of silently reading someone else's labels
+  // as their own. Order-independent by construction: the pairs are sorted before canonicalization.
+  const pairs = [];
+  for (let i = 0; i < k; i++) arrayPush(pairs, witnesses[i].pubkey + " " + witnesses[i].kid);
+  const digest = "sha256:" + sha256Hex(canonicalize(arraySort(pairs)));
+  return { ok: true, byKid, k, quorum: q, digest };
 }
 
 /**
@@ -275,10 +302,29 @@ function admitTrustSet(trustSet) {
  * the kernel at src/federation/anchor.ts (reviews #5 C3 / #6 C1-C2), and a fresh module is exactly
  * where it comes back.
  */
+const SIG_KEYS = objectFreeze(["alg", "kid", "value"]);
+
+/**
+ * Rejection is CLASSIFIED, never a bare drop. The three reasons mean different things and a caller
+ * that cannot tell them apart cannot act:
+ *   `unpinned`     an anchor addressed to someone else's trust-set. Normal in a shared pool.
+ *   `malformed`    structurally unusable, or an anchor carrying a smuggled `sig` member.
+ *   `badSignature` a PINNED kid whose signature does not verify. That is an attack signal, not noise.
+ * Returning `{ ok:false, why }` is what lets `scanForEquivocation` refuse to call an all-rejected
+ * pool CLEAN — "I checked and found nothing" and "I could not check anything" must not share a word.
+ */
 function admitAnchor(a, byKid) {
-  if (typeof a !== "object" || a === null) return null;
+  if (typeof a !== "object" || a === null) return { ok: false, why: "malformed" };
   const sigIn = a.sig;
-  if (typeof sigIn !== "object" || sigIn === null) return null;
+  if (typeof sigIn !== "object" || sigIn === null) return { ok: false, why: "malformed" };
+  // CLOSED SIG SCHEMA (the kernel holds a checkpoint's sig to exactly {alg,kid,value} for the same
+  // reason). An extra member also made `anchorHash` — which covers the WHOLE sig — disagree with
+  // this snapshot, so one anchor was filed under two different keys and its TSA stamp could never
+  // attach. Refusing the smuggled member removes the divergence at its source.
+  const sigKeys = objectKeys(sigIn);
+  for (let i = 0; i < arrayLength(sigKeys); i++) {
+    if (!arrayIncludes(SIG_KEYS, sigKeys[i])) return { ok: false, why: "malformed" };
+  }
   const snap = {
     chain: a.chain,
     highestSeq: a.highestSeq,
@@ -286,32 +332,35 @@ function admitAnchor(a, byKid) {
     ts: a.ts,
     sig: { alg: sigIn.alg, kid: sigIn.kid, value: sigIn.value },
   };
-  if (typeof snap.chain !== "string" || snap.chain.length === 0) return null;
-  if (!isSafeNonNegInt(snap.highestSeq)) return null;
-  if (!isSha256Hash(snap.headHash)) return null;
-  if (typeof snap.ts !== "string" || snap.ts.length === 0) return null;
-  if (snap.sig.alg !== "ed25519") return null; // anchors are Ed25519 (federation-spec section 8) - no alg confusion
-  if (typeof snap.sig.kid !== "string" || snap.sig.kid.length === 0) return null;
-  if (typeof snap.sig.value !== "string" || snap.sig.value.length === 0) return null;
+  if (typeof snap.chain !== "string" || snap.chain.length === 0) return { ok: false, why: "malformed" };
+  if (!isSafeNonNegInt(snap.highestSeq)) return { ok: false, why: "malformed" };
+  if (!isSha256Hash(snap.headHash)) return { ok: false, why: "malformed" };
+  if (typeof snap.ts !== "string" || snap.ts.length === 0) return { ok: false, why: "malformed" };
+  if (snap.sig.alg !== "ed25519") return { ok: false, why: "malformed" }; // Ed25519 only (federation-spec section 8)
+  if (typeof snap.sig.kid !== "string" || snap.sig.kid.length === 0) return { ok: false, why: "malformed" };
+  if (typeof snap.sig.value !== "string" || snap.sig.value.length === 0) return { ok: false, why: "malformed" };
 
   const pubkey = mapGet(byKid, snap.sig.kid);
-  if (pubkey === undefined) return null; // not in the verifier's sovereign pinned set
+  if (pubkey === undefined) return { ok: false, why: "unpinned" }; // not in this verifier's pinned set
 
-  let ok = false;
+  let verified = false;
   try {
-    ok = verifyEd25519(pubkey, anchorSigningInput(snap), snap.sig.value);
+    verified = verifyEd25519(pubkey, anchorSigningInput(snap), snap.sig.value);
   } catch {
-    return null;
+    return { ok: false, why: "badSignature" };
   }
-  if (!ok) return null;
+  if (!verified) return { ok: false, why: "badSignature" };
 
   let hash;
   try {
     hash = anchorHash(snap);
   } catch {
-    return null;
+    return { ok: false, why: "malformed" };
   }
-  return { anchor: snap, chain: snap.chain, seq: snap.highestSeq, headHash: snap.headHash, ts: snap.ts, kid: snap.sig.kid, pubkey, hash };
+  return {
+    ok: true,
+    rec: { anchor: snap, chain: snap.chain, seq: snap.highestSeq, headHash: snap.headHash, ts: snap.ts, kid: snap.sig.kid, pubkey, hash },
+  };
 }
 
 // -- result constructors ------------------------------------------------------------------------
@@ -324,8 +373,10 @@ function invalidScan(reason) {
     findings: [],
     reason,
     pinned: 0,
+    trustSetDigest: undefined,
     admitted: 0,
     dropped: 0,
+    rejected: { unpinned: 0, malformed: 0, badSignature: 0 },
     chains: [],
     historyChecked: false,
     stampsChecked: false,
@@ -349,11 +400,17 @@ function branchOf(rec, stamps) {
     const record = ownGet(stamps, rec.hash);
     if (record !== undefined) {
       const res = verifyStamp(rec.anchor, record);
+      // CARRY THE TOKEN BYTES, not only a summary of them. A finding travels; a derived
+      // {verified, genTime, tsaUrl} triple inside a travelling document is an unauthenticated
+      // CLAIM, and it was reproduced being rewritten to `verified:true` with a 1900 timestamp and
+      // an attacker URL. `verifyEquivocationProof` re-derives all three from `tsr` and reports the
+      // claim as refuted when the bytes disagree.
       branch.stamp = {
         verified: res.ok === true,
         reason: res.reason,
         genTime: res.genTime,
         tsaUrl: typeof record === "object" && record !== null ? record.tsaUrl : undefined,
+        tsr: typeof record === "object" && record !== null ? record.tsr : undefined,
       };
     }
   }
@@ -398,28 +455,76 @@ function branchesOf(recs, stamps, maxBranches) {
  *                         also hold the presented artifact.
  */
 export function scanForEquivocation(anchors, trustSet, opts = {}) {
+  // NEVER THROWS, AND THAT IS NOW ENFORCED RATHER THAN ASSERTED. Every field read below is a read
+  // of a caller-owned object, and a getter is caller code: `anchor.sig`, `opts.maxAnchors` and
+  // `trustSet.witnesses` were each reproduced escaping a throw through this boundary while the
+  // docstring promised they could not. The snapshot discipline stops a value from CHANGING between
+  // reads; it was never a defence against a read that throws.
+  try {
+    return scanForEquivocationInner(anchors, trustSet, opts);
+  } catch (e) {
+    return invalidScan(`input threw while being read: ${describeThrown(e)}`);
+  }
+}
+
+function scanForEquivocationInner(anchors, trustSet, opts) {
   const prepared = prepare(anchors, trustSet, opts, undefined);
   if (!prepared.ok) return invalidScan(prepared.reason);
   const ts = prepared.ts;
   const pool = prepared.pool;
   const historyMap = prepared.historyMap;
 
-  const scanned = scanRecords(pool, historyMap, prepared.stamps, prepared.bounds);
+  const scanned = scanRecords(pool, historyMap, prepared.stamps, prepared.bounds, undefined, ts.digest);
   const findings = scanned.findings;
   const found = arrayLength(findings) > 0;
+  const unusable = pool.rejected.malformed + pool.rejected.badSignature;
+
+  // THE VERDICT LADDER. "I checked and found nothing" and "I could not check anything" used to
+  // share one word, and the second is not a clean bill of health — an empty pool, a pool of
+  // forgeries and a pool addressed to someone else all returned CLEAN with exit 0.
+  //
+  //   EQUIVOCATION     a fork outranks a dirty pool: junk alongside a real contradiction does not
+  //                    make the contradiction less true.
+  //   NO_EVIDENCE      nothing was admitted, so nothing was examined.
+  //   INCOMPLETE_POOL  entries were structurally unusable, or a PINNED kid's signature failed.
+  //                    The second is an attack signal; neither leaves room to call this clean.
+  //   CLEAN            admitted anchors were examined in full and they agree.
+  //
+  // `clean` is true for CLEAN alone, and additionally requires that nothing was truncated.
+  let verdict;
+  let reason;
+  if (found) {
+    verdict = "EQUIVOCATION";
+    reason = `${arrayLength(findings)} signed contradiction(s) found across ${pool.admitted} admitted anchor(s)`;
+  } else if (pool.admitted === 0) {
+    verdict = "NO_EVIDENCE";
+    reason =
+      `no anchor was admitted (${pool.dropped} rejected: ${pool.rejected.unpinned} unpinned, ${pool.rejected.malformed} malformed, ` +
+      `${pool.rejected.badSignature} bad signature) - nothing was examined, so nothing is attested clean`;
+  } else if (unusable > 0) {
+    verdict = "INCOMPLETE_POOL";
+    reason =
+      `${pool.admitted} anchor(s) examined and in agreement, but ${pool.rejected.malformed} entr(ies) were unusable and ` +
+      `${pool.rejected.badSignature} carried a PINNED kid whose signature failed - the pool was not fully readable, ` +
+      "so this is not a clean result";
+  } else {
+    verdict = "CLEAN";
+    reason =
+      `no contradiction among ${pool.admitted} admitted anchor(s) from ${ts.k} pinned witness(es)` +
+      (historyMap === undefined ? " (presented chain NOT supplied - see `undetected`)" : "");
+  }
 
   return {
-    clean: !found,
-    verdict: found ? "EQUIVOCATION" : "CLEAN",
+    clean: verdict === "CLEAN" && !scanned.truncatedFindings,
+    verdict,
     equivocationFound: found,
     findings,
-    reason: found
-      ? `${arrayLength(findings)} signed contradiction(s) found across ${pool.admitted} admitted anchor(s)`
-      : `no contradiction among ${pool.admitted} admitted anchor(s) from ${ts.k} pinned witness(es)` +
-        (historyMap === undefined ? " (presented chain NOT supplied - see `undetected`)" : ""),
+    reason,
     pinned: ts.k,
+    trustSetDigest: ts.digest,
     admitted: pool.admitted,
     dropped: pool.dropped,
+    rejected: pool.rejected,
     chains: setToArray(pool.chains),
     historyChecked: historyMap !== undefined,
     stampsChecked: prepared.stamps !== undefined,
@@ -427,6 +532,16 @@ export function scanForEquivocation(anchors, trustSet, opts = {}) {
     note: SCAN_NOTE,
     undetected: UNDETECTED,
   };
+}
+
+/** A thrown value is not necessarily an Error — never re-throw while describing one. */
+function describeThrown(e) {
+  try {
+    if (typeof e === "object" && e !== null && typeof e.message === "string") return e.message;
+    return jsonStringify(e) ?? "non-serialisable thrown value";
+  } catch {
+    return "thrown value that could not be described";
+  }
 }
 
 /**
@@ -445,7 +560,15 @@ function prepare(anchors, trustSet, opts, extraHistory) {
   };
   for (let i = 0; i < arrayLength(BOUND_NAMES); i++) {
     const name = BOUND_NAMES[i];
-    if (!isSafeNonNegInt(bounds[name])) return { ok: false, reason: `opts.${name} must be a non-negative safe integer` };
+    const min = BOUND_MINIMA[i];
+    if (!isSafeNonNegInt(bounds[name]) || bounds[name] < min) {
+      return {
+        ok: false,
+        reason:
+          `opts.${name} must be a safe integer >= ${min} (got ${jsonStringify(bounds[name])}). A bound is a DoS ` +
+          "ceiling, never a switch: a value below this floor would let the scan report a clean result it did not earn",
+      };
+    }
   }
 
   const ts = admitTrustSet(trustSet);
@@ -471,8 +594,10 @@ function prepare(anchors, trustSet, opts, extraHistory) {
   let historyMap;
   if (extraHistory !== undefined || history !== undefined) {
     historyMap = newMap();
-    addHistory(historyMap, extraHistory);
-    addHistory(historyMap, history);
+    const e1 = addHistory(historyMap, extraHistory);
+    if (!e1.ok) return { ok: false, reason: e1.reason };
+    const e2 = addHistory(historyMap, history);
+    if (!e2.ok) return { ok: false, reason: `opts.${e2.reason}` };
   }
 
   const stamps = opts.stamps;
@@ -489,12 +614,15 @@ function prepare(anchors, trustSet, opts, extraHistory) {
   let admitted = 0;
   let dropped = 0;
 
+  const rejected = { unpinned: 0, malformed: 0, badSignature: 0 };
   for (let i = 0; i < anchorCount; i++) {
-    const rec = admitAnchor(anchors[i], ts.byKid);
-    if (rec === null) {
+    const admission = admitAnchor(anchors[i], ts.byKid);
+    if (!admission.ok) {
       dropped++;
+      rejected[admission.why]++;
       continue;
     }
+    const rec = admission.rec;
     admitted++;
     arrayPush(records, rec);
     setAdd(chains, rec.chain);
@@ -519,27 +647,54 @@ function prepare(anchors, trustSet, opts, extraHistory) {
     historyMap,
     stamps,
     bounds,
-    pool: { byFrontier, frontierMeta, chains, records, admitted, dropped },
+    pool: { byFrontier, frontierMeta, chains, records, admitted, dropped, rejected },
   };
 }
 
-/** Fold history entries into the seq -> {hash, source} map. First entry for a seq wins. */
+/**
+ * Fold history entries into a `frontierKey(chain, seq)` -> {hash, source} map. First entry wins.
+ *
+ * KEYED BY (CHAIN, SEQ), NEVER BY SEQ ALONE. Dropping the chain id made this the module's
+ * false-accusation vector, reproduced in both directions: an unrelated `chain-B` was reported as
+ * contradicting a history presented for `chain-A` (two different chains of course have different
+ * heads at seq 2), and a perfectly valid `chain-A` checkpoint was turned into EQUIVOCATION purely
+ * because `chain-B` had forked. For a tool whose output is an accusation, convicting an honest
+ * chain is worse than missing a fork — a finding nobody can trust is worth less than no finding.
+ *
+ * A malformed entry is an INPUT ERROR, not a silent skip: skipping would leave `historyChecked:true`
+ * over a history that was quietly discarded, which is the same "said nothing was wrong" failure.
+ */
 function addHistory(historyMap, entries) {
-  if (entries === undefined || !isArray(entries)) return;
+  if (entries === undefined) return { ok: true };
+  if (!isArray(entries)) return { ok: false, reason: "history must be an array of { chain, seq, hash }" };
   const n = arrayLength(entries);
   for (let i = 0; i < n; i++) {
     const h = entries[i];
-    if (typeof h !== "object" || h === null) continue;
+    if (typeof h !== "object" || h === null) return { ok: false, reason: `history[${i}] is not an object` };
+    const chain = h.chain;
     const seq = h.seq;
     const hash = h.hash;
-    if (!isSafeNonNegInt(seq) || !isSha256Hash(hash)) continue;
+    if (typeof chain !== "string" || chain.length === 0) {
+      return { ok: false, reason: `history[${i}].chain must be a non-empty string - a history entry with no chain identity cannot be compared to anything` };
+    }
+    if (!isSafeNonNegInt(seq)) return { ok: false, reason: `history[${i}].seq must be a non-negative safe integer` };
+    if (!isSha256Hash(hash)) return { ok: false, reason: `history[${i}].hash must be sha256:<64 hex>` };
+    const key = frontierKey(chain, seq);
     // first wins; a chain that contradicts ITSELF is verifyChain's job, not this module's
-    if (!mapHas(historyMap, seq)) mapSet(historyMap, seq, { hash, source: h.source === "checkpoint" ? "checkpoint" : "chain" });
+    if (!mapHas(historyMap, key)) mapSet(historyMap, key, { chain, seq, hash, source: h.source === "checkpoint" ? "checkpoint" : "chain" });
   }
+  return { ok: true };
 }
 
-/** The three detections, over an already-admitted pool. Pure; returns findings only. */
-function scanRecords(pool, historyMap, stamps, bounds) {
+/**
+ * The three detections, over an already-admitted pool. Pure; returns findings only.
+ *
+ * `onlyChain`, when set, restricts the scan to ONE chain. `checkpointCorroboration` uses it: a
+ * checkpoint speaks for its own chain, and a fork on some unrelated chain in the same shared pool
+ * is not evidence against it (H2, reproduced). `scanForEquivocation` leaves it unset, because a
+ * monitor's job is the whole pool.
+ */
+function scanRecords(pool, historyMap, stamps, bounds, onlyChain, trustSetDigest) {
   const findings = [];
   let truncatedFindings = false;
 
@@ -550,6 +705,7 @@ function scanRecords(pool, historyMap, stamps, bounds) {
     const heads = frontiers[fi][1];
     if (mapSize(heads) < 2) continue;
     const meta = mapGet(pool.frontierMeta, key);
+    if (onlyChain !== undefined && meta.chain !== onlyChain) continue;
     const headEntries = mapEntriesToArray(heads);
 
     // WITNESS_EQUIVOCATION — identity is the PUBLIC KEY, not the label. Two anchors under different
@@ -580,6 +736,8 @@ function scanRecords(pool, historyMap, stamps, bounds) {
       } else {
         arrayPush(findings, {
           kind: "WITNESS_EQUIVOCATION",
+          establishes: "SIGNED_CONTRADICTION",
+          trustSetDigest,
           chain: meta.chain,
           seq: meta.seq,
           attributedTo: [recs[0].kid],
@@ -601,6 +759,8 @@ function scanRecords(pool, historyMap, stamps, bounds) {
       } else {
         arrayPush(findings, {
           kind: "CHAIN_FORK",
+          establishes: "SIGNED_CONTRADICTION",
+          trustSetDigest,
           chain: meta.chain,
           seq: meta.seq,
           attributedTo: [], // both witnesses may be honest; the contradiction belongs to the chain
@@ -624,7 +784,9 @@ function scanRecords(pool, historyMap, stamps, bounds) {
         const headHash = headEntries[hi][0];
         const list = headEntries[hi][1];
         const rec = list[0];
-        const presented = mapGet(historyMap, rec.seq);
+        if (onlyChain !== undefined && rec.chain !== onlyChain) continue;
+        // (chain, seq) — an anchor is only ever compared to the presented history OF ITS OWN CHAIN.
+        const presented = mapGet(historyMap, frontierKey(rec.chain, rec.seq));
         if (presented === undefined || presented.hash === headHash) continue;
         const label = presented.source === "checkpoint" ? "ENDORSED CHECKPOINT head" : "PRESENTED chain";
         const kidSet = newSet();
@@ -638,6 +800,11 @@ function scanRecords(pool, historyMap, stamps, bounds) {
         }
         arrayPush(findings, {
           kind: "HISTORY_CONTRADICTION",
+          // Only ONE side of this contradiction is signed. Saying so in the finding itself means a
+          // recipient does not have to infer it from `transferable` on a verification result they
+          // may never run.
+          establishes: "HALF_SIGNED_CLAIM",
+          trustSetDigest,
           chain: rec.chain,
           seq: rec.seq,
           attributedTo: [],
@@ -686,6 +853,14 @@ function findCrossKeyPair(headEntries) {
  * kind of quiet overstatement this package exists to avoid.
  */
 export function verifyEquivocationProof(proof, trustSet) {
+  try {
+    return verifyEquivocationProofInner(proof, trustSet);
+  } catch (e) {
+    return { ok: false, transferable: false, reason: `proof or trust-set threw while being read: ${describeThrown(e)}` };
+  }
+}
+
+function verifyEquivocationProofInner(proof, trustSet) {
   const ts = admitTrustSet(trustSet);
   if (!ts.ok) return { ok: false, transferable: false, reason: `unusable trust-set: ${ts.reason}` };
   if (typeof proof !== "object" || proof === null) return { ok: false, transferable: false, reason: "proof is not an object" };
@@ -707,10 +882,15 @@ export function verifyEquivocationProof(proof, trustSet) {
   for (let i = 0; i < nb; i++) {
     const b = branches[i];
     if (typeof b !== "object" || b === null) return { ok: false, transferable: false, reason: `branch ${i} is not an object` };
-    const rec = admitAnchor(b.anchor, ts.byKid);
-    if (rec === null) {
-      return { ok: false, transferable: false, reason: `branch ${i}: the carried anchor is malformed, unpinned, or its signature does not verify` };
+    const admission = admitAnchor(b.anchor, ts.byKid);
+    if (!admission.ok) {
+      return {
+        ok: false,
+        transferable: false,
+        reason: `branch ${i}: the carried anchor was rejected (${admission.why}) - a proof is only evidence if every anchor in it re-verifies under the RECIPIENT's own pinned keys`,
+      };
     }
+    const rec = admission.rec;
     if (b.headHash !== undefined && b.headHash !== rec.headHash) {
       return { ok: false, transferable: false, reason: `branch ${i}: claimed headHash does not match the signed anchor` };
     }
@@ -723,24 +903,64 @@ export function verifyEquivocationProof(proof, trustSet) {
     arrayPush(recs, rec);
   }
 
+  // TSA EVIDENCE IS RE-DERIVED FROM THE BYTES, NEVER READ OFF THE SUMMARY. A finding travels, and a
+  // `{verified:true, genTime, tsaUrl}` triple inside a travelling document is an unauthenticated
+  // claim: it was reproduced rewritten to a 1900 timestamp and an attacker URL while the proof still
+  // returned ok. A refuted stamp does NOT flip `ok` — the signature contradiction stands on its own,
+  // and letting an attached bad stamp destroy a genuine fork proof would be its own defect.
+  const stampEvidence = [];
+  let stampClaimsRefuted = 0;
+  for (let i = 0; i < nb; i++) {
+    const b = branches[i];
+    const claim = typeof b === "object" && b !== null ? b.stamp : undefined;
+    if (claim === undefined || claim === null) continue;
+    const rec = recs[i];
+    const claimedVerified = typeof claim === "object" && claim.verified === true;
+    const res = verifyStamp(rec.anchor, { tsr: typeof claim === "object" ? claim.tsr : undefined, anchorHash: rec.hash });
+    const verified = res.ok === true;
+    if (claimedVerified && !verified) stampClaimsRefuted++;
+    arrayPush(stampEvidence, {
+      branch: i,
+      verified,
+      claimedVerified,
+      genTime: verified ? res.genTime : undefined,
+      tsaUrl: verified && typeof claim === "object" ? claim.tsaUrl : undefined,
+      reason: res.reason,
+    });
+  }
+  const stampNote =
+    stampClaimsRefuted > 0
+      ? ` WARNING: ${stampClaimsRefuted} attached stamp(s) claim to be verified but do not re-verify from their own token bytes - treat their times and URLs as unattested.`
+      : "";
+
   if (kind === "HISTORY_CONTRADICTION") {
     const presented = proof.presented;
     if (typeof presented !== "object" || presented === null || !isSafeNonNegInt(presented.seq) || !isSha256Hash(presented.hash)) {
       return { ok: false, transferable: false, reason: "proof.presented must be { seq, hash } with an sha256 hash" };
     }
     const rec = recs[0];
+    // The presented side must name the SAME chain, or this compares two unrelated histories.
+    if (presented.chain !== undefined && presented.chain !== rec.chain) {
+      return { ok: false, transferable: false, reason: "the anchor and the presented entry are on different chains - they do not contradict each other" };
+    }
     if (rec.seq !== presented.seq) return { ok: false, transferable: false, reason: "the anchor and the presented entry are at different seqs" };
     if (rec.headHash === presented.hash) return { ok: false, transferable: false, reason: "no contradiction: the anchor agrees with the presented head" };
     return {
       ok: true,
       transferable: false,
+      establishes: "HALF_SIGNED_CLAIM",
       kind,
       chain: rec.chain,
       seq: rec.seq,
       attributedTo: [],
+      attributedToPubkey: [],
+      trustSetMatches: proof.trustSetDigest === undefined ? undefined : proof.trustSetDigest === ts.digest,
+      stampEvidence,
+      stampClaimsRefuted,
       reason:
-        `a witness signature says chain "${rec.chain}" seq ${rec.seq} was ${rec.headHash}. This proof is only half signed: ` +
-        `confirm for yourself that the presented artifact hashes to ${presented.hash} at that seq before relying on it`,
+        `a witness signature says chain "${rec.chain}" seq ${rec.seq} was ${rec.headHash}. This proof is HALF SIGNED: the ` +
+        `other side is an unsigned assertion carried in the proof itself, so recompute the presented artifact yourself and ` +
+        `confirm it hashes to ${presented.hash} at that seq before relying on it.` + stampNote,
     };
   }
 
@@ -784,18 +1004,37 @@ export function verifyEquivocationProof(proof, trustSet) {
         break;
       }
     }
+    // ATTRIBUTION IS CHECKED AT THE KEY, AND ONLY REPORTED AT THE LABEL. `sig.kid` is NOT inside the
+    // bytes a witness signs, so a name is whatever the reader's own trust-set calls that key: the
+    // same unchanged signatures were reproduced coming back attributed to "local-alias" simply by
+    // relabelling the pinned mapping. What transfers is the PUBLIC KEY; `kid` is a local convenience
+    // and is presented as one.
     const claimed = proof.attributedTo;
     if (isArray(claimed) && arrayLength(claimed) > 0 && claimed[0] !== kid) {
-      return { ok: false, transferable: false, reason: "proof.attributedTo names a witness other than the one whose key actually equivocated" };
+      return {
+        ok: false,
+        transferable: false,
+        reason:
+          `proof.attributedTo names "${claimed[0]}", but under THIS trust-set the equivocating key is pinned as "${kid}" - ` +
+          "resolve the naming disagreement before forwarding this proof",
+      };
     }
     return {
       ok: true,
       transferable: true,
+      establishes: "SIGNED_CONTRADICTION",
       kind,
       chain,
       seq,
       attributedTo: [kid],
-      reason: `witness "${kid}" signed ${setSize(headSet)} different heads at chain "${chain}" seq ${seq}; every signature verifies under its pinned key`,
+      attributedToPubkey: [culprit],
+      trustSetMatches: proof.trustSetDigest === undefined ? undefined : proof.trustSetDigest === ts.digest,
+      stampEvidence,
+      stampClaimsRefuted,
+      reason:
+        `the key pinned here as "${kid}" signed ${setSize(headSet)} different heads at chain "${chain}" seq ${seq}; every ` +
+        "signature verifies under that key. What transfers is the KEY (see attributedToPubkey) - the name is this " +
+        "trust-set's own label, because sig.kid is not part of the signed bytes." + stampNote,
     };
   }
 
@@ -815,13 +1054,19 @@ export function verifyEquivocationProof(proof, trustSet) {
   return {
     ok: true,
     transferable: true,
+    establishes: "SIGNED_CONTRADICTION",
     kind,
     chain,
     seq,
     attributedTo: [],
+    attributedToPubkey: [],
+    trustSetMatches: proof.trustSetDigest === undefined ? undefined : proof.trustSetDigest === ts.digest,
+    stampEvidence,
+    stampClaimsRefuted,
     reason:
       `two independent pinned witnesses signed different heads at chain "${chain}" seq ${seq}; both signatures verify. ` +
-      "This proves the chain was presented two ways - it does not convict either witness, and it does not say which head is true",
+      "This proves the chain was presented two ways - it does not convict either witness, and it does not say which head " +
+      "is true." + stampNote,
   };
 }
 
@@ -834,20 +1079,44 @@ export function verifyEquivocationProof(proof, trustSet) {
  * its own hashes are, which is precisely what a witness anchor either contradicts or confirms.
  */
 export function historyFromReceipts(receipts) {
-  const out = [];
-  if (!isArray(receipts)) return out;
-  const n = arrayLength(receipts);
-  for (let i = 0; i < n; i++) {
-    const r = receipts[i];
-    if (typeof r !== "object" || r === null) continue;
-    const c = r.chain;
-    if (typeof c !== "object" || c === null) continue;
-    const seq = c.seq;
-    const hash = c.hash;
-    if (!isSafeNonNegInt(seq) || !isSha256Hash(hash)) continue;
-    arrayPush(out, { seq, hash, source: "chain" });
+  try {
+    const out = [];
+    if (!isArray(receipts)) return out;
+    const n = arrayLength(receipts);
+    for (let i = 0; i < n; i++) {
+      const r = receipts[i];
+      if (typeof r !== "object" || r === null) continue;
+      const c = r.chain;
+      const scope = r.scope;
+      if (typeof c !== "object" || c === null || typeof scope !== "object" || scope === null) continue;
+      const chain = scope.chain;
+      const seq = c.seq;
+      const hash = c.hash;
+      // THE CHAIN ID IS NOT OPTIONAL. A history entry without it cannot be compared to anything
+      // safely — that omission is what let one chain's anchors be judged against another's history.
+      if (typeof chain !== "string" || chain.length === 0) continue;
+      if (!isSafeNonNegInt(seq) || !isSha256Hash(hash)) continue;
+      arrayPush(out, { chain, seq, hash, source: "chain" });
+    }
+    return out;
+  } catch {
+    return [];
   }
-  return out;
+}
+
+/**
+ * How many receipts a document has, for the caller that must check this derivation was TOTAL.
+ *
+ * `historyFromReceipts` skips what it cannot read, and a silent skip is how `--chain [{}]` came back
+ * `historyChecked:true` over a history containing nothing. A caller comparing this count to the
+ * derived length learns whether the whole document was understood; the CLI refuses otherwise.
+ */
+export function receiptCount(receipts) {
+  try {
+    return isArray(receipts) ? arrayLength(receipts) : -1;
+  } catch {
+    return -1;
+  }
 }
 
 // -- checkpoint corroboration -------------------------------------------------------------------
@@ -874,6 +1143,14 @@ export function historyFromReceipts(receipts) {
  * is the party who benefits from that.
  */
 export function checkpointCorroboration(checkpoint, anchors, trustSet, opts = {}) {
+  try {
+    return checkpointCorroborationInner(checkpoint, anchors, trustSet, opts);
+  } catch (e) {
+    return invalidCorroboration(`input threw while being read: ${describeThrown(e)}`);
+  }
+}
+
+function checkpointCorroborationInner(checkpoint, anchors, trustSet, opts) {
   if (typeof opts !== "object" || opts === null) return invalidCorroboration("opts must be an object");
 
   if (typeof checkpoint !== "object" || checkpoint === null) return invalidCorroboration("checkpoint is not an object");
@@ -906,11 +1183,13 @@ export function checkpointCorroboration(checkpoint, anchors, trustSet, opts = {}
   }
 
   // The endorsed head is the presented side, and it wins at its own seq (prepended => first wins).
-  const prepared = prepare(anchors, trustSet, opts, [{ seq: cp.highestSeq, hash: cp.headHash, source: "checkpoint" }]);
+  const prepared = prepare(anchors, trustSet, opts, [{ chain: cp.chain, seq: cp.highestSeq, hash: cp.headHash, source: "checkpoint" }]);
   if (!prepared.ok) return invalidCorroboration(prepared.reason);
   const ts = prepared.ts;
   const pool = prepared.pool;
-  const scanned = scanRecords(pool, prepared.historyMap, prepared.stamps, prepared.bounds);
+  // ONLY THIS CHAIN. A checkpoint speaks for its own chain; a fork on some unrelated chain sharing
+  // the pool is not evidence against it, and treating it as such convicted an honest checkpoint.
+  const scanned = scanRecords(pool, prepared.historyMap, prepared.stamps, prepared.bounds, cp.chain, ts.digest);
   const findings = scanned.findings;
   const equivocationFound = arrayLength(findings) > 0;
 
@@ -977,8 +1256,10 @@ export function checkpointCorroboration(checkpoint, anchors, trustSet, opts = {}
     equivocationFound,
     findings,
     truncatedFindings: scanned.truncatedFindings,
+    trustSetDigest: ts.digest,
     admitted: pool.admitted,
     dropped: pool.dropped,
+    rejected: pool.rejected,
     note: SCAN_NOTE,
     undetected: UNDETECTED,
   };
@@ -997,8 +1278,10 @@ function invalidCorroboration(reason) {
     equivocationFound: false,
     findings: [],
     truncatedFindings: false,
+    trustSetDigest: undefined,
     admitted: 0,
     dropped: 0,
+    rejected: { unpinned: 0, malformed: 0, badSignature: 0 },
     note: SCAN_NOTE,
     undetected: UNDETECTED,
   };

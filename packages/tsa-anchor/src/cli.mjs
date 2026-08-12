@@ -28,17 +28,17 @@
  * 5 EQUIVOCATION (a signed contradiction was found).
  */
 import { readSync, writeFileSync, openSync, fstatSync, closeSync, constants as fsConstants } from "node:fs";
-import { safeParse, frozenTable, intrinsics } from "noa-receipt";
+import { safeParse, frozenTable, verifyChain, intrinsics } from "noa-receipt";
 import { stampAnchor } from "./client.mjs";
 import { verifyStamp } from "./verify.mjs";
 import { anchorHash } from "./anchor-hash.mjs";
-import { scanForEquivocation, checkpointCorroboration, historyFromReceipts } from "./equivocation.mjs";
+import { scanForEquivocation, checkpointCorroboration, historyFromReceipts, receiptCount, rfc3339ToMs } from "./equivocation.mjs";
 
 const MAX_FILE_BYTES = 64 * 1024 * 1024;
 // Captured at load, and the exit table frozen + null-rooted (ADR §5.6). The exit code IS the
 // verdict as a pipeline consumes it, so a rewritable EXIT.EQUIVOCATION would turn a detected
 // fork into a silent success for every caller at once.
-const { setHas, newSet, arrayLength, arraySlice, isArray, strStartsWith, dateParse, toNumber, isFiniteNumber, isNaNValue } = intrinsics;
+const { setHas, newSet, arrayLength, arraySlice, isArray, strStartsWith, toNumber, isFiniteNumber, jsonStringify } = intrinsics;
 const EXIT = frozenTable({ OK: 0, MISMATCH: 1, TRANSPORT: 2, MALFORMED: 3, USAGE: 4, EQUIVOCATION: 5 });
 
 function usage(msg) {
@@ -51,6 +51,17 @@ function usage(msg) {
       "                           [--now <rfc3339> --max-age-ms <n>] [--tsr <tsr.json>]\n",
   );
   process.exit(EXIT.USAGE);
+}
+
+/**
+ * ONE fatal-exit path, rather than a `process.stderr.write` + `process.exit` pair at each site.
+ * Centralising it keeps the exit-code table honest (every fatal route goes through a single place
+ * that takes the code as an argument) and keeps the number of raw `process.*` dispatch sites in
+ * this decision-path file to the few that genuinely need them.
+ */
+function fail(code, msg) {
+  process.stderr.write(`error: ${msg}\n`);
+  process.exit(code);
 }
 
 function readJsonFile(path) {
@@ -95,8 +106,7 @@ function readJsonFile(path) {
   } catch (e) {
     // Malformed JSON is EXIT.MALFORMED (3) with a clean one-line message — never an uncaught
     // safeParse throw dumping a raw stack and exiting 1 (which contradicts the header's exit table).
-    process.stderr.write(`error: malformed JSON in ${path}: ${e.message}\n`);
-    process.exit(EXIT.MALFORMED);
+    fail(EXIT.MALFORMED, `malformed JSON in ${path}: ${e.message}`);
   }
 }
 
@@ -123,6 +133,10 @@ async function cmdStamp(args) {
   if (!flags["--tsa-url"]) usage("stamp requires --tsa-url <url>");
   const anchors = readJsonFile(flags["--anchors"]);
   if (!Array.isArray(anchors)) usage("--anchors file must contain a JSON array of anchors");
+  // "Did nothing" is not "succeeded". Exiting 0 over an empty array reported success for a run that
+  // did no work at all - reproduced for `stamp` against an UNREACHABLE TSA, where exit 0 said
+  // nothing about whether the TSA had ever been contacted.
+  if (arrayLength(anchors) === 0) usage("--anchors file contains an empty array - refusing to report success for stamping nothing");
   const out = flags["--out"] ?? `${flags["--anchors"]}.tsr.json`;
 
   const sidecar = {};
@@ -134,7 +148,7 @@ async function cmdStamp(args) {
     try {
       key = anchorHash(a);
     } catch (e) {
-      process.stderr.write(`error: malformed anchor entry: ${e.message}\n`);
+      fail(EXIT.MALFORMED, `malformed anchor entry: ${e.message}`);
       return EXIT.MALFORMED;
     }
     if (sidecar[key]) continue; // distinct-anchor dedup (same witness re-listed twice in the file)
@@ -145,7 +159,7 @@ async function cmdStamp(args) {
         includeNonce: !flags["--no-nonce"],
       });
     } catch (e) {
-      process.stderr.write(`error: stamping anchor ${key} (kid=${a?.sig?.kid}): ${e.message}\n`);
+      fail(EXIT.TRANSPORT, `stamping anchor ${key} (kid=${a?.sig?.kid}): ${e.message}`);
       return EXIT.TRANSPORT;
     }
   }
@@ -161,6 +175,7 @@ function cmdVerify(args) {
   const anchors = readJsonFile(flags["--anchors"]);
   const sidecar = readJsonFile(flags["--tsr"]);
   if (!Array.isArray(anchors)) usage("--anchors file must contain a JSON array of anchors");
+  if (arrayLength(anchors) === 0) usage("--anchors file contains an empty array - refusing to report success for verifying nothing");
   if (typeof sidecar !== "object" || sidecar === null || Array.isArray(sidecar)) usage("--tsr file must contain a JSON object (anchorHash -> stamp record)");
 
   let mismatches = 0;
@@ -197,11 +212,27 @@ function loadMonitorInputs(flags) {
   const anchors = readJsonFile(flags["--anchors"]);
   const trustSet = readJsonFile(flags["--trust-set"]);
   if (!isArray(anchors)) usage("--anchors file must contain a JSON array of anchors (the published pool)");
+  if (arrayLength(anchors) === 0) usage("--anchors file contains an empty array - an empty pool is not a clean pool");
   const opts = {};
   if (flags["--chain"]) {
     const receipts = readJsonFile(flags["--chain"]);
     if (!isArray(receipts)) usage("--chain file must contain a JSON array of receipts");
-    opts.history = historyFromReceipts(receipts);
+    if (arrayLength(receipts) === 0) usage("--chain file contains an empty array - there is no presented history to compare against");
+    // THE PRESENTED CHAIN IS VERIFIED, NOT TRUSTED. `historyFromReceipts` reads each receipt's OWN
+    // `chain.hash` and skips whatever it cannot read; on its own that let `--chain '[{}]'` exit 0
+    // while reporting `historyChecked:true` over a history containing nothing at all. Two checks
+    // close it: the kernel's unchanged offline verifier must accept the document (no keyring needed
+    // - this is the structural and hash-linkage check, so the hashes the history is built from are
+    // the chain's own real ones), and the derivation must be TOTAL, not partial.
+    const chainResult = verifyChain(jsonStringify(receipts));
+    if (chainResult.status === "MALFORMED" || chainResult.status === "TAMPERED") {
+      fail(EXIT.MALFORMED, `--chain does not verify (${chainResult.status}: ${chainResult.reason}) - refusing to compare anchors against a chain that is not internally consistent`);
+    }
+    const history = historyFromReceipts(receipts);
+    if (arrayLength(history) !== receiptCount(receipts)) {
+      fail(EXIT.MALFORMED, `--chain: only ${arrayLength(history)} of ${receiptCount(receipts)} receipt(s) yielded a usable (chain, seq, hash) entry - a partially-read history would silently narrow the comparison`);
+    }
+    opts.history = history;
   }
   if (flags["--tsr"]) {
     const sidecar = readJsonFile(flags["--tsr"]);
@@ -221,11 +252,12 @@ function cmdForkScan(args) {
 
   const res = scanForEquivocation(anchors, trustSet, opts);
   process.stdout.write(JSON.stringify(res, null, 2) + "\n");
-  // `clean` is the fail-closed field: INVALID_INPUT and EQUIVOCATION both leave it false, so no exit
-  // path can report success for a scan that did not actually run to completion over the whole pool.
+  // EXIT 0 MEANS "CLEAN", AND NOTHING ELSE. It used to also cover "I admitted nothing" and "the
+  // pool was full of forgeries", so a pipeline could not tell a clean bill from a scan that never
+  // examined anything. `clean` is the single fail-closed field, and the exit code now follows it.
   if (res.verdict === "INVALID_INPUT") return EXIT.MALFORMED;
   if (res.equivocationFound) return EXIT.EQUIVOCATION;
-  return EXIT.OK;
+  return res.clean ? EXIT.OK : EXIT.MISMATCH;
 }
 
 function cmdCorroborate(args) {
@@ -245,9 +277,12 @@ function cmdCorroborate(args) {
   const hasAge = flags["--max-age-ms"] !== undefined;
   if (hasNow !== hasAge) usage("--now and --max-age-ms must be supplied together (a freshness policy is not half a policy)");
   if (hasNow) {
-    const now = dateParse(flags["--now"]);
+    // STRICT RFC 3339, because that is what the flag claims. `Date.parse` accepted "2026" and
+    // silently anchored the whole freshness window to the first instant of that year. The strict
+    // scanner already existed in equivocation.mjs and simply was not being used here.
+    const now = rfc3339ToMs(flags["--now"]);
     const maxAgeMs = toNumber(flags["--max-age-ms"]);
-    if (isNaNValue(now)) usage(`--now is not a parseable RFC 3339 timestamp: ${flags["--now"]}`);
+    if (now === null) usage(`--now must be a full RFC 3339 timestamp such as 2026-06-23T10:30:00Z (got: ${flags["--now"]})`);
     if (!isFiniteNumber(maxAgeMs) || maxAgeMs < 0) usage(`--max-age-ms must be a non-negative number: ${flags["--max-age-ms"]}`);
     opts.freshness = { now, maxAgeMs };
   }

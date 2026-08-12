@@ -31,6 +31,51 @@ has gone stale is the failure this changelog exists to prevent.
   prevention: it does not adjudicate which branch is true, it sees only what was published, and a
   rewrite that also extends the chain needs the presented chain to catch.
 
+### Fixed (independent adversarial review — every defect reproduced before it was fixed)
+
+The review's own summary of what held is worth keeping: head comparison is canonical — accepted
+heads are exactly lowercase `sha256:<64 hex>`, sequences are safe integers, signed frontier bytes
+are JCS — and no casing or numeric-encoding collision merges two different heads or splits one. The
+defects were all in the layers above that comparison, and three of them were the same failure in
+different clothes: **the detector saying nothing is wrong.**
+
+- **A real fork could return `CLEAN`.** Bounds accepted zero, so `maxFindings:0` marked detected
+  contradictions "truncated" while `findings.length === 0` drove `clean:true`. Bounds are DoS
+  ceilings, never switches: each now has a floor (`maxBranches` ≥ 2, since a proof carrying fewer
+  than two anchors demonstrates nothing) and a degenerate value is refused, not clamped.
+- **An honest chain could be convicted by an unrelated one.** The presented history was keyed by
+  SEQUENCE alone, so `chain-B` was reported as contradicting `chain-A`'s history, and a valid
+  `chain-A` checkpoint became `EQUIVOCATION` purely because `chain-B` had forked. Keyed by
+  `(chain, seq)` now, and `checkpointCorroboration` only ever scans the checkpoint's own chain. For
+  a tool whose output is an accusation this was the worst of the set.
+- **"Checked, found nothing" and "could not check" shared one answer.** Empty and all-rejected pools
+  returned `CLEAN` with exit 0. There are now five verdicts — `EQUIVOCATION`, `CLEAN`,
+  `NO_EVIDENCE`, `INCOMPLETE_POOL`, `INVALID_INPUT` — rejections are classified
+  (`unpinned` / `malformed` / `badSignature`, the last an attack signal), and **exit 0 means CLEAN
+  and nothing else**. `stamp` and `verify` also refuse an empty anchor array instead of reporting
+  success for doing nothing.
+- **`--chain` neither verified nor hashed the presented chain** while reporting
+  `historyChecked:true`; `[{}]` was accepted. It is now run through the kernel's unchanged offline
+  `verifyChain`, and the derivation must be total.
+- **An emitted proof could fail its own verifier** at `maxBranches:1`. Closed by the branch floor.
+- **Attribution transferred at a label, not a key.** `sig.kid` is not in the signed bytes, so the
+  same signatures could be re-attributed by relabelling a trust-set. Findings now carry
+  `attributedToPubkey` and a `trustSetDigest`, and say plainly that the name is the reader's own.
+- **TSA evidence inside a proof was an unauthenticated claim** — a `{verified:true}` summary with a
+  forged time and URL passed. Proofs carry the token bytes and the verifier re-derives from them,
+  reporting `stampClaimsRefuted` rather than letting a bad stamp destroy a genuine fork proof.
+- **"Never throws" was false**; throwing getters escaped from anchors, options, proofs, checkpoints
+  and trust-sets. All entry points now hold the contract.
+- **`--now` claimed RFC 3339 but used lenient `Date.parse`**, accepting `2026`.
+- **An anchor with a smuggled `sig` member was double-keyed** (`anchorHash` covers the whole `sig`),
+  so its stamp could never attach. The `sig` schema is closed, as the kernel's checkpoint sig is.
+- **Release blockers.** `prepublishOnly` ran the tests but not the dependency gate, so a hand-run
+  `npm publish` would have uploaded a tarball still declaring `file:../..`; the OIDC-first first
+  release was impossible as documented (npm needs the package to exist before a trusted publisher
+  can be configured) and pinned Node 20 against a ≥ 22.14 requirement; and `workflow_dispatch` could
+  reach `npm publish` on an arbitrary branch, because the version/tag comparison only ran under
+  `refs/tags/*`. The publish job is now gated on the tag condition itself.
+
 ### Gated
 
 - **`packages/tsa-anchor/src` is now inside the security-gate inventory** (`scripts/lint-security-gates.mjs`).

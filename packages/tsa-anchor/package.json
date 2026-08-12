@@ -44,7 +44,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "prepublishOnly": "npm test"
+    "check:tarball": "node ../../scripts/lint-publish-tarball-deps.mjs --dir . --manifest",
+    "prepublishOnly": "npm test && npm run check:tarball"
   },
   "dependencies": {
     "noa-receipt": "file:../.."
