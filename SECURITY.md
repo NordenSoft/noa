@@ -61,12 +61,17 @@ This is a **trust layer**, so it is built to be boring and hostile-input-safe:
   ⚠ This bullet describes the **kernel**. `noa-mcp-proxy` is a server, not a verifier, and does have
   runtime dependencies — see its own manifest. Reading this bullet as covering every published package
   would be a mistake: it does not.
-- **Strict parser.** Receipts are parsed by a hardened JSON parser (`safeParse`) that rejects
-  duplicate keys, `__proto__`/`constructor`/`prototype` keys, floats/exponents, unpaired
-  surrogates, and over-deep or over-large input. The `noa verify` CLI and the `verifyChainText()`
-  library entry use it. ⚠️ If you call `verifyChain(value)` with a **pre-parsed** object, the
-  strict-parse guarantees are yours to uphold — use `safeParse`/`verifyChainText`, not a bare
-  `JSON.parse`, on untrusted input (`JSON.parse` silently accepts duplicate keys).
+- **Strict parser, and no way around it.** Receipts are parsed by a hardened JSON parser
+  (`safeParse`) that rejects duplicate keys, `__proto__`/`constructor`/`prototype` keys,
+  floats/exponents, unpaired surrogates, and over-deep or over-large input. Since `0.6.0` there is no
+  entry point that lets a caller skip it: `verifyChain`, `verifyCheckpoint` and
+  `verifyReceiptCompliance` take `Uint8Array | string` **only**, and `verifyChainText` is a pure
+  alias of `verifyChain`. Handing one a pre-parsed object returns `MALFORMED` — *"a security-sensitive
+  document is bytes, never a caller-owned object"* — rather than trusting your parse.
+
+  *This bullet used to warn that `verifyChain(value)` with a pre-parsed object left the strict-parse
+  checks for the caller to perform. That was true through `0.5.0` and has been false since `0.6.0`;
+  it understated the shipped boundary, which is the direction nobody files a bug about.*
 - **Strict schema.** Unknown fields are rejected everywhere (`additionalProperties:false`).
 - **Mandatory signatures.** Ed25519 signatures are required; the signing key id is bound into
   the hash; keys are pinned per `agent.id` within a chain.

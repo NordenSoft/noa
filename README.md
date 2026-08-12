@@ -7,8 +7,9 @@
 actions: before an agent does something real, a governance layer decides *allow · hold for a human ·
 block*, and emits a tamper-evident, hash-chained record that anyone can verify offline — no account,
 no network, no dependency on us.** This repository is the kernel: the protocol, the reference
-implementations, and the conformance suite that holds every one of them to the identical verdict on
-every vector.
+implementations, and the conformance suite that holds each of them to the identical verdict on every
+vector it is run against — which is not every vector for every implementation, and the matrix says
+per class exactly which.
 
 [![CI](https://github.com/NordenSoft/noa/actions/workflows/ci.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/ci.yml)
 [![doc-truth](https://github.com/NordenSoft/noa/actions/workflows/doc-truth.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/doc-truth.yml)

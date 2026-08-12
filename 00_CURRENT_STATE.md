@@ -28,7 +28,9 @@ Registry, measured 2026-08-12:
 | `noa-mcp-adapter-core` | 0.3.2 | 2026-08-04T16:49:21Z |
 | `noa-mcp-proxy` | 0.3.2 | 2026-08-04T16:49:52Z |
 
-This tree is **18 commits past tag `v0.6.2`** and is being prepared as **0.7.0**, unpublished.
+This tree is **29 commits past tag `v0.6.2`** and is being prepared as **0.7.0**, unpublished.
+(`origin/main` is 18 past the tag; this release branch adds eleven more. The two numbers are not
+interchangeable, and an earlier draft of this line quoted main's while sitting on the branch.)
 `lint:release-parity` is therefore RED, exits 1, and says:
 
 ```console
@@ -90,8 +92,13 @@ core was unreachable. It runs now.
   over-threshold transfer executed with no approval at all — and it touched **no `package.json`**. So
   `npm install noa-mcp-proxy` today installs the code with the bypass, and one version number means
   two different contents. That is the exact failure the `## [0.6.2]` changelog entry was written to
-  correct. Both packages need a version bump and a release; publishing is owner-authorised and has not
-  happened.
+  correct. **Half-closed on this branch:** both packages are now `0.4.0` in the tree, so the number no
+  longer lies about what the source is. Nothing has been published, so the registry still serves the
+  pre-fix code — that half is owner-authorised and has not happened. The release is also gated on a
+  second, larger defect in the same gate: a rules file that is valid JSON but not a rule set
+  (`{}`, `null`, a bare string, a partially-invalid array) made the proxy forward the same
+  over-threshold transfer with no approval, because the structural validator that already existed was
+  never called. Fixed on `fix/proxy-rules-fail-open`, not yet merged.
 - **`file:../..` everywhere.** Every in-repo consumer of the kernel (`adapter-core`, `e2e-demo`,
   `evidence`, `gate`, `signer-sidecar`, `tsa-anchor`, and `signer-core` as a dev dependency) depends on
   `noa-receipt: file:../..`. Nothing pins a published version, so every package builds against this

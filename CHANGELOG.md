@@ -877,10 +877,25 @@ predicate is neutered.
 Initial release, published as the unscoped package `noa-receipt` (renamed pre-publish from the
 scoped `@noa/receipt`).
 
-> **This heading has no link, because it has no tag.** Tagging began at `v0.3.0`; no `v0.1.0` or
-> `v0.2.0` ref exists in this repository or on the remote, and neither version is on the registry
-> (`npm view noa-receipt versions` starts at `0.5.0`). The heading is left un-linked rather than
-> pointed at a tag that would have to be invented.
+> **This heading has no link, because it has no tag — but the release itself is real.** `0.1.0` is
+> published and installable; `git ls-remote --tags origin` shows tagging began at `v0.3.0`, so no
+> `v0.1.0` ref exists here or on the remote. The heading is left un-linked rather than pointed at a
+> tag that would have to be invented.
+>
+> *Corrected before release.* The first version of this note also claimed `0.1.0` was not on the
+> registry, citing `npm view noa-receipt versions` as starting at `0.5.0`. It does not:
+>
+> ```console
+> $ npm view noa-receipt versions
+> [ '0.1.0', '0.3.0', '0.4.0', '0.5.0', '0.6.0', '0.6.1', '0.6.2' ]
+> $ npm view noa-receipt@0.1.0 dist.tarball
+> https://registry.npmjs.org/noa-receipt/-/noa-receipt-0.1.0.tgz
+> ```
+>
+> Only `0.2.0` was never published. The false half came from reusing a version list from earlier in
+> the working session instead of re-running the command — inside the very commit whose subject was
+> correcting claims that had drifted from measurement. An independent reviewer caught it. A missing
+> tag and an unpublished version are two different facts, and this note had merged them.
 
 ### Added
 
