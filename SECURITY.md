@@ -10,14 +10,17 @@ project; coordinated disclosure is appreciated.
 
 ## Supported versions
 
-Measured against the registry on 2026-08-04, so a reporter knows which line a fix would land on
-before spending time on a report.
+So a reporter knows which line a fix would land on before spending time on a report. The
+`published` cells are badges that read the npm registry at the moment this page is rendered — the
+number is never typed here, so it cannot be stale on the day a release lands. The typed number
+this replaces had already gone stale between releases once and been corrected by hand
+(`git show 634a043 -- SECURITY.md`); that is the failure this shape removes rather than repeats.
 
 | package | published | supported |
 |---|---|---|
-| `noa-receipt` | **0.6.2** | yes — fixes land here |
-| `noa-mcp-adapter-core` | **0.3.2** | yes |
-| `noa-mcp-proxy` | **0.3.2** | yes — **upgrade from 0.3.1**, see below |
+| `noa-receipt` | [![noa-receipt on npm](https://img.shields.io/npm/v/noa-receipt)](https://www.npmjs.com/package/noa-receipt) | yes — fixes land here |
+| `noa-mcp-adapter-core` | [![noa-mcp-adapter-core on npm](https://img.shields.io/npm/v/noa-mcp-adapter-core)](https://www.npmjs.com/package/noa-mcp-adapter-core) | yes |
+| `noa-mcp-proxy` | [![noa-mcp-proxy on npm](https://img.shields.io/npm/v/noa-mcp-proxy)](https://www.npmjs.com/package/noa-mcp-proxy) | yes — **upgrade from 0.3.1**, see below |
 | everything older | — | **no**. Upgrade; 0.6.0 is deliberately stricter than 0.5.0 and artifacts that verified `VALID` under 0.5.0 can verify `REFUSE` or `TAMPERED` under it. That is the point of the release, and it is documented in `CHANGELOG.md`. |
 
 ⚠ **The `noa-mcp-proxy` release published as 0.3.1 shipped a vulnerable `@hono/node-server`. Upgrade to 0.3.2.**
@@ -31,8 +34,10 @@ Measured the same way against 0.3.2, after publication on 2026-08-04: `@hono/nod
 `npm audit` **0 vulnerabilities at every severity**. The fix required moving
 `@modelcontextprotocol/sdk` to 1.30.0 as well — 1.29.0 permits only `^1.19.9`.
 
-`noa-mcp-adapter-core@0.3.2` is behaviour-identical to 0.3.1; it moved only because the two
-packages release in lockstep.
+`noa-mcp-adapter-core` is behaviour-identical across 0.3.1 and 0.3.2; it moved only because the two
+packages release in lockstep. (The version is not typed next to the package name on purpose: a
+literal there reads as a claim about the CURRENT release and goes false at the next one, which is
+the same decay the table above removes.)
 
 0.3.1 has not been unpublished. It is a real release whose own description is correct about the
 forgery fixes it shipped and wrong about this one, which is why the correction is written where an
