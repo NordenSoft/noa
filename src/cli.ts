@@ -31,10 +31,8 @@
  */
 
 import { readSync, openSync, fstatSync, closeSync, constants as fsConstants } from "node:fs";
-import { safeParse } from "./safe-json.js";
 import { verifyChain, type VerifyOptions, type VerifyStatus } from "./verify.js";
 import { verifyChainWitnessed, type WitnessedOptions } from "./federation/verify-witnessed.js";
-import type { Keyring, Checkpoint, IdentityManifest, Anchor, TrustSet } from "./index.js";
 
 const MAX_FILE_BYTES = 64 * 1024 * 1024; // 64 MiB hard cap
 

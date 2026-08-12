@@ -11,7 +11,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ARTIFACTS, evalSchema, type KeyEntry } from "noa-approval-artifacts";
+import { ARTIFACTS, evalSchema } from "noa-approval-artifacts";
 import { intrinsics } from "noa-receipt";
 import { parseDocument } from "./bytes.js";
 import {

@@ -51,7 +51,6 @@ test("guard(): full hold→approve→reserve→execute→report → EXECUTED, si
 });
 
 test("D14: a grant whose paramsHash disagrees with the snapshot → REFUSED, execute() NEVER called", async () => {
-  const fx = setupGate({ approverRole: "approve-high" });
   // A hostile/mismatched client: it approves but hands back a grant bound to a DIFFERENT paramsHash
   // (the "approve A, run B" attack). The wrapper's D14 re-check must refuse before reserve/execute.
   const tampered: GateClient = {

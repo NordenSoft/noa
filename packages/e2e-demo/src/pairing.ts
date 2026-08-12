@@ -17,7 +17,7 @@
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from 'noa-approval-artifacts';
 import type { GateTrust, GateKeyPair } from 'noa-gate';
 import { SIGNING_KEY_LIFECYCLE_SPEC, type SigningKeyLifecycle } from 'noa-receipt';
-import { deriveSas, sasEquals, buildPairingTranscript } from './mobile.js';
+import { deriveSas, buildPairingTranscript } from './mobile.js';
 import type {
   PairingChallenge,
   PairingConfirmation,
