@@ -472,9 +472,16 @@ execution leg had no source. It now emits **`HUMAN_APPROVED_INTENT_NOT_EXECUTION
 approved this exact derived intent; whether that intent executed is not established.
 
 `HUMAN_APPROVED` stays in the union, RESERVED and emitted by nothing. It is the destination for the
-day an execution witness exists, and a source-scanning guard
+day an execution witness exists, and a guard
 (`packages/gate/test/human-approved-is-reserved.test.ts`) fails if anything starts emitting it again
 — including in a merge, which is the cheapest way a single string comes back.
+
+That guard used to be a text search over two directories, and a text search cannot decide what a
+program produces: twenty-seven ways of producing the token were measured passing it green, from
+`"HUMAN_" + "APPROVED"` to a `.json` file sitting beside the code. It now parses **every source root
+in the repository** with the TypeScript compiler and asks what each expression evaluates to,
+resolving concatenation, template literals, escapes, constants, enum members, re-export chains and
+base64/hex blobs. A file it cannot analyse **fails** the check rather than passing it.
 
 Eight consequences are owner-ratified and binding: caller-supplied display text and caller-supplied
 `paramsHash` **cannot** be independent authoritative inputs; the trusted boundary **must** derive the
