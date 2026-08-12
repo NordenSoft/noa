@@ -95,10 +95,10 @@
  * the host — there is no partially-working proxy state.
  */
 import { randomUUID } from "node:crypto";
-import { writeFileSync, readFileSync, promises as fsp } from "node:fs";
+import { promises as fsp } from "node:fs";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile, describeThrown, describeThrownDetailed } from "noa-mcp-adapter-core";
+import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile, readConfigJson, writeConfigArtifact, describeThrown, describeThrownDetailed } from "noa-mcp-adapter-core";
 import { createProxyServer } from "./create-proxy-server.mjs";
 import { TRANSFER_GUARD_POLICY } from "./policy.mjs";
 
@@ -109,7 +109,7 @@ import { intrinsics } from "noa-mcp-adapter-core";
 // module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
 // who adds one, so the builtins come from the kernel's module-load capture whether or not each site
 // is reachable today. Reachability is a property of the surrounding code, and that changes.
-const { isFiniteNumber, jsonParse, jsonStringify } = intrinsics;
+const { isFiniteNumber, jsonStringify } = intrinsics;
 
 function parseArgs(argv) {
   const sepIndex = argv.indexOf("--");
@@ -259,7 +259,10 @@ async function main() {
     signer = { kid: kp.kid, privateKey: kp.privateKey };
     signerPublicKey = kp.publicKey;
   }
-  if (opts.keyringFile) writeFileSync(opts.keyringFile, jsonStringify({ [signer.kid]: signerPublicKey }), "utf8");
+  // Through a verified descriptor (adapter-core's config-artifact.mjs): a symlink planted at
+  // --keyring-file would otherwise turn this routine startup write into "clobber any file this
+  // process can write" — the same primitive loadOrCreateKeyFile already refuses for --key-file.
+  if (opts.keyringFile) writeConfigArtifact(opts.keyringFile, jsonStringify({ [signer.kid]: signerPublicKey }), { label: "--keyring-file", mode: 0o644 });
 
   const sessionStoreOptions = {
     ...(opts.sessionIdleTtlMs != null && isFiniteNumber(opts.sessionIdleTtlMs) ? { idleTtlMs: opts.sessionIdleTtlMs } : {}),
@@ -284,8 +287,19 @@ async function main() {
   // single session (one factory call); HTTP calls it once per MCP session.
   const makeDownstreamTransport = () => new StdioClientTransport({ command: downstreamCommand, args: downstreamArgs });
 
+  // ── CONFIG ARTIFACTS ARE READ THROUGH A DESCRIPTOR, NEVER BY PATH (CWE-59/CWE-367) ────────────
+  // MEASURED 2026-08-12 against the shipped CLI: with a path-based `readFileSync`, replacing
+  // `approval-rules.json` with a SYMLINK to a file containing `[]` turned the human-approval gate
+  // OFF and a `transfer_funds` of 7000 (above the configured 5000 threshold) was forwarded and
+  // EXECUTED with no human approval; replacing `approver-keyring.json` with a symlink to an
+  // attacker keyring let the attacker sign their own approval and the identical retry EXECUTED.
+  // In most real deployments the agent process CAN WRITE ITS OWN WORKING DIRECTORY, so planting
+  // that symlink is inside the threat model, not outside it. readConfigJson (adapter-core's
+  // config-artifact.mjs) opens with O_NOFOLLOW, fstats the DESCRIPTOR (regular file, owned by this
+  // process or root, not group/other-writable) and reads from that same descriptor — the pathname
+  // never gets a second chance to decide which bytes this process trusts.
   let approvalRules;
-  if (opts.approvalRulesFile) approvalRules = jsonParse(readFileSync(opts.approvalRulesFile, "utf8"));
+  if (opts.approvalRulesFile) approvalRules = readConfigJson(opts.approvalRulesFile, { label: "--approval-rules" });
 
   // FAIL-CLOSED at startup: the human-approval gate (--approval-rules and/or --pending-store) can
   // adopt an approver's ALLOWED receipt onto the live chain and forward the held action. Adopting
@@ -298,9 +312,9 @@ async function main() {
     );
   }
   let approverKeyring;
-  if (opts.approverKeyringFile) approverKeyring = jsonParse(readFileSync(opts.approverKeyringFile, "utf8"));
+  if (opts.approverKeyringFile) approverKeyring = readConfigJson(opts.approverKeyringFile, { label: "--approver-keyring" });
   let approverIdentityManifest;
-  if (opts.approverIdentityFile) approverIdentityManifest = jsonParse(readFileSync(opts.approverIdentityFile, "utf8"));
+  if (opts.approverIdentityFile) approverIdentityManifest = readConfigJson(opts.approverIdentityFile, { label: "--approver-identity" });
 
   // Everything except the transport wiring is identical for stdio and HTTP — the gate is NOT forked
   // per transport. This one config object feeds both paths.

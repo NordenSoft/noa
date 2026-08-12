@@ -665,6 +665,7 @@ const ADAPTER_CORE_TCB = [
   "packages/adapter-core/src/approval-defaults.mjs",     // shipped approval policy defaults
   "packages/adapter-core/src/approval-rules.mjs",        // validates and evaluates approval policy
   "packages/adapter-core/src/approve-cli.mjs",           // loads the approver key and mints the signed decision
+  "packages/adapter-core/src/config-artifact.mjs",       // decides WHICH BYTES a governance config read returns
   "packages/adapter-core/src/file-session-store.mjs",    // durable receipt-chain state and recovery
   "packages/adapter-core/src/key-file.mjs",              // private signing-key creation and loading
   "packages/adapter-core/src/opaque-id.mjs",             // approval-identity normalization and hashing

@@ -48,6 +48,16 @@ line could state that would be true in both places — which is the argument for
   `--key-file` loader shared by `packages/mcp-proxy`'s `proxy.mjs` and `packages/signer-sidecar`'s
   `sidecar.mjs`, so both callers get the exact same symlink/loose-permission guards from one
   implementation. See `src/key-file.mjs`'s own docstring for the hardening detail.
+- `readConfigArtifact(path, { label, maxBytes, required })` / `readConfigJson(...)` /
+  `appendConfigArtifact(path, text, { label })` / `writeConfigArtifact(path, text, { label, mode })`
+  + `ConfigArtifactError` — the same descriptor-level guard for a security-bearing CONFIG file
+  (approval rules, approver keyring, approver identity manifest, pending store): one `O_NOFOLLOW`
+  open, `fstat` on the DESCRIPTOR (regular file, owned by this process or root, no group/other
+  write bits), then the I/O on that same descriptor — the path is never re-opened. This exists
+  because `noa-mcp-proxy`'s path-based reads were a **reproduced** gate bypass: a symlinked
+  `approval-rules.json` pointing at `[]` executed an over-threshold transfer with no human
+  approval at all. It closes REDIRECTION, not in-place CONTENT rewriting by a same-uid attacker —
+  see NON-CLAIMS.md NC-6.9 and `src/config-artifact.mjs`'s own docstring.
 - `createChainSessionStore({ idleTtlMs, maxSessions, sweepIntervalMs, now, onEvict })` — owns
   `Map<tenant, Map<sessionId, { prev, seq, lastAccessedAt, segmentId }>>` (tenant-nested — see
   "MULTI-TENANT ISOLATION" below) plus one store-instance-scoped `instanceToken` (constant across

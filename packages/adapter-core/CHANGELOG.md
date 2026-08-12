@@ -4,6 +4,31 @@ The root `CHANGELOG.md` scopes itself to `noa-receipt` in its first line, so sec
 package had nowhere to be written. `0.2.0` is live on npm and exploitable; without this file a
 consumer upgrading to `0.3.0` would see a silent version bump and no reason to hurry.
 
+## [Unreleased]
+
+### Security — `--pending-store` followed symlinks on both read and append (CWE-59 / CWE-367)
+
+`loadPendingIndex` used `existsSync(path)` + `readFileSync(path)` and `appendEvent` used
+`appendFileSync(path)`. All three follow a symlink, so anyone able to create a file in the store's
+directory could redirect the outstanding-approval state the gate reads AND turn the hold record
+into an arbitrary-file append primitive. Both now go through the new descriptor-level guard, and
+the guard is re-applied on **every** call — `loadPendingIndex` runs per gated tool call, and a
+check that is not repeated at the moment of use is a TOCTOU.
+
+### Added — `config-artifact.mjs`, the ONE hardened path for a security-bearing config file
+
+`readConfigArtifact` / `readConfigJson` / `appendConfigArtifact` / `writeConfigArtifact` +
+`ConfigArtifactError`. Same shape as `loadOrCreateKeyFile` and for the same reason: `open` with
+`O_NOFOLLOW` (a symlink at the final component fails the open itself — no check-then-open gap),
+`fstat` on the DESCRIPTOR (regular file, owned by this process or root, no group/other write bits),
+then the I/O on that same descriptor. `O_NONBLOCK` too, so a FIFO planted at the path is refused
+rather than hanging the open. One implementation, so a future fix lands once for every caller.
+
+`noa-mcp-proxy` is the consumer that motivated it: its `--approval-rules` / `--approver-keyring`
+reads were a **reproduced** full-gate-bypass and wrong-approver-accepted pair — see that package's
+changelog. Honest edge, recorded as NON-CLAIMS.md NC-6.9: this closes REDIRECTION of the path, not
+in-place rewriting of the CONTENT by an attacker running as the same uid.
+
 ## [0.3.2] - 2026-08-04
 
 **No change to this package. Version bumped only to stay in lockstep with `noa-mcp-proxy@0.3.2`,**

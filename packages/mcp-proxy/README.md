@@ -78,16 +78,16 @@ including genuine pre-retirement history.
 | `--outcome-log <path>` | (none) | (R2) append each POST-execution OUTCOME receipt as one JSON line (same non-blocking appender). For this static single-key CLI path, pass the parsed `--keyring-file` map as `verifyOutcomeReceipt(..., { verification })`. |
 | `--http-port <n>` | (none — stdio) | (R2) serve over HTTP+SSE (Streamable HTTP) on this port INSTEAD of stdio. Each MCP session gets its own downstream connection + receipt chain, fronted by the same fail-closed gate as stdio. |
 | `--http-host <host>` | `127.0.0.1` | (R2) bind address for `--http-port` (loopback only by default; set `0.0.0.0` deliberately to expose beyond localhost). |
-| `--keyring-file <path>` | (none) | write `{ [kid]: publicKey }` once at startup for an external verifier |
+| `--keyring-file <path>` | (none) | write `{ [kid]: publicKey }` once at startup for an external verifier. Written through an `O_NOFOLLOW` descriptor (see **Config-artifact integrity** below), so a symlink planted at this path cannot turn the startup write into "clobber any file this process can write". |
 | `--key-file <path>` (or `NOA_MCP_PROXY_KEY_FILE` env) | (none — fresh keypair every run) | load a persisted signing identity, or generate + save one (mode `0600`) if the path doesn't exist yet — a restart against the same path reuses the same `kid` |
 | `--signer-socket <path>` | (none) | use a process-isolated remote signer ([`noa-signer-sidecar`](../signer-sidecar)) over this Unix domain socket instead of an in-process private key. Mutually exclusive with `--key-file`/`NOA_MCP_PROXY_KEY_FILE`. Fails closed at startup if the sidecar is unreachable, and fails closed per-call if the sidecar dies mid-session |
 | `--session-idle-ttl-ms <n>` | 1 hour | override the session store's idle-TTL sweep |
 | `--max-sessions <n>` | 10,000 | override the session store's max-sessions cap |
 | `--session-dir <path>` | (none — in-memory only) | opt-in file-backed session store (see "Honest limits" above): persists each session's chain position across a restart so the chain stays ONE continuous segment instead of starting fresh every time. Only one live process may point at a given `--session-dir` at once. |
-| `--approval-rules <path>` | (none — gate off) | JSON array of human-approval rules (adapter-core's `approvalRules`). A tool call matching a rule is HELD (`DEFERRED`) — never forwarded — until a human approves it out-of-band with `noa-approve`. |
-| `--pending-store <path>` | (none) | JSONL operational index the `DEFERRED` holds are recorded into and `noa-approve` resolves against. |
-| `--approver-keyring <path>` | (none — **required** when the gate is on) | `{ [kid]: publicKey }` JSON of TRUSTED approver keys. An approval's Ed25519 signature is verified against this **before** the held action is adopted onto the live chain and forwarded. The proxy **refuses to start** if `--approval-rules`/`--pending-store` is given without it — a gate that could adopt unverifiable approvals would be fail-open. |
-| `--approver-identity <path>` | (none) | optional `{ [agentId]: kid[] }` identity manifest pinning which kid may sign for the approval seat, so a co-trusted key cannot impersonate the human approver. |
+| `--approval-rules <path>` | (none — gate off) | JSON array of human-approval rules (adapter-core's `approvalRules`). A tool call matching a rule is HELD (`DEFERRED`) — never forwarded — until a human approves it out-of-band with `noa-approve`. Read through an `O_NOFOLLOW` descriptor: a symlink, a non-regular file, a foreign-owned file or a group/other-writable one is refused at startup, because a swapped rule set is a gate that is simply OFF (see **Config-artifact integrity** below). |
+| `--pending-store <path>` | (none) | JSONL operational index the `DEFERRED` holds are recorded into and `noa-approve` resolves against. Read AND appended through an `O_NOFOLLOW` descriptor on **every** call, not once at startup — a check that is not repeated at the moment of use is a TOCTOU. |
+| `--approver-keyring <path>` | (none — **required** when the gate is on) | `{ [kid]: publicKey }` JSON of TRUSTED approver keys. An approval's Ed25519 signature is verified against this **before** the held action is adopted onto the live chain and forwarded. The proxy **refuses to start** if `--approval-rules`/`--pending-store` is given without it — a gate that could adopt unverifiable approvals would be fail-open — and equally refuses to start if this path is a symlink, since "trusted keys" the attacker chose are not trusted keys (see **Config-artifact integrity** below). |
+| `--approver-identity <path>` | (none) | optional `{ [agentId]: kid[] }` identity manifest pinning which kid may sign for the approval seat, so a co-trusted key cannot impersonate the human approver. Same `O_NOFOLLOW` descriptor guard as the keyring — a redirected manifest would let an attacker pin their OWN kid to the approval seat. |
 
 ## Human-approval gate (R4)
 
@@ -141,6 +141,53 @@ node src/proxy.mjs -- node src/demo-downstream.mjs
 npm install
 npm test   # node test/smoke.mjs — real child processes, real MCP Client/Server, no mocks
 ```
+
+## Config-artifact integrity — what the guard buys, and exactly where it stops
+
+**Measured 2026-08-12, on the shipped CLI, not theorised.** These flags used to be read with a
+path-based `readFileSync`, which follows a symlink. Two attacks were reproduced end to end:
+
+1. Replace `approval-rules.json` with a symlink to a file containing `[]`. The human-approval gate
+   is then OFF, and a `transfer_funds` of 7000 minor units — above the configured 5000 threshold —
+   was **forwarded and executed with no human approval at all**.
+2. Replace `approver-keyring.json` with a symlink to an attacker-controlled keyring. The attacker
+   then signs the approval with their **own** key and the identical retry **executed**.
+
+The precondition — "something can create a file in the config directory" — is not exotic. In most
+real deployments the agent process can write its own working directory, which means the party this
+gate exists to constrain is the party that can plant the symlink.
+
+**What is fixed.** `--approval-rules`, `--approver-keyring`, `--approver-identity`,
+`--pending-store` and `--keyring-file` now go through one descriptor that a later path swap cannot
+redirect (`noa-mcp-adapter-core`'s `config-artifact.mjs`): `open` with `O_NOFOLLOW` (a symlink at
+the final component fails the open itself — there is no check-then-open gap), `fstat` on **that
+descriptor** (regular file — a FIFO can answer differently on every read; owned by this process or
+root; no group/other write bits), then the read or write on that same descriptor. The pending store
+re-applies the guard on **every** call, because it is re-read per gated tool call and a check that
+is not repeated at use is a TOCTOU. Pinned by `test/smoke.mjs` "Bonus AA" (16 assertions), which
+fails against the pre-fix code.
+
+**What is NOT fixed — measured against the FIXED code, not reasoned about.** Two things still
+execute the same unapproved 7000 transfer:
+
+- **In-place content rewrite as the same uid.** `printf '[]' > approval-rules.json`. No symlink, no
+  unlink, no mode change — nothing for `O_NOFOLLOW`, the owner check or the mode check to catch.
+- **Ancestor-directory repoint.** `O_NOFOLLOW` guards only the FINAL path component. If your
+  configured path is `<dir>/config/approval-rules.json` and an attacker can swap the `config`
+  **directory** entry for a symlink to their own directory, the open follows it. Node exposes no
+  `openat`, so a real fix needs component-wise descent this runtime's `fs` cannot express; an
+  `lstat` walk over the ancestors is itself check-then-use, and a control that only looks like one
+  is worse than a stated gap. **Operational mitigation:** put these artifacts in a directory whose
+  every ancestor is owned and non-writable by anything but the operator, and pass a fully-resolved
+  path.
+
+Also out of scope: an attacker who controls the proxy process (they need no file at all). Content
+integrity needs the config signed and checked against a key that does not live beside it, which
+this repository does not implement. Recorded as **NC-6.9** in
+[NON-CLAIMS.md](https://github.com/NordenSoft/noa/blob/main/NON-CLAIMS.md). Not covered by this
+change either: `--receipt-log` / `--outcome-log` (append-only OUTPUTS, still written by path
+through `fs.promises.appendFile`) and `--session-dir` (a directory, guarded by its own lockfile
+logic) — redirecting those damages the audit trail, not the approval verdict.
 
 ## Honest limits (not fixed by this skeleton)
 

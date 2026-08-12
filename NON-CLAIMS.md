@@ -540,6 +540,47 @@ signing keys, device secrets and enrolment credentials — those are NOA's, they
 to NOA, and none of them can act on a customer's provider. The exclusion is about credentials that
 grant power over systems belonging to someone else.
 
+### NC-6.9 — A governance config file is not tamper-evident; only its PATH is now un-redirectable (measured 2026-08-12)
+
+**We do not claim that the approval gate's configuration — `--approval-rules`, `--approver-keyring`,
+`--approver-identity`, `--pending-store` — is protected against an attacker who can rewrite those
+files' CONTENT IN PLACE as the same uid the proxy runs as.**
+
+What was measured, and what changed. Until 2026-08-12 these artifacts were read with a path-based
+`readFileSync`, which FOLLOWS A SYMLINK. Two attacks were reproduced end-to-end against the shipped
+CLI: replacing `approval-rules.json` with a symlink to a file containing `[]` turned the human
+approval gate off and a `transfer_funds` of 7000 minor units — above the configured 5000 threshold —
+was forwarded and executed with no human approval at all; replacing `approver-keyring.json` with a
+symlink to an attacker keyring let the attacker sign the approval with their own key and the
+identical retry executed. Both are now refused: every access goes through one `O_NOFOLLOW` open,
+`fstat` on the DESCRIPTOR (regular file, owned by this process or root, no group/other write bits),
+and the read or write on that same descriptor — `packages/adapter-core/src/config-artifact.mjs`,
+pinned by `packages/mcp-proxy/test/smoke.mjs` "Bonus AA".
+
+**The precondition is inside the threat model, not outside it.** In most real deployments the agent
+process can write its own working directory, so "something can create a file in the config
+directory" describes the party the gate exists to constrain, not an unusual compromise.
+
+**And here are the edges, MEASURED after the fix rather than reasoned about.** Both of these still
+execute the same unapproved 7000 transfer against the fixed code:
+
+- **In-place content rewrite, same uid.** `printf '[]' > approval-rules.json` — no symlink, no
+  unlink, no mode change. `O_NOFOLLOW` never fires, the owner still matches, the mode is untouched.
+  At the filesystem layer this is indistinguishable from the operator editing their own config, and
+  no `open` flag separates them.
+- **Ancestor-directory repoint.** `O_NOFOLLOW` guards only the FINAL path component. If the
+  operator configured `<dir>/config/approval-rules.json` and an attacker can replace the `config`
+  DIRECTORY entry with a symlink to a directory of their own, the open follows it and the guard
+  never sees a symlink. Node exposes no `openat`, so a genuine fix needs component-wise descent
+  this runtime's `fs` API cannot express; an `lstat` walk over the ancestors would raise the cost
+  but is itself check-then-use, and a control that only LOOKS like one is worse than a named gap.
+
+So what NC-6.9 asserts is narrow on purpose: the FINAL component of the configured path can no
+longer be redirected, and a non-regular, foreign-owned or group-writable artifact is refused.
+Everything above is the residual. Closing it properly means the config is SIGNED and the signature
+checked against a key that does not live beside it — that does not exist in this repository today.
+Also outside: an attacker who controls the proxy process (they need no file at all — see NC-6.6).
+
 
 ## 7. Changing this document
 
