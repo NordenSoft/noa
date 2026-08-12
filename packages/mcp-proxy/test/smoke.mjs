@@ -1172,6 +1172,162 @@ async function main() {
   fs.rmSync(aaG.dir, { recursive: true, force: true });
 
   // ---------------------------------------------------------------------------------------
+  // BONUS AB: the rule set's CONTENT is a governance input too, and until now NOTHING validated it.
+  //
+  // Bonus AA above closed the REDIRECT class — which BYTES the configured path resolves to. This
+  // closes what those bytes are allowed to SAY. Measured 2026-08-12 against the shipped CLI, with
+  // AA's guard already in place and a perfectly ordinary rule file (regular, mode 0600, owned by
+  // this uid, no symlink anywhere) whose content was `{}`:
+  //
+  //     transfer_funds(amountMinor=7000, to="attacker-account")
+  //     -> "transferred 7000 (minor units) to attacker-account"   *** NO HUMAN APPROVAL ***
+  //
+  // Six of the seven payloads below executed that unapproved transfer against the unfixed code. The
+  // mechanism is one line: `matchApprovalRule` answers `null` for a non-array, `null` means "no rule
+  // matched", and "no rule matched" means FORWARD. `validateApprovalRules` — the structural
+  // validator that catches every one of these — already existed, was already exported, and was
+  // simply never called on the load path.
+  //
+  // WHY THIS IS WORSE THAN THE SYMLINK IT SITS BESIDE: it removes the need for the conspicuous `[]`
+  // payload. Any content-write primitive at all — the same-uid rewrite and the ancestor repoint that
+  // NON-CLAIMS.md NC-6.9 names as ACCEPTED residuals — becomes a full approval bypass. Those
+  // residuals were accepted on the assumption that rewriting content still meant writing PLAUSIBLE
+  // rules. Two bytes disproved that.
+  //
+  // The partially-invalid case is the one to watch: a rule set where rule 1 is honoured and rule 2 is
+  // silently skipped is the same bypass wearing a disguise, so the refusal is all-or-nothing.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus AB — a rule set that is not an ARRAY OF VALID RULES never starts the proxy");
+
+  const approverKpAb = generateKeyPair("smoke:ab:approver");
+  const abKeyring = { [approverKpAb.kid]: approverKpAb.publicKey };
+
+  /** Same shape as aaFixture, but the rule file's CONTENT is the payload under test. Every
+   *  descriptor-level guard AA added is deliberately SATISFIED here (regular file, mode 0600, this
+   *  uid, no symlink) so a refusal can only be about the content. */
+  function abFixture(tag, rulesText) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `noa-mcp-proxy-ab-${tag}-`));
+    const rules = path.join(dir, "approval-rules.json");
+    const keyring = path.join(dir, "approver-keyring.json");
+    const pending = path.join(dir, "pending.jsonl");
+    fs.writeFileSync(rules, rulesText, { mode: 0o600 });
+    fs.chmodSync(rules, 0o600); // an EXISTING file's mode is not changed by writeFileSync's `mode`
+    fs.writeFileSync(keyring, JSON.stringify(abKeyring), { mode: 0o600 });
+    return { dir, rules, keyring, pending, args: ["--approval-rules", rules, "--approver-keyring", keyring, "--pending-store", pending] };
+  }
+
+  // `preFixExecuted` records what the UNFIXED code actually DID with each payload, measured one by
+  // one — not what it was assumed to do. The `badop` row is the honest exception: an unrecognised
+  // operator still gated (the matcher's `op === "ge" ? >= : >` fell through to `>`), so for THAT row
+  // the regression is the startup refusal alone, and saying so beats letting a green tick imply a
+  // bypass was closed that this payload never opened.
+  const AB_PAYLOADS = [
+    { tag: "object", what: "`{}` — valid JSON, not an array", text: "{}", preFixExecuted: true },
+    { tag: "null", what: "`null` — a rule file emptied to a JSON null", text: "null", preFixExecuted: true },
+    { tag: "string", what: "a bare JSON string", text: '"nope"', preFixExecuted: true },
+    { tag: "number", what: "a JSON number", text: "5", preFixExecuted: true },
+    {
+      tag: "badop",
+      what: "an array whose only rule carries an invalid threshold operator",
+      text: JSON.stringify([{ id: "r", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "gte", value: 5000 } }]),
+      preFixExecuted: false,
+    },
+    {
+      tag: "badthreshold",
+      what: "an array whose only rule has a malformed threshold (no path)",
+      text: JSON.stringify([{ id: "r", match: { type: "exact", action: "transfer_funds" }, threshold: { op: "ge", value: 5000 } }]),
+      preFixExecuted: true,
+    },
+    {
+      tag: "partial",
+      what: "a PARTIALLY-invalid array — rule 1 valid, rule 2 malformed",
+      text: JSON.stringify([
+        { id: "r1", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } },
+        { id: "r2", match: { type: "regex", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } },
+      ]),
+      preFixExecuted: true,
+    },
+  ];
+
+  // AB(control) FIRST, for the same reason AA has one: a validator that refused every rule set would
+  // pass every assertion below while destroying the product. The honest rule set must still start
+  // the proxy AND still HOLD the over-threshold call for a human.
+  const abControl = abFixture("control", JSON.stringify(APPROVAL_RULES));
+  const abControlRun = await attemptTransferThroughProxy(abControl.args, { sessionId: "ab-control" });
+  ok("(ab-control) an honest rule set still starts the proxy and still HOLDS the over-threshold transfer", abControlRun.started && !abControlRun.executed);
+  fs.rmSync(abControl.dir, { recursive: true, force: true });
+
+  for (const payload of AB_PAYLOADS) {
+    const fx = abFixture(payload.tag, payload.text);
+    const run = await attemptTransferThroughProxy(fx.args, { sessionId: `ab-${payload.tag}` });
+    ok(
+      `(ab-${payload.tag}) ${payload.what}: the over-threshold transfer is NEVER executed${payload.preFixExecuted ? " (the reproduced bypass)" : " (this payload gated pre-fix too — the refusal below is the regression)"}`,
+      !run.executed && !/transferred 7000/.test(run.text),
+    );
+    const stderrAb = await runProxyCapturingStderr(fx.args);
+    ok(
+      `(ab-${payload.tag}) the CLI exits on its own and the refusal names --approval-rules`,
+      stderrAb.refused && /--approval-rules/.test(stderrAb.stderr),
+    );
+    fs.rmSync(fx.dir, { recursive: true, force: true });
+  }
+
+  // AB(lib) — the SAME check on the REUSABLE factory, not only the CLI. A consumer that loads its own
+  // config must not be able to skip the validation by not using proxy.mjs. And it has to refuse
+  // BEFORE the downstream is established: the marker file is written by demo-downstream.mjs at
+  // startup (its zeroed counts baseline), so its ABSENCE proves no downstream process ever ran.
+  const abLibDir = fs.mkdtempSync(path.join(os.tmpdir(), "noa-mcp-proxy-ab-lib-"));
+  const abLibMarker = path.join(abLibDir, "downstream-started.json");
+  const abLibKp = generateKeyPair("smoke:ab:lib");
+  let abLibRefusal = "";
+  let abLibProxy = null;
+  try {
+    abLibProxy = await createProxyServer({
+      sessionId: "ab-lib",
+      downstreamTransport: new StdioClientTransport({
+        command: process.execPath,
+        args: [DEMO_DOWNSTREAM],
+        env: { ...process.env, NOA_DEMO_COUNTS_FILE: abLibMarker },
+      }),
+      signer: { kid: abLibKp.kid, privateKey: abLibKp.privateKey },
+      policy: TRANSFER_GUARD_POLICY,
+      store: createChainSessionStore(),
+      tenant: "ab-tenant",
+      approvalRules: {}, // the exact payload that executed 7000 with no human
+      approverKeyring: abKeyring,
+      pendingStorePath: path.join(abLibDir, "pending.jsonl"),
+    });
+  } catch (err) {
+    abLibRefusal = String(err?.message ?? err);
+  }
+  ok("(ab-lib) createProxyServer itself refuses a non-array `approvalRules`", abLibRefusal !== "" && /approvalRules/.test(abLibRefusal));
+  ok("(ab-lib) it refuses BEFORE the downstream connection — the downstream process never started", !fs.existsSync(abLibMarker));
+  if (abLibProxy) await abLibProxy.downstream.close().catch(() => {});
+
+  // AB(http) — and on the HTTP entry point, which must refuse to BIND rather than bind and then 502
+  // every session. Same fail-closed direction as the CLI, one layer earlier.
+  let abHttpRefusal = "";
+  let abHttp = null;
+  try {
+    abHttp = await startHttpProxy({
+      host: "127.0.0.1",
+      port: 0,
+      makeDownstreamTransport: () => new StdioClientTransport({ command: process.execPath, args: [DEMO_DOWNSTREAM] }),
+      signer: { kid: abLibKp.kid, privateKey: abLibKp.privateKey },
+      policy: TRANSFER_GUARD_POLICY,
+      store: createChainSessionStore(),
+      approvalRules: {},
+      approverKeyring: abKeyring,
+      pendingStorePath: path.join(abLibDir, "pending-http.jsonl"),
+    });
+  } catch (err) {
+    abHttpRefusal = String(err?.message ?? err);
+  }
+  ok("(ab-http) startHttpProxy refuses to bind at all with a non-array `approvalRules`", abHttpRefusal !== "" && /approvalRules/.test(abHttpRefusal));
+  if (abHttp) await abHttp.close();
+  fs.rmSync(abLibDir, { recursive: true, force: true });
+
+  // ---------------------------------------------------------------------------------------
   // BONUS G: downstream connection failure at proxy STARTUP must fail closed (non-zero exit,
   // never a half-serving proxy).
   // ---------------------------------------------------------------------------------------

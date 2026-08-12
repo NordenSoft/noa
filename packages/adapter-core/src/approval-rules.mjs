@@ -68,7 +68,7 @@ import { intrinsics } from "noa-receipt";
 // dispatches through no method at all — there is no `next`, no `map`, no `forEach` to replace — so
 // the class is closed rather than its current members. This is the same move the kernel made when
 // its key walk and code-point walk became index loops.
-const { isArray, hasOwn, strStartsWith, strEndsWith, isSafeInteger, arrayPush } = intrinsics;
+const { isArray, hasOwn, strStartsWith, strEndsWith, isSafeInteger, arrayPush, arrayJoin } = intrinsics;
 
 export function validateApprovalRules(approvalRules) {
   if (approvalRules === undefined || approvalRules === null) return { ok: true, errors: [] };
@@ -85,6 +85,65 @@ export function validateApprovalRules(approvalRules) {
     }
   }
   return { ok: errors.length === 0, errors };
+}
+
+/** Names the SHAPE of a rejected rule set for the refusal message, without ever calling a method on
+ *  the caller's value (a `toString` on an attacker-supplied object is not a safe thing to invoke
+ *  while refusing that object). */
+function shapeOfRuleSet(value) {
+  if (value === undefined) return "absent (undefined)";
+  if (value === null) return "null";
+  const t = typeof value;
+  if (t === "object") return "a JSON object";
+  if (t === "string") return "a string";
+  return `a ${t}`;
+}
+
+/**
+ * THE LOAD-TIME GATE. `validateApprovalRules` above only REPORTS; nothing was calling it on the
+ * paths that actually load a rule set, and that gap was a full approval bypass — MEASURED 2026-08-12
+ * against the shipped CLI with a perfectly ordinary rule file (regular, mode 0600, owned by this
+ * process) whose content was `{}`:
+ *
+ *     transfer_funds(amountMinor=7000, to="attacker-account")
+ *     -> downstream answered "transferred 7000 (minor units) to attacker-account", no human involved
+ *
+ * The mechanism is `matchApprovalRule`'s own first line: a non-array returns `null`, `null` means
+ * "no rule matched", and "no rule matched" means FORWARD. So EVERY malformed shape — `{}`, `null`,
+ * a bare string, a number — reads to the caller exactly like "nothing here needs a human", which is
+ * the one answer a fail-closed component must never give by accident. Six of the seven shapes below
+ * were reproduced as live, executed, unapproved transfers.
+ *
+ * WHY THIS SITS ABOVE THE SYMLINK GUARD IT COMPLEMENTS. `config-artifact.mjs` closed the REDIRECT
+ * class (which bytes the path resolves to) and honestly names same-uid CONTENT rewriting as an
+ * accepted residual (NON-CLAIMS.md NC-6.9). That residual was judged acceptable on the assumption
+ * that rewriting content still required writing PLAUSIBLE rules. It did not: two bytes, `{}`, turned
+ * the gate off. This function is what makes that assumption true — any content-write primitive at
+ * all now has to produce a rule set that survives structural validation.
+ *
+ * Throws (never returns a verdict object): every caller of this is a startup path whose only correct
+ * response to a malformed rule set is to refuse to run. Returning the rules keeps callers able to
+ * write `const rules = requireValidApprovalRules(...)`.
+ *
+ * `undefined`/`null` are NOT accepted here, unlike in `validateApprovalRules` — a caller that wants
+ * no approval rules omits the option entirely; a `null` that arrived from a config file is a
+ * malformed rule set, and the two must not share an answer.
+ */
+export function requireValidApprovalRules(approvalRules, label) {
+  if (!isArray(approvalRules)) {
+    throw new Error(
+      `${label}: a human-approval rule set must be a JSON ARRAY of rules — this one is ${shapeOfRuleSet(approvalRules)}. ` +
+        `A non-array matches no rule, "no rule matched" means the call is FORWARDED, and a gate that forwards everything is a gate that is switched off. Refusing to start (fail-closed).`,
+    );
+  }
+  const validity = validateApprovalRules(approvalRules);
+  if (!validity.ok) {
+    throw new Error(
+      `${label}: the human-approval rule set is structurally invalid, so at least one rule cannot gate the action it names — refusing to start (fail-closed). ` +
+        `Rejected in full, never partially: a rule set where rule 1 is honoured and rule 2 is silently skipped is the same bypass wearing a disguise. Errors: ${arrayJoin(validity.errors, "; ")}`,
+    );
+  }
+  return approvalRules;
 }
 
 /**

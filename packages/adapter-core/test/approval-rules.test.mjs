@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { validateApprovalRules, matchApprovalRule, tryIdentifyToolCallForTicketLookup } from "../src/approval-rules.mjs";
+import { validateApprovalRules, requireValidApprovalRules, matchApprovalRule, tryIdentifyToolCallForTicketLookup } from "../src/approval-rules.mjs";
 import { canonicalParamsHash } from "../src/pre-check.mjs";
 
 test("validateApprovalRules: undefined/null/empty are valid; rejects non-array, missing id, bad match.type, duplicate id, bad threshold", () => {
@@ -15,6 +15,41 @@ test("validateApprovalRules: undefined/null/empty are valid; rejects non-array, 
   );
   assert.equal(validateApprovalRules([{ id: "r", match: { type: "exact", action: "a" }, threshold: { path: "x", op: "eq", value: 1 } }]).ok, false);
   assert.equal(validateApprovalRules([{ id: "r", match: { type: "exact", action: "a" }, threshold: { path: "x", op: "ge", value: 1.5 } }]).ok, false);
+});
+
+// The LOAD-PATH gate. `validateApprovalRules` above has always been able to see every one of these
+// shapes; nothing called it where a rule set is actually loaded, and each of the first four executed
+// a real, over-threshold, unapproved transfer through the shipped proxy (measured 2026-08-12).
+// `matchApprovalRule(nonArray, …) -> null` and `null` means "forward", so a malformed rule set is
+// not a weaker gate — it is no gate.
+test("requireValidApprovalRules: every non-array shape is REFUSED, including null (which validateApprovalRules calls valid)", () => {
+  for (const bad of [{}, null, "nope", 5, true]) {
+    assert.throws(
+      () => requireValidApprovalRules(bad, "--approval-rules"),
+      /must be a JSON ARRAY of rules/,
+      `a ${JSON.stringify(bad)} rule set must be refused, not silently treated as "nothing needs approval"`,
+    );
+  }
+  // undefined too: this function is only ever called where a rule set was supposed to have been
+  // loaded, so "absent" is a misconfiguration here even though it is a legitimate library default.
+  assert.throws(() => requireValidApprovalRules(undefined, "--approval-rules"), /must be a JSON ARRAY of rules/);
+});
+
+test("requireValidApprovalRules: a PARTIALLY-invalid array is refused in full, and the error names the offending index", () => {
+  const partiallyValid = [
+    { id: "r1", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } },
+    { id: "r2", match: { type: "regex", action: "transfer_funds" } },
+  ];
+  // Pre-fix this loaded happily and rule 2 simply never matched — an approval bypass that looks like
+  // a working gate from the outside, which is why a partial accept is not on offer.
+  assert.throws(() => requireValidApprovalRules(partiallyValid, "--approval-rules"), /approvalRules\[1\]\.match\.type/);
+  assert.throws(() => requireValidApprovalRules(partiallyValid, "--approval-rules"), /structurally invalid/);
+});
+
+test("requireValidApprovalRules: an honest rule set passes through unchanged (the control — a validator that refused everything would pass every test above)", () => {
+  const honest = [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }];
+  assert.equal(requireValidApprovalRules(honest, "--approval-rules"), honest);
+  assert.equal(requireValidApprovalRules([], "--approval-rules").length, 0, "an EMPTY array is a deliberate, valid rule set — it just gates nothing");
 });
 
 test("matchApprovalRule: exact match / prefix match (the feature dsl.ts cannot express) / no match", () => {

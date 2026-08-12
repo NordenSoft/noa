@@ -938,7 +938,7 @@ test("adoptApprovedReceipt: refuses (returns null, never throws) when the sessio
 test("index.mjs: R4 public surface is exported from the package root", async () => {
   const pkg = await import("../src/index.mjs");
   for (const name of [
-    "matchApprovalRule", "validateApprovalRules", "tryIdentifyToolCallForTicketLookup",
+    "matchApprovalRule", "validateApprovalRules", "requireValidApprovalRules", "tryIdentifyToolCallForTicketLookup",
     "recordDeferred", "recordApproved", "recordDenied", "consumeApprovalTicket", "findOutstanding", "loadPendingIndex",
     "buildApprovalReceipt", "buildDenialReceipt", "adoptApprovedReceipt", "canonicalParamsHash",
   ]) {

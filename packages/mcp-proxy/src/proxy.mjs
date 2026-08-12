@@ -98,7 +98,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fsp } from "node:fs";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile, readConfigJson, writeConfigArtifact, describeThrown, describeThrownDetailed } from "noa-mcp-adapter-core";
+import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile, readConfigJson, writeConfigArtifact, requireValidApprovalRules, describeThrown, describeThrownDetailed } from "noa-mcp-adapter-core";
 import { createProxyServer } from "./create-proxy-server.mjs";
 import { TRANSFER_GUARD_POLICY } from "./policy.mjs";
 
@@ -298,8 +298,26 @@ async function main() {
   // config-artifact.mjs) opens with O_NOFOLLOW, fstats the DESCRIPTOR (regular file, owned by this
   // process or root, not group/other-writable) and reads from that same descriptor — the pathname
   // never gets a second chance to decide which bytes this process trusts.
+  //
+  // ── AND THE BYTES ARE THEN STRUCTURALLY VALIDATED, BEFORE ANY DOWNSTREAM IS SPAWNED ───────────
+  // MEASURED 2026-08-12 against the shipped CLI, with the symlink guard above already in place: a
+  // REGULAR, mode-0600, correctly-owned `approval-rules.json` containing `{}` — valid JSON, not an
+  // array — was accepted, and the same 7000 transfer was FORWARDED AND EXECUTED with no human
+  // approval. `readConfigJson` decides WHICH BYTES are read; it has nothing to say about whether
+  // those bytes are a rule set. `matchApprovalRule` answers `null` for a non-array, `null` means
+  // "no rule matched", and "no rule matched" means forward — so a two-byte file switched the gate
+  // off. This removes the need for the conspicuous `[]` payload the symlink attack needed: ANY
+  // content-write primitive, including the same-uid rewrite NON-CLAIMS.md NC-6.9 names as an
+  // accepted residual, was a full bypass. `requireValidApprovalRules` refuses a non-array AND every
+  // malformed rule — in FULL, never partially — so the process exits non-zero here rather than
+  // serving the host with the gate silently absent. createProxyServer/startHttpProxy apply the
+  // identical check on their own inputs (a library consumer must not be able to skip it by not
+  // using this CLI); this call is what gives the OPERATOR the flag-named error.
   let approvalRules;
-  if (opts.approvalRulesFile) approvalRules = readConfigJson(opts.approvalRulesFile, { label: "--approval-rules" });
+  if (opts.approvalRulesFile) {
+    approvalRules = readConfigJson(opts.approvalRulesFile, { label: "--approval-rules" });
+    requireValidApprovalRules(approvalRules, `--approval-rules "${opts.approvalRulesFile}"`);
+  }
 
   // FAIL-CLOSED at startup: the human-approval gate (--approval-rules and/or --pending-store) can
   // adopt an approver's ALLOWED receipt onto the live chain and forward the held action. Adopting

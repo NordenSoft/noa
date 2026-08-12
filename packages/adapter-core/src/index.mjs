@@ -8,7 +8,10 @@ export { loadOrCreateKeyFile } from "./key-file.mjs";
 // mcp-proxy CLI is a consumer: its `--approval-rules`/`--approver-keyring`/`--approver-identity`
 // reads were the measured symlink-redirect bypass this module closes.
 export { readConfigArtifact, readConfigJson, appendConfigArtifact, writeConfigArtifact, ConfigArtifactError } from "./config-artifact.mjs";
-export { matchApprovalRule, validateApprovalRules, tryIdentifyToolCallForTicketLookup } from "./approval-rules.mjs";
+// `requireValidApprovalRules` is the THROWING form every rule-set LOAD path must call before it
+// serves anything. `validateApprovalRules` alone only REPORTS, and a report nobody reads is what
+// let a `{}` rule file switch the human-approval gate off (see that function's own note).
+export { matchApprovalRule, validateApprovalRules, requireValidApprovalRules, tryIdentifyToolCallForTicketLookup } from "./approval-rules.mjs";
 export { recordDeferred, recordApproved, recordDenied, consumeApprovalTicket, findOutstanding, loadPendingIndex, PendingStoreError } from "./pending-store.mjs";
 export { buildApprovalReceipt, buildDenialReceipt, verifyApprovalReceipt, DEFAULT_APPROVAL_TICKET_TTL_MS } from "./approval-decision.mjs";
 export { opaqueApproverId, assertOpaqueApproverBy } from "./opaque-id.mjs";

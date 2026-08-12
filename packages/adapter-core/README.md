@@ -57,7 +57,18 @@ line could state that would be true in both places — which is the argument for
   because `noa-mcp-proxy`'s path-based reads were a **reproduced** gate bypass: a symlinked
   `approval-rules.json` pointing at `[]` executed an over-threshold transfer with no human
   approval at all. It closes REDIRECTION, not in-place CONTENT rewriting by a same-uid attacker —
-  see NON-CLAIMS.md NC-6.9 and `src/config-artifact.mjs`'s own docstring.
+  see NON-CLAIMS.md NC-6.9 and `src/config-artifact.mjs`'s own docstring. The WRITE path never
+  truncates before the descriptor has been verified (a refused write leaves its target byte-for-byte
+  unchanged) and refuses a hard-linked target — a second NAME for the same inode is the one
+  redirection `O_NOFOLLOW` cannot see. The READ path bounds the bytes it ACTUALLY read, not the size
+  the `fstat` remembered, so a file growing under a concurrent writer cannot exceed the cap.
+- `requireValidApprovalRules(approvalRules, label)` — the THROWING form of
+  `validateApprovalRules`, for every path that LOADS a rule set. The validator only ever reported,
+  and nothing called it where rule sets are loaded: `{}` in `approval-rules.json` — valid JSON, not
+  an array — made `matchApprovalRule` answer "no rule matched", which a caller reads as "no approval
+  needed", and an over-threshold transfer executed with no human at all (measured 2026-08-12). This
+  refuses a non-array, refuses `null`, and refuses a partially-invalid array IN FULL: a rule set
+  where rule 1 is honoured and rule 2 is silently skipped is the same bypass in a costume.
 - `createChainSessionStore({ idleTtlMs, maxSessions, sweepIntervalMs, now, onEvict })` — owns
   `Map<tenant, Map<sessionId, { prev, seq, lastAccessedAt, segmentId }>>` (tenant-nested — see
   "MULTI-TENANT ISOLATION" below) plus one store-instance-scoped `instanceToken` (constant across

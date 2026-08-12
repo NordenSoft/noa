@@ -6,6 +6,62 @@ consumer upgrading to `0.3.0` would see a silent version bump and no reason to h
 
 ## [Unreleased]
 
+### Security — a rule set that was not an ARRAY switched the approval gate off (CWE-20, fail-open)
+
+**Reproduced against the shipped proxy on 2026-08-12, with a REGULAR, mode-0600, correctly-owned
+`approval-rules.json` — every descriptor-level guard satisfied — whose content was `{}`:**
+`transfer_funds(amountMinor=7000)` was forwarded and the downstream answered
+`transferred 7000 (minor units) to attacker-account`. No human was involved at any point.
+
+`validateApprovalRules` has always been able to see this shape. It was simply **never called** on
+the paths that load a rule set. `matchApprovalRule` returns `null` for a non-array, `null` means "no
+rule matched", and "no rule matched" means FORWARD — so a two-byte file read, to every caller, as
+"nothing here needs a human". Six shapes were measured as live, executed, unapproved transfers:
+`{}`, `null`, a bare string, a number, a rule with a malformed threshold, and a partially-invalid
+array whose second rule was silently skipped.
+
+**Added: `requireValidApprovalRules(approvalRules, label)`** — the throwing form, exported from the
+package root, called by every load boundary in `noa-mcp-proxy` (the CLI, `createProxyServer` and
+`startHttpProxy`). It refuses a non-array, refuses an explicit `null` (which
+`validateApprovalRules` treats as "no rules" — right for an omitted option, wrong for a config file
+that parsed to null), and rejects a partially-invalid array IN FULL rather than honouring its valid
+rules: a rule set where rule 1 gates and rule 2 is skipped is the same bypass wearing a disguise.
+
+**Why this matters more than the symlink swap it sits beside:** it removed the need for the
+conspicuous `[]` payload. Any content-write primitive at all — including the same-uid in-place
+rewrite and the ancestor repoint that NON-CLAIMS.md NC-6.9 names as **accepted residuals** — was a
+full approval bypass. Those residuals were accepted on the assumption that rewriting the content
+still meant writing *plausible* rules. It did not. NC-6.9's own statement is unchanged and still
+true: `printf '[]' > approval-rules.json` remains an unclosed residual, because `[]` is a valid
+rule set that gates nothing.
+
+### Security — `writeConfigArtifact` truncated its target BEFORE verifying it, and followed hard links
+
+Two more, both reproduced 2026-08-12:
+
+- The replace path opened with `O_CREAT|O_TRUNC`, so the truncation happened **inside the open** —
+  before the `fstat`, before the owner test, before the mode test. A write refused for a
+  group-writable target had already emptied that target to zero bytes. The guard destroyed the file
+  it then declined to write. Now: open without `O_TRUNC` → verify the descriptor → `ftruncate`
+  **through that verified descriptor** → write; creation is `O_CREAT|O_EXCL`. A refused write leaves
+  its target byte-for-byte unchanged.
+- `O_NOFOLLOW` refuses a symLINK. A **hard** link is a second NAME for the same inode, with the same
+  owner and the same mode, so it passed every check and the victim sharing that inode had its
+  content replaced. The write and append paths now refuse `nlink > 1`. Reads are deliberately not
+  subject to this: a second name does not change which bytes a read returns.
+
+### Fixed — the config-artifact size cap measured a remembered number, not the bytes read
+
+The 64 MiB cap was compared against the size the `fstat` reported and the descriptor was then read
+in one unbounded call. With a 1 MB test cap and a concurrent writer, the read returned **1.2 MB**.
+`readConfigArtifact` now reads in bounded steps and refuses the moment the ACTUAL byte count passes
+the cap; the `fstat` comparison is kept as an early refusal that avoids reading an oversized file at
+all. Multi-byte characters straddling a chunk boundary are decoded after concatenation, so content
+round-trips byte-for-byte.
+
+Regression coverage: `test/config-artifact.test.mjs` (8 tests, 4 of which fail against the pre-fix
+module) and `test/approval-rules.test.mjs`'s three `requireValidApprovalRules` cases.
+
 ### Security — `--pending-store` followed symlinks on both read and append (CWE-59 / CWE-367)
 
 `loadPendingIndex` used `existsSync(path)` + `readFileSync(path)` and `appendEvent` used

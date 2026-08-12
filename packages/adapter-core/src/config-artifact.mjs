@@ -46,7 +46,7 @@
  * NON-CLAIMS.md NC-7.0. What is closed here is the REDIRECTION class: the path the operator
  * configured no longer decides which BYTES the process reads.
  */
-import { openSync, fstatSync, readFileSync, writeFileSync, closeSync, constants as fsConstants } from "node:fs";
+import { openSync, fstatSync, readSync, writeFileSync, ftruncateSync, closeSync, constants as fsConstants } from "node:fs";
 import { describeThrown, thrownCode } from "./safe-throw.mjs";
 
 import { intrinsics } from "noa-receipt";
@@ -54,7 +54,7 @@ import { intrinsics } from "noa-receipt";
 // REDTEAM 2026-08-03 — the builtins come from the kernel's module-load capture on every published
 // decision path, whether or not each individual site is reachable today (see key-file.mjs's own
 // note). Reachability is a property of the surrounding code, and the surrounding code changes.
-const { jsonParse, numToString } = intrinsics;
+const { jsonParse, numToString, arrayPush, bufferAlloc, bufferConcat, bufSubarray, bufToString } = intrinsics;
 
 // Captured at MODULE-EVALUATION time, before any caller-supplied value has been read: the effective
 // uid this process is allowed to trust a security artifact from. `null` on a platform with no POSIX
@@ -71,11 +71,26 @@ const NOFOLLOW = fsConstants.O_NOFOLLOW ?? 0;
 const NONBLOCK = fsConstants.O_NONBLOCK ?? 0;
 const READ_FLAGS = fsConstants.O_RDONLY | NOFOLLOW | NONBLOCK;
 const APPEND_FLAGS = fsConstants.O_WRONLY | fsConstants.O_APPEND | fsConstants.O_CREAT | NOFOLLOW | NONBLOCK;
-const REPLACE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | NOFOLLOW | NONBLOCK;
+// ── WHY THESE TWO, AND WHY NEITHER OF THEM CARRIES O_TRUNC (fixed 2026-08-12) ────────────────────
+// The replace path used to be ONE open with `O_CREAT|O_TRUNC`, and the truncation therefore happened
+// INSIDE the `open` — before the fstat, before the owner test, before the mode test. MEASURED: a
+// write refused for a group-writable target had ALREADY EMPTIED that target to zero bytes. The guard
+// destroyed the very file it then declined to write. The order is now open (no truncation) → verify
+// the descriptor → truncate THROUGH the descriptor that was verified, so a refusal leaves the file
+// byte-for-byte as it was found.
+//
+// Creation is `O_CREAT|O_EXCL`: an EXCLusive create cannot adopt a file that somebody else planted
+// between "it was not there" and "create it", which is the window a plain O_CREAT hands over.
+const REPLACE_EXISTING_FLAGS = fsConstants.O_WRONLY | NOFOLLOW | NONBLOCK;
+const CREATE_EXCLUSIVE_FLAGS = fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL | NOFOLLOW | NONBLOCK;
 
 // A config artifact this package will hold entirely in memory. The cap is not a policy statement —
 // it is a bound on how much an attacker who can grow the file can make this process allocate.
 const DEFAULT_MAX_BYTES = 64 * 1024 * 1024;
+
+// Read granularity for the bounded reader below. Not a limit on anything — only how often the
+// running total is compared against the cap.
+const READ_CHUNK_BYTES = 64 * 1024;
 
 /** The ONE typed error every guard in this module raises, so a caller can catch the whole class. */
 export class ConfigArtifactError extends Error {
@@ -89,9 +104,21 @@ export class ConfigArtifactError extends Error {
  * The descriptor-level verdict. Returns a human-readable REASON to refuse, or `null` to accept.
  * Every test here reads the FSTAT OF AN ALREADY-OPEN DESCRIPTOR — nothing re-resolves the path.
  */
-function refusalReason(st, pathname, label) {
+function refusalReason(st, pathname, label, singleLink) {
   if (!st.isFile()) {
     return `${label} "${pathname}" is not a regular file — a FIFO, device or directory can answer differently on every read, so it can never be a governance input`;
+  }
+  // HARD LINKS, on the paths that WRITE (fixed 2026-08-12). O_NOFOLLOW refuses a symLINK; a hard
+  // link is not a link at all at the filesystem layer, it is a second NAME for the same inode, and
+  // an `fstat` of it is indistinguishable from an fstat of the operator's own file — same uid, same
+  // mode, same everything. MEASURED: a hard link planted at the configured output, pointing at
+  // another 0600 file owned by this same uid, passed every check and had that victim's content
+  // replaced. `nlink` is the one field that can tell: a file this process is entitled to overwrite
+  // wholesale should have exactly ONE name. Reads are deliberately NOT subject to this — a second
+  // name does not change which bytes a read returns, so refusing there would cost operators a
+  // legitimate layout for no security gain.
+  if (singleLink && st.nlink > 1) {
+    return `${label} "${pathname}" has ${numToString(st.nlink, 10)} hard links — these bytes have another name, so replacing them here would also replace the contents of a file this path does not describe; refusing (point ${label} at a path with a single link)`;
   }
   if (PROCESS_EUID !== null && st.uid !== PROCESS_EUID && st.uid !== 0) {
     return `${label} "${pathname}" is owned by uid ${numToString(st.uid, 10)}, not by this process (uid ${numToString(PROCESS_EUID, 10)}) or root — refusing to take an enforcement decision from a file this process does not own`;
@@ -107,8 +134,12 @@ function refusalReason(st, pathname, label) {
  * when the file genuinely does not exist and `flags` did not ask to create it. Throws
  * ConfigArtifactError on a symlink, a non-regular file, a foreign owner or loose write bits — and
  * closes the descriptor before it does, so a refusal never leaks an fd.
+ *
+ * `singleLink` additionally refuses a hard-linked file (see refusalReason) — set by the paths that
+ * WRITE. `existsIsSoft` turns an `EEXIST` from an O_EXCL create into `null` instead of an error, so
+ * the caller can re-try the "it exists" branch rather than fail a benign creation race.
  */
-function openVerified(pathname, label, flags, mode) {
+function openVerified(pathname, label, flags, mode, { singleLink = false, existsIsSoft = false } = {}) {
   let fd;
   try {
     // The descriptor-level O_NOFOLLOW / regular-file / owner / mode checks below are precisely the
@@ -124,6 +155,7 @@ function openVerified(pathname, label, flags, mode) {
       );
     }
     if (code === "ENOENT") return null;
+    if (code === "EEXIST" && existsIsSoft) return null;
     throw new ConfigArtifactError(`${label} "${pathname}" could not be opened (${describeThrown(err)})`);
   }
 
@@ -135,12 +167,46 @@ function openVerified(pathname, label, flags, mode) {
     throw new ConfigArtifactError(`${label} "${pathname}" could not be inspected after opening (${describeThrown(err)})`);
   }
 
-  const reason = refusalReason(st, pathname, label);
+  const reason = refusalReason(st, pathname, label, singleLink);
   if (reason !== null) {
     closeSync(fd);
     throw new ConfigArtifactError(reason);
   }
   return { fd, size: st.size };
+}
+
+/**
+ * Reads a whole descriptor in bounded steps, refusing the moment the ACTUAL byte count passes
+ * `maxBytes`.
+ *
+ * THE BUG THIS REPLACES (reproduced 2026-08-12): the cap was compared against the size reported by
+ * the `fstat` and the descriptor was then read in ONE call with no further bound. `fstat` describes
+ * the file at the instant it was taken, and a writer that grows the file between that instant and
+ * the read is exactly the party this module exists to constrain. Measured with a 1 MB cap and a
+ * concurrent appender: the function returned a **1.2 MB** buffer — the cap reported "within limit"
+ * about a number that was already stale. A limit that is only ever checked against a remembered
+ * value is not a limit on what this process actually allocates.
+ */
+function readAllBounded(fd, pathname, label, maxBytes) {
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    // A FRESH buffer per chunk: a reused scratch buffer would have to be copied before being
+    // retained anyway, and a missed copy is a silent content corruption rather than a loud failure.
+    const chunk = bufferAlloc(READ_CHUNK_BYTES);
+    const n = readSync(fd, chunk, 0, READ_CHUNK_BYTES, null);
+    if (n === 0) break;
+    total += n;
+    if (total > maxBytes) {
+      throw new ConfigArtifactError(
+        `${label} "${pathname}" is larger than the ${numToString(maxBytes, 10)}-byte cap (already read ${numToString(total, 10)} bytes) — refusing to load it. A file that grew while it was being read is a file something else is writing right now.`,
+      );
+    }
+    arrayPush(chunks, n === READ_CHUNK_BYTES ? chunk : bufSubarray(chunk, 0, n));
+  }
+  // Decoded AFTER concatenation, never per chunk: a multi-byte UTF-8 sequence straddling a chunk
+  // boundary would otherwise decode as two replacement characters.
+  return bufToString(bufferConcat(chunks), "utf8");
 }
 
 /**
@@ -160,12 +226,15 @@ export function readConfigArtifact(pathname, { label = "config file", maxBytes =
     return null;
   }
   try {
+    // The fstat size is an EARLY refusal — it costs one comparison and rejects an oversized file
+    // without reading a byte of it. It is NOT the enforcement: readAllBounded below re-checks the
+    // count of bytes THIS PROCESS ACTUALLY READ, which is the only number that bounds the allocation.
     if (opened.size > maxBytes) {
       throw new ConfigArtifactError(`${label} "${pathname}" is ${numToString(opened.size, 10)} bytes, over the ${numToString(maxBytes, 10)}-byte cap — refusing to load it`);
     }
     // From the DESCRIPTOR. Re-opening by path here is the whole bug: it would hand the final read
     // back to whatever the pathname resolves to at that instant.
-    return readFileSync(opened.fd, "utf8");
+    return readAllBounded(opened.fd, pathname, label, maxBytes);
   } finally {
     closeSync(opened.fd);
   }
@@ -199,7 +268,9 @@ export function readConfigJson(pathname, { label = "config file", maxBytes = DEF
  * @param {{ label?: string }} [options]
  */
 export function appendConfigArtifact(pathname, text, { label = "config file" } = {}) {
-  const opened = openVerified(pathname, label, APPEND_FLAGS, 0o600);
+  // `singleLink`: an append through a hard link is the same arbitrary-file-write primitive the
+  // symlink guard closes, wearing the one disguise O_NOFOLLOW cannot see through.
+  const opened = openVerified(pathname, label, APPEND_FLAGS, 0o600, { singleLink: true });
   try {
     // writeFileSync on an EXISTING descriptor writes at the current position (O_APPEND: the end)
     // and loops over short writes itself; it does not close the fd and does not truncate.
@@ -215,15 +286,47 @@ export function appendConfigArtifact(pathname, text, { label = "config file" } =
  * routine startup write into "clobber any file this process can write" — the same primitive
  * loadOrCreateKeyFile already refuses for `--key-file`.
  *
+ * ORDER OF OPERATIONS, AND WHY IT IS THE WHOLE POINT (fixed 2026-08-12): open WITHOUT truncating →
+ * verify the descriptor → truncate THROUGH the descriptor that was verified → write. The previous
+ * single `O_CREAT|O_TRUNC` open truncated inside the `open` itself, so every refusal below used to
+ * fire on a file this function had already emptied. Now a refused write leaves the target byte-for-
+ * byte as it was found, and a hard-linked target is refused outright rather than replacing the
+ * content of whatever else shares that inode.
+ *
  * @param {string} pathname
  * @param {string} text
  * @param {{ label?: string, mode?: number }} [options]
  */
 export function writeConfigArtifact(pathname, text, { label = "config file", mode = 0o600 } = {}) {
-  const opened = openVerified(pathname, label, REPLACE_FLAGS, mode);
-  try {
-    writeFileSync(opened.fd, text, "utf8");
-  } finally {
-    closeSync(opened.fd);
+  // Two attempts, not a loop: the only way BOTH branches decline is that the file existed for one
+  // open and did not exist for the other, i.e. something is creating and removing it right now. One
+  // retry absorbs a single benign race; a second identical outcome is a state this function refuses
+  // to keep guessing at.
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const existing = openVerified(pathname, label, REPLACE_EXISTING_FLAGS, undefined, { singleLink: true });
+    if (existing !== null) {
+      try {
+        // Through the ALREADY-VERIFIED descriptor. The file position is still 0, so the write below
+        // starts at the beginning; `ftruncate` is what stops a shorter replacement from leaving the
+        // tail of the previous content behind.
+        ftruncateSync(existing.fd, 0);
+        writeFileSync(existing.fd, text, "utf8");
+      } finally {
+        closeSync(existing.fd);
+      }
+      return;
+    }
+    const created = openVerified(pathname, label, CREATE_EXCLUSIVE_FLAGS, mode, { singleLink: true, existsIsSoft: true });
+    if (created !== null) {
+      try {
+        writeFileSync(created.fd, text, "utf8");
+      } finally {
+        closeSync(created.fd);
+      }
+      return;
+    }
   }
+  throw new ConfigArtifactError(
+    `${label} "${pathname}" is being created and removed by something else while this process is writing it — refusing to keep re-trying (fail-closed: a governance artifact whose existence flickers is not one this process can publish safely)`,
+  );
 }

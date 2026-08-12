@@ -65,6 +65,7 @@ import {
   commitSessionReceipt,
   adoptApprovedReceipt,
   canonicalParamsHash,
+  requireValidApprovalRules,
   tryIdentifyToolCallForTicketLookup,
   recordDeferred,
   findOutstanding,
@@ -133,7 +134,21 @@ export async function createProxyServer({
   if (!signer) throw new Error("createProxyServer: `signer` is required");
   if (!policy) throw new Error("createProxyServer: `policy` is required");
   if (!store) throw new Error("createProxyServer: `store` is required");
-  // FAIL-CLOSED CONFIG: the human-approval gate (enabled by `approvalRules` and/or a
+  // FAIL-CLOSED CONFIG, AND THE FIRST THING CHECKED: a rule set that is not an ARRAY OF VALID RULES
+  // is not a weaker gate, it is NO gate. `matchApprovalRule` returns `null` for a non-array, the
+  // caller reads `null` as "no approval needed", and the call is forwarded — MEASURED 2026-08-12,
+  // `{}` in the rule file executed an over-threshold `transfer_funds` with no human anywhere.
+  // Validating HERE and not only in proxy.mjs is the point: this factory is the reusable entry point
+  // (the CLI, the HTTP transport and any embedding consumer all funnel through it), so a consumer
+  // who loads its own config must not be able to skip the check by not using the CLI. It runs BEFORE
+  // `downstream.connect` below, so a refused rule set never even spawns the downstream server.
+  //
+  // `undefined` means "no approval rules configured" and is a legitimate caller choice (the pre-R4
+  // behavior). An explicit `null` is REFUSED rather than treated as "none": `null` is what a
+  // corrupted/attacker-written config file parses to, and "the caller deliberately passed nothing"
+  // and "the caller's rule file was emptied" must not share an answer. Omit the option instead.
+  if (approvalRules !== undefined) requireValidApprovalRules(approvalRules, "createProxyServer: `approvalRules`");
+  // The human-approval gate (enabled by `approvalRules` and/or a
   // `pendingStorePath`) can adopt an approver's ALLOWED receipt onto the live chain and forward the
   // held action. That adoption MUST verify the approver's signature (see `verifyApprovalReceipt`),
   // which requires a trusted approver keyring. Refusing to start without one makes it structurally

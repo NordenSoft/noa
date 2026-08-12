@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+### Security — the human-approval gate could be turned off by a rule file that was not a rule set
+
+**Reproduced against the shipped CLI on 2026-08-12, with the symlink guard below already in place.**
+The `--approval-rules` file was a REGULAR file, mode 0600, owned by this process — no symlink, no
+FIFO, no loose permissions, nothing for the descriptor guard to catch. Its content was `{}`:
+
+```
+transfer_funds(amountMinor=7000, to=attacker-account)
+  -> downstream: "transferred 7000 (minor units) to attacker-account"
+  *** FORWARDED AND EXECUTED WITH NO HUMAN APPROVAL ***
+```
+
+The bytes were validated as JSON and never validated as a RULE SET. `matchApprovalRule` returns
+`null` for a non-array, `null` means "no rule matched", and "no rule matched" means forward. Six
+payloads were each measured executing that unapproved transfer: `{}`, `null`, a bare string, a
+number, a rule with a malformed threshold, and a **partially** invalid array whose second rule was
+silently skipped while its first one worked.
+
+**Why it is worse than the symlink swap it sits beside:** it removes the need for the conspicuous
+`[]` payload. Any content-write primitive at all — including the same-uid in-place rewrite and the
+ancestor-directory repoint that NON-CLAIMS.md NC-6.9 names as **accepted residuals** — was a full
+approval bypass. Those residuals were accepted on the assumption that rewriting the content still
+meant writing *plausible* rules.
+
+**Fixed** by calling `noa-mcp-adapter-core`'s new `requireValidApprovalRules` at **every** boundary
+that loads a rule set — `proxy.mjs` (the CLI, which names the flag in its error), `createProxyServer`
+and `startHttpProxy` — so a library consumer cannot skip the check by not using the CLI. Each runs
+before any downstream connection is established: a refused rule set never spawns the downstream
+server and never binds a port. The refusal is all-or-nothing; a partially valid rule set is not
+partially honoured. `--approval-rules` pointing at a file that parses to `null` is now a startup
+error rather than a silently absent gate.
+
+Regression coverage: `test/smoke.mjs` **"Bonus AB"** — 18 assertions over real proxy processes, 16
+of which fail against the pre-fix code. The two that pass pre-fix are stated as such in the test
+text: the honest-rule-set control, and one payload (an invalid threshold operator) that happened to
+still gate, for which the startup refusal is the regression.
+
 ### Security — the human-approval gate could be turned off by a file swap (CWE-59 / CWE-367)
 
 **Reproduced end to end against the shipped CLI on 2026-08-12, twice, before any code changed.**

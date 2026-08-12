@@ -29,7 +29,7 @@ import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createProxyServer } from "./create-proxy-server.mjs";
-import { describeThrown } from "noa-mcp-adapter-core";
+import { describeThrown, requireValidApprovalRules } from "noa-mcp-adapter-core";
 
 import { intrinsics } from "noa-mcp-adapter-core";
 
@@ -105,6 +105,11 @@ export async function startHttpProxy(config) {
   if (typeof makeDownstreamTransport !== "function") {
     throw new Error("startHttpProxy: `makeDownstreamTransport` (a fresh-transport factory) is required");
   }
+  // A malformed rule set is refused BEFORE the listener binds, not per session. createProxyServer
+  // below would refuse every individual session anyway (it applies the identical check), but a
+  // process that binds a port and then fails every call is an operator staring at 502s; a process
+  // that never starts is an operator reading the actual reason. Same fail-closed direction, earlier.
+  if (proxyConfig.approvalRules !== undefined) requireValidApprovalRules(proxyConfig.approvalRules, "startHttpProxy: `approvalRules`");
 
   // mcpSessionId -> { transport, proxy }
   const sessions = new Map();
