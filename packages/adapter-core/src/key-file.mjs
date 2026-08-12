@@ -13,7 +13,14 @@ import { intrinsics } from "noa-receipt";
 // So the builtins are taken from the kernel's module-load capture here too, whether or not each
 // individual site is reachable today. Reachability is a property of the surrounding code, and the
 // surrounding code changes.
-const { jsonParse, jsonStringify } = intrinsics;
+const { jsonParse, jsonStringify, numToString } = intrinsics;
+
+// Captured at MODULE-EVALUATION time, before any caller-supplied value has been read: the effective
+// uid this process is allowed to trust a PRIVATE SIGNING KEY from. `null` on a platform with no
+// POSIX uid model (Windows), where the ownership test is skipped and DOCUMENTED as skipped rather
+// than silently reported as passed — O_NOFOLLOW, the regular-file test and the mode test all still
+// apply there. Same shape as config-artifact.mjs's own PROCESS_EUID capture.
+const PROCESS_EUID = typeof process.geteuid === "function" ? process.geteuid() : null;
 
 
 function createPrivateKeyFile(keyFile, record) {
@@ -75,7 +82,13 @@ export function loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel = "loadO
   // read-only open -- no worse than the pre-fix behavior on that platform, but the O_EXCL
   // create-path below stays protective everywhere Node runs, since O_EXCL's symlink refusal is
   // POSIX-universal).
-  const READONLY_NOFOLLOW = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0);
+  // O_NONBLOCK so a FIFO planted at `--key-file` cannot HANG this open. Measured 2026-08-12: with a
+  // FIFO at the path and no writer, `open(fifo, O_RDONLY)` never returned — the loader was still
+  // blocked when a 12-second cap killed it, which is a startup-stall primitive for anyone who can
+  // create a file where the key is expected. The regular-file guard below is correct but sits
+  // DOWNSTREAM of that block, so it never got to run. With O_NONBLOCK the same case returns in
+  // milliseconds and the existing guard fires and refuses. Measured no-op on a regular file.
+  const READONLY_NOFOLLOW = fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0);
 
   let fd = null;
   try {
@@ -100,6 +113,28 @@ export function loadOrCreateKeyFile({ keyFile, mintKeyPair, callerLabel = "loadO
       if (!st.isFile()) {
         throw new Error(`${callerLabel}: --key-file "${keyFile}" is not a regular file -- refusing to load a signing identity from a special file`);
       }
+      // OWNER. This loader never had one, and mode alone is NOT an owner test: `0o600 & 0o077` is
+      // 0, so a mode-0600 key file planted by a DIFFERENT uid passed every check here and a
+      // root-run proxy would adopt it as its SIGNING IDENTITY — the one secret whose entire job is
+      // to be unforgeable. Root-owned is accepted for the same reason config-artifact.mjs accepts
+      // it: a root-provisioned secret is the operator's own provisioning, not a foreign plant.
+      if (PROCESS_EUID !== null && st.uid !== PROCESS_EUID && st.uid !== 0) {
+        throw new Error(
+          `${callerLabel}: --key-file "${keyFile}" is owned by uid ${numToString(st.uid, 10)}, not by this process (uid ${numToString(PROCESS_EUID, 10)}) or root -- refusing to load a private signing identity from a file this process does not own.`,
+        );
+      }
+      // MASK — DELIBERATELY STRICTER THAN config-artifact.mjs. DO NOT CONSOLIDATE THE TWO LOADERS.
+      // This line denies on 0o077: ANY group or other bit, READ included. config-artifact.mjs's own
+      // mode test denies on 0o022 — WRITE bits only — and that is correct THERE, because a rule set
+      // others can merely read is still a usable rule set. A private key others can read is not a
+      // private key. Both loaders were run against ONE 0644 file holding a private key (2026-08-12):
+      // this loader REFUSED it, readConfigArtifact ACCEPTED it and readConfigJson handed the
+      // privateKey field straight back. So routing --key-file through
+      // readConfigJson/readConfigArtifact to "remove the duplication" would silently start accepting
+      // world-readable private keys while reading like cleanup. The duplication IS the control.
+      // The mirror of this note belongs beside config-artifact.mjs's own 0o022 mask; it is not
+      // written there in this change because that file was under concurrent edit, so whoever
+      // touches it next should carry the note across.
       if ((st.mode & 0o077) !== 0) {
         throw new Error(
           `${callerLabel}: --key-file "${keyFile}" is readable/writable by group or others (mode 0${(st.mode & 0o777).toString(8)}) -- refusing to load a private key from a loosely-permissioned file. chmod 600 it first.`,
