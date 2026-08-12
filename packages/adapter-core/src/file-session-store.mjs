@@ -322,6 +322,23 @@ function reloadAll(dir) {
       if (typeof parsed.sessionId !== "string" || parsed.sessionId.length === 0) {
         throw new Error(`createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} is missing "sessionId"`);
       }
+      // TENANT-FILE BINDING (measured 2026-08-12, not theoretical). The filename IS sha256(tenant)
+      // — tenantFilePath() above — and this module's own docstring says the hashing exists so an
+      // operator-supplied tenant string can never collide with another's. But the LINE's `tenant`
+      // field was trusted exactly as written, and nothing ever checked it against the file the line
+      // was read from. One honest line copied inside acme's own JSONL with ONLY the `tenant` field
+      // changed to "victim-corp" made victim-corp's FIRST receipt come back at seq=1 with acme's
+      // receipt hash as its prevHash: one tenant's signed chain seeded from another's.
+      // session-store.mjs's nested-map isolation argument is about MEMORY; it says nothing about
+      // what a restart reads off disk, which is where this store's whole reason to exist lives.
+      // Re-derive the path from the CLAIMED tenant and refuse any line that does not hash back to
+      // the file holding it — the same fail-closed refusal the torn-line checks above use, because
+      // a line that lies about its tenant is corruption of exactly that severity.
+      if (tenantFilePath(dir, parsed.tenant) !== filePath) {
+        throw new Error(
+          `createFileSessionStore: refusing to start — "${filePath}" line ${idx + 1} names tenant ${jsonStringify(parsed.tenant)}, which hashes to a DIFFERENT tenant file; a line may only ever name the tenant whose own file holds it (cross-tenant chain-seeding guard). Restore from backup before restarting.`,
+        );
+      }
       if (parsed.kind === "end") {
         live.delete(parsed.sessionId);
         return;
