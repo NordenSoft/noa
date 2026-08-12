@@ -132,6 +132,67 @@ test("compileApprovalRules: an ACCESSOR-backed critical field is refused WITHOUT
   assert.match(compileApprovalRules(sneakyArray).errors.join("; "), /OWN DATA element/);
 });
 
+// ── THE BRANDED HOLE (third review, 2026-08-12) ──────────────────────────────────────────────────
+// `push` performs [[Set]], and [[Set]] walks the RECEIVER'S prototype chain. The compiler built its
+// accumulators as ordinary arrays and re-rooted the finished one onto the inert prototype at the
+// END, so an accessor at `Object.prototype["0"]` swallowed the element write while `push` still
+// bumped `length`. The result was a snapshot that was branded, reported `length: 1`, and held
+// nothing:
+//
+//     branded=true  length=1  own0=false   ->  preCheck(over-threshold transfer) = ALLOW
+//
+// The realistic gadget is TIMED — poison during the compile, withdraw, then serve — because with the
+// poison left installed the policy engine DENYs earlier for unrelated reasons.
+function withIndexZeroPoisoned(fn) {
+  Object.defineProperty(Object.prototype, "0", { configurable: true, set() {}, get() { return undefined; } });
+  try {
+    return fn();
+  } finally {
+    delete Object.prototype[0];
+  }
+}
+
+test("compileApprovalRules: an accessor on Object.prototype cannot hole the snapshot while it is being filled", () => {
+  const honest = [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }];
+
+  const compiled = withIndexZeroPoisoned(() => compileApprovalRules(honest));
+  assert.equal(compiled.ok, true, "an honest rule set still compiles under the poison");
+  assert.equal(compiled.rules.length, 1);
+  assert.equal(Object.prototype.hasOwnProperty.call(compiled.rules, 0), true, "the rule LANDED — pre-fix `length` said 1 and index 0 was absent");
+  assert.equal(compiled.rules[0].id, "transfer-needs-human");
+
+  // The TIMED gadget, end to end: hole it at load, clean up, then serve.
+  const snapshot = withIndexZeroPoisoned(() => requireValidApprovalRules(honest, "--approval-rules"));
+  assert.equal(
+    matchApprovalRule(snapshot, "transfer_funds", { amountMinor: 7000 })?.id,
+    "transfer-needs-human",
+    "a snapshot compiled under the poison must still gate afterwards",
+  );
+});
+
+test("compileApprovalRules: the ERRORS container cannot be holed either — a refusal keeps its reason", () => {
+  const invalid = [{ id: "", match: { type: "regex", action: "x" } }];
+  const compiled = withIndexZeroPoisoned(() => compileApprovalRules(invalid));
+  assert.equal(compiled.ok, false);
+  assert.ok(compiled.errors.length > 0);
+  assert.notEqual(compiled.errors[0], undefined, "pre-fix the COUNT was right and the message itself had vanished");
+  assert.match(compiled.errors.join("; "), /approvalRules\[0\]/);
+});
+
+test("matchApprovalRule: a THROW while evaluating a matched rule's threshold HOLDS, never skips", () => {
+  const rules = [{ id: "big-transfer", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }];
+  const hostileInputs = {};
+  Object.defineProperty(hostileInputs, "amountMinor", { enumerable: true, configurable: true, get() { throw new Error("boom"); } });
+
+  const held = matchApprovalRule(rules, "transfer_funds", hostileInputs);
+  assert.notEqual(held, null, "pre-fix the throw was caught and the rule SKIPPED — which a caller reads as 'no approval needed'");
+  assert.equal(held?.id, "big-transfer", "the rule that matched the action is the rule that gates it");
+
+  // CONTROL: an honest `inputs` still decides both ways.
+  assert.equal(matchApprovalRule(rules, "transfer_funds", { amountMinor: 7000 })?.id, "big-transfer");
+  assert.equal(matchApprovalRule(rules, "transfer_funds", { amountMinor: 10 }), null);
+});
+
 test("compileApprovalRules: a Proxy is refused wherever it appears, and own-data scalar extras survive compilation", () => {
   const rule = { id: "r", match: { type: "exact", action: "x" } };
   assert.equal(compileApprovalRules(new Proxy([rule], {})).ok, false, "a Proxy rule SET can answer differently on every read");

@@ -6,6 +6,66 @@ consumer upgrading to `0.3.0` would see a silent version bump and no reason to h
 
 ## [Unreleased]
 
+### Security — the snapshot could be compiled as a BRANDED HOLE (a property WRITE, CWE-1321)
+
+**Reproduced against the snapshot fix below, end to end.** `compileApprovalRules` filled an ORDINARY
+array and re-rooted it onto the inert prototype only at the END. `push` performs `[[Set]]`, and
+`[[Set]]` walks the receiver's prototype chain — an ordinary array's chain ends at the mutable
+`Object.prototype`. An accessor installed at `Object.prototype["0"]` swallowed the element write
+while `push` still bumped `length`:
+
+```
+snapshot: branded=true  length=1  own0=false
+preCheck(transfer_funds 7000) -> ALLOW   (ruleFired=allow-all, approvalRuleFired=null)
+```
+
+An honest rule set, validated ok, and the transfer forwards with no human — the snapshot the gate
+reads is a hole wearing this package's own brand. The realistic gadget is TIMED: poison during the
+compile, withdraw immediately, then serve (with the poison left installed the policy engine DENYs
+earlier, thanks to earlier hardening). The refusal bookkeeping stayed accurate while the rules
+vanished, so the compiler believed it had succeeded. `errors` holed the same way, which silently
+empties the message an operator is meant to read.
+
+**Fixed** by creating both containers INERT AT CREATION (`inertArray()`, re-rooted while still empty)
+instead of re-rooting a filled one — the proven inoculation: under the identical poison the element
+lands (`own0=true`). `config-artifact.mjs`'s chunk list had the same shape and gets the same fix;
+pre-fix it holed and `Buffer.concat` threw a raw `TypeError` — the right direction by luck of that
+function's strictness, and the wrong error class for a caller catching `ConfigArtifactError`. A cheap
+landing check (count what actually arrived; refuse a snapshot with a gap) now backs the containers
+up, because a compiler that trusts its own bookkeeping over its own contents is exactly what shipped
+last time.
+
+`policy-change-guard.mjs` documented this class in its ROUND 4 note and answered it the same way;
+this is that answer applied to containers the note never reached. Neither L2 nor L8 could have caught
+it — they model dispatch as a call or a read and have **no grammar for a write**, which is why
+`approval-rules.mjs` contributes zero findings to either budget and still had a hole in it.
+
+**And the lesson, now written at the brand itself:** `isCompiledApprovalRules` certifies PROVENANCE,
+NOT CONTENT. It says "this module built this array", never "this array holds what that module
+intended". Fail-closed rests on the containers being inert from their first write, on the snapshot
+being frozen, and on compile-on-the-spot for anything unbranded. The `WeakSet` buys identity and a
+fast path — nothing more.
+
+### Security — a throw while reading a MATCHED rule's threshold skipped that rule (fail-open)
+
+`matchApprovalRule` wrapped the whole per-rule body in one `try { … } catch { continue; }`. A throw
+while reading the threshold path out of `inputs` — a hostile getter, reachable when the matcher is
+called directly rather than through `preCheck`'s flattened snapshot — therefore skipped a rule that
+had ALREADY matched the action, and a skipped rule means "no approval needed". It also contradicted
+this module's own stated doctrine (*present but ambiguous → fail-closed match*). The try is now
+split: a throw while matching the ACTION holds the whole rule set; a throw while evaluating a matched
+rule's THRESHOLD gates that rule.
+
+### Security — `applyPolicyChange` handed back the caller's live array as the new active ruleset
+
+The module's header calls `applyPolicyChange` "the ONLY function that returns a new active ruleset"
+and its enforcement "STRUCTURAL". It then returned `proposedRules` — the caller's own object.
+**Reproduced with a genuine signed approval:** `activeRules === proposed`, the over-threshold action
+`DEFERRED`, and then mutating that array after approval — no new approval, no step-up — yielded
+`ALLOW`. It already built a compiler snapshot to validate the proposal and discarded it; it returns
+that snapshot now. Two tests that asserted object identity (`res.activeRules === P_TIGHTEN`) pinned
+the defect rather than the behaviour, and are reversed in place with the reasoning beside them.
+
 ### Security — validation did not BIND to the value it validated (CWE-367 in the object graph)
 
 **Reproduced three ways against the fix below, each ending in an executed 7000-unit transfer with no

@@ -54,7 +54,10 @@ import { intrinsics } from "noa-receipt";
 // REDTEAM 2026-08-03 — the builtins come from the kernel's module-load capture on every published
 // decision path, whether or not each individual site is reachable today (see key-file.mjs's own
 // note). Reachability is a property of the surrounding code, and the surrounding code changes.
-const { jsonParse, numToString, arrayPush, bufferAlloc, bufferConcat, bufferFrom, bufSubarray, bufToString, isSafeInteger, dateNow } = intrinsics;
+const {
+  jsonParse, numToString, arrayPush, bufferAlloc, bufferConcat, bufferFrom, bufSubarray, bufToString,
+  isSafeInteger, dateNow, objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE,
+} = intrinsics;
 
 // Captured at MODULE-EVALUATION time, before any caller-supplied value has been read: the effective
 // uid this process is allowed to trust a security artifact from. `null` on a platform with no POSIX
@@ -199,7 +202,14 @@ function readAllBounded(fd, pathname, label, maxBytes) {
   // measured 1,024 returned bytes against 67,174,400 allocated — 65,600×. `maxBytes` is supposed to
   // bound what this process allocates, and a counter that is only right about the answer is not that.
   const scratch = bufferAlloc(READ_CHUNK_BYTES);
+  // INERT BEFORE THE FIRST WRITE. `push` performs `[[Set]]`, which walks the receiver's prototype
+  // chain; an ordinary array's chain ends at the mutable `Object.prototype`, where an accessor at
+  // `"0"` swallows the element while `push` still bumps `length`. Measured on this exact container
+  // in the third review: the read holed, and `Buffer.concat` then threw a raw `TypeError` — the
+  // right direction by luck of that function's strictness rather than by design, and the wrong error
+  // class for a caller catching `ConfigArtifactError`. Re-rooting while empty removes the chain.
   const chunks = [];
+  objectSetPrototypeOf(chunks, INERT_ARRAY_PROTOTYPE);
   let total = 0;
   for (;;) {
     const n = readSync(fd, scratch, 0, READ_CHUNK_BYTES, null);

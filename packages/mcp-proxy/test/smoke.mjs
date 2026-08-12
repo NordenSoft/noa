@@ -27,7 +27,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ListToolsRequestSchema, CallToolRequestSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalReceipt, recordApproved, signEd25519 } from "noa-mcp-adapter-core";
+import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalReceipt, recordApproved, signEd25519, requireValidApprovalRules } from "noa-mcp-adapter-core";
 import { b } from "./helpers/bytes.mjs";
 import { createProxyServer } from "../src/create-proxy-server.mjs";
 import { startHttpProxy } from "../src/http-server.mjs";
@@ -1422,8 +1422,32 @@ async function main() {
   ok("(ac-c) the getter was never invoked at all, so it never got a second answer", acGetterReads === 0);
   ok("(ac-c) the transfer never executed", acC.executed === 0 && !acC.downstreamStarted);
 
+  // (ac-d) THE BRANDED HOLE, end to end. `push` performs [[Set]], which walks the RECEIVER'S
+  // prototype chain; the compiler used to fill an ORDINARY array and re-root it onto the inert
+  // prototype only afterwards, so an accessor at `Object.prototype["0"]` swallowed the rule while
+  // `push` still bumped `length` — producing a snapshot that was branded, said `length: 1` and held
+  // nothing. The gadget is TIMED (poison while the rules compile, withdraw, then serve), which is
+  // also what makes it safe here: the poison is never installed while a child process is spawned.
+  const acHonestRules = [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }];
+  Object.defineProperty(Object.prototype, "0", { configurable: true, set() {}, get() { return undefined; } });
+  let acHoled;
+  let acCompileError = "";
+  try {
+    acHoled = requireValidApprovalRules(acHonestRules, "smoke:ac-d");
+  } catch (err) {
+    acCompileError = String(err?.message ?? err);
+  } finally {
+    delete Object.prototype[0];
+  }
+  ok(
+    '(ac-d) a rule set compiled while Object.prototype["0"] is poisoned is not holed (branded + length 1 + index 0 PRESENT)',
+    acCompileError === "" && acHoled !== undefined && acHoled.length === 1 && Object.prototype.hasOwnProperty.call(acHoled, 0),
+  );
+  const acD = acHoled === undefined ? { started: false, held: false, executed: 0 } : await acAttempt("d-holed", acHoled);
+  ok("(ac-d) and serving that snapshot through a real proxy still HOLDS the over-threshold transfer", acD.started && acD.held && acD.executed === 0);
+
   // (ac-control) The same real session with an honest, untouched rule set must still HOLD — the
-  // three refusals above are worth nothing if the gate has simply stopped working.
+  // refusals above are worth nothing if the gate has simply stopped working.
   const acControl = await acAttempt("control", [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }]);
   ok("(ac-control) an honest rule set still starts the proxy and still holds the transfer for a human", acControl.started && acControl.held && acControl.executed === 0);
   fs.rmSync(acDir, { recursive: true, force: true });

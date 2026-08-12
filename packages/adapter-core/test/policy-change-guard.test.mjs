@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { generateKeyPair } from "noa-receipt";
 import { preCheck } from "../src/pre-check.mjs";
+import { isCompiledApprovalRules, matchApprovalRule } from "../src/approval-rules.mjs";
 import { buildApprovalReceipt } from "../src/approval-decision.mjs";
 import { opaqueApproverId } from "../src/opaque-id.mjs";
 import {
@@ -77,7 +78,33 @@ test("§19.3: an APPROVED non-weakening change APPLIES", () => {
   assert.equal(res.ok, true);
   assert.equal(res.changed, true);
   assert.equal(res.weakens, false);
-  assert.equal(res.activeRules, P_TIGHTEN, "on success the applicator returns the proposed ruleset to persist");
+  // ⚠ THIS ASSERTION WAS REVERSED ON 2026-08-12 (third review), and the old one is written out here
+  // rather than deleted. It used to be `assert.equal(res.activeRules, P_TIGHTEN)` — object IDENTITY
+  // with the caller's proposal — which pinned the defect rather than the behaviour: MEASURED with a
+  // genuine signed approval, mutating that same array AFTER approval (no new approval, no step-up)
+  // turned a DEFERRED action into ALLOW. This function's own header calls its enforcement
+  // "STRUCTURAL", and handing back a live object anyone can rewrite is not structural.
+  assert.notEqual(res.activeRules, P_TIGHTEN, "the applicator must NOT hand back the caller's live array");
+  assert.ok(isCompiledApprovalRules(res.activeRules), "it returns the compiled, inert snapshot it already built while validating the proposal");
+  assert.ok(Object.isFrozen(res.activeRules), "and that snapshot is frozen, so an approved policy cannot be edited after approval");
+  assert.equal(res.activeRules.length, P_TIGHTEN.length);
+  assert.equal(res.activeRules[0].id, P_TIGHTEN[0].id, "same rules, by content");
+});
+
+test("§19.3: an APPLIED policy cannot be re-aimed by mutating the array that was approved", () => {
+  const { allowed, approverKeyring } = mintPolicyApproval(C, P_TIGHTEN, "apply-mutate");
+  const proposed = P_TIGHTEN.map((r) => ({ ...r, match: { ...r.match }, ...(r.threshold ? { threshold: { ...r.threshold } } : {}) }));
+  const res = applyPolicyChange({ currentRules: C, proposedRules: proposed, approval: allowed, approverKeyring });
+  assert.equal(res.ok, true);
+
+  const gatedBefore = matchApprovalRule(res.activeRules, "payment.refund", { amountMinor: 5000 });
+  // The measured attack: rewrite the approved proposal afterwards. No new approval, no step-up.
+  proposed[0].match.action = "something-else";
+  if (proposed[0].threshold) proposed[0].threshold.value = 999_999_999;
+  const gatedAfter = matchApprovalRule(res.activeRules, "payment.refund", { amountMinor: 5000 });
+
+  assert.equal(gatedBefore?.id, gatedAfter?.id, "the applied ruleset must not move when the proposal it came from is rewritten");
+  assert.notEqual(gatedAfter, null, "and it must still gate the action it was approved to gate");
 });
 
 test("§19.3: a WEAKENING change needs BOTH approval AND step-up (D4) — approval alone is refused", () => {
@@ -91,7 +118,12 @@ test("§19.3: a WEAKENING change needs BOTH approval AND step-up (D4) — approv
   const withStep = applyPolicyChange({ currentRules: C, proposedRules: P_WEAKEN, approval: allowed, approverKeyring, stepUpVerified: true });
   assert.equal(withStep.ok, true);
   assert.equal(withStep.weakens, true);
-  assert.equal(withStep.activeRules, P_WEAKEN);
+  // Reversed for the same reason as the assertion above: identity with the caller's array WAS the
+  // defect. Content equality, not object identity, is what this test is actually about.
+  assert.notEqual(withStep.activeRules, P_WEAKEN, "the applicator returns its own inert snapshot, never the caller's array");
+  assert.ok(isCompiledApprovalRules(withStep.activeRules));
+  assert.equal(withStep.activeRules.length, P_WEAKEN.length);
+  assert.equal(withStep.activeRules[0].id, P_WEAKEN[0].id);
 });
 
 test("§19.3 BINDING: an approval minted for a DIFFERENT diff cannot be replayed onto another change", () => {

@@ -43,6 +43,17 @@ regression. (An earlier draft of this entry called all 18 "over real proxy proce
 place: an evidence count that overstates its own instrument is the one error this file cannot
 afford.)
 
+### Security — the compiled snapshot could be holed while it was being built
+
+A third review poisoned `Object.prototype["0"]` while the rule set compiled. `push` performs
+`[[Set]]`, which walks the receiver's prototype chain, so the accessor swallowed the rule while
+`push` still bumped `length` — producing a snapshot that was branded, reported `length: 1` and held
+nothing. Served through this proxy, the over-threshold transfer forwarded with no human. The gadget
+is timed: poison during the compile, withdraw, then serve. Fixed in `noa-mcp-adapter-core` (both
+compiler containers are now inert from their first write); pinned here by `test/smoke.mjs` "Bonus AC"
+(ac-d) — two assertions, both failing against the previous commit, the second one end to end through
+a real downstream child process.
+
 ### Security — the VALIDATED rule set was not the rule set that got USED
 
 **Reproduced against the fix above, three separate ways, each ending in an executed 7000-unit

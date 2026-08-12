@@ -1117,8 +1117,10 @@ const LINTS = [
   // above: the approval-rule compiler reads every field through captured wrappers
   // (`getOwnPropertyDescriptor`, `setHas`, `arrayLength`, `objectFreeze`) instead of dispatching on
   // the caller's object, and the hand-rolled validator it replaced is gone.
+  // RATCHETED 146 -> 145 later the same day: `policy-change-guard.mjs`'s refusal message stopped
+  // calling `.join` on a live array and now goes through the captured `arrayJoin`.
   { id: "L8-adapter-core", name: "L8 dispatch-surface AST gate on adapter-core decision paths",
-    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 146 },
+    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 145 },
   { id: "L8-mcp-proxy", name: "L8 dispatch-surface AST gate on mcp-proxy decision paths",
     run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 49 },
   // 212 -> 97 when the package was enrolled, then 97 -> 95 in the round-2 fix commit. The

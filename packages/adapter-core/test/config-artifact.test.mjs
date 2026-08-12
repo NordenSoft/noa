@@ -169,6 +169,33 @@ test("readConfigArtifact: a multi-chunk file round-trips byte-for-byte, includin
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test("readConfigArtifact: an accessor on Object.prototype cannot hole the chunk list mid-read", () => {
+  // Same class as the approval-rule snapshot: `push` performs [[Set]], which walks the receiver's
+  // prototype chain, and an ordinary array's chain ends at the mutable `Object.prototype`. Pre-fix
+  // the chunk list holed and `Buffer.concat` threw a raw TypeError — the right direction by luck of
+  // that function's strictness rather than by design, and the wrong error class for a caller
+  // catching ConfigArtifactError.
+  const dir = tmpDir("holed-chunks");
+  const file = path.join(dir, "rules.json");
+  const content = `${"a".repeat(70000)}日本語${"b".repeat(1000)}`;
+  fs.writeFileSync(file, content, { mode: 0o600 });
+
+  Object.defineProperty(Object.prototype, "0", { configurable: true, set() {}, get() { return undefined; } });
+  let read;
+  let threw = null;
+  try {
+    read = readConfigArtifact(file, { label: "rules", required: true });
+  } catch (err) {
+    threw = err;
+  } finally {
+    delete Object.prototype[0];
+  }
+
+  assert.equal(threw, null, `the read must not throw under the poison (threw ${threw === null ? "nothing" : String(threw && threw.name)})`);
+  assert.equal(read, content, "and it must return the file byte-for-byte, not a hole");
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test("readConfigArtifact: an oversized file is refused before a byte of it is read, and an empty file is still an empty string", () => {
   const dir = tmpDir("cap");
   const big = path.join(dir, "big.json");

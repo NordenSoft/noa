@@ -78,6 +78,11 @@ line could state that would be true in both places — which is the argument for
   null-prototype). Keeping your own object instead keeps the bug — a rule set mutated after
   validation, a `threshold` inherited from a prototype, and a `match` getter answering differently on
   its second read each executed the same unapproved transfer through a real proxy before this landed.
+  `isCompiledApprovalRules` reports **provenance, not content** — it says this package built the
+  array, never that the array holds what the compiler intended. A branded snapshot with a HOLE in it
+  was measured (an accessor on `Object.prototype["0"]` swallowing element writes while `push` bumped
+  `length`), so the fail-closed property rests on the compiler's containers being inert from their
+  first write, on the snapshot being frozen, and on compiling anything unbranded on the spot.
 - `matchApprovalRule(rules, actionId, inputs)` reads a snapshot, or compiles one on the spot, and
   **HOLDS the action** (returning the `approval-rules-unusable` rule) for any rule set it cannot
   compile — `undefined`/`null` still mean "no approval rules configured" and still match nothing.

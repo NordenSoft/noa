@@ -17,7 +17,8 @@
  *   - canonicalParamsHash (pre-check.mjs) so the diff hash here is byte-identical to the paramsHash
  *     preCheck independently computes for a `{ name:"noa.policy.update", args:<diff> }` tool call;
  *   - verifyApprovalReceipt (approval-decision.mjs) for the fail-closed, action-bound authenticity check;
- *   - validateApprovalRules (approval-rules.mjs) to refuse an invalid proposed policy outright.
+ *   - compileApprovalRules (approval-rules.mjs) to refuse an invalid proposed policy outright AND to
+ *     produce the inert snapshot this function hands back as the new active rule set.
  *
  * Deferred (documented follow-ups, NOT in this slice): §19.2 PWA settings surface, §19.4 enterprise
  * floor, §19.5 learning/shadow suggestions. Step-up (D4) is enforced here as a caller-asserted
@@ -26,7 +27,7 @@
  */
 import { canonicalParamsHash } from "./pre-check.mjs";
 import { verifyApprovalReceipt } from "./approval-decision.mjs";
-import { validateApprovalRules } from "./approval-rules.mjs";
+import { compileApprovalRules } from "./approval-rules.mjs";
 import { describeThrown } from "./safe-throw.mjs";
 import { intrinsics } from "noa-receipt";
 
@@ -61,7 +62,7 @@ import { intrinsics } from "noa-receipt";
 //
 // The fix is structural, not another captured name: a null-prototype object has no chain to walk, so
 // `[[Set]]` cannot be intercepted at all. Same reason the kernel gives arrays an inert prototype.
-const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap, arraySort, arrayPush, objectKeys, objectCreateNull, objectSetPrototypeOf, strStartsWith, strEndsWith, mapHas, mapGet } = intrinsics;
+const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap, arraySort, arrayPush, arrayJoin, objectKeys, objectCreateNull, objectSetPrototypeOf, strStartsWith, strEndsWith, mapHas, mapGet } = intrinsics;
 // ROUND 4 / R4-06, R4-07. The remaining live reads on this file's decision paths: `Set.prototype.has`
 // deciding whether an event name is known (a poisoned `has` admits a line the loader must refuse),
 // `Map.prototype.has/get` deciding which rules were added, removed or modified, and
@@ -262,16 +263,25 @@ export function buildPolicyChangeRequest(currentRules, proposedRules) {
  */
 export function applyPolicyChange({ currentRules, proposedRules, approval = null, approverKeyring, identityManifest, expectedChain, stepUpVerified = false } = {}) {
   try {
-    const validity = validateApprovalRules(proposedRules);
-    if (!validity.ok) {
-      return { ok: false, code: "invalid-policy", changed: false, reason: `proposed policy is invalid: ${validity.errors.join("; ")}`, errors: validity.errors };
+    // ── `activeRules` IS A SNAPSHOT, NOT THE CALLER'S ARRAY (third review, 2026-08-12) ────────────
+    // This function's own header calls itself "the ONLY function that returns a new active ruleset"
+    // and its enforcement "STRUCTURAL". It then handed back `proposedRules` — the caller's live
+    // object — so a consumer installing the result held something anyone could rewrite afterwards.
+    // MEASURED with a genuine signed approval: `activeRules === proposed` was true, the over-
+    // threshold action was DEFERRED, and mutating that array after approval (no new approval, no
+    // step-up) turned the same action into ALLOW. The compiler was already being run here and its
+    // snapshot thrown away; it is returned now. Same rule as everywhere else in this package: do not
+    // hand out a live object a decision will later be taken from.
+    const compiled = compileApprovalRules(proposedRules === undefined || proposedRules === null ? [] : proposedRules);
+    if (!compiled.ok) {
+      return { ok: false, code: "invalid-policy", changed: false, reason: `proposed policy is invalid: ${arrayJoin(compiled.errors, "; ")}`, errors: compiled.errors };
     }
 
     const request = buildPolicyChangeRequest(currentRules, proposedRules);
 
     if (!request.changed) {
       // Re-applying an identical policy is not a mutation; nothing to approve.
-      return { ok: true, changed: false, weakens: false, activeRules: isArray(proposedRules) ? proposedRules : [], request };
+      return { ok: true, changed: false, weakens: false, activeRules: compiled.rules, request };
     }
 
     // FAIL-CLOSED: a real change requires a verified human approval bound to THIS exact diff.
@@ -306,7 +316,7 @@ export function applyPolicyChange({ currentRules, proposedRules, approval = null
       };
     }
 
-    return { ok: true, changed: true, weakens: request.weakens, activeRules: proposedRules, request, approvalReceiptId: approval && typeof approval === "object" ? approval.id ?? null : null };
+    return { ok: true, changed: true, weakens: request.weakens, activeRules: compiled.rules, request, approvalReceiptId: approval && typeof approval === "object" ? approval.id ?? null : null };
   } catch (err) {
     // The applicator must be fail-closed even on an unexpected internal throw — never apply on error.
     return { ok: false, code: "guard-threw", changed: false, reason: `policy-change guard failed closed (${describeThrown(err)})` };

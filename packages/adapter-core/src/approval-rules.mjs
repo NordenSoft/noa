@@ -105,6 +105,33 @@ function isPlainRecord(v) {
   return v !== null && typeof v === "object" && !isArray(v) && !isProxy(v);
 }
 
+// ── A CONTAINER MUST BE INERT BEFORE ITS FIRST WRITE, NOT AFTER ITS LAST ──────────────────────────
+// MEASURED, third review, 2026-08-12: this module built its accumulators as ORDINARY arrays and
+// re-rooted the finished one onto the inert prototype at the END. `push` performs `[[Set]]`, and
+// `[[Set]]` WALKS THE RECEIVER'S PROTOTYPE CHAIN — which, for an ordinary array, ends at the mutable
+// `Object.prototype`. An accessor installed at `Object.prototype["0"]` SWALLOWS the element write
+// while `push` still bumps `length`:
+//
+//     snapshot: branded=true  length=1  own0=false     <- a HOLE wearing this module's own brand
+//     preCheck(over-threshold transfer) -> ALLOW  (approvalRuleFired: null)
+//
+// The realistic gadget is TIMED: poison during the compile, withdraw immediately, then serve. The
+// refusal bookkeeping stayed accurate while the rules themselves vanished, so the compiler believed
+// it had succeeded — the worst possible split. `errors` holed the same way, which silently empties
+// the message an operator is supposed to read.
+//
+// `policy-change-guard.mjs` documented this exact class in its ROUND 4 note and answered it the same
+// way; this is that answer applied to a container that note never reached. L2 and L8 cannot help
+// here — they model dispatch as a call or a read and have NO GRAMMAR FOR A WRITE, which is why this
+// file contributes zero findings to either budget and still had a hole in it.
+function inertArray() {
+  // Re-rooted while still EMPTY: no element has been written yet, so no `[[Set]]` has walked the
+  // ordinary chain. Every push after this line resolves against a frozen, null-rooted prototype.
+  const a = [];
+  objectSetPrototypeOf(a, INERT_ARRAY_PROTOTYPE);
+  return a;
+}
+
 /** Reads a REQUIRED own-data field, recording a precise error when it is anything else. */
 function requiredOwnField(obj, key, where, errors) {
   const f = readOwnField(obj, key);
@@ -208,12 +235,16 @@ function compileRule(raw, idx, errors) {
  * — is what every decision below reads.
  */
 export function compileApprovalRules(approvalRules) {
-  const errors = [];
+  // BOTH containers are inert from their first write — see inertArray's note. `errors` is not
+  // cosmetic: a holed error list is a refusal whose reason has gone missing.
+  const errors = inertArray();
   if (!isArray(approvalRules) || isProxy(approvalRules)) {
-    return { ok: false, errors: ["approvalRules: must be an array"], rules: null };
+    arrayPush(errors, "approvalRules: must be an array");
+    return { ok: false, errors, rules: null };
   }
-  const compiledRules = [];
+  const compiledRules = inertArray();
   const seenIds = newSet();
+  let ruleCount = 0;
   const n = arrayLength(approvalRules);
   for (let i = 0; i < n; i += 1) {
     // Even the ELEMENTS are read as own data properties: `Object.defineProperty(rules, 0, {get(){…}})`
@@ -231,18 +262,44 @@ export function compileApprovalRules(approvalRules) {
     }
     setAdd(seenIds, rule.id);
     arrayPush(compiledRules, rule);
+    // Counted in a local NUMBER, not read back off the container: the container is the thing being
+    // checked, so its own `length` cannot be the witness that it is intact.
+    ruleCount += 1;
   }
   if (arrayLength(errors) !== 0) return { ok: false, errors, rules: null };
-  // Re-rooted onto the kernel's inert array prototype and frozen: nothing the caller (or a poisoned
-  // `Array.prototype`) does afterwards can change what this snapshot says.
-  objectSetPrototypeOf(compiledRules, INERT_ARRAY_PROTOTYPE);
+  // ONE LAST CHECK, and it exists because the brand cannot make it for us: count what actually
+  // LANDED. A container that was inert from its first write cannot be holed by a prototype accessor,
+  // so this is belt-and-braces — but the failure it guards against reported `length: 1` with no
+  // element at index 0, and a compiler that trusts its own bookkeeping over its own contents is
+  // exactly what shipped last round. Cheap, total, and it fails closed.
+  if (arrayLength(compiledRules) !== ruleCount) {
+    arrayPush(errors, `approvalRules: ${numToString(ruleCount, 10)} rules compiled but ${numToString(arrayLength(compiledRules), 10)} landed in the snapshot — refusing a rule set this process cannot hold intact`);
+    return { ok: false, errors, rules: null };
+  }
+  for (let i = 0; i < ruleCount; i += 1) {
+    if (!hasOwn(compiledRules, i)) {
+      arrayPush(errors, `approvalRules[${numToString(i, 10)}]: compiled but absent from the snapshot — refusing a rule set with a hole in it`);
+      return { ok: false, errors, rules: null };
+    }
+  }
   objectFreeze(compiledRules);
   weakSetAdd(COMPILED_RULE_SETS, compiledRules);
-  return { ok: true, errors: [], rules: compiledRules };
+  return { ok: true, errors: inertArray(), rules: compiledRules };
 }
 
-/** True only for a snapshot THIS module compiled. The brand is a module-private WeakSet, so it
- *  cannot be forged by a caller and cannot be copied onto a look-alike object. */
+/**
+ * True only for a snapshot THIS module compiled. The brand is a module-private WeakSet, so it cannot
+ * be forged by a caller, cannot be copied onto a look-alike object, and does not survive
+ * `structuredClone`.
+ *
+ * ⚠ READ THIS BEFORE RELYING ON IT: THE BRAND CERTIFIES PROVENANCE, NOT CONTENT. It says "this
+ * module built this array", never "this array contains what that module intended". A branded object
+ * with a hole in it was MEASURED (third review, 2026-08-12) — `branded: true, length: 1, own0:
+ * false` — and it forwarded an over-threshold transfer with no human. The fail-closed property rests
+ * on the containers being inert from their first write, on the snapshot being frozen, and on
+ * compile-on-the-spot for anything unbranded. The WeakSet buys identity and a fast path. Nothing
+ * more.
+ */
 export function isCompiledApprovalRules(value) {
   return value !== null && typeof value === "object" && weakSetHas(COMPILED_RULE_SETS, value);
 }
@@ -397,11 +454,18 @@ export function matchApprovalRule(approvalRules, actionId, inputs) {
 function matchCompiled(approvalRules, actionId, inputs) {
   for (let ri = 0; ri < arrayLength(approvalRules); ri += 1) {
     const rule = approvalRules[ri];
+    // ── WHY THE TRY IS SPLIT IN TWO (third review, 2026-08-12) ───────────────────────────────────
+    // It used to be ONE try around the whole per-rule body with `catch { continue; }`. That is
+    // fail-OPEN for the second half: a throw while reading the threshold path out of `inputs` (a
+    // hostile getter, reachable when this function is called directly rather than through preCheck's
+    // flattened snapshot) SKIPPED the rule, and a skipped rule means "no approval needed". It also
+    // contradicted this file's own stated doctrine two paragraphs up — present but ambiguous means
+    // GATE IT. A throw is maximal ambiguity, so it now gates.
+    let actionMatches = false;
     try {
       if (!rule || typeof rule !== "object") continue;
       const m = rule.match;
       if (!m || typeof m !== "object") continue;
-      let actionMatches = false;
       if (m.type === "exact") actionMatches = actionId === m.action;
       else if (m.type === "prefix") actionMatches = typeof actionId === "string" && strStartsWith(actionId, m.action);
       // "suffix" gates by the trailing segment of an action id (e.g. ".delete" catches "db.delete",
@@ -409,8 +473,14 @@ function matchCompiled(approvalRules, actionId, inputs) {
       // must gate destructive verbs that are named as suffixes across integrations. Backward-compatible:
       // no pre-existing rule uses this type, so exact/prefix behavior is byte-identical.
       else if (m.type === "suffix") actionMatches = typeof actionId === "string" && strEndsWith(actionId, m.action);
-      if (!actionMatches) continue;
+    } catch {
+      // Unreachable over a snapshot (every field is own data on a frozen null-prototype record). If
+      // it ever happens, the rule set is not one this process can read — hold, never skip.
+      return UNUSABLE_RULE_SET;
+    }
+    if (!actionMatches) continue;
 
+    try {
       if (rule.threshold === undefined) return rule;
 
       const t = rule.threshold;
@@ -424,7 +494,10 @@ function matchCompiled(approvalRules, actionId, inputs) {
       }
       return rule; // present but ambiguous type -> fail-closed match
     } catch {
-      continue;
+      // THE RULE ALREADY MATCHED THE ACTION and only its threshold could not be evaluated — a
+      // throwing getter on `inputs[t.path]`, say. Skipping here was fail-open: it forwarded an
+      // action a matching rule had claimed. Gate it, exactly as an ambiguous VALUE is gated.
+      return rule;
     }
   }
   return null;
