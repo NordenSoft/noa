@@ -107,10 +107,21 @@ test("loadOrCreateKeyFile: a --key-file whose owner is not this process's euid (
   const ownerUid = statSync(keyFile).uid;
   const foreignEuid = ownerUid + 4242; // never the owner, and never 0
 
-  const refused = await runLoader([keyFile, "--euid", String(foreignEuid)]);
-  assert.equal(refused.code, 3, `the loader must refuse a foreign-owned key file; got code=${refused.code} stdout=${JSON.stringify(refused.stdout)}`);
-  assert.match(refused.stdout, /owned by uid/, "and say plainly that ownership, not permissions, is the reason");
-  assert.ok(!refused.stdout.includes("planted-kid"), "the planted identity must never be adopted");
+  // ROOT-RUN CI: the guard accepts a ROOT-OWNED key file by design (`st.uid !== 0`), so when the
+  // suite runs as root the file this test just wrote IS root-owned and the refusal half is
+  // CORRECTLY not reachable — asserting it there would go red against a correct implementation,
+  // which is the opposite of what a test is for. Containers commonly run as root, so skip that half
+  // explicitly rather than let it fail somewhere nobody is watching. The positive control below
+  // still runs everywhere.
+  const runningAsRoot = typeof process.geteuid === "function" && process.geteuid() === 0;
+  if (runningAsRoot) {
+    console.log("  (skipping the refusal half: running as root, where a root-owned key file is accepted by design)");
+  } else {
+    const refused = await runLoader([keyFile, "--euid", String(foreignEuid)]);
+    assert.equal(refused.code, 3, `the loader must refuse a foreign-owned key file; got code=${refused.code} stdout=${JSON.stringify(refused.stdout)}`);
+    assert.match(refused.stdout, /owned by uid/, "and say plainly that ownership, not permissions, is the reason");
+    assert.ok(!refused.stdout.includes("planted-kid"), "the planted identity must never be adopted");
+  }
 
   // POSITIVE CONTROL — the same 0600 file, with this process's real euid, must still load. Without
   // this the test above would also pass if the guard simply refused everything.
