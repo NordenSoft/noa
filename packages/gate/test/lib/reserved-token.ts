@@ -8,9 +8,9 @@
  * that was a per-line text match, and it stated its own limit honestly — "a computed
  * `HUMAN_ + APPROVED` would pass. That is accepted."
  *
- * It was not one hole. Measured against the retired matcher, TWENTY-SEVEN distinct emissions passed
- * it green — each one executed and observed returning the token — plus six conditions it could not
- * detect at all. Five classes:
+ * It was not one hole. Measured against the retired matcher, THIRTY-SEVEN distinct emissions passed
+ * it green — each one executed and observed returning the token — plus ten conditions it could not
+ * detect at all. Six classes:
  *
  *   A. the same string spelled differently — `'…'`, `` `…` ``, `"HUMAN_" + "APPROVED"`,
  *      `"HUMAN_APPROVED"`, `"\x48UMAN_APPROVED"`, `String.fromCharCode(…)`,
@@ -24,27 +24,36 @@
  *      `reasons.json` next to the code compiles under this package's own `resolveJsonModule`,
  *      SHIPS in `dist/src`, returns the token at runtime, and was invisible.
  *   E. a file it could not read as code passed by default, because nothing ever parsed it.
+ *   G. THE MATERIAL SPLIT ACROSS EXPRESSION TREES — found by an independent review of the FIRST
+ *      rebuild of this file, not of the regex. Ten constant-only programs assembled the token from
+ *      pieces sitting in different statements or different modules: a user-defined `join2(HEAD,
+ *      TAIL)`, a `default` export, a class field plus a getter, `Object.fromEntries`, a symbol key,
+ *      a regex `.replace`. Every one scored zero.
  *
- * The common root cause is that a text scan cannot answer the question the rule asks. The rule is
- * about VALUES; text is not values. So this module parses each file with the TypeScript compiler
- * API — already a dependency, nothing new installed — and constant-folds every value-position
- * expression. A concatenation, a template, an escape, a constant, an enum member, a map entry, a
- * re-export chain and a decoded blob all reduce to the same answer: the string this expression
- * produces.
+ * The common root cause of A-E is that a text scan cannot answer the question the rule asks. The
+ * rule is about VALUES; text is not values. So this module parses each file with the TypeScript
+ * compiler API — already a dependency, nothing new installed — and constant-folds every
+ * value-position expression. A concatenation, a template, an escape, a constant, an enum member, a
+ * map entry, a re-export chain, a call into a function it can read, and a decoded blob all reduce to
+ * the same answer: the string this expression produces.
+ *
+ * The root cause of G is different and worth stating on its own, because the first rebuild committed
+ * it while fixing A-E: UNRESOLVED MUST NOT MEAN CLEAN. An expression the fold cannot reduce is not
+ * evidence that no token is there.
  *
  * ─── THE PROPERTY THAT MAKES IT A CONTROL ───────────────────────────────────────────────────────
  *
  * A FILE THIS MODULE CANNOT ANALYSE IS A FINDING, NEVER A PASS. That is the whole difference from
  * the scanner it replaces. A file that does not parse, a file in a form it has no reader for, a
- * dangling symlink, a symlink cycle, a missing root — each one FAILS. A control that quietly skips
- * what it does not understand grades itself on the subset it happens to handle.
+ * dangling symlink, a symlink cycle, a root that contributes nothing, a missing root, a module
+ * specifier that is not constant — each one FAILS. A control that quietly skips what it does not
+ * understand grades itself on the subset it happens to handle.
  *
  * Folding is necessarily incomplete — no static pass decides what an arbitrary program computes. So
- * the incompleteness is bounded rather than ignored: when an expression cannot be folded, the
- * subtree is checked for TOKEN MATERIAL (fragments of the token, an ordered concatenation of its
- * literals, char codes, or a base64/hex blob that decodes to it) and a hit is a finding. What
- * remains open after that is stated in `KNOWN LIMITS` at the bottom of this file rather than
- * implied.
+ * the incompleteness is bounded at the level the material lives rather than at the level of one
+ * expression: for any module where the fold gave up, every constant that module and its imports can
+ * reach is pooled, and the token being BUILDABLE from that pool is a finding. What remains open
+ * after that is stated in `KNOWN LIMITS` at the bottom of this file rather than implied.
  */
 
 import ts from "typescript";
@@ -98,6 +107,63 @@ export type Val =
 
 const UNKNOWN = (why: string): Val => ({ k: "unknown", why });
 const STR = (v: string): Val => ({ k: "str", v });
+
+/**
+ * Every constant string a folded value can hand out — including object KEYS, which are strings the
+ * program owns just as much as its values, and including the utf-8 reading of a decoded blob.
+ */
+function harvest(v: Val, into: Set<string>, depth = 0): void {
+  if (depth > 12) return;
+  if (v.k === "str") { if (v.v.length > 0) into.add(v.v); return; }
+  if (v.k === "bytes") {
+    const text = Buffer.from(v.v).toString("utf8");
+    if (text.length > 0) into.add(text);
+    return;
+  }
+  if (v.k === "arr" || v.k === "oneof") {
+    for (let i = 0; i < v.v.length; i++) harvest(v.v[i] as Val, into, depth + 1);
+    return;
+  }
+  if (v.k === "obj") {
+    for (let i = 0; i < v.v.length; i++) {
+      const e = v.v[i] as readonly [string, Val];
+      if (e[0].length > 0) into.add(e[0]);
+      harvest(e[1], into, depth + 1);
+    }
+  }
+}
+
+/**
+ * Can `token` be built by concatenating pieces drawn from `pool`? Returns the pieces, or undefined.
+ *
+ * This is the question the old subtree tripwire could not ask. It looked for token material INSIDE
+ * one expression, so splitting the material across two statements — or two modules — starved it.
+ * Segmentation asks the question at the level the material actually lives: what strings does this
+ * module, and everything it imports, have on hand.
+ */
+function segmentation(token: string, pool: ReadonlySet<string>): string[] | undefined {
+  const from: Array<[number, string] | null> = new Array(token.length + 1).fill(null);
+  const reachable = new Array<boolean>(token.length + 1).fill(false);
+  reachable[0] = true;
+  for (let i = 0; i < token.length; i++) {
+    if (!reachable[i]) continue;
+    for (let j = i + 1; j <= token.length; j++) {
+      const piece = token.slice(i, j);
+      if (!pool.has(piece) || reachable[j]) continue;
+      reachable[j] = true;
+      from[j] = [i, piece];
+    }
+  }
+  if (!reachable[token.length]) return undefined;
+  const out: string[] = [];
+  for (let k = token.length; k > 0;) {
+    const step = from[k];
+    if (!step) return undefined;
+    out.unshift(step[1]);
+    k = step[0];
+  }
+  return out;
+}
 
 /** Every value this expression can take, flattened. `oneof` nests while folding a `?:` of a `||`. */
 function candidates(v: Val, out: Val[] = []): Val[] {
@@ -171,7 +237,6 @@ function enumerate(roots: readonly string[], rel: (p: string) => string): Enumer
   };
 
   const walk = (dir: string): void => {
-    // A symlink cycle would otherwise recurse until the stack dies with an unrelated error.
     let real: string;
     try {
       real = realpathSync(dir);
@@ -179,7 +244,18 @@ function enumerate(roots: readonly string[], rel: (p: string) => string): Enumer
       push(dir, "E-UNREADABLE", `directory could not be resolved (${String(e)}); it is not analysed`);
       return;
     }
-    if (seenDirs.has(real)) return;
+    if (seenDirs.has(real)) {
+      // ⚠ THIS WAS A SILENT `return`, AND THAT MADE THE FAIL-CLOSED CLAIM FALSE. A directory reached
+      // twice in a tree walk means a link aliases it, and stopping there is correct — but stopping
+      // QUIETLY meant a source root consisting of a self-referential symlink reported zero files and
+      // zero findings, which is this control's own forbidden state: "not analysable" and "clean"
+      // sharing an exit code.
+      push(dir, "E-SYMLINK-CYCLE",
+        `this directory resolves to ${rel(real)}, which the walk has already entered. A link aliases ` +
+        "part of the tree; the walk stops here rather than looping, and says so rather than " +
+        "reporting a clean subtree it never read.");
+      return;
+    }
     seenDirs.add(real);
 
     let entries: string[];
@@ -244,7 +320,19 @@ function enumerate(roots: readonly string[], rel: (p: string) => string): Enumer
       push(root, "E-MISSING-ROOT", "root is not a directory");
       continue;
     }
+    const before = files.length;
     walk(root);
+    if (files.length === before) {
+      // ⚠ A ROOT THAT CONTRIBUTES NOTHING IS THE FORBIDDEN STATE. An empty directory, a directory
+      // whose whole content sat behind a symlink loop, and a directory named `a.ts` that happens to
+      // be a directory all reported zero files and zero findings — indistinguishable from a root
+      // that was read and found clean. The aggregate file-count floor in the test did not catch it
+      // either: adding one empty root to eleven healthy ones left every threshold satisfied.
+      push(root, "E-EMPTY-ROOT",
+        "this root contributed ZERO analysable files. Whether it is empty, unreadable or aliased " +
+        "away by a link, nothing here was read — and a control may not report a root it never read " +
+        "as clean. If the root is genuinely obsolete, stop claiming it.");
+    }
   }
   return { files, findings };
 }
@@ -252,6 +340,9 @@ function enumerate(roots: readonly string[], rel: (p: string) => string): Enumer
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 // MODULE MODEL
 // ────────────────────────────────────────────────────────────────────────────────────────────────
+
+/** The function shapes this control will evaluate at a call site. */
+type InlinableFn = ts.FunctionDeclaration | ts.ArrowFunction | ts.FunctionExpression;
 
 interface Mod {
   readonly file: string;
@@ -269,6 +360,10 @@ interface Mod {
   readonly reexports: Map<string, { spec: string; imported: string }>;
   /** `export * from "./x"` specifiers. */
   readonly starReexports: string[];
+  /** `export default <expr>` — the expression, when there is one. */
+  defaultExport?: ts.Expression;
+  /** Top-level function/arrow declarations simple enough to inline; see `inlineCall`. */
+  readonly fns: Map<string, InlinableFn>;
 }
 
 /**
@@ -340,7 +435,7 @@ function buildMod(file: string): { mod: Mod } | { error: string } {
   }
   const empty = (): Mod => ({
     file, kind: "code", binds: new Map(), enums: new Map(), imports: new Map(),
-    exportAlias: new Map(), reexports: new Map(), starReexports: [],
+    exportAlias: new Map(), reexports: new Map(), starReexports: [], fns: new Map(),
   });
 
   if (DATA_EXT.has(extname(file).toLowerCase())) {
@@ -360,8 +455,22 @@ function buildMod(file: string): { mod: Mod } | { error: string } {
   for (const st of p.sf.statements) {
     if (ts.isVariableStatement(st)) {
       for (const d of st.declarationList.declarations) {
-        if (ts.isIdentifier(d.name) && d.initializer) mod.binds.set(d.name.text, d.initializer);
+        if (!ts.isIdentifier(d.name) || !d.initializer) continue;
+        mod.binds.set(d.name.text, d.initializer);
+        // `const j = (a, b) => a + b` is the same inlinable thing as a function declaration.
+        const init = d.initializer;
+        if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) mod.fns.set(d.name.text, init);
       }
+      continue;
+    }
+    if (ts.isFunctionDeclaration(st) && st.name) {
+      mod.fns.set(st.name.text, st);
+      continue;
+    }
+    // `export default <expr>`. Resolving this is what closes the default-import hole; a
+    // `export default function/class` has no constant value and is deliberately not recorded.
+    if (ts.isExportAssignment(st) && !st.isExportEquals) {
+      mod.defaultExport = st.expression;
       continue;
     }
     if (ts.isEnumDeclaration(st)) {
@@ -419,6 +528,12 @@ class Analyzer {
   readonly findings: Finding[] = [];
   /** Package name -> that package's `src` directory, for bare first-party specifiers. */
   private readonly pkgRoots = new Map<string, string>();
+  /** file -> every constant string that module can produce. The material rule's input. */
+  private readonly pools = new Map<string, Set<string>>();
+  /** file -> the expressions the fold gave up on. Silence here is what the material rule answers. */
+  private readonly unresolved = new Map<string, Array<{ node: ts.Node; why: string }>>();
+  /** file -> every numeric literal in it, for the char-code arm. */
+  private readonly numbers = new Map<string, number[]>();
 
   constructor(opts: AnalyzeOptions) {
     this.token = opts.token ?? RESERVED_TOKEN;
@@ -538,13 +653,90 @@ class Analyzer {
     if (!target) return undefined;
     const tmod = this.load(target);
     if ("error" in tmod) return undefined;
-    if (imported === "*" || imported === "default") return undefined; // handled by the caller
+    if (imported === "*") return undefined; // namespaces are handled by foldNamespaceMember
+    // ⚠ `default` USED TO RETURN UNDEFINED HERE, with a comment claiming the caller handled it. No
+    // caller did. Measured by an independent review: `export default "HUMAN_"` in one module and
+    // `HEAD + "APPROVED"` in the importer produced the token at runtime with this control silent,
+    // and the same hole survived two renaming re-export hops.
+    if (imported === "default") {
+      const d = tmod.defaultExport;
+      if (d) return { mod: tmod, node: d };
+      return undefined;
+    }
     return this.resolveExport(tmod, imported, depth + 1);
   }
 
-  /** The value bound to `name` at this use site: enclosing blocks first, then module scope. */
+  /**
+   * PARAMETERS BOUND BY AN IN-PROGRESS INLINE.
+   *
+   * A stack rather than a single map, because folding an inlined body can inline again. Entries are
+   * keyed by the function NODE, and `lookup` only consults an entry once its ancestor walk has
+   * actually reached that node — so a parameter named `a` in one function cannot leak into another.
+   */
+  private readonly inlineStack: Array<{ fn: ts.Node; params: Map<string, Val> }> = [];
+
+  /**
+   * Evaluate a call to a function defined in the scanned set.
+   *
+   * ⚠ WHY THIS EXISTS. An independent review measured a two-line program this control could not see:
+   *
+   *     function join2(a, b) { return a + b; }
+   *     const HEAD = "HUMAN_"; const TAIL = "APPROVED";
+   *     export const R = join2(HEAD, TAIL);          // -> "HUMAN_APPROVED" at runtime
+   *
+   * Nothing here is dynamic; the call was simply a construct the fold had no rule for, and an
+   * unresolved call used to mean silence. Evaluating the callee turns the whole class into an exact
+   * VALUE answer instead of a heuristic — and a heuristic was never going to hold, because the
+   * material was in one expression tree and the call in another.
+   *
+   * Deliberately narrow: a single `return <expr>`, or an arrow with an expression body. Anything
+   * with real control flow folds to `unknown`, where the material rule takes over.
+   */
+  private inlineCall(fn: InlinableFn, args: Val[], mod: Mod, depth: number): Val {
+    if (depth > MAX_FOLD_DEPTH || this.inlineStack.length > 8) return UNKNOWN("inline budget exhausted");
+
+    let body: ts.Expression | undefined;
+    if (ts.isArrowFunction(fn) && !ts.isBlock(fn.body)) body = fn.body;
+    else {
+      const block = fn.body;
+      if (!block || !ts.isBlock(block)) return UNKNOWN("function has no readable body");
+      const stmts = block.statements.filter((s) => !ts.isEmptyStatement(s));
+      if (stmts.length !== 1) return UNKNOWN("function body is more than a single return");
+      const only = stmts[0];
+      if (!only || !ts.isReturnStatement(only) || !only.expression) {
+        return UNKNOWN("function body is not a single return of an expression");
+      }
+      body = only.expression;
+    }
+
+    const params = new Map<string, Val>();
+    for (let i = 0; i < fn.parameters.length; i++) {
+      const p = fn.parameters[i] as ts.ParameterDeclaration;
+      if (!ts.isIdentifier(p.name)) return UNKNOWN("destructured parameter is not folded");
+      const supplied = args[i];
+      if (supplied !== undefined) { params.set(p.name.text, supplied); continue; }
+      params.set(p.name.text, p.initializer ? this.fold(p.initializer, mod, depth + 1) : { k: "undef" });
+    }
+
+    this.inlineStack[this.inlineStack.length] = { fn, params };
+    try {
+      return this.fold(body, mod, depth + 1);
+    } finally {
+      this.inlineStack.length = this.inlineStack.length - 1;
+    }
+  }
+
+  /** The value bound to `name` at this use site: inlined parameters, enclosing blocks, module scope. */
   private lookup(name: string, at: ts.Node, mod: Mod, depth: number): Val {
     for (let n: ts.Node | undefined = at; n; n = n.parent) {
+      // An inlined parameter shadows everything outside the function it belongs to.
+      for (let s = this.inlineStack.length - 1; s >= 0; s--) {
+        const frame = this.inlineStack[s] as { fn: ts.Node; params: Map<string, Val> };
+        if (frame.fn === n) {
+          const bound = frame.params.get(name);
+          if (bound !== undefined) return bound;
+        }
+      }
       if (!ts.isBlock(n) && !ts.isSourceFile(n) && !ts.isCaseClause(n) && !ts.isModuleBlock(n)) continue;
       const stmts = ts.isSourceFile(n) ? n.statements : (n as ts.Block).statements;
       for (const st of stmts) {
@@ -827,6 +1019,11 @@ class Analyzer {
         const p = this.asPrimitiveString(arg(0));
         return p === undefined ? UNKNOWN("String() of a non-primitive") : STR(p);
       }
+      // A call to a function this control can read is EVALUATED, not shrugged at.
+      const local = this.findFn(name, callee, mod, depth);
+      if (local) {
+        return this.inlineCall(local.fn, args.map((a) => a ?? { k: "undef" }), local.mod, depth);
+      }
       return UNKNOWN(`call to ${name}() is not folded`);
     }
 
@@ -856,6 +1053,48 @@ class Analyzer {
         return UNKNOWN("JSON.stringify is not folded");
       }
       if (owner === "Object" && method === "freeze") return arg(0);
+      // `Object.fromEntries` was a measured silence: the pieces went in as a constant array and came
+      // out as a map this control could not read, so the material vanished from the fold.
+      if (owner === "Object" && method === "fromEntries") {
+        const src = arg(0);
+        if (src.k !== "arr") return UNKNOWN("Object.fromEntries of a value this control cannot fold");
+        const entries: Array<readonly [string, Val]> = [];
+        for (let i = 0; i < src.v.length; i++) {
+          const pair = src.v[i] as Val;
+          if (pair.k !== "arr" || pair.v.length < 2) return UNKNOWN("Object.fromEntries over a non-pair");
+          const key = this.asPrimitiveString(pair.v[0] as Val);
+          if (key === undefined) return UNKNOWN("Object.fromEntries with a non-constant key");
+          entries[entries.length] = [key, pair.v[1] as Val] as const;
+        }
+        return { k: "obj", v: entries };
+      }
+      if (owner === "Object" && (method === "keys" || method === "values" || method === "entries")) {
+        const src = arg(0);
+        if (src.k !== "obj") return UNKNOWN(`Object.${method} of a value this control cannot fold`);
+        const out: Val[] = [];
+        for (let i = 0; i < src.v.length; i++) {
+          const e = src.v[i] as readonly [string, Val];
+          if (method === "keys") out[out.length] = STR(e[0]);
+          else if (method === "values") out[out.length] = e[1];
+          else out[out.length] = { k: "arr", v: [STR(e[0]), e[1]] };
+        }
+        return { k: "arr", v: out };
+      }
+      if (owner === "Object" && method === "assign") {
+        const entries: Array<readonly [string, Val]> = [];
+        for (let i = 0; i < args.length; i++) {
+          const v = arg(i);
+          if (v.k !== "obj") return UNKNOWN("Object.assign over a value this control cannot fold");
+          for (let j = 0; j < v.v.length; j++) entries[entries.length] = v.v[j] as readonly [string, Val];
+        }
+        return { k: "obj", v: entries };
+      }
+      if (owner === "Array" && method === "from") {
+        const src = arg(0);
+        if (src.k === "arr") return src;
+        if (src.k === "str") return { k: "arr", v: [...src.v].map(STR) };
+        return UNKNOWN("Array.from of a value this control cannot fold");
+      }
       if (owner === "Buffer" && method === "from") {
         const v = arg(0);
         if (v.k === "str") {
@@ -881,9 +1120,51 @@ class Analyzer {
     const rs = candidates(recv);
     const outs: Val[] = [];
     for (let i = 0; i < rs.length; i++) {
-      outs[outs.length] = this.foldMethod(rs[i] as Val, method, args, depth);
+      outs[outs.length] = this.foldMethod(rs[i] as Val, method, args, depth, node);
     }
     return oneof(outs);
+  }
+
+  /**
+   * The function a call name refers to: an inlined-scope binding, a local declaration, the module,
+   * or an imported module in the scanned set.
+   */
+  private findFn(name: string, at: ts.Node, mod: Mod, depth: number):
+      { fn: InlinableFn; mod: Mod } | undefined {
+    for (let n: ts.Node | undefined = at; n; n = n.parent) {
+      if (!ts.isBlock(n) && !ts.isSourceFile(n) && !ts.isModuleBlock(n)) continue;
+      const stmts = ts.isSourceFile(n) ? n.statements : (n as ts.Block).statements;
+      for (const st of stmts) {
+        if (ts.isFunctionDeclaration(st) && st.name?.text === name) return { fn: st, mod };
+        if (!ts.isVariableStatement(st)) continue;
+        for (const d of st.declarationList.declarations) {
+          if (!ts.isIdentifier(d.name) || d.name.text !== name || !d.initializer) continue;
+          const init = d.initializer;
+          if (ts.isArrowFunction(init) || ts.isFunctionExpression(init)) return { fn: init, mod };
+        }
+      }
+    }
+    const own = mod.fns.get(name);
+    if (own) return { fn: own, mod };
+    const found = this.resolveExport(mod, name, depth);
+    if (found && !ts.isEnumDeclaration(found.node)) {
+      const node = found.node;
+      if (ts.isFunctionDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node)) {
+        return { fn: node, mod: found.mod };
+      }
+    }
+    const imp = mod.imports.get(name);
+    if (imp) {
+      const target = this.resolveSpec(imp.spec, mod.file);
+      if (target) {
+        const tmod = this.load(target);
+        if (!("error" in tmod)) {
+          const fn = tmod.fns.get(imp.imported === "default" ? "default" : imp.imported);
+          if (fn) return { fn, mod: tmod };
+        }
+      }
+    }
+    return undefined;
   }
 
   private decode(s: string, enc: string): Val {
@@ -897,7 +1178,8 @@ class Analyzer {
     return UNKNOWN(`encoding ${enc} is not folded`);
   }
 
-  private foldMethod(recv: Val, method: string, args: (Val | undefined)[], depth: number): Val {
+  private foldMethod(recv: Val, method: string, args: (Val | undefined)[], depth: number,
+                     call?: ts.CallExpression): Val {
     const a = (i: number): Val => (args[i] ?? { k: "undef" });
     const s = (i: number): string | undefined => {
       const v = a(i);
@@ -935,10 +1217,29 @@ class Analyzer {
           return acc.length > MAX_STRING ? UNKNOWN("string exceeds the fold budget") : STR(acc);
         }
         case "replace": case "replaceAll": {
-          const find = s(0);
           const repl = s(1);
-          if (find === undefined || repl === undefined) return UNKNOWN(`${method} with a non-constant argument`);
-          return STR(method === "replace" ? recv.v.replace(find, repl) : recv.v.replaceAll(find, repl));
+          if (repl === undefined) return UNKNOWN(`${method} with a non-constant replacement`);
+          const find = s(0);
+          if (find !== undefined) {
+            return STR(method === "replace" ? recv.v.replace(find, repl) : recv.v.replaceAll(find, repl));
+          }
+          // ⚠ A REGEX PATTERN IS A CONSTANT TOO, and treating it as un-foldable was a measured
+          // silence: `"HUMAN-APPROVED".replace(/-/, "_")` is a constant-only program that produced
+          // the reserved token while this control reported nothing. A regex LITERAL is as static as
+          // a string literal; only a computed pattern is genuinely unknown.
+          const pat = call?.arguments[0];
+          if (pat && ts.isRegularExpressionLiteral(pat)) {
+            const m = /^\/(.*)\/([a-z]*)$/s.exec(pat.text);
+            // Bounded: a pathological pattern from source must not turn this control into a hang.
+            if (m && (m[1] as string).length <= 200 && recv.v.length <= MAX_STRING) {
+              try {
+                const re = new RegExp(m[1] as string, method === "replaceAll" && !(m[2] as string).includes("g")
+                  ? `${m[2] as string}g` : (m[2] as string));
+                return STR(recv.v.replace(re, repl));
+              } catch { return UNKNOWN("regular expression could not be constructed"); }
+            }
+          }
+          return UNKNOWN(`${method} with a non-constant pattern`);
         }
         case "slice": case "substring": {
           const start = n(0) ?? 0;
@@ -1028,7 +1329,12 @@ class Analyzer {
     const sf = mod.sf;
     if (!sf) return;
 
+    const pool = new Set<string>();
+    const unresolved: Array<{ node: ts.Node; why: string }> = [];
+    const numbers: number[] = [];
+
     const visit = (node: ts.Node): void => {
+      if (ts.isNumericLiteral(node)) numbers[numbers.length] = Number(node.text);
       if (ts.isTypeNode(node) || ts.isTypeAliasDeclaration(node) || ts.isInterfaceDeclaration(node)) return;
       if (node.kind === ts.SyntaxKind.JSDoc) return;
 
@@ -1060,112 +1366,142 @@ class Analyzer {
               "second way to manufacture human consent.");
             return; // the outermost producing expression is the finding; its parts are not extra ones
           }
-          if (v.k === "unknown" && this.isExpressionRoot(node)) this.tripwire(mod, expr, sf);
+          // Record every constant this module can produce, and every place the fold gave up. The
+          // material rule below decides on the pair; neither half is a finding on its own.
+          if (v.k === "unknown") {
+            if (this.isExpressionRoot(node)) {
+              unresolved[unresolved.length] = { node: expr, why: v.why };
+            }
+          } else {
+            harvest(v, pool);
+          }
         }
       }
       ts.forEachChild(node, visit);
     };
     ts.forEachChild(sf, visit);
+
+    this.pools.set(mod.file, pool);
+    this.numbers.set(mod.file, numbers);
+    if (unresolved.length > 0) this.unresolved.set(mod.file, unresolved);
   }
 
-  /** True when nothing above this node is itself an expression — so the tripwire fires once per tree. */
+  /** True when nothing above this node is itself an expression — so a tree yields one entry. */
   private isExpressionRoot(node: ts.Node): boolean {
     const p = node.parent;
     return !p || !ts.isExpression(p);
   }
 
   /**
-   * THE BOUND ON INCOMPLETENESS.
+   * THE BOUND ON INCOMPLETENESS — AND WHY IT IS NO LONGER A SUBTREE HEURISTIC.
    *
    * No static pass decides what an arbitrary program computes, so some expressions will not fold.
-   * The question is what happens then. Skipping them is how the retired scanner reached green while
-   * twenty-seven emissions would have walked past it, so instead the unfoldable subtree is searched for TOKEN
-   * MATERIAL — the ingredients the token would have to be made of:
+   * The question is what happens then, and the first answer here was wrong in an instructive way: it
+   * searched the UNFOLDABLE EXPRESSION for token material. An independent review starved that in ten
+   * different constant-only programs, all of which returned the reserved token when executed:
    *
-   *   1. a string literal that is a fragment of the token STRADDLING its underscore — `HUMAN_A`,
-   *      `AN_APP`, `N_APPROVED`. Only a piece that spans the join is distinctive;
-   *   2. string literals that CONCATENATE to the token across at least two of them, which catches
-   *      assembly from pieces too small or too ordinary to be individually distinctive;
-   *   3. numeric literals that spell six or more consecutive characters of the token;
-   *   4. a literal that base64/hex-decodes to something containing the token.
+   *     const HEAD = "HUMAN_"; const TAIL = "APPROVED";
+   *     export const R = join2(HEAD, TAIL);      // subtree holds no literals at all
+   *
+   * The material was in the module; the unresolved call was in a different expression tree. A rule
+   * that looks inside one tree cannot see that, and closing the ten cases one at a time would have
+   * left the eleventh silent — the exact defect this control exists to correct.
+   *
+   * So the question is asked where the material actually lives. For a module with at least one
+   * expression the fold gave up on, take every constant string that module and everything it imports
+   * can produce, and ask whether the token can be BUILT from them:
+   *
+   *   M1  the pool can be concatenated into the token using two or more pieces. One piece alone is
+   *       not this — that is a plain literal, already reported as `R-EMIT`.
+   *   M2  a pool string base64/hex-decodes to something containing the token.
+   *   M3  numeric literals in the module spell six or more consecutive characters of it.
    *
    * WHAT IS DELIBERATELY *NOT* MATERIAL, measured against the real repository:
-   *   · `"HUMAN"` — a `Principal` value (`src/schema.ts:34`), and `"APPROVED"` — a `HoldStatus`
-   *     (`packages/gate/src/engine.ts:933`). Both are substrings of the token and both are ordinary
-   *     domain vocabulary here.
-   *   · any literal that merely CONTAINS the token or a piece of it, such as the honest
+   *   · `"HUMAN"` — a `Principal` value (`src/schema.ts:34`) — and `"APPROVED"` — a `HoldStatus`
+   *     (`packages/gate/src/engine.ts:933`) — where nothing supplies the `_` between them.
+   *   · any literal that merely CONTAINS the token, such as the honest
    *     `"HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND"` and `"HUMAN_DENIED"`.
-   * An earlier draft of this tripwire flagged all of those: 8 findings, 8 of them correct code. A
-   * gate whose findings a maintainer learns to dismiss is worse than no gate
-   * (`scripts/lint-trusted-roots.mjs:297`), so the rule is narrowed to shapes that only make sense
-   * as an attempt to build the token.
+   * An earlier draft flagged all of those: 8 findings, 8 of them correct code. A gate whose findings
+   * a maintainer learns to dismiss is worse than no gate (`scripts/lint-trusted-roots.mjs:297`).
+   *
+   * MEASURED before adopting it: across all 153 first-party TypeScript and JavaScript files, ZERO
+   * modules have a pool that can assemble the token — at minimum piece length 1, the strongest and
+   * most false-positive-prone setting. The rule costs nothing on correct code today.
    */
-  private tripwire(mod: Mod, expr: ts.Expression, sf: ts.SourceFile): void {
+  private materialSweep(): void {
     const token = this.token;
-    /** Fragments that straddle the token's internal boundary; a lone `HUMAN` or `APPROVED` is not one. */
-    const fragments = new Set<string>();
-    const join = token.indexOf("_") >= 0 ? token.slice(token.indexOf("_") - 1, token.indexOf("_") + 2) : token;
-    for (let i = 0; i < token.length; i++) {
-      for (let j = i + 5; j <= token.length; j++) {
-        const piece = token.slice(i, j);
-        if (piece !== token && piece.includes(join)) fragments.add(piece);
+    for (const [file, unresolved] of this.unresolved) {
+      const mod = this.mods.get(file);
+      if (!mod || "error" in mod || !mod.sf) continue;
+
+      const pool = this.closurePool(file, 0, new Set());
+      const first = unresolved[0] as { node: ts.Node; why: string };
+      const hit = (rule: string, why: string): void => {
+        this.report(file, first.node, mod.sf, rule,
+          `this module contains ${unresolved.length} expression(s) this control could not reduce to ` +
+          `a constant (first one here: ${first.why}), and the constants it can reach are enough to ` +
+          `build the reserved value \`${token}\` (${why}). An expression the control cannot decide ` +
+          "is not evidence of absence: either make the value statically evident, or the material " +
+          "does not belong within reach of code this control cannot follow.");
+      };
+
+      // M1 — assembly from two or more pieces the module can reach.
+      const seg = segmentation(token, pool);
+      if (seg && seg.length >= 2) {
+        hit("R-MATERIAL", `it can be concatenated from ${JSON.stringify(seg)}`);
+        continue;
       }
-    }
 
-    const strings: string[] = [];
-    const numbers: number[] = [];
-    const collect = (n: ts.Node): void => {
-      if (ts.isTypeNode(n)) return;
-      if (ts.isStringLiteral(n) || ts.isNoSubstitutionTemplateLiteral(n)) strings[strings.length] = n.text;
-      else if (ts.isTemplateHead(n) || ts.isTemplateMiddle(n) || ts.isTemplateTail(n)) strings[strings.length] = n.text;
-      else if (ts.isNumericLiteral(n)) numbers[numbers.length] = Number(n.text);
-      ts.forEachChild(n, collect);
-    };
-    collect(expr);
-
-    const hit = (why: string): void => {
-      this.report(mod.file, expr, sf, "R-MATERIAL",
-        `this expression could not be reduced to a constant, and it carries material for the ` +
-        `reserved value \`${token}\` (${why}). This control fails on what it cannot decide rather ` +
-        "than passing it: either make the value statically evident, or it does not belong here.");
-    };
-
-    // 1 + 4 — one literal at a time.
-    for (let i = 0; i < strings.length; i++) {
-      const s = strings[i] as string;
-      if (fragments.has(s)) return hit(`the literal ${JSON.stringify(s)} is a fragment spanning its internal boundary`);
-      for (const enc of ["base64", "base64url", "hex"] as const) {
-        let decoded = "";
-        try { decoded = Buffer.from(s, enc).toString("utf8"); } catch { decoded = ""; }
-        if (decoded.includes(token)) return hit(`the literal ${JSON.stringify(s)} ${enc}-decodes to it`);
+      // M2 — an encoded blob.
+      let encoded: string | undefined;
+      for (const s of pool) {
+        for (const enc of ["base64", "base64url", "hex"] as const) {
+          let decoded = "";
+          try { decoded = Buffer.from(s, enc).toString("utf8"); } catch { decoded = ""; }
+          if (decoded.includes(token)) { encoded = `the constant ${JSON.stringify(s)} ${enc}-decodes to it`; break; }
+        }
+        if (encoded) break;
       }
-    }
+      if (encoded) { hit("R-MATERIAL", encoded); continue; }
 
-    // 2 — assembly ACROSS literals. A single literal that happens to contain the token is not this:
-    // that is the honest `HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND` and a hundred assertions.
-    let joined = "";
-    const bounds: number[] = [];
-    for (let i = 0; i < strings.length; i++) {
-      joined += strings[i] as string;
-      bounds[bounds.length] = joined.length;
-    }
-    for (let at = joined.indexOf(token); at >= 0; at = joined.indexOf(token, at + 1)) {
-      for (let b = 0; b < bounds.length - 1; b++) {
-        const edge = bounds[b] as number;
-        if (edge > at && edge < at + token.length) {
-          return hit("its string literals concatenate to it across a literal boundary");
+      // M3 — char codes anywhere in the module.
+      const numbers = this.numbers.get(file) ?? [];
+      if (numbers.length >= 6) {
+        const codes = numbers.filter((x) => Number.isInteger(x) && x > 0 && x < 0x110000);
+        const spelled = codes.length > 0 ? String.fromCharCode(...codes) : "";
+        for (let i = 0; i + 6 <= token.length; i++) {
+          if (spelled.includes(token.slice(i, i + 6))) { hit("R-MATERIAL", "its numeric literals spell part of it"); break; }
         }
       }
     }
+  }
 
-    // 3 — char codes.
-    if (numbers.length >= 6) {
-      const codes = numbers.filter((x) => Number.isInteger(x) && x > 0 && x < 0x110000);
-      const spelled = codes.length > 0 ? String.fromCharCode(...codes) : "";
-      for (let i = 0; i + 6 <= token.length; i++) {
-        if (spelled.includes(token.slice(i, i + 6))) return hit("its numeric literals spell part of it");
+  /** A module's own constants plus those of everything it imports, to a bounded depth. */
+  private closurePool(file: string, depth: number, seen: Set<string>): Set<string> {
+    const out = new Set<string>();
+    if (depth > 3 || seen.has(file)) return out;
+    seen.add(file);
+    for (const s of this.pools.get(file) ?? []) out.add(s);
+    const mod = this.mods.get(file);
+    if (!mod || "error" in mod) return out;
+    const specs: string[] = [...mod.starReexports];
+    for (const imp of mod.imports.values()) specs[specs.length] = imp.spec;
+    for (const re of mod.reexports.values()) specs[specs.length] = re.spec;
+    for (let i = 0; i < specs.length; i++) {
+      const target = this.resolveSpec(specs[i] as string, file);
+      if (!target) continue;
+      // A JSON module contributes its data; it may never have been visited as code.
+      if (!this.pools.has(target)) {
+        const tmod = this.load(target);
+        if (!("error" in tmod) && tmod.kind === "data" && tmod.data) {
+          const p = new Set<string>();
+          harvest(tmod.data, p);
+          this.pools.set(target, p);
+        }
       }
+      for (const s of this.closurePool(target, depth + 1, seen)) out.add(s);
     }
+    return out;
   }
 
   /** A `.json` file in a source root is data the code can import; the token in it is an emission. */
@@ -1227,12 +1563,49 @@ class Analyzer {
     // Static declarations are not the only way in. `src/cli.ts:231` is a real `await import("./serve.js")`
     // in this repository, so checking only the top-level `import`/`export` forms would leave the
     // escape rule enforcing a rule the codebase already routes around in ordinary use.
+    // WHICH CALLS LOAD A MODULE. `require` is routinely rebound in ESM — `packages/gate/src/schemas.ts:15`
+    // is a real `const require = createRequire(import.meta.url)` — so the set is computed rather than
+    // guessed. A first draft matched any identifier containing "require" and immediately reported
+    // `requiredApproverRole(ctx.riskClass)` (`packages/approval-artifacts/src/verify.ts:402`) and the
+    // `createRequire` call itself: two findings, both correct code, on the first run against the repo.
+    const loaders = new Set<string>(["require"]);
+    const collectLoaders = (n: ts.Node): void => {
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer &&
+          ts.isCallExpression(n.initializer)) {
+        const callee = n.initializer.expression;
+        const name = ts.isIdentifier(callee) ? callee.text
+          : ts.isPropertyAccessExpression(callee) ? callee.name.text : "";
+        if (name === "createRequire") loaders.add(n.name.text);
+      }
+      ts.forEachChild(n, collectLoaders);
+    };
+    ts.forEachChild(sf, collectLoaders);
+
     const dynamic = (n: ts.Node): void => {
       if (ts.isCallExpression(n)) {
         const isDynamicImport = n.expression.kind === ts.SyntaxKind.ImportKeyword;
-        const isRequire = ts.isIdentifier(n.expression) && n.expression.text === "require";
+        const isRequire = ts.isIdentifier(n.expression) && loaders.has(n.expression.text);
         const first = n.arguments[0];
-        if ((isDynamicImport || isRequire) && first && ts.isStringLiteral(first)) check(first.text, first);
+        if ((isDynamicImport || isRequire) && first) {
+          // ⚠ THIS WAS A LITERAL-ONLY TEST, AND A `+` WALKED PAST IT. Measured by an independent
+          // review: `require("../test/" + "helper.js")` reached an excluded root, returned the token
+          // at runtime, and this control reported zero findings. The specifier is an EXPRESSION, so
+          // it gets folded like every other expression — and a specifier that does not fold to a
+          // constant cannot be checked at all, which is a finding rather than a shrug.
+          const v = this.fold(first, mod, 0);
+          const cs = candidates(v);
+          let sawConstant = false;
+          for (let i = 0; i < cs.length; i++) {
+            const c = cs[i] as Val;
+            if (c.k === "str") { sawConstant = true; check(c.v, first); }
+          }
+          if (!sawConstant) {
+            this.report(mod.file, first, sf, "E-COMPUTED-SPECIFIER",
+              "this module specifier does not reduce to a constant, so this control cannot tell " +
+              "whether the import leaves the scanned source roots. An unanalysable edge into the " +
+              "module graph is a finding, not a pass.");
+          }
+        }
       }
       ts.forEachChild(n, dynamic);
     };
@@ -1256,6 +1629,9 @@ class Analyzer {
       this.visitFile(mod);
       this.checkImportEscape(mod);
     }
+    // The material rule runs LAST, because it needs every module's pool before it can ask whether
+    // any module can reach enough constants to build the token.
+    this.materialSweep();
     this.findings.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.col - b.col);
     return this.findings;
   }
@@ -1276,26 +1652,80 @@ export function analysableFiles(opts: AnalyzeOptions): number {
   return new Analyzer(opts).analysedCount();
 }
 
+/** A discovered source root and what this control can do with it. */
+export interface RootCoverage {
+  readonly dir: string;
+  /** True when the root holds at least one file this control has a reader for. */
+  readonly analysed: boolean;
+  /** Extension census, so "not analysed" is an observation rather than an assertion. */
+  readonly census: ReadonlyArray<readonly [string, number]>;
+}
+
 /**
- * Every `src` directory in the repository, discovered rather than listed.
+ * EVERY directory named `src` in the repository, found by walking — not by naming two of them, and
+ * not by naming a shape either.
  *
- * ⚠ THE ROOT LIST WAS ITSELF A BYPASS. The retired scanner named two directories, so the token
- * could be produced in `packages/approval-artifacts/src` and re-exported into the gate with the
- * control green. `scripts/lint-trusted-roots.mjs` exists because the layer below made the same
- * mistake, and its own answer is mechanical discovery: "a NEW package cannot be silently
- * unguarded". Same answer here.
+ * ⚠ THE ROOT LIST WAS A BYPASS TWICE. The retired scanner named `packages/gate/src` and
+ * `packages/relay/src`, so the token could be produced in `packages/approval-artifacts/src` and
+ * re-exported in with the control green. The first rebuild replaced that with `src` plus
+ * `packages/*​/src` — mechanical for the shape it knew, and still a hardcoded shape: an independent
+ * review measured `impl-csharp/src` and `impl-rust/src` missing from it while the surrounding prose
+ * claimed "every source root in the repository". Same mistake, one level up.
+ *
+ * So discovery now walks. What it CANNOT do is read every language: `impl-csharp/src` is six `.cs`
+ * files and `impl-rust/src` is six `.rs` files, and this control parses TypeScript and JavaScript.
+ * Those roots are therefore reported as DISCOVERED-BUT-NOT-ANALYSED, with the census that says why —
+ * never silently dropped, and never counted as covered. If a single `.ts` file ever lands in one,
+ * `analysed` flips to true on its own and the root joins the scan.
  */
-export function discoverSourceRoots(repoRoot: string): string[] {
-  const roots: string[] = [];
-  const add = (p: string): void => {
-    try { if (statSync(p).isDirectory()) roots[roots.length] = p; } catch { /* absent */ }
+export function discoverSourceRoots(repoRoot: string): RootCoverage[] {
+  const found: string[] = [];
+  const walk = (dir: string, depth: number): void => {
+    if (depth > 6) return;
+    let entries: string[];
+    try { entries = readdirSync(dir).sort(); } catch { return; }
+    for (let i = 0; i < entries.length; i++) {
+      const name = entries[i] as string;
+      if (name === "node_modules" || name === "dist" || name === ".git" || name === "coverage") continue;
+      const abs = join(dir, name);
+      let st;
+      try { st = statSync(abs); } catch { continue; }
+      if (!st.isDirectory()) continue;
+      if (name === "src") { found[found.length] = abs; continue; }
+      walk(abs, depth + 1);
+    }
   };
-  add(join(repoRoot, "src"));
-  const pkgs = join(repoRoot, "packages");
-  let entries: string[] = [];
-  try { entries = readdirSync(pkgs).sort(); } catch { entries = []; }
-  for (let i = 0; i < entries.length; i++) add(join(pkgs, entries[i] as string, "src"));
-  return roots;
+  walk(repoRoot, 0);
+
+  const out: RootCoverage[] = [];
+  for (let i = 0; i < found.length; i++) {
+    const dir = found[i] as string;
+    const counts = new Map<string, number>();
+    const census = (d: string): void => {
+      let entries: string[];
+      try { entries = readdirSync(d).sort(); } catch { return; }
+      for (let k = 0; k < entries.length; k++) {
+        const name = entries[k] as string;
+        if (name === "node_modules") continue;
+        const abs = join(d, name);
+        let st;
+        try { st = statSync(abs); } catch { continue; }
+        if (st.isDirectory()) { census(abs); continue; }
+        const ext = extname(name).toLowerCase() || "(none)";
+        counts.set(ext, (counts.get(ext) ?? 0) + 1);
+      }
+    };
+    census(dir);
+    let analysed = false;
+    for (const ext of counts.keys()) if (CODE_EXT.has(ext) || DATA_EXT.has(ext)) analysed = true;
+    out[out.length] = { dir, analysed, census: [...counts.entries()].sort() };
+  }
+  return out.sort((a, b) => a.dir.localeCompare(b.dir));
+}
+
+/** The subset of discovered roots this control actually reads. */
+export function analysableRoots(repoRoot: string): string[] {
+  return discoverSourceRoots(repoRoot).filter((r) => r.analysed).map((r) => r.dir);
 }
 
 /**
@@ -1305,14 +1735,28 @@ export function discoverSourceRoots(repoRoot: string): string[] {
  *    is absent, which means naming it. The hole that opens — production code importing a value from
  *    a test file — is closed separately by `E-ESCAPE`, which fails any relative import in a scanned
  *    root that resolves outside every scanned root.
- * 2. Values arriving from THIRD-PARTY packages are not folded through. A dependency that returns the
- *    token would reach a source file as an unfoldable call; the tripwire only fires if token
- *    material is visible at the call site. This is a supply-chain question, not a text-versus-AST
- *    one, and `scripts/lint-publish-tarball-deps.mjs` and the dependency topology gate are where it
- *    belongs.
- * 3. Genuinely dynamic assembly — a runtime loop over char codes computed by arithmetic, a value
- *    read from the network or from disk — cannot be decided statically by anything. The tripwire
- *    bounds the common shapes; it does not claim to bound all of them.
- * 4. The fold set is CLOSED and listed in `foldCall`/`foldMethod`. Adding a pure builder to it is a
- *    one-line change; the anti-vacuity fixtures exist so that removing one is loud.
+ * 2. LANGUAGES THIS CONTROL CANNOT READ. It parses TypeScript and JavaScript. `discoverSourceRoots`
+ *    walks for EVERY directory named `src` and reports each one's disposition, so `impl-csharp/src`
+ *    (6 `.cs`) and `impl-rust/src` (6 `.rs`) are named as DISCOVERED-BUT-NOT-ANALYSED rather than
+ *    quietly dropped — and a single `.ts` landing in either flips it into the scan on its own. Those
+ *    two roots hold no occurrence of the token today (measured). The claim this file supports is
+ *    "every TypeScript and JavaScript source root", never "every source root".
+ * 3. Values arriving from THIRD-PARTY packages are not folded through. A dependency that returns the
+ *    token reaches a source file as an unfoldable call; the material rule then fires only if the
+ *    importing module's own constants can build the token. This is a supply-chain question, not a
+ *    text-versus-AST one, and `scripts/lint-publish-tarball-deps.mjs` and the dependency topology
+ *    gate are where it belongs.
+ * 4. Genuinely dynamic assembly cannot be decided statically by anything — a runtime loop over char
+ *    codes computed by ARITHMETIC rather than written as literals, a value read from the network or
+ *    from disk, a string built from `Math`/`Date`/counter output. The material rule bounds the case
+ *    where the ingredients are constants somewhere in reach; it does not bound the case where the
+ *    ingredients are computed. Concretely still silent: `String.fromCharCode(...[71,84,76].map(n =>
+ *    n + 1))`, and a module whose only unresolved expression takes its material from a caller in an
+ *    unscanned root. The first is undecidable; the second is why `E-ESCAPE` exists.
+ * 5. The fold set is CLOSED and listed in `foldCall`/`foldMethod`, and inlining is limited to a
+ *    single `return` or an expression-bodied arrow. A helper with real control flow folds to
+ *    `unknown` — which is not silence, it is what hands the module to the material rule.
+ * 6. The material rule is conditioned on a module HAVING an unresolved expression. A module the fold
+ *    understands completely is decided by the fold alone, which is the point: its pool cannot
+ *    assemble anything the fold did not already evaluate.
  */

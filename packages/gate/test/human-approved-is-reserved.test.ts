@@ -28,8 +28,8 @@
  *     "It proves no code SAYS the token, not that no code could compute it. A computed
  *      `HUMAN_ + APPROVED` would pass. That is accepted — the realistic regression is a literal."
  *
- * That estimate was wrong, and not by a little. TWENTY-SEVEN distinct emissions were measured passing
- * it green — every one of them executed and observed returning the token — plus SIX conditions it
+ * That estimate was wrong, and not by a little. THIRTY-SEVEN distinct emissions were measured passing
+ * it green — every one of them executed and observed returning the token — plus TEN conditions it
  * could not detect at all. The four shapes it did catch are the only four it ever could:
  *
  *   A — the SAME STRING, SPELLED DIFFERENTLY. It matched the eleven bytes `"HUMAN_APPROVED"`, so a
@@ -52,10 +52,26 @@
  * by folding value-position expressions with the TypeScript compiler API (`test/lib/reserved-token.ts`).
  * Its load-bearing property is the opposite of its predecessor's: A FILE IT CANNOT ANALYSE FAILS.
  *
+ * ─── AND THEN THE REBUILD MADE THE SAME MISTAKE ONE LEVEL DOWN ──────────────────────────────────
+ *
+ * An independent adversarial review of the first rebuild found ten MORE emissions, class G below.
+ * Every one was a constant-only program — no network, no undecidable loop — and every one scored
+ * zero findings. The diagnosis was not ten bugs:
+ *
+ *     unresolved calls and data flow returned `unknown`, and the material check only looked INSIDE
+ *     the unfoldable expression. So `unknown` was the same answer as "no token here".
+ *
+ * Split the pieces across two statements — or two modules — and both halves went quiet. That is the
+ * defect this control exists to correct, committed by the control. The fix is not ten patches: the
+ * fold now evaluates functions defined in the scanned set, resolves `default` exports, and reads
+ * regex replaces and object builders; and where it still cannot decide, the material question is
+ * asked at the level the material actually lives — every constant a module and its imports can
+ * reach, and whether the token can be BUILT from them.
+ *
  * ─── AND WHY THE FIXTURES BELOW ARE THE POINT ───────────────────────────────────────────────────
  *
  * The retired control had one probe proving it could see one shape. It passed for months while
- * twenty-seven emissions would have walked past it, because "the control is green" and "the control
+ * thirty-seven emissions would have walked past it, because "the control is green" and "the control
  * can go red" are different claims. Every bypass listed above is a fixture here, and each one is
  * asserted THREE ways: the retired matcher is green on it (it was a real hole), the rebuilt control
  * is red on it (the hole is closed), and — where the fixture is executable — it really does return
@@ -71,7 +87,7 @@ import { fileURLToPath } from "node:url";
 import { pathToFileURL } from "node:url";
 import ts from "typescript";
 import {
-  analysableFiles, analyze, discoverSourceRoots, RESERVED_TOKEN,
+  analysableFiles, analysableRoots, analyze, discoverSourceRoots, RESERVED_TOKEN,
 } from "./lib/reserved-token.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -134,6 +150,10 @@ interface Fixture {
   readonly roots?: readonly string[];
   /** `dir` -> a symlink to create at `src/<name>` pointing at `target` (may be absent on purpose). */
   readonly symlink?: { readonly name: string; readonly target: string };
+  /** A DIRECTORY symlink at `src/<name>`; `"."` makes the root alias itself. */
+  readonly symlinkDir?: { readonly name: string; readonly target: string };
+  /** An empty directory created at `src/<name>` — including names that look like source files. */
+  readonly emptyDirNamed?: string;
   /** Entry module + export name, when the fixture can be executed to prove it really emits. */
   readonly runtime?: { readonly entry: string; readonly name: string };
   /** True when the retired matcher ALSO caught this — i.e. it is a regression guard, not a bypass. */
@@ -360,6 +380,100 @@ fx({
   runtime: { entry: "src/dist/a.ts", name: "REASON" },
 });
 
+// ── CLASS G — MATERIAL SPLIT ACROSS EXPRESSION TREES ────────────────────────────────────────────
+// An independent adversarial review of the first rebuild found ten more emissions, every one a
+// constant-only program a maintainer could write by accident. The diagnosis was not ten bugs: the
+// fold returned `unknown` for constructs it had no rule for, and the material check only looked
+// INSIDE the unfoldable expression. Split the pieces across two statements — or two modules — and
+// both halves went quiet. `unknown` was the same answer as "no token here", which is the exact
+// defect this control exists to correct, committed by the control.
+fx({
+  id: "G1-helper-call", why: "G: a user-defined function — material in one tree, the call in another",
+  files: {
+    "src/a.ts": "function join2(a: string, b: string): string { return a + b; }\n" +
+      'const HEAD = "HUMAN_";\nconst TAIL = "APPROVED";\n' +
+      "export const REASON = join2(HEAD, TAIL);\n",
+  },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+fx({
+  id: "G2-replace-regexp", why: "G: a regex literal is as constant as a string, and was treated as unknown",
+  files: { "src/a.ts": 'export const REASON = "HUMAN-APPROVED".replace(/-/, "_");\n' },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+fx({
+  id: "G3-default-module-boundary", why: "G: `default` was abandoned outright in the export resolver",
+  files: {
+    "src/b.ts": 'export default "HUMAN_";\n',
+    "src/a.ts": 'import HEAD from "./b.js";\nexport const REASON = HEAD + "APPROVED";\n',
+  },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+fx({
+  id: "G4-default-reexport-renamed-twice", why: "G: the same hole surviving two renaming re-export hops",
+  files: {
+    "src/c.ts": 'export default "HUMAN_";\n',
+    "src/b.ts": 'export { default as Head } from "./c.js";\n',
+    "src/index.ts": 'export { Head as H } from "./b.js";\n',
+    "src/a.ts": 'import { H } from "./index.js";\nexport const REASON = H + "APPROVED";\n',
+  },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+fx({
+  id: "G5-class-field-getter", why: "G: half in a field initializer, half in a getter",
+  files: {
+    "src/a.ts": "class Reason {\n  private head = \"HUMAN_\";\n" +
+      '  get code(): string { return this.head + "APPROVED"; }\n}\n' +
+      "export const REASON = new Reason().code;\n",
+  },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+fx({
+  id: "G6-switch-fallthrough", why: "G: assembled by a compound assignment across two case clauses",
+  files: {
+    "src/a.ts": "export function pick(k: number): string {\n  let out = \"\";\n" +
+      '  switch (k) {\n    case 1: out = "HUMAN_";\n' +
+      '    case 2: out += "APPROVED";\n  }\n  return out;\n}\n' +
+      "export const REASON = pick(1);\n",
+  },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+fx({
+  id: "G7-object-from-entries", why: "G: pieces went in as a constant array and came out of a builder the fold could not read",
+  files: {
+    "src/a.ts": 'const PAIRS: Array<[string, string]> = [["head", "HUMAN_"]];\n' +
+      "const MAP = Object.fromEntries(PAIRS);\n" +
+      'export const REASON = (MAP["head"] as string) + "APPROVED";\n',
+  },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+fx({
+  id: "G8-symbol-keys", why: "G: a symbol-keyed map the fold cannot index",
+  files: {
+    "src/a.ts": 'const K = Symbol("head");\nconst O: Record<symbol, string> = { [K]: "HUMAN_" };\n' +
+      'export const REASON = O[K] + "APPROVED";\n',
+  },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+fx({
+  id: "G9-json-import-computed-key", why: "G: half in an imported JSON module, reached by a computed key",
+  files: {
+    "src/parts.json": '{ "head": "HUMAN_" }\n',
+    "src/a.ts": 'import parts from "./parts.json" with { type: "json" };\n' +
+      "const key = String.fromCharCode(104, 101, 97, 100).toString();\n" +
+      'export const REASON = (parts as Record<string, string>)[key] + "APPROVED";\n',
+  },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+fx({
+  id: "G10-tagged-template-helper", why: "G: a tagged template, whose tag the fold does not evaluate",
+  files: {
+    "src/a.ts": "function head(strings: TemplateStringsArray): string { return strings[0] as string; }\n" +
+      "export const REASON = head`HUMAN_` + \"APPROVED\";\n",
+  },
+  runtime: { entry: "src/a.ts", name: "REASON" },
+});
+
 // ── CLASS E — the fail-closed property: what it cannot analyse must FAIL ────────────────────────
 fx({
   id: "E1-file-that-does-not-parse",
@@ -399,6 +513,34 @@ fx({
   why: "E: walking a vendored dependency tree would look like a hang; calling the root clean would be a lie",
   files: { "src/node_modules/evil/index.ts": 'export const R = "HUMAN_APPROVED";\n' },
 });
+fx({
+  id: "E8-computed-module-specifier",
+  why: "E: a `+` in the specifier walked straight past a literal-only escape check and reached an excluded root",
+  files: {
+    "helpers/reason.ts": 'export const INNER = "HUMAN_APPROVED";\n',
+    "src/a.ts": 'import { createRequire } from "node:module";\n' +
+      "const require2 = createRequire(import.meta.url);\n" +
+      'const helper = require2("../helpers/" + "reason.js");\n' +
+      "export const REASON: string = helper.INNER;\n",
+  },
+});
+fx({
+  id: "E9-symlink-cycle",
+  why: "E: the walk stopped on a re-entered directory SILENTLY, so a root that was never read reported clean",
+  files: {},
+  symlinkDir: { name: "loop", target: "." },
+});
+fx({
+  id: "E10-root-that-contributes-nothing",
+  why: "E: zero files and zero findings is this control's own forbidden state — `not analysable` and `clean` sharing an exit code",
+  files: {},
+});
+fx({
+  id: "E11-directory-wearing-a-source-extension",
+  why: "E: a directory named `a.ts` is not a file; the walk yielded nothing and said nothing",
+  files: {},
+  emptyDirNamed: "a.ts",
+});
 
 /** A fixture directory of ONLY correct code. A control that is always red proves as little as one
  *  that is always green, so the honest token, the `HoldStatus`, the `Principal` and a `HUMAN_DENIED`
@@ -433,6 +575,11 @@ function materialize(f: Fixture): { dir: string; roots: string[] } {
   }
   mkdirSync(join(dir, "src"), { recursive: true });
   if (f.symlink) symlinkSync(f.symlink.target, join(dir, "src", f.symlink.name));
+  if (f.symlinkDir) {
+    symlinkSync(f.symlinkDir.target === "." ? join(dir, "src") : f.symlinkDir.target,
+      join(dir, "src", f.symlinkDir.name), "dir");
+  }
+  if (f.emptyDirNamed) mkdirSync(join(dir, "src", f.emptyDirNamed), { recursive: true });
   const roots = [join(dir, "src"), ...(f.roots ?? []).map((r) => join(dir, r))];
   return { dir, roots };
 }
@@ -510,8 +657,8 @@ test("the fixture table is the size this control's docstring claims", () => {
   const failClosed = F.filter((f) => f.id.startsWith("E"));
   const bypasses = F.filter((f) => f.retiredCaught !== true && !f.id.startsWith("E"));
   assert.equal(guards.length, 4, "the retired matcher caught exactly four shapes");
-  assert.equal(bypasses.length, 27, "twenty-seven emissions passed the retired matcher green");
-  assert.equal(failClosed.length, 6, "six conditions the retired matcher could not detect at all");
+  assert.equal(bypasses.length, 37, "thirty-seven emissions passed the retired matcher green");
+  assert.equal(failClosed.length, 10, "ten conditions the retired matcher could not detect at all");
   assert.equal(bypasses.filter((f) => f.runtime).length, bypasses.length,
     "every claimed emission must be runtime-proven — an unexecuted fixture is an assertion, not a measurement");
 });
@@ -583,6 +730,10 @@ test("FAIL-CLOSED — a file the control cannot analyse is a finding, never a pa
     ["E5-relative-import-escaping-every-root", "E-ESCAPE"],
     ["E6-dynamic-import-escaping-every-root", "E-ESCAPE"],
     ["E7-dependency-tree-inside-a-source-root", "E-UNANALYSABLE"],
+    ["E8-computed-module-specifier", "E-ESCAPE"],
+    ["E9-symlink-cycle", "E-SYMLINK-CYCLE"],
+    ["E10-root-that-contributes-nothing", "E-EMPTY-ROOT"],
+    ["E11-directory-wearing-a-source-extension", "E-EMPTY-ROOT"],
   ];
   for (const [id, rule] of cases) {
     const f = F.find((x) => x.id === id);
@@ -617,14 +768,52 @@ test("the fold is real — it is not matching text with extra steps", () => {
 // THE REAL SCAN
 // ────────────────────────────────────────────────────────────────────────────────────────────────
 
-test("HUMAN_APPROVED is produced by NOTHING in any source root in this repository", () => {
-  const roots = discoverSourceRoots(REPO);
-  // ⚠ ROOTS ARE DISCOVERED, NOT LISTED. The retired control named `packages/gate/src` and
-  // `packages/relay/src`, so the token could be produced in any of the ten other source roots and
-  // re-exported in with the control green. `scripts/lint-trusted-roots.mjs` exists because the layer
-  // below it made the same mistake, and gives the same answer: a NEW package cannot be silently
-  // unguarded if discovery is mechanical.
-  assert.ok(roots.length >= 10, `fixture: only ${roots.length} source roots discovered — discovery is broken`);
+test("COVERAGE — what this control reads is stated exactly, not claimed universally", () => {
+  // ⚠ THE ROOT LIST WAS A BYPASS TWICE. The retired control named two directories. The first
+  // rebuild replaced that with `src` plus `packages/*/src` and the prose around it said "every
+  // source root in the repository" — which an independent review measured as false:
+  // `impl-csharp/src` and `impl-rust/src` were missing. Same mistake, one level up.
+  //
+  // Discovery now WALKS for every directory named `src`. What it cannot do is read every language,
+  // so each root carries a disposition and this test pins the whole split. A new root, or a `.ts`
+  // file landing in one of the non-TypeScript roots, changes this list and turns the test red —
+  // which is the point: the covered set is reconciled, never assumed.
+  const coverage = discoverSourceRoots(REPO);
+  const shown = coverage.map((r) =>
+    `${r.analysed ? "ANALYSED    " : "not analysed"} ${r.dir.slice(REPO.length + 1)}` +
+    (r.analysed ? "" : `  [${r.census.map(([e, n]) => `${n}${e}`).join(" ")}]`));
+  assert.deepEqual(shown, [
+    "not analysed impl-csharp/src  [6.cs]",
+    "not analysed impl-rust/src  [6.rs]",
+    "ANALYSED     packages/adapter-core/src",
+    "ANALYSED     packages/approval-artifacts/src",
+    "ANALYSED     packages/e2e-demo/src",
+    "ANALYSED     packages/evidence/src",
+    "ANALYSED     packages/framework-adapters/src",
+    "ANALYSED     packages/gate/src",
+    "ANALYSED     packages/mcp-proxy/src",
+    "ANALYSED     packages/relay/src",
+    "ANALYSED     packages/signer-core/src",
+    "ANALYSED     packages/signer-sidecar/src",
+    "ANALYSED     packages/tsa-anchor/src",
+    "ANALYSED     src",
+  ], "the set of source roots changed. This control parses TypeScript and JavaScript; a root holding " +
+    "neither is reported here rather than silently dropped, and a root that gains a `.ts` file joins " +
+    "the scan on its own. Update this list only after checking which of the two happened.");
+  // The two unread roots hold no TypeScript at all, which is WHY they are unread — measured here so
+  // it stays a fact rather than an assumption.
+  for (const r of coverage) {
+    if (r.analysed) continue;
+    for (const [ext] of r.census) {
+      assert.ok(![".ts", ".tsx", ".mts", ".cts", ".js", ".mjs", ".cjs", ".jsx", ".json"].includes(ext),
+        `${r.dir} holds ${ext} files and must be analysed, not inventoried`);
+    }
+  }
+});
+
+test("HUMAN_APPROVED is produced by NOTHING in any source root this control reads", () => {
+  const roots = analysableRoots(REPO);
+  assert.ok(roots.length >= 12, `fixture: only ${roots.length} source roots discovered — discovery is broken`);
   const count = analysableFiles({ roots, repoRoot: REPO });
   assert.ok(count > 100, `fixture: only ${count} files reached — the walk is broken and every assertion here is vacuous`);
 
