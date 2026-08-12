@@ -39,7 +39,7 @@ const MAX_FILE_BYTES = 64 * 1024 * 1024;
 // verdict as a pipeline consumes it, so a rewritable EXIT.EQUIVOCATION would turn a detected
 // fork into a silent success for every caller at once.
 const { setHas, newSet, arrayLength, arraySlice, isArray, strStartsWith, toNumber, isFiniteNumber, jsonStringify } = intrinsics;
-const EXIT = frozenTable({ OK: 0, MISMATCH: 1, TRANSPORT: 2, MALFORMED: 3, USAGE: 4, EQUIVOCATION: 5 });
+const EXIT = frozenTable({ OK: 0, MISMATCH: 1, TRANSPORT: 2, MALFORMED: 3, USAGE: 4, EQUIVOCATION: 5, NO_CLEAN_RESULT: 6 });
 
 function usage(msg) {
   if (msg) process.stderr.write(`error: ${msg}\n`);
@@ -149,7 +149,6 @@ async function cmdStamp(args) {
       key = anchorHash(a);
     } catch (e) {
       fail(EXIT.MALFORMED, `malformed anchor entry: ${e.message}`);
-      return EXIT.MALFORMED;
     }
     if (sidecar[key]) continue; // distinct-anchor dedup (same witness re-listed twice in the file)
     try {
@@ -160,7 +159,6 @@ async function cmdStamp(args) {
       });
     } catch (e) {
       fail(EXIT.TRANSPORT, `stamping anchor ${key} (kid=${a?.sig?.kid}): ${e.message}`);
-      return EXIT.TRANSPORT;
     }
   }
   writeFileSync(out, JSON.stringify(sidecar, null, 2) + "\n", "utf8");
@@ -257,7 +255,10 @@ function cmdForkScan(args) {
   // examined anything. `clean` is the single fail-closed field, and the exit code now follows it.
   if (res.verdict === "INVALID_INPUT") return EXIT.MALFORMED;
   if (res.equivocationFound) return EXIT.EQUIVOCATION;
-  return res.clean ? EXIT.OK : EXIT.MISMATCH;
+  // 6, NOT 1. Exit 1 already means "this stamp does not match" for `verify` and "quorum not met"
+  // for `corroborate`; folding "the scan examined nothing" into it left a pipeline unable to tell
+  // a substantive negative from an empty one.
+  return res.clean ? EXIT.OK : EXIT.NO_CLEAN_RESULT;
 }
 
 function cmdCorroborate(args) {

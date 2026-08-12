@@ -76,6 +76,50 @@ different clothes: **the detector saying nothing is wrong.**
   reach `npm publish` on an arbitrary branch, because the version/tag comparison only ran under
   `refs/tags/*`. The publish job is now gated on the tag condition itself.
 
+### Fixed (adversarial review, second pass — the mirror defects)
+
+Every finding in this pass had one shape: **the previous fix created its opposite.** A detector that
+refuses honest input is not safer than one that accepts hostile input — in an accusation tool a
+standing false alarm costs as much as a missed fork, because it teaches the reader to ignore the
+output.
+
+- **A forward-compatible anchor condemned an honest pool.** Closing the `sig` schema to stop
+  double-keying made any anchor carrying an unknown `sig` member "malformed", and the verdict ladder
+  turned ONE such entry in a 10,000-anchor honest pool into a permanent `INCOMPLETE_POOL` / exit 1.
+  Fixed where the defect actually was: `anchorHash` now normalises `sig` to `{alg,kid,value}`, so one
+  anchor has one lookup key and the extra member — covered by neither the Ed25519 signature nor the
+  TSA token — cannot re-key it. Unknown members are admitted (matching the kernel's own reference
+  verifier) and counted under `extensions.sigMembers`, distinct from corruption.
+- **The release was bound to a tag NAME, not to reviewed history.** Anyone with write access could
+  tag an arbitrary unreviewed commit `tsa-v9.9.9`, bump the version on it, and the workflow would
+  publish it with OIDC provenance — provenance faithfully attesting a commit nobody reviewed. The
+  tagged commit must now be an **ancestor of `main`**, the job runs in an `npm-publish` environment
+  whose required reviewers are part of the setup instructions (which previously told the operator to
+  leave it blank), and the released SHA is printed into the run log and job summary.
+- **The workflow comment overclaimed twice**, including the H13 invariant itself: a dispatcher can
+  select a *tag* as the ref and reach `npm publish`, and a branch dispatch runs no gates at all
+  because the job-level `if` skips the whole job. Both now stated as they are.
+- **A valid proof died at an organisational boundary.** `attributedTo` mismatching the reader's label
+  hard-failed a cryptographically perfect proof, and admission resolved witnesses by `kid` — so a
+  proof only ever verified inside the naming domain that produced it. Proof verification now resolves
+  the witness **by key**, reports `labelMismatch` and `attributedToClaimed`, and speaks the reader's
+  names. The trust-set digest also covers `quorum` now.
+- **A TSA URL was laundered into re-derived evidence**: it is not inside a token and cannot be
+  re-derived, so it is carried as `tsaUrlClaimed` and never next to `verified:true`.
+- **Bound truncation was invisible** — reported as `truncated.{findings,branches}` and forces
+  `clean:false`. **An unverified history** is reported as `historyVerified:false` rather than implied
+  trustworthy by `historyChecked:true`. **Exit 6** now separates "the scan examined nothing" from a
+  substantive negative. Dead `return` statements after a fatal `fail()` removed.
+
+**Compatibility breaks, disclosed:** history entries supplied to `scanForEquivocation` now require a
+`chain` field (a history without chain identity cannot be compared safely); `corroborate` over an
+empty anchor array moved from exit 1 to exit 4; and `fork-scan` NO_EVIDENCE / INCOMPLETE_POOL moved
+from exit 1 to exit 6.
+
+**Residual gaps are named in `NON-CLAIMS.md` NC-4.3a**, not left in a review thread: pool
+completeness is unauthenticated, the trust-set digest is an integrity hint rather than an
+authentication, and a force-moved tag can still republish different content under one tag name.
+
 ### Gated
 
 - **`packages/tsa-anchor/src` is now inside the security-gate inventory** (`scripts/lint-security-gates.mjs`).

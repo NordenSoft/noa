@@ -227,6 +227,28 @@ It is still **not** a transparency log, and the difference is not cosmetic:
   different heights are indistinguishable from a chain that grew. Catching that additionally needs
   the presented chain, or the dormant §10 consistency proofs.
 
+### NC-4.3a — Named open items in the anchoring monitor (added 2026-08-12)
+
+Three residual gaps were found by adversarial review and are **not closed**. They are written here,
+in the register a customer reads, rather than left in a report that expires with the panel.
+
+- **Pool completeness is unauthenticated, and this is the cheapest evasion of the whole mechanism.**
+  The monitor cannot distinguish an incomplete pool from a complete one. Withholding a single anchor
+  makes a forked chain read `CLEAN`, and doing so needs **no compromised key and no forgery** — only
+  control over what reaches the verifier. Everything the monitor detects is conditional on someone
+  actually collecting both halves; nothing here does that collecting.
+- **A trust-set digest is an integrity hint, not an authentication.** Findings carry a digest of the
+  pinned witnesses and quorum so a recipient can see they are reading a proof produced against a
+  different mapping. It is a digest of PUBLIC data that any forwarder can recompute, so it detects
+  drift and accident and is worthless against an active attacker. Attribution that does transfer is
+  the public key (`attributedToPubkey`); a `kid` is always the reader's own label.
+- **A release tag is mutable, so tag NAME is not bound to commit permanently.** The publish workflow
+  requires the tagged commit to be an ancestor of `main` (so an unreviewed commit cannot be
+  released) and prints the released SHA, but a force-moved tag plus a re-run can publish different
+  content under the same tag name. What stops that being silent is npm's own immutable versions and
+  the required reviewer on the `npm-publish` environment — process controls, not a property of this
+  repository.
+
 ### NC-4.4 — An evidence bundle does not let a third party re-check the display binding (F2)
 MEASURED (2026-07-31): `EvidenceBundle` (`packages/evidence/src/types.ts:79-99`) carries the
 `holdEnvelope` — and therefore the gate-signed `displayCiphertextHash` — but it does **not** carry

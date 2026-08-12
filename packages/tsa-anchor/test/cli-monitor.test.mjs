@@ -213,12 +213,15 @@ test("H4 — fork-scan does NOT exit 0 for a pool it could not examine", async (
     forgedPool: [good, forged],
     trustset: TRUST_SET,
   });
+  // EXIT 6, not 1. Round 2 sent these to 1, which already means "this stamp does not match"
+  // (verify) and "quorum not met" (corroborate); round 3's F15 split "the scan examined nothing"
+  // onto its own code so a pipeline can tell a substantive negative from an empty one.
   const u = await run(["fork-scan", "--anchors", p.unpinnedOnly, "--trust-set", p.trustset]);
-  assert.equal(u.status, 1, "nothing admitted is not a clean bill");
+  assert.equal(u.status, 6, "nothing admitted is not a clean bill");
   assert.equal(JSON.parse(u.stdout).verdict, "NO_EVIDENCE");
 
   const f = await run(["fork-scan", "--anchors", p.forgedPool, "--trust-set", p.trustset]);
-  assert.equal(f.status, 1, "a forgery under a pinned key is not a clean bill");
+  assert.equal(f.status, 6, "a forgery under a pinned key is not a clean bill");
   assert.equal(JSON.parse(f.stdout).verdict, "INCOMPLETE_POOL");
 });
 

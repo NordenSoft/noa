@@ -121,7 +121,14 @@ result reports `transferable` separately from `ok` (see the honest limits below)
   those keys belong to distinct organisations is operational (`NON-CLAIMS.md` NC-4.1).
 - **A name in a finding is the reader's own label.** `sig.kid` is not inside the bytes a witness
   signs, so attribution transfers at the **public key** (`attributedToPubkey`), never at the `kid`.
-  Findings carry a `trustSetDigest` so a recipient can see they are reading someone else's labels.
+  `verifyEquivocationProof` therefore resolves a branch's witness **by key**, not by name, so a proof
+  survives crossing organisations; a disagreement between the producer's label and yours is reported
+  as `labelMismatch`, never treated as a cryptographic failure.
+- **`trustSetDigest` is an integrity hint, not an authentication.** It is a digest of public data
+  that any forwarder can recompute: it catches drift and accident, not an active attacker.
+- **A TSA URL is a claim, not evidence.** It is not inside an RFC 3161 token, so it cannot be
+  re-derived; it is carried as `tsaUrlClaimed` and never sits beside `verified:true` as if attested.
+  Only `verified` and `genTime` are re-derived from the token bytes.
 
 Every result object carries these limits in its own `undetected` array, including a `CLEAN` one —
 which is exactly when a reader is most likely to over-read the answer.
@@ -137,6 +144,16 @@ which is exactly when a reader is most likely to over-read the answer.
 | `NO_EVIDENCE` | nothing was admitted, so nothing was examined. **Not** a clean bill |
 | `INCOMPLETE_POOL` | entries were unusable, or a **pinned** kid's signature failed — the latter is an attack signal |
 | `INVALID_INPUT` | the scan did not run: bad trust-set, malformed history, or a degenerate bound |
+
+A **forward-compatible** anchor — one whose `sig` carries a member this version does not know, which
+JSON extensibility makes routine — is admitted and compared, counted under `extensions.sigMembers`,
+and never confused with a corrupt entry. An unsigned extra member cannot change an anchor's identity
+either: `anchorHash` normalises `sig` to `{alg, kid, value}`, so one anchor has exactly one lookup
+key and its TSA stamp attaches regardless.
+
+Bound **truncation** is reported too (`truncated.findings`, `truncated.branches`) and forces
+`clean:false`: a legal bound quietly dropping corroborating branches would leave a reader holding a
+summary that looks like the whole picture.
 
 Bounds are DoS ceilings, never switches: `maxAnchors`/`maxHistory`/`maxFindings` must be ≥ 1 and
 `maxBranches` ≥ 2 (a proof carrying fewer than two anchors demonstrates nothing). A value below the
@@ -189,6 +206,11 @@ verify, or one only partly readable, exits `3` rather than quietly narrowing the
 
 `--now` is parsed as strict RFC 3339 (`2026-06-23T10:30:00Z`); `2026` and `2026-06-23` are refused
 rather than silently anchoring the freshness window to the start of a year.
+
+**Exit 6** is separate from exit 1 on purpose: `1` is a substantive negative (this stamp does not
+match; the quorum was not met), while `6` means the scan ran and earned no clean result — it
+examined nothing, or the pool was not fully readable. Folding the two together left a pipeline
+unable to tell them apart.
 
 `--now` and `--max-age-ms` must be supplied together: half a freshness policy is an operator error,
 and treating it as "no freshness" would silently re-open the replay gap the flag exists to close.

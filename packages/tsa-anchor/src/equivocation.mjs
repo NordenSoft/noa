@@ -262,6 +262,7 @@ function admitTrustSet(trustSet) {
   if (q > k) return { ok: false, reason: `quorum q=${q} exceeds pinned witness count k=${k} (unsatisfiable)` };
 
   const byKid = newMap();
+  const byPubkey = newMap(); // pubkey -> THIS verifier's own label for that key
   const seenPubkeys = newSet();
   for (let i = 0; i < k; i++) {
     const w = witnesses[i];
@@ -277,6 +278,7 @@ function admitTrustSet(trustSet) {
       return { ok: false, reason: "trustSet pins the same witness pubkey under two kids (witnesses must be distinct KEYS, not just distinct ids)" };
     }
     mapSet(byKid, kid, pubkey);
+    mapSet(byPubkey, pubkey, kid);
     setAdd(seenPubkeys, pubkey);
   }
   // A finding is read by someone who pinned their OWN trust-set, and `sig.kid` is NOT inside the
@@ -284,10 +286,14 @@ function admitTrustSet(trustSet) {
   // not something the signer committed to. The digest lets a recipient say "this proof was produced
   // against a DIFFERENT pinned mapping than mine" instead of silently reading someone else's labels
   // as their own. Order-independent by construction: the pairs are sorted before canonicalization.
+  // Covers the POLICY as well as the keys: two trust-sets over the same witnesses with different
+  // quorums are different trust-sets, and reporting them as a match would be a false reassurance.
+  // This is an integrity HINT, never an authentication: it is a digest of public data that any
+  // forwarder can recompute, so it detects drift and accident, not an active attacker.
   const pairs = [];
   for (let i = 0; i < k; i++) arrayPush(pairs, witnesses[i].pubkey + " " + witnesses[i].kid);
-  const digest = "sha256:" + sha256Hex(canonicalize(arraySort(pairs)));
-  return { ok: true, byKid, k, quorum: q, digest };
+  const digest = "sha256:" + sha256Hex(canonicalize({ witnesses: arraySort(pairs), quorum: q }));
+  return { ok: true, byKid, byPubkey, k, quorum: q, digest };
 }
 
 /**
@@ -305,6 +311,20 @@ function admitTrustSet(trustSet) {
 const SIG_KEYS = objectFreeze(["alg", "kid", "value"]);
 
 /**
+ * Count `sig` members beyond the three defined ones. An anchor carrying extra members is a NEWER
+ * PRODUCER, not an attacker: JSON extensibility is conventional, the extra bytes are covered by
+ * neither the Ed25519 signature nor a TSA token, and `anchorHash` now normalises them away so they
+ * cannot re-key the anchor. They are counted and reported so a consumer can tell a forward-compatible
+ * peer from a corrupt entry — which is exactly the distinction the previous refusal destroyed.
+ */
+function countExtendedSigMembers(sigIn) {
+  const keys = objectKeys(sigIn);
+  let n = 0;
+  for (let i = 0; i < arrayLength(keys); i++) if (!arrayIncludes(SIG_KEYS, keys[i])) n++;
+  return n;
+}
+
+/**
  * Rejection is CLASSIFIED, never a bare drop. The three reasons mean different things and a caller
  * that cannot tell them apart cannot act:
  *   `unpinned`     an anchor addressed to someone else's trust-set. Normal in a shared pool.
@@ -313,18 +333,16 @@ const SIG_KEYS = objectFreeze(["alg", "kid", "value"]);
  * Returning `{ ok:false, why }` is what lets `scanForEquivocation` refuse to call an all-rejected
  * pool CLEAN — "I checked and found nothing" and "I could not check anything" must not share a word.
  */
-function admitAnchor(a, byKid) {
+function admitAnchor(a, byKid, ts) {
   if (typeof a !== "object" || a === null) return { ok: false, why: "malformed" };
   const sigIn = a.sig;
   if (typeof sigIn !== "object" || sigIn === null) return { ok: false, why: "malformed" };
-  // CLOSED SIG SCHEMA (the kernel holds a checkpoint's sig to exactly {alg,kid,value} for the same
-  // reason). An extra member also made `anchorHash` — which covers the WHOLE sig — disagree with
-  // this snapshot, so one anchor was filed under two different keys and its TSA stamp could never
-  // attach. Refusing the smuggled member removes the divergence at its source.
-  const sigKeys = objectKeys(sigIn);
-  for (let i = 0; i < arrayLength(sigKeys); i++) {
-    if (!arrayIncludes(SIG_KEYS, sigKeys[i])) return { ok: false, why: "malformed" };
-  }
+  // AN UNKNOWN `sig` MEMBER IS TOLERATED, AND COUNTED. This deliberately matches the kernel's own
+  // reference verifier (src/federation/acceptance.ts), which reads alg/kid/value and ignores the
+  // rest: a monitor that refused anchors `verifyCompleteness` accepts would disagree with the
+  // artifact it exists to police. The double-keying that made refusal look necessary is fixed where
+  // it belonged, in `anchorHash` (see anchor-hash.mjs), so nothing is traded away here.
+  const extendedSigMembers = countExtendedSigMembers(sigIn);
   const snap = {
     chain: a.chain,
     highestSeq: a.highestSeq,
@@ -340,16 +358,45 @@ function admitAnchor(a, byKid) {
   if (typeof snap.sig.kid !== "string" || snap.sig.kid.length === 0) return { ok: false, why: "malformed" };
   if (typeof snap.sig.value !== "string" || snap.sig.value.length === 0) return { ok: false, why: "malformed" };
 
-  const pubkey = mapGet(byKid, snap.sig.kid);
-  if (pubkey === undefined) return { ok: false, why: "unpinned" }; // not in this verifier's pinned set
-
+  // IDENTITY RESOLUTION, AND WHY IT IS ASYMMETRIC.
+  //
+  // A POOL is local: its anchors carry the producer's labels and the verifier looks them up by kid,
+  // exactly as the kernel's reference verifier does (src/federation/acceptance.ts). Deviating from
+  // the reference rule in the artifact that polices it would be its own defect, so the scan path
+  // keeps kid lookup.
+  //
+  // A PROOF crosses organisations, and that is the whole point of it. `sig.kid` is NOT inside
+  // `anchorSigningInput`, so the label an anchor carries is the PRODUCER's, while the recipient's
+  // trust-set is keyed by names the recipient chose. Looking up by kid there rejected
+  // cryptographically perfect proofs as "unpinned" for the sole reason that two organisations name
+  // the same witness differently — which is the normal case, so "transferable" meant "transferable
+  // within one company". `ts` is supplied only on that path: the signature is checked against each
+  // PINNED KEY, and identity is whichever key verifies it. Bounded work: k keys x branches.
+  let pubkey = mapGet(byKid, snap.sig.kid);
   let verified = false;
-  try {
-    verified = verifyEd25519(pubkey, anchorSigningInput(snap), snap.sig.value);
-  } catch {
-    return { ok: false, why: "badSignature" };
+  if (pubkey !== undefined) {
+    try {
+      verified = verifyEd25519(pubkey, anchorSigningInput(snap), snap.sig.value);
+    } catch {
+      return { ok: false, why: "badSignature" };
+    }
+    if (!verified) return { ok: false, why: "badSignature" };
+  } else if (ts !== undefined) {
+    const candidates = mapEntriesToArray(ts.byPubkey);
+    for (let i = 0; i < arrayLength(candidates) && !verified; i++) {
+      try {
+        if (verifyEd25519(candidates[i][0], anchorSigningInput(snap), snap.sig.value)) {
+          pubkey = candidates[i][0];
+          verified = true;
+        }
+      } catch {
+        // a malformed pinned key is that trust-set's problem; keep trying the others
+      }
+    }
+    if (!verified) return { ok: false, why: "unpinned" };
+  } else {
+    return { ok: false, why: "unpinned" }; // not in this verifier's pinned set
   }
-  if (!verified) return { ok: false, why: "badSignature" };
 
   let hash;
   try {
@@ -359,7 +406,19 @@ function admitAnchor(a, byKid) {
   }
   return {
     ok: true,
-    rec: { anchor: snap, chain: snap.chain, seq: snap.highestSeq, headHash: snap.headHash, ts: snap.ts, kid: snap.sig.kid, pubkey, hash },
+    extendedSigMembers,
+    rec: {
+      anchor: snap,
+      chain: snap.chain,
+      seq: snap.highestSeq,
+      headHash: snap.headHash,
+      ts: snap.ts,
+      // The LOCAL label wins when the two disagree: a result should speak the reader's names.
+      kid: ts === undefined ? snap.sig.kid : (mapGet(ts.byPubkey, pubkey) ?? snap.sig.kid),
+      producerKid: snap.sig.kid,
+      pubkey,
+      hash,
+    },
   };
 }
 
@@ -377,10 +436,13 @@ function invalidScan(reason) {
     admitted: 0,
     dropped: 0,
     rejected: { unpinned: 0, malformed: 0, badSignature: 0 },
+    extensions: { sigMembers: 0 },
     chains: [],
     historyChecked: false,
+    historyVerified: false,
     stampsChecked: false,
     truncatedFindings: false,
+    truncated: { findings: 0, branches: 0 },
     note: SCAN_NOTE,
     undetected: UNDETECTED,
   };
@@ -417,12 +479,19 @@ function branchOf(rec, stamps) {
   return branch;
 }
 
-/** Map a record list to branches, bounded. Index walk; no Array.prototype.map on a verdict path. */
+/**
+ * Map a record list to branches, bounded, and REPORT how many were dropped. Index walk; no
+ * Array.prototype.map on a verdict path.
+ *
+ * The count is the point: a legal `maxBranches` silently discarding corroborating witnesses leaves
+ * the reader holding a summary that looks like the whole picture.
+ */
 function branchesOf(recs, stamps, maxBranches) {
+  const total = arrayLength(recs);
   const capped = arraySlice(recs, 0, maxBranches);
   const out = [];
   for (let i = 0; i < arrayLength(capped); i++) arrayPush(out, branchOf(capped[i], stamps));
-  return out;
+  return { branches: out, dropped: total - arrayLength(out) };
 }
 
 // -- the scan -----------------------------------------------------------------------------------
@@ -515,7 +584,7 @@ function scanForEquivocationInner(anchors, trustSet, opts) {
   }
 
   return {
-    clean: verdict === "CLEAN" && !scanned.truncatedFindings,
+    clean: verdict === "CLEAN" && !scanned.truncatedFindings && scanned.truncated.branches === 0,
     verdict,
     equivocationFound: found,
     findings,
@@ -525,10 +594,17 @@ function scanForEquivocationInner(anchors, trustSet, opts) {
     admitted: pool.admitted,
     dropped: pool.dropped,
     rejected: pool.rejected,
+    extensions: pool.extensions,
     chains: setToArray(pool.chains),
     historyChecked: historyMap !== undefined,
+    // THE LIBRARY CANNOT VERIFY A HISTORY IT WAS HANDED. `historyChecked` says a comparison ran;
+    // it never said whether the thing compared against was itself trustworthy. A caller that DID
+    // verify (the CLI runs the kernel's verifyChain) declares it; everyone else gets `false` and a
+    // result that does not pretend otherwise.
+    historyVerified: historyMap !== undefined && prepared.historyVerified === true,
     stampsChecked: prepared.stamps !== undefined,
     truncatedFindings: scanned.truncatedFindings,
+    truncated: scanned.truncated,
     note: SCAN_NOTE,
     undetected: UNDETECTED,
   };
@@ -615,6 +691,7 @@ function prepare(anchors, trustSet, opts, extraHistory) {
   let dropped = 0;
 
   const rejected = { unpinned: 0, malformed: 0, badSignature: 0 };
+  const extensions = { sigMembers: 0 };
   for (let i = 0; i < anchorCount; i++) {
     const admission = admitAnchor(anchors[i], ts.byKid);
     if (!admission.ok) {
@@ -623,6 +700,7 @@ function prepare(anchors, trustSet, opts, extraHistory) {
       continue;
     }
     const rec = admission.rec;
+    if (admission.extendedSigMembers > 0) extensions.sigMembers++;
     admitted++;
     arrayPush(records, rec);
     setAdd(chains, rec.chain);
@@ -645,9 +723,10 @@ function prepare(anchors, trustSet, opts, extraHistory) {
     ok: true,
     ts,
     historyMap,
+    historyVerified: opts.historyVerified === true,
     stamps,
     bounds,
-    pool: { byFrontier, frontierMeta, chains, records, admitted, dropped, rejected },
+    pool: { byFrontier, frontierMeta, chains, records, admitted, dropped, rejected, extensions },
   };
 }
 
@@ -697,6 +776,16 @@ function addHistory(historyMap, entries) {
 function scanRecords(pool, historyMap, stamps, bounds, onlyChain, trustSetDigest) {
   const findings = [];
   let truncatedFindings = false;
+  // TRUNCATION IS A MEASUREMENT, NOT A SILENT CAP. Refusing a degenerate bound closed the case
+  // where a bound switched detection off; it did nothing for the case where a legal bound quietly
+  // drops corroborating branches from a finding. A reader must be able to see that the finding they
+  // are holding is a summary rather than the whole picture.
+  let truncatedBranches = 0;
+  const takeBranches = (recs) => {
+    const r = branchesOf(recs, stamps, bounds.maxBranches);
+    truncatedBranches += r.dropped;
+    return r.branches;
+  };
 
   // -- 1 + 2. Same-frontier disagreement: the detection that needs NOTHING but the pool. ---------
   const frontiers = mapEntriesToArray(pool.byFrontier);
@@ -741,7 +830,7 @@ function scanRecords(pool, historyMap, stamps, bounds, onlyChain, trustSetDigest
           chain: meta.chain,
           seq: meta.seq,
           attributedTo: [recs[0].kid],
-          branches: branchesOf(recs, stamps, bounds.maxBranches),
+          branches: takeBranches(recs),
           reason:
             `witness "${recs[0].kid}" validly signed ${mapSize(m)} DIFFERENT heads at chain "${meta.chain}" seq ${meta.seq} - ` +
             "one key, two histories; its own signatures are the contradiction",
@@ -764,7 +853,7 @@ function scanRecords(pool, historyMap, stamps, bounds, onlyChain, trustSetDigest
           chain: meta.chain,
           seq: meta.seq,
           attributedTo: [], // both witnesses may be honest; the contradiction belongs to the chain
-          branches: branchesOf(pair, stamps, bounds.maxBranches),
+          branches: takeBranches(pair),
           reason:
             `two INDEPENDENT pinned witnesses ("${pair[0].kid}", "${pair[1].kid}") validly anchored different heads at ` +
             `chain "${meta.chain}" seq ${meta.seq} - the chain was presented as two conflicting histories`,
@@ -809,7 +898,7 @@ function scanRecords(pool, historyMap, stamps, bounds, onlyChain, trustSetDigest
           seq: rec.seq,
           attributedTo: [],
           presented: { seq: rec.seq, hash: presented.hash, source: presented.source },
-          branches: branchesOf(list, stamps, bounds.maxBranches),
+          branches: takeBranches(list),
           reason:
             `${arrayLength(kids)} pinned witness(es) (${arrayJoin(quoted, ", ")}) signed head ${headHash} at chain ` +
             `"${rec.chain}" seq ${rec.seq}, but the ${label} has ${presented.hash} there - the presented history is not ` +
@@ -819,7 +908,7 @@ function scanRecords(pool, historyMap, stamps, bounds, onlyChain, trustSetDigest
     }
   }
 
-  return { findings, truncatedFindings };
+  return { findings, truncatedFindings, truncated: { findings: truncatedFindings ? 1 : 0, branches: truncatedBranches } };
 }
 
 /** Find two records at one frontier with different heads AND different signing keys, or null. */
@@ -882,7 +971,7 @@ function verifyEquivocationProofInner(proof, trustSet) {
   for (let i = 0; i < nb; i++) {
     const b = branches[i];
     if (typeof b !== "object" || b === null) return { ok: false, transferable: false, reason: `branch ${i} is not an object` };
-    const admission = admitAnchor(b.anchor, ts.byKid);
+    const admission = admitAnchor(b.anchor, ts.byKid, ts);
     if (!admission.ok) {
       return {
         ok: false,
@@ -894,8 +983,8 @@ function verifyEquivocationProofInner(proof, trustSet) {
     if (b.headHash !== undefined && b.headHash !== rec.headHash) {
       return { ok: false, transferable: false, reason: `branch ${i}: claimed headHash does not match the signed anchor` };
     }
-    if (b.witnessKid !== undefined && b.witnessKid !== rec.kid) {
-      return { ok: false, transferable: false, reason: `branch ${i}: claimed witnessKid does not match the signed anchor` };
+    if (b.witnessKid !== undefined && b.witnessKid !== rec.producerKid) {
+      return { ok: false, transferable: false, reason: `branch ${i}: claimed witnessKid does not match the anchor it is attached to` };
     }
     if (b.anchorHash !== undefined && b.anchorHash !== rec.hash) {
       return { ok: false, transferable: false, reason: `branch ${i}: claimed anchorHash does not match the carried anchor` };
@@ -919,12 +1008,16 @@ function verifyEquivocationProofInner(proof, trustSet) {
     const res = verifyStamp(rec.anchor, { tsr: typeof claim === "object" ? claim.tsr : undefined, anchorHash: rec.hash });
     const verified = res.ok === true;
     if (claimedVerified && !verified) stampClaimsRefuted++;
+    // ONLY `verified` AND `genTime` ARE RE-DERIVED. A TSA URL is not inside an RFC 3161 token, so
+    // it cannot be re-derived from anything — copying it out of the claim into a field sitting next
+    // to `verified:true` laundered an attacker-chosen string into what reads as attested evidence.
+    // It is carried under a name that says what it is, and nowhere else.
     arrayPush(stampEvidence, {
       branch: i,
       verified,
       claimedVerified,
       genTime: verified ? res.genTime : undefined,
-      tsaUrl: verified && typeof claim === "object" ? claim.tsaUrl : undefined,
+      tsaUrlClaimed: typeof claim === "object" ? claim.tsaUrl : undefined,
       reason: res.reason,
     });
   }
@@ -1009,16 +1102,15 @@ function verifyEquivocationProofInner(proof, trustSet) {
     // same unchanged signatures were reproduced coming back attributed to "local-alias" simply by
     // relabelling the pinned mapping. What transfers is the PUBLIC KEY; `kid` is a local convenience
     // and is presented as one.
-    const claimed = proof.attributedTo;
-    if (isArray(claimed) && arrayLength(claimed) > 0 && claimed[0] !== kid) {
-      return {
-        ok: false,
-        transferable: false,
-        reason:
-          `proof.attributedTo names "${claimed[0]}", but under THIS trust-set the equivocating key is pinned as "${kid}" - ` +
-          "resolve the naming disagreement before forwarding this proof",
-      };
-    }
+    // A LABEL DISAGREEMENT IS NOT A CRYPTOGRAPHIC FAILURE. Hard-failing when the producer's
+    // `attributedTo` differed from the recipient's own name for the same key made the "transferable"
+    // proof transferable only INSIDE one naming domain — which is to say, not transferable, since
+    // two organisations naming the same witness identically is the exception. `attributedTo` is
+    // unauthenticated text (`sig.kid` is not in the signed bytes); the only sane response to text
+    // disagreeing with the keys is to report both and let the keys decide.
+    const claimedArr = proof.attributedTo;
+    const attributedToClaimed = isArray(claimedArr) ? arraySlice(claimedArr, 0) : [];
+    const labelMismatch = arrayLength(attributedToClaimed) > 0 && attributedToClaimed[0] !== kid;
     return {
       ok: true,
       transferable: true,
@@ -1027,14 +1119,18 @@ function verifyEquivocationProofInner(proof, trustSet) {
       chain,
       seq,
       attributedTo: [kid],
+      attributedToClaimed,
       attributedToPubkey: [culprit],
+      labelMismatch,
       trustSetMatches: proof.trustSetDigest === undefined ? undefined : proof.trustSetDigest === ts.digest,
       stampEvidence,
       stampClaimsRefuted,
       reason:
         `the key pinned here as "${kid}" signed ${setSize(headSet)} different heads at chain "${chain}" seq ${seq}; every ` +
         "signature verifies under that key. What transfers is the KEY (see attributedToPubkey) - the name is this " +
-        "trust-set's own label, because sig.kid is not part of the signed bytes." + stampNote,
+        "trust-set's own label, because sig.kid is not part of the signed bytes." +
+        (labelMismatch ? ` The producer called that key "${attributedToClaimed[0]}"; the keys agree, the names do not.` : "") +
+        stampNote,
     };
   }
 

@@ -231,15 +231,23 @@ test("H4 — a genuinely clean pool still reads CLEAN (the fix is not just 'neve
 
 // ── L14 ─────────────────────────────────────────────────────────────────────────────────────────
 
-test("L14 — an anchor whose sig carries an extra member is refused, not silently double-keyed", () => {
-  // anchorHash covers the WHOLE sig; admission snapshots only {alg,kid,value}. An extra member made
-  // those two disagree, so the anchor was filed under one key and its stamp under another.
+test("L14 — an anchor whose sig carries an extra member is never DOUBLE-KEYED", () => {
+  // THE PROPERTY, NOT THE MECHANISM. anchorHash covered the WHOLE sig while admission snapshotted
+  // only {alg,kid,value}, so an extra member made the two disagree: the anchor was filed under one
+  // key and its stamp looked up under another.
+  //
+  // Round 2 closed that by REFUSING the extra member, and round 3's F8 reversed that fix: refusal
+  // turned every forward-compatible anchor into "malformed", which the verdict ladder then promoted
+  // to a standing INCOMPLETE_POOL. The divergence is now fixed where it belonged — `anchorHash`
+  // normalises the sig — so the anchor is ADMITTED and there is still exactly one key for it.
+  // What L14 protects is asserted here; how it is achieved moved.
   const chain = buildChainOn(CHAIN_A, ["p0", "p1", "p2"]);
   const a = anchorOn(W1, CHAIN_A, chain, 2, "2026-06-23T10:00:00Z");
   const smuggled = { ...a, sig: { ...a.sig, extra: "smuggled" } };
+  assert.equal(anchorHash(smuggled), anchorHash(a), "one anchor, one lookup key");
   const res = scanForEquivocation([smuggled], TRUST_SET);
-  assert.equal(res.admitted, 0, "a closed sig schema refuses the extra member");
-  assert.equal(res.rejected.malformed, 1);
+  assert.equal(res.admitted, 1, "a newer producer is not an attacker");
+  assert.equal(res.rejected.malformed, 0);
 });
 
 // ── M6 ──────────────────────────────────────────────────────────────────────────────────────────

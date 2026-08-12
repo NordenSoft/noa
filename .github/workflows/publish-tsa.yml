@@ -19,7 +19,13 @@ name: publish-tsa
 #       Organization or user: NordenSoft
 #       Repository:           noa
 #       Workflow filename:    publish-tsa.yml
-#       (Environment:         leave blank)
+#       Environment:          npm-publish
+#
+#   STEP 2b (once, in this repository — the OIDC subject is only as good as what guards it):
+#     Settings → Environments → npm-publish → add REQUIRED REVIEWERS, and restrict the environment
+#     to protected tags. Trusted publishing authenticates the WORKFLOW; it says nothing about who
+#     asked it to run or what commit it was pointed at. Without a reviewer on the environment, write
+#     access to the repository is publish access to the package.
 #
 #   STEP 3 (every release after that, with no token, ever):
 #     git tag tsa-v0.1.1 && git push origin tsa-v0.1.1
@@ -36,11 +42,15 @@ on:
   push:
     tags:
       - 'tsa-v*'
-  # A manual run is useful for exercising the gates, and it must NEVER be able to publish. The
-  # version/tag comparison below only runs under `refs/tags/*`, so on a branch it was vacuously
-  # satisfied and the job walked straight into `npm publish` with nothing checking WHAT it shipped.
-  # The job-level `if` closes that at the condition itself rather than in a later step: on anything
-  # that is not a tsa-v* tag the publish job does not run at all.
+  # WHAT A MANUAL RUN CAN AND CANNOT DO, stated exactly, because the previous wording claimed an
+  # invariant this workflow does not have:
+  #   - On a BRANCH: the job-level `if` skips the entire job, so nothing runs — not the publish, and
+  #     not the gates either. A dispatch is therefore useless for rehearsing them; run the gates
+  #     locally (`npm test`, `npm run check:tarball`) or read them off a real tag run.
+  #   - On a TAG: a dispatcher can select a tag as the ref, and that DOES reach `npm publish`. It is
+  #     bounded rather than forbidden — the ancestry gate, the version/tag match and the `npm-publish`
+  #     environment's reviewers all still apply, and npm refuses a duplicate version — but "a manual
+  #     run can never publish" would be false and is not claimed.
   workflow_dispatch: {}
 
 concurrency:
@@ -54,10 +64,15 @@ permissions:
 
 jobs:
   publish:
-    # THE ONLY WAY THIS JOB RUNS IS A tsa-v* TAG. Not a branch, not a manual dispatch, not a fork.
+    # THE ONLY WAY THIS JOB RUNS IS A tsa-v* TAG. Not a branch, not a fork, and not a branch dispatch.
     if: startsWith(github.ref, 'refs/tags/tsa-v')
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # A HUMAN GATE ON THE RELEASE ITSELF. The tag condition proves the ref is a tag; it proves
+    # nothing about who created it. Configure `npm-publish` with required reviewers (see the header):
+    # without that, this line is documentation, and with it the job waits for an approval it cannot
+    # grant itself.
+    environment: npm-publish
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -90,6 +105,33 @@ jobs:
         run: |
           npm ci
           npm run build
+
+      - name: Gate — the tagged commit is reviewed history, not an arbitrary commit
+        # A TAG NAME IS NOT PROVENANCE. The version check below compares the tag's TEXT to
+        # package.json, which anyone with write access can satisfy: tag any unreviewed commit
+        # `tsa-v9.9.9`, bump the version on that same commit, and the workflow would have published
+        # it with OIDC and provenance attached — provenance that would faithfully attest a commit
+        # nobody reviewed. "It is a tag, not a branch" is true and beside the point, because a tag
+        # can point anywhere, including at a branch tip.
+        #
+        # So the released commit must be an ANCESTOR OF main: whatever the tag is called, its
+        # content went through the branch's own review. A force-moved tag is also bounded by this —
+        # it can only ever move to another commit that is already on main.
+        #
+        # It cannot bind tag NAME to commit permanently: a tag is mutable, so re-running this
+        # workflow after a force-move republishes under the same name from a different commit. npm's
+        # immutable versions stop that from overwriting a released version, and the SHA is printed
+        # below so the run log records exactly what was shipped. The residual gap is recorded in
+        # NON-CLAIMS.md rather than papered over here.
+        run: |
+          git fetch --no-tags origin main
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::tag $GITHUB_REF_NAME points at $GITHUB_SHA, which is NOT an ancestor of origin/main."
+            echo "::error::Releases are cut from reviewed history. Merge the commit first, then tag the merged SHA."
+            exit 1
+          fi
+          echo "released commit: $GITHUB_SHA (ancestor of origin/main)"
+          echo "released commit: $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Gate — the tag matches the package version
         # A mistagged push (tag says 0.2.0, package.json still 0.1.0) would otherwise publish a

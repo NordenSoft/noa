@@ -25,14 +25,45 @@ function assertAnchorShape(a) {
   }
 }
 
-/** Raw 32-byte sha256 digest of the canonicalized, sig-inclusive anchor. */
+/**
+ * The exact preimage, with the signature envelope NORMALISED to its three defined members.
+ *
+ * WHY NORMALISED, AND WHY THIS IS THE FIX FOR TWO DEFECTS AT ONCE. Hashing the sig object verbatim
+ * meant that an anchor carrying any additional `sig` member — `x5c`, `ds`, whatever a newer witness
+ * adds, JSON extensibility being conventional — hashed DIFFERENTLY here than it did after admission
+ * (which reads exactly {alg,kid,value}). One anchor, two keys: its TSA stamp was filed under one and
+ * looked up under the other, so it could never attach.
+ *
+ * The first fix for that closed the sig schema and refused the extra member. That traded a lookup
+ * bug for a worse one: a single forward-compatible anchor in an otherwise honest pool became
+ * "malformed", and the scanner's own verdict ladder turned it into a standing INCOMPLETE_POOL —
+ * a permanent false alarm, in a tool whose entire output is an accusation.
+ *
+ * Normalising here removes the divergence at its source instead. It is also the more defensible
+ * preimage: an extra member is covered by NEITHER the Ed25519 anchor signature (whose preimage is
+ * `anchorSigningInput` — chain, highestSeq, headHash, ts) NOR the TSA token, so it is unauthenticated
+ * data either way. Letting it change the identity of the anchor would give unsigned bytes power over
+ * a lookup key. The property this hash exists for is untouched: two witnesses over the identical
+ * frontier still hash differently, because `kid` and `value` differ.
+ */
+function anchorPreimage(anchor) {
+  return canonicalize({
+    chain: anchor.chain,
+    highestSeq: anchor.highestSeq,
+    headHash: anchor.headHash,
+    ts: anchor.ts,
+    sig: { alg: anchor.sig.alg, kid: anchor.sig.kid, value: anchor.sig.value },
+  });
+}
+
+/** Raw 32-byte sha256 digest of the canonicalized anchor (sig normalised to {alg,kid,value}). */
 export function anchorHashDigest(anchor) {
   assertAnchorShape(anchor);
-  return sha256Digest(canonicalize({ chain: anchor.chain, highestSeq: anchor.highestSeq, headHash: anchor.headHash, ts: anchor.ts, sig: anchor.sig }));
+  return sha256Digest(anchorPreimage(anchor));
 }
 
 /** "sha256:<hex>" form — the lookup key used in a .tsr sidecar file (see cli.mjs / verify.mjs). */
 export function anchorHash(anchor) {
   assertAnchorShape(anchor);
-  return "sha256:" + sha256Hex(canonicalize({ chain: anchor.chain, highestSeq: anchor.highestSeq, headHash: anchor.headHash, ts: anchor.ts, sig: anchor.sig }));
+  return "sha256:" + sha256Hex(anchorPreimage(anchor));
 }
