@@ -18,7 +18,13 @@ const MATCH_TYPES = new Set(["exact", "prefix", "suffix"]);
 const THRESHOLD_OPS = new Set(["ge", "gt"]);
 
 function ruleErrors(rule, idx) {
+  // INERT AT CREATION, BEFORE THE FIRST WRITE (L11). `arrayPush` applies the PRISTINE push, but the
+  // receiver is still this array, and push is defined as Set(O, "0", v) — a [[Set]] that walks the
+  // receiver's prototype chain to the mutable Object.prototype. An accessor planted there swallows
+  // the element while `length` still moves, so the caller reads back whatever the attacker's getter
+  // answers. Re-rooting AFTER the fill does not help: the write has already gone through.
   const errors = [];
+  objectSetPrototypeOf(errors, INERT_ARRAY_PROTOTYPE);
   const where = `approvalRules[${idx}]`;
   if (!rule || typeof rule !== "object") return [`${where}: must be an object`];
   if (typeof rule.id !== "string" || rule.id.length === 0) arrayPush(errors, `${where}.id: non-empty string`);
@@ -68,12 +74,20 @@ import { intrinsics } from "noa-receipt";
 // dispatches through no method at all — there is no `next`, no `map`, no `forEach` to replace — so
 // the class is closed rather than its current members. This is the same move the kernel made when
 // its key walk and code-point walk became index loops.
-const { isArray, hasOwn, strStartsWith, strEndsWith, isSafeInteger, arrayPush } = intrinsics;
+// ROUND 5 — THE WRITE. Rounds 1-3 hardened builtin READS and CALLS; round 4 named the class this
+// line's `objectSetPrototypeOf`/`INERT_ARRAY_PROTOTYPE` close, and `scripts/lint-inert-containers.mjs`
+// is the grammar that finds them. `out[k] = v` and `arrayPush(a, v)` both perform [[Set]], which
+// WALKS the receiver's prototype chain — so an ordinary `[]` on a decision path is a slot the
+// attacker already owns, with no builtin replaced at all.
+const { isArray, hasOwn, strStartsWith, strEndsWith, isSafeInteger, arrayPush,
+        objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 export function validateApprovalRules(approvalRules) {
   if (approvalRules === undefined || approvalRules === null) return { ok: true, errors: [] };
   if (!isArray(approvalRules)) return { ok: false, errors: ["approvalRules: must be an array"] };
+  // Inert before the first write — see the note in ruleErrors above.
   const errors = [];
+  objectSetPrototypeOf(errors, INERT_ARRAY_PROTOTYPE);
   const seenIds = new Set();
   for (let i = 0; i < approvalRules.length; i += 1) {
     const r = approvalRules[i];

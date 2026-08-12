@@ -48,7 +48,8 @@ import { intrinsics } from "noa-receipt";
 // So the builtins are taken from the kernel's module-load capture here too, whether or not each
 // individual site is reachable today. Reachability is a property of the surrounding code, and the
 // surrounding code changes.
-const { dateParse, isFiniteNumber, jsonParse, jsonStringify, arrayPush, setHas, mapHas, mapGet, mapSet, strSplit, strTrim } = intrinsics;
+const { dateParse, isFiniteNumber, jsonParse, jsonStringify, arrayPush, setHas, mapHas, mapGet, mapSet, strSplit, strTrim,
+        objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 // ROUND 4 / R4-06, R4-07. The remaining live reads on this file's decision paths: `Set.prototype.has`
 // deciding whether an event name is known (a poisoned `has` admits a line the loader must refuse),
 // `Map.prototype.has/get` deciding which rules were added, removed or modified, and
@@ -215,7 +216,14 @@ export function loadPendingIndex(path) {
     // Backward-compatible: an event with NO sessionId (every pre-R4-session-scope caller, and every
     // existing test) falls back to keying by `id` alone — identical behavior to before.
     const key = recordKeyOf(ev);
-    if (!mapHas(byId, key)) mapSet(byId, key, []);
+    if (!mapHas(byId, key)) {
+      // INERT BEFORE THE FIRST WRITE (L11). These per-record event arrays are folded into the
+      // approval index: a swallowed FIRST event is an "approved"/"denied" that `foldEvents` never
+      // sees while `length` still counts it, and the fold reads the attacker's getter instead.
+      const events = [];
+      objectSetPrototypeOf(events, INERT_ARRAY_PROTOTYPE);
+      mapSet(byId, key, events);
+    }
     arrayPush(mapGet(byId, key), ev);
   }
   const index = new Map();

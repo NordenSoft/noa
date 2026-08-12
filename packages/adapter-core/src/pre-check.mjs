@@ -43,7 +43,8 @@ import { intrinsics } from "noa-receipt";
 // policy evaluated inputs that were silently missing a key — an omission bypass with NO builtin
 // replaced at all (R4-02b). A null-prototype object has no chain to walk.
 const { isArray, objectKeys, arraySort, arrayPush, arrayJoin, jsonStringify, isFiniteNumber,
-        isSafeInteger, strIncludes, objectCreateNull, objectAssign } = intrinsics;
+        isSafeInteger, strIncludes, objectCreateNull, objectAssign, objectSetPrototypeOf,
+        INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 /**
  * ── THE DOCUMENT ENCODER (bytes-in) ──────────────────────────────────────────────────────────────
@@ -112,6 +113,22 @@ const MAX_ARGS_FLATTEN_ENTRIES = 2_000;
  * float `amountMinor`) the moment one is found, rather than guessing which of two colliding values
  * the caller "really meant".
  */
+/**
+ * The flatten budget, NULL-ROOTED BEFORE ITS COUNTER IS EVER WRITTEN (L11).
+ *
+ * `state.count++` is a [[Set]], and [[Set]] walks the receiver's prototype chain. Passed as a plain
+ * `{ count: 0 }` literal, an accessor at `Object.prototype.count` swallowed every increment while
+ * the getter kept answering 0 — so `state.count >= MAX_ARGS_FLATTEN_ENTRIES` never became true and
+ * the entry cap simply stopped existing, with the guard still visibly in the source and no builtin
+ * replaced. The sibling `out` container has been `objectCreateNull()` since R4-02b for the same
+ * reason; this is the half that was left on a live prototype.
+ */
+function newFlattenState() {
+  const state = objectCreateNull();
+  state.count = 0;
+  return state;
+}
+
 function flattenArgsToPolicyInputs(args, prefix, depth, out, state) {
   if (state.count >= MAX_ARGS_FLATTEN_ENTRIES || depth > MAX_ARGS_FLATTEN_DEPTH) return out;
   if (args === null || args === undefined) return out; // absent, not a scalar — omitted, not coerced
@@ -226,7 +243,14 @@ function stableStringifyFallback(value, seen) {
   if (isArray(value)) {
     if (seen.has(value)) throw new Error("noa-mcp-adapter-core: circular structure in tool-call args");
     seen.add(value);
+    // INERT BEFORE THE FIRST WRITE (L11), and MEASURED — this path is where the class was
+    // reproduced end to end. `arrayPush` applies the pristine push, but push is Set(O, "0", v) and
+    // [[Set]] walks THE RECEIVER'S chain, so an accessor at `Object.prototype["0"]` swallows the
+    // first element while `length` still moves, and `arrayJoin` then reads the attacker's value
+    // back. Two different tool calls collapsed to ONE paramsHash here — the same R4-05 collision the
+    // `Object.keys` note below records, arriving through a WRITE instead of a read.
     const items = [];
+    objectSetPrototypeOf(items, INERT_ARRAY_PROTOTYPE);
     for (let i = 0; i < value.length; i += 1) arrayPush(items, stableStringifyFallback(value[i], seen) ?? "null");
     seen.delete(value);
     return `[${arrayJoin(items, ",")}]`;
@@ -234,7 +258,12 @@ function stableStringifyFallback(value, seen) {
   if (t === "object") {
     if (seen.has(value)) throw new Error("noa-mcp-adapter-core: circular structure in tool-call args");
     seen.add(value);
+    // Inert before the first write — same reason as `items` above, and this is the container the
+    // measured collision actually ran through: with `Object.prototype["0"]` holding an accessor,
+    // `{amountMinor:10, rate:1.5}` and `{amountMinor:900000, rate:1.5}` produced the SAME
+    // paramsHash, so an approval minted for the small transfer authorises the large one.
     const parts = [];
+    objectSetPrototypeOf(parts, INERT_ARRAY_PROTOTYPE);
     // INDEX LOOP, not `for…of Object.keys(v).sort()`. This fallback runs when the hardened JCS
     // canonicalizer THROWS — which the surrounding code documents as an expected, legitimate shape
     // (JCS refuses non-integer numbers, and a float `rate` is ordinary tool-call input). A redteam
@@ -427,7 +456,7 @@ function computeReceiptPlan(toolCall, { policy, prev = null, seq = 0, tenant = "
     ev = { verdict: "DENY", ruleFired: "args-uncanonicalizable", engine: "args-canonicalization-guard" };
   } else {
     try {
-      objectAssign(inputs, flattenArgsToPolicyInputs(safeArgs, "args", 0, objectCreateNull(), { count: 0 }));
+      objectAssign(inputs, flattenArgsToPolicyInputs(safeArgs, "args", 0, objectCreateNull(), newFlattenState()));
       // BYTES-IN: both documents are serialized ONCE here and parsed by the kernel — see
       // `encodeDocument` above. A policy that cannot be serialized at all is its own fail-closed
       // DENY, not an args error: the receipt's `ruleId` is evidence, and evidence that names the

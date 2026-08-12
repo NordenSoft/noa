@@ -35,7 +35,7 @@ import { intrinsics } from "noa-receipt";
 // So the builtins are taken from the kernel's module-load capture here too, whether or not each
 // individual site is reachable today. Reachability is a property of the surrounding code, and the
 // surrounding code changes.
-const { jsonStringify } = intrinsics;
+const { jsonStringify, objectSetPrototypeOf } = intrinsics;
 
 
 function loadOrCreateApproverSigner(keyFile) {
@@ -50,7 +50,12 @@ function parseArgs(argv) {
   if (argv.length === 0) throw new Error("usage: noa-approve <approve|deny> --id <id> --by <email> --pending-store <path> --key-file <path> [--reason <text>] [--receipt-log <path>] [--ttl-ms <n>]");
   const command = argv[0];
   if (command !== "approve" && command !== "deny") throw new Error(`noa-approve: unknown command "${command}" (expected "approve" or "deny")`);
+  // NULL-ROOTED BEFORE THE FIRST FLAG IS APPLIED (L11). The literal above is built with
+  // CreateDataProperty and is safe; every `opts.x = value` below is a [[Set]] that walks the
+  // prototype chain. An accessor at `Object.prototype.keyFile` would swallow `--key-file` and hand
+  // this CLI back an approver key path of the attacker's choosing, with the flag apparently parsed.
   const opts = { id: null, by: null, reason: null, pendingStorePath: null, keyFile: null, receiptLogPath: null, ttlMs: DEFAULT_APPROVAL_TICKET_TTL_MS };
+  objectSetPrototypeOf(opts, null);
   for (let i = 1; i < argv.length; i++) {
     const flag = argv[i];
     const value = argv[++i];

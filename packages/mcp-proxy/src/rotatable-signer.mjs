@@ -1,4 +1,9 @@
 import { parseCanonicalInstant, SIGNING_KEY_LIFECYCLE_SPEC } from "./outcome-receipt.mjs";
+// The kernel's module-load capture, reached through the package this one already depends on. Only
+// the two members the L11 inert-container fix below needs are taken; every other builtin in this
+// file keeps its own local capture, which is this file's established style.
+import { intrinsics } from "noa-mcp-adapter-core";
+const { objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 // Capture the default clock when this module loads, so replacing Date.now afterwards cannot move a
 // retirement bound. This defends post-load mutation only: a Date.now poisoned before module
@@ -162,7 +167,20 @@ export function createRotatableSigner(initialKeyPair, options = {}) {
       return lifecycleHandle;
     },
     retiredKids() {
+      // INERT BEFORE THE FIRST WRITE (L11). `kids[kids.length] = kid` is a [[Set]] on an integer
+      // index, which walks the receiver's prototype chain: an accessor at `Object.prototype["0"]`
+      // swallows the FIRST retired kid while `length` still counts it, so a caller asking "which
+      // keys are retired?" gets a list that silently omits one — and a retired key that reads as
+      // never-retired is exactly the state this module exists to make explicit.
+      //
+      // The array is returned INERT. Two caller-visible differences follow and are accepted rather
+      // than hidden: `x instanceof Array` is false, and `deepStrictEqual` against an array literal
+      // no longer matches — the same two `src/inert.ts` documents for parser output. Everything this
+      // method's callers actually do keeps working (`length`, index reads, `join`, `JSON.stringify`,
+      // `Array.isArray`), and this is a retirement-state snapshot rather than caller data, so it is
+      // one of the values that should NOT be handed back on a live prototype.
       const kids = [];
+      objectSetPrototypeOf(kids, INERT_ARRAY_PROTOTYPE);
       forEachMapEntryCaptured(retired, (kid) => {
         kids[kids.length] = kid;
       });

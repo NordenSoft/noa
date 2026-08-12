@@ -84,7 +84,11 @@ import { intrinsics } from "noa-mcp-adapter-core";
 // module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
 // who adds one, so the builtins come from the kernel's module-load capture whether or not each site
 // is reachable today. Reachability is a property of the surrounding code, and that changes.
-const { isArray, objectKeys } = intrinsics;
+// ROUND 5 adds the WRITE half of the same argument: `arrayPush`/`objectSetPrototypeOf`/
+// `INERT_ARRAY_PROTOTYPE` exist here because `a.push(v)` is Set(O, "0", v) and [[Set]] walks the
+// RECEIVER's prototype chain — an ordinary `[]` on a decision path is a slot the attacker owns with
+// no builtin replaced at all. `scripts/lint-inert-containers.mjs` is the gate for that class.
+const { isArray, objectKeys, arrayPush, objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 import { buildOutcomeReceipt, buildOutcomeReceiptAsync } from "./outcome-receipt.mjs";
 
@@ -514,12 +518,18 @@ export async function createProxyServer({
     // tears down its per-request progress handler the instant the result lands — would drop every
     // progress event that arrives after it. Awaiting the relays first preserves the intended order
     // (all settled progress sends, THEN the result) on the same ordered transport.
+    // INERT BEFORE THE FIRST WRITE (L11). The handler AWAITS these relays before returning the tool
+    // result, so a swallowed element is a progress notification that is counted in `length` and then
+    // never awaited — `Promise.allSettled` would await the attacker's getter value instead. The
+    // inert prototype keeps a self-contained `Symbol.iterator`, so `allSettled` still iterates it
+    // (measured).
     const pendingProgressRelays = [];
+    objectSetPrototypeOf(pendingProgressRelays, INERT_ARRAY_PROTOTYPE);
     const forwardOptions =
       hostProgressToken !== undefined && hostProgressToken !== null
         ? {
             onprogress: (progress) => {
-              pendingProgressRelays.push(
+              arrayPush(pendingProgressRelays,
                 server
                   .notification({ method: "notifications/progress", params: { ...progress, progressToken: hostProgressToken } })
                   .catch((err) => console.error(`noa-mcp-proxy: session "${sessionId}" — failed to relay downstream progress to host (${describeThrown(err)})`)),

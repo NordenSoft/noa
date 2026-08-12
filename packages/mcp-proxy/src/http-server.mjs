@@ -38,13 +38,20 @@ import { intrinsics } from "noa-mcp-adapter-core";
 // module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
 // who adds one, so the builtins come from the kernel's module-load capture whether or not each site
 // is reachable today. Reachability is a property of the surrounding code, and that changes.
-const { jsonParse, jsonStringify } = intrinsics;
+const { jsonParse, jsonStringify, arrayPush, objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — fail closed on anything larger, never buffer unbounded
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
+    // INERT BEFORE THE FIRST WRITE (L11). These chunks become the JSON-RPC request body the proxy
+    // authorises. `.push` into an ordinary array is Set(O, "0", v), which walks the receiver's
+    // prototype chain: an accessor at `Object.prototype["0"]` swallows the FIRST chunk and answers
+    // reads with a buffer of the attacker's choosing, so `Buffer.concat` assembles a body that was
+    // never received. `Buffer.concat` reads `length` and integer indices only, so it is unaffected
+    // by the re-rooting itself (measured).
     const chunks = [];
+    objectSetPrototypeOf(chunks, INERT_ARRAY_PROTOTYPE);
     let size = 0;
     req.on("data", (c) => {
       size += c.length;
@@ -53,7 +60,7 @@ function readJsonBody(req) {
         req.destroy();
         return;
       }
-      chunks.push(c);
+      arrayPush(chunks, c);
     });
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
