@@ -331,6 +331,27 @@ function reloadAll(dir) {
       // receipt hash as its prevHash: one tenant's signed chain seeded from another's.
       // session-store.mjs's nested-map isolation argument is about MEMORY; it says nothing about
       // what a restart reads off disk, which is where this store's whole reason to exist lives.
+      //
+      // WHAT THIS BINDS, AND WHAT IT DOES NOT — measured, and stated narrowly on purpose. It binds
+      // the FILE NAME to the tenant the line CLAIMS. It does NOT bind a CHAIN to a tenant. Measured
+      // with real files and a real symlink: a plain regular file named
+      // `tenant-<sha256("victim-corp")>.jsonl` whose line claims "victim-corp" while carrying ACME's
+      // receipt is ACCEPTED and still seeds victim-corp at seq=1 on acme's prevHash, because the
+      // name and the claim agree by construction. The same content behind a real symlink is likewise
+      // ACCEPTED; a victim-named symlink pointing at acme's own file, whose lines still claim "acme",
+      // is REFUSED. So the symlink is irrelevant either way — what decides is whether name and claim
+      // agree. Concretely: this removes the APPEND-ONLY vector (a line copied inside an existing
+      // tenant's file, needing no new file), and does NOT stop an attacker who can CREATE files in
+      // this directory from standing up a correctly-named victim file carrying another tenant's
+      // chain state.
+      //
+      // The obvious widening — additionally require `receipt.scope.tenant === parsed.tenant` — was
+      // measured and REJECTED as an illusion: `scope.required` in the FROZEN noa.receipt/0.1 schema
+      // is ["chain"], so `scope.tenant` is OPTIONAL, and deleting that one field from the forged
+      // line was measured to seed victim-corp exactly as before. `scope.chain` is no better:
+      // pre-check.mjs lets a caller override it outright, so its prefix is not a reliable tenant. A
+      // guard described more broadly than it binds is worse than a narrow one that says so.
+      //
       // Re-derive the path from the CLAIMED tenant and refuse any line that does not hash back to
       // the file holding it — the same fail-closed refusal the torn-line checks above use, because
       // a line that lies about its tenant is corruption of exactly that severity.

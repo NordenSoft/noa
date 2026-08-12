@@ -481,3 +481,62 @@ test("createFileSessionStore: the tenant-file binding is not a blanket refusal �
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// ── HONEST LIMIT — what the tenant-file binding actually binds ───────────────────────────────────
+// Two reviewers reached opposite conclusions about this guard and a symlink, so it is measured here
+// with REAL files and a REAL symlink and pinned, in the same spirit as the readdirSync-ordering
+// HONEST LIMIT test above. The guard binds the FILE NAME to the tenant the line CLAIMS. It does NOT
+// bind a CHAIN to a tenant. Both of these are documented limits, not bugs to be silently widened:
+// the widening (also requiring receipt.scope.tenant === parsed.tenant) is an illusion, because
+// scope.required in the FROZEN noa.receipt/0.1 schema is ["chain"] and deleting that one optional
+// field restores the attack. See the guard's own comment in file-session-store.mjs.
+
+test("createFileSessionStore: HONEST LIMIT -- the tenant guard binds the FILE NAME to the CLAIMED tenant, not a chain to a tenant: a correctly-named victim file carrying another tenant's chain is still accepted", () => {
+  const dir = tmpDir("noa-file-session-store-bindlimit-");
+  const { signer } = signerAndKeyring("test-fss-bindlimit");
+
+  const store1 = createFileSessionStore(dir);
+  const p1 = prepareSessionReceipt({ name: "payment.refund", args: { amountMinor: 10 } }, { sessionId: "sess-A", store: store1, signer, policy: REFUND_GUARD_POLICY, tenant: "acme" });
+  assert.equal(commitSessionReceipt(store1, "sess-A", p1.receipt, p1.segmentId, p1.tenant), true);
+  store1.dispose();
+
+  const acmeLine = JSON.parse(fs.readFileSync(path.join(dir, tenantFileName("acme")), "utf8").split("\n").filter(Boolean)[0]);
+
+  // A plain REGULAR file, no symlink anywhere: correctly named for victim-corp, its line CLAIMS
+  // victim-corp, and it carries ACME's receipt. Name and claim agree, so the guard is satisfied by
+  // construction and this is accepted.
+  fs.writeFileSync(
+    path.join(dir, tenantFileName("victim-corp")),
+    JSON.stringify({ ...acmeLine, tenant: "victim-corp", sessionId: "sess-V" }) + "\n",
+  );
+
+  const store2 = createFileSessionStore(dir);
+  const seeded = store2.peek("sess-V", "victim-corp");
+  assert.equal(seeded.seq, 1, "documented limit: victim-corp still resumes at seq=1");
+  assert.equal(seeded.prev.chain.hash, acmeLine.receipt.chain.hash, "documented limit: on ACME's prevHash — the guard never claimed to stop this");
+  store2.dispose();
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("createFileSessionStore: a victim-named REAL SYMLINK pointing at acme's own file IS refused — because the lines there still claim acme, so name and claim disagree", () => {
+  const dir = tmpDir("noa-file-session-store-bindlink-");
+  const { signer } = signerAndKeyring("test-fss-bindlink");
+
+  const store1 = createFileSessionStore(dir);
+  const p1 = prepareSessionReceipt({ name: "payment.refund", args: { amountMinor: 10 } }, { sessionId: "sess-A", store: store1, signer, policy: REFUND_GUARD_POLICY, tenant: "acme" });
+  assert.equal(commitSessionReceipt(store1, "sess-A", p1.receipt, p1.segmentId, p1.tenant), true);
+  store1.dispose();
+
+  const linkPath = path.join(dir, tenantFileName("victim-corp"));
+  fs.symlinkSync(path.join(dir, tenantFileName("acme")), linkPath);
+  assert.equal(fs.lstatSync(linkPath).isSymbolicLink(), true, "precondition: this is a real symlink, not a copy");
+
+  assert.throws(
+    () => createFileSessionStore(dir),
+    /cross-tenant chain-seeding/,
+    "pre-fix this constructed fine and seeded victim-corp from acme's chain through the link",
+  );
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
