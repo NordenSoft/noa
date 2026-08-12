@@ -10,7 +10,7 @@
  * never an exception, and `then` is guaranteed to be exactly ALLOW|DENY before it reaches a verdict.
  */
 
-import type { Policy, Condition, Scalar } from "./dsl.js";
+import type { Policy, Scalar } from "./dsl.js";
 import { POLICY_SPEC } from "./dsl.js";
 import { canonicalize, MAX_DEPTH } from "../jcs.js";
 import { parseDocument } from "../bytes.js";

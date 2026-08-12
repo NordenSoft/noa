@@ -15,7 +15,7 @@ import { validateReceiptShapeParsed } from "../schema.js";
 import { parseDocument } from "../bytes.js";
 import { parseVerificationKeyring } from "../verification-keyring.js";
 import type { Receipt } from "../types.js";
-import type { Keyring, IdentityManifest } from "../keys.js";
+import type { IdentityManifest } from "../keys.js";
 import { arrayIncludes, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray, bufferFrom, bufToString, bufEquals, jsonStringify } from "../intrinsics.js";
 
 /** Wrap a receipt as a COSE_Sign1 (CBOR bytes). Payload = JCS-canonical receipt. */

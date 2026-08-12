@@ -56,8 +56,6 @@
 // second exception to. `isProxy` is captured in `src/intrinsics.ts` with every other builtin.
 import { isProxy as _isProxy, hasOwn as _hasOwn, arrayJoin as _arrayJoin } from "./intrinsics.js";
 import { decodeDocument } from "./bytes.js";
-const _apply: <T, A extends readonly unknown[], R>(fn: (this: T, ...a: A) => R, thisArg: T, args: A) => R =
-  Reflect.apply as never;
 const _ownKeys = Reflect.ownKeys;
 const _getOwnPropertyDescriptor = Reflect.getOwnPropertyDescriptor;
 const _getPrototypeOf = Reflect.getPrototypeOf;

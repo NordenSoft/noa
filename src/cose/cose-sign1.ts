@@ -8,9 +8,8 @@
 
 import { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, type CborValue } from "./cbor.js";
 import { signEd25519, verifyEd25519, type Keyring } from "../keys.js";
-import { parseDocument } from "../bytes.js";
 import { parseVerificationKeyring } from "../verification-keyring.js";
-import { bufEquals, bufToString, bufferFrom, bufferAlloc, isArray, jsonStringify } from "../intrinsics.js";
+import { bufEquals, bufToString, bufferFrom, bufferAlloc, jsonStringify } from "../intrinsics.js";
 
 /**
  * H1 — LIFT A SIGNED BYTE STRING INTO A JS STRING ONLY IF IT ROUND-TRIPS.

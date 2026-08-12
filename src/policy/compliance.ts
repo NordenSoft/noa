@@ -38,7 +38,7 @@ import { canonicalize } from "../jcs.js";
 import { sha256Prefixed, sha256Hex } from "../hash.js";
 import { validateReceiptShapeParsed } from "../schema.js";
 import { receiptHashInput } from "../canonicalize.js";
-import { verifyEd25519, type Keyring, type IdentityManifest } from "../keys.js";
+import { verifyEd25519 } from "../keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN } from "../signing.js";
 import { arrayIncludes, arrayJoin, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray, jsonStringify } from "../intrinsics.js";
 import { parseVerificationKeyring, type ParsedVerificationKeyring } from "../verification-keyring.js";

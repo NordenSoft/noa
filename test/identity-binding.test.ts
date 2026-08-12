@@ -113,7 +113,7 @@ test("B1: RE-HEADING truncation — a co-trusted key appends onto a victim's pre
 
   // alice opens + a damning CRITICAL refund tail
   const a0 = mkR("a0", "alice", "login", "LOW", null, aliceS);
-  const a1 = mkR("a1", "alice", "payment.refund", "CRITICAL", a0, aliceS);
+  void mkR("a1", "alice", "payment.refund", "CRITICAL", a0, aliceS); // the receipt bob's attack DROPS: created so the honest tail exists, never re-read
   // ATTACK: bob appends onto a0 — drops a1, re-heads, forges a checkpoint over his head
   const b1 = mkR("b1", "bob", "noop", "LOW", a0, bobS);
   const bobCp = buildCheckpoint(b1, "2026-06-21T11:00:00.000Z", bobS);

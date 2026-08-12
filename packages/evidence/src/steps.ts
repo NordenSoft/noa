@@ -540,7 +540,6 @@ export function step4_decision(ctx: Ctx): StepResult {
   const b = ctx.bundle;
   const decision = b.decisionArtifact;
   if (decision === undefined || !asObj(decision)) return ok(S); // no decision for this outcome (e.g. EXPIRED)
-  const d = asObj(decision)!;
 
   // NOTE: the F15 approver-TIER check (approve-high vs approve-critical for the action's riskClass)
   // is deliberately OWNED by step 5, not here — so a tier violation is attributed to step 5. Here we

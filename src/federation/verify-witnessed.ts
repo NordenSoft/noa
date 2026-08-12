@@ -17,14 +17,11 @@
  * one, or a valid chain with an unmet quorum for a complete one.
  */
 
-import { verifyChain, verifyChainText, DEFAULT_MAX_RECEIPTS, type VerifyResult, type VerifyOptions } from "../verify.js";
-import { safeParse } from "../safe-json.js";
+import { verifyChain, DEFAULT_MAX_RECEIPTS, type VerifyResult, type VerifyOptions } from "../verify.js";
 import { parseDocument } from "../bytes.js";
 import { inertOptions, type OptionSchema } from "../opts.js";
 import { frozenTable } from "../inert.js";
 import { isArray, arrayLength, isFiniteNumber } from "../intrinsics.js";
-import type { Keyring, IdentityManifest } from "../keys.js";
-import type { Checkpoint } from "../types.js";
 import {
   verifyCompletenessParsed,
   type Anchor,
