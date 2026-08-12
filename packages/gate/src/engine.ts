@@ -215,6 +215,19 @@ export interface GateEngineDeps {
    * gate that believes it is protected and is not.
    */
   executionSigner?: ExecutionSigner;
+  /**
+   * EXPLICIT ACKNOWLEDGEMENT that this gate keeps its grant-signing key on its own heap.
+   *
+   * ── WHY PROTECTION IS NOT THE OPT-IN ANY MORE (adversarial review 2026-08-12) ────────────────
+   * The first cut made the sidecar opt-in and the in-process key the silent default, so the
+   * configuration `NON-CLAIMS.md` describes as the defect was the one you got by saying nothing.
+   * For an authority root that is backwards: the UNSAFE posture is what must be typed out. A gate
+   * constructed with neither an `executionSigner` nor this flag now refuses to exist.
+   *
+   * Set it in tests, demos and local development. Setting it in a deployment is a decision, and it
+   * is a decision that has to be written down in the source that makes it.
+   */
+  unsafeInProcessGrantKey?: true;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -240,6 +253,14 @@ export class GateEngine {
     // actually signs. If those disagree the gate either emits grants nobody accepts (loud, merely
     // broken) or keeps an in-process key the manifest still trusts (silent, and the whole custody
     // property is void). Neither may be discovered on the first human approval.
+    if (!deps.executionSigner && deps.unsafeInProcessGrantKey !== true) {
+      throw new Error(
+        "GateEngine: no execution signer was supplied. The grant-signing key would live on this process's heap — the exact " +
+          "configuration NON-CLAIMS.md's authority-root corollary describes as an unprotected authority root. Pass " +
+          "`executionSigner: remoteExecutionSigner({...})`, or state the development posture explicitly with " +
+          "`unsafeInProcessGrantKey: true`.",
+      );
+    }
     const externalKid = this.trust.executionSigner?.kid;
     this.execSigner = deps.executionSigner ?? localExecutionSigner(this.trust.gate);
     const expectedKid = externalKid ?? this.trust.gate.kid;

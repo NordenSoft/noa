@@ -25,7 +25,8 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync, chmodSync } from "node:fs";
+import { generateKeyPairSync } from "node:crypto";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, symlinkSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,7 +39,14 @@ import {
   verifyArtifact,
 } from "noa-approval-artifacts";
 import { GateEngine } from "../src/engine.js";
+import { createGate } from "../src/server.js";
 import { remoteExecutionSigner, type ExecutionSigner } from "../src/exec-signer.js";
+import {
+  ApprovalReplayStore,
+  assertSocketDirIsNotWorldAccessible,
+  loadGrantSignerTrust,
+  validateGrantRequest,
+} from "../src/grant-sidecar.js";
 import { createAlphaTrust, type GateTrust } from "../src/trust.js";
 import { InMemoryStore } from "../src/store.js";
 import { resolveGateConfig } from "../src/config.js";
@@ -49,6 +57,63 @@ import { testSealer, signPhoneDecision, sampleCommandParams, body } from "./help
 import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
+
+/** An X25519 public half for the enrolled approver record. Real key material; the §8 protocol does
+ *  not exercise it here, but the manifest entry must carry a well-formed one. */
+function generateX25519PublicForTest(): string {
+  const { publicKey } = generateKeyPairSync("x25519");
+  return (publicKey.export({ type: "spki", format: "der" }) as Buffer).toString("base64");
+}
+
+/**
+ * A stand-in listener speaking the sidecar's wire protocol, so a test can play a HOSTILE signer.
+ *
+ * IT MUST BE ITS OWN PROCESS, and finding that out is worth recording: the client shim is driven by
+ * `spawnSync`, so while the gate waits for a reply its event loop is BLOCKED. A rogue listener
+ * living in this test process could never accept the connection, and the first version of these two
+ * tests deadlocked for the full 10-second client timeout instead of measuring anything. The
+ * synchronous transport that keeps `decide()` atomic has this as its cost, and a test harness that
+ * hides it would be lying about the shape of the system.
+ *
+ * `reply` is stringified into the child, so it must be self-contained.
+ */
+async function rogueSigner(socketPath: string, replySource: string): Promise<ChildProcess> {
+  const script = path.join(H.dir, `rogue-${path.basename(socketPath)}.mjs`);
+  writeFileSync(script, `
+import { createServer } from "node:net";
+const reply = ${replySource};
+const server = createServer((sock) => {
+  let buf = "";
+  sock.setEncoding("utf8");
+  sock.on("data", (chunk) => {
+    buf += chunk;
+    const nl = buf.indexOf("\\n");
+    if (nl === -1) return;
+    let req = {};
+    try { req = JSON.parse(buf.slice(0, nl)); } catch { /* a hostile peer need not be well-formed */ }
+    sock.end(JSON.stringify(reply(req)) + "\\n");
+  });
+  sock.on("error", () => sock.destroy());
+});
+server.listen(${JSON.stringify(socketPath)}, () => console.error("rogue: listening"));
+`);
+  const child = spawn(process.execPath, [script], { stdio: ["ignore", "pipe", "pipe"] });
+  await new Promise<void>((resolve, reject) => {
+    const t = setTimeout(() => reject(new Error("rogue signer did not start")), 10_000);
+    child.stderr!.setEncoding("utf8");
+    child.stderr!.on("data", (c: string) => {
+      if (c.includes("rogue: listening")) {
+        clearTimeout(t);
+        resolve();
+      }
+    });
+    child.once("exit", (code) => {
+      clearTimeout(t);
+      reject(new Error(`rogue signer exited early (${String(code)})`));
+    });
+  });
+  return child;
+}
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const SIDECAR = path.join(HERE, "..", "src", "grant-sidecar.js");
 const CALL_SHIM = path.join(HERE, "..", "src", "grant-signer-call.js");
@@ -56,12 +121,15 @@ const CALL_SHIM = path.join(HERE, "..", "src", "grant-signer-call.js");
 interface Harness {
   dir: string;
   socket: string;
+  trustFile: string;
   child: ChildProcess;
   trust: GateTrust;
   store: InMemoryStore;
   engine: GateEngine;
   agent: AgentRecord;
   signer: ExecutionSigner;
+  /** THE PHONE. Held by the test, never by `trust` — that is the point of the production posture. */
+  phone: { kid: string; privateKey: string; publicKey: string };
 }
 let H: Harness;
 
@@ -130,6 +198,14 @@ before(async () => {
   writeFileSync(keyFile, JSON.stringify({ kid: grantKey.kid, privateKey: grantKey.privateKey, publicKey: grantKey.publicKey }), { mode: 0o600 });
   chmodSync(keyFile, 0o600);
 
+  // 1b. THE PHONE. Minted here and kept HERE — `createAlphaTrust` gets the public half only, so the
+  //     gate's trust root has no approver private key to steal. The first cut of this file called
+  //     `createAlphaTrust()` with no approver argument, which GENERATED the phone key inside the
+  //     gate, and then described the resulting attack as an "honest limit" while shipping it as the
+  //     only wiring (adversarial review 2026-08-12, CRITICAL 2). The posture is now the tested one.
+  const phoneKey = generateKeyPair("approver-1-device-1");
+  const phoneHpke = generateX25519PublicForTest();
+
   // 2. The trust root names THAT kid as the tenant's only `execution-signer`; the gate key drops to
   //    `hold-signer`. Real clock, because the sidecar's approval-freshness window is measured
   //    against its own clock and a frozen 2026-07-14 fixture would be refused as stale — correctly.
@@ -137,6 +213,7 @@ before(async () => {
     tenant: "alpha-tenant",
     approverRole: "approve-high",
     executionSigner: { kid: grantKey.kid, publicKey: grantKey.publicKey },
+    approverPublicKey: { kid: phoneKey.kid, publicKey: phoneKey.publicKey, hpkePublicKey: phoneHpke },
   });
 
   // 3. The sidecar's OWN trust material, provisioned to it — never taken from a request.
@@ -165,7 +242,9 @@ before(async () => {
     });
   });
 
-  const signer = remoteExecutionSigner({ socketPath: socket });
+  // The signer's identity is OPERATOR-supplied (from the key we provisioned above), never learned
+  // from the socket — CRITICAL 3.
+  const signer = remoteExecutionSigner({ socketPath: socket, expect: { kid: grantKey.kid, publicKey: grantKey.publicKey } });
   assert.equal(signer.kid, grantKey.kid, "the running sidecar is the key the manifest authorizes");
 
   const store = new InMemoryStore();
@@ -181,7 +260,7 @@ before(async () => {
     executionSigner: signer,
   });
 
-  H = { dir, socket, child, trust, store, engine, agent, signer };
+  H = { dir, socket, trustFile, child, trust, store, engine, agent, signer, phone: phoneKey };
 });
 
 after(() => {
@@ -219,7 +298,12 @@ test("the gate process holds NO key the manifest lets sign an Execution Grant", 
     }
     return out;
   };
-  assert.deepEqual(privateKeyPaths(H.trust).sort(), ["approver.privateKey", "gate.privateKey"]);
+  // ── STRONGER THAN IT WAS, AND THE REVIEW IS WHY ─────────────────────────────────────────────
+  // This used to accept `["approver.privateKey", "gate.privateKey"]` — i.e. the "fully compromised
+  // gate" the headline test names was handed the phone's key by the fixture, and the principal
+  // attack then excluded it by stipulation. In the production posture the gate's trust root holds
+  // exactly one private key: its own.
+  assert.deepEqual(privateKeyPaths(H.trust).sort(), ["gate.privateKey"]);
 });
 
 test("EVIDENCE GATE: a fully compromised gate cannot obtain a grant for unapproved params", async () => {
@@ -227,6 +311,7 @@ test("EVIDENCE GATE: a fully compromised gate cannot obtain a grant for unapprov
   // The genuine human approval — for the params the human actually saw.
   const approval = signPhoneDecision({
     trust: H.trust,
+    signer: H.phone,
     deferredReceipt: A.deferred,
     holdEnvelope: A.holdEnvelope,
     decision: "APPROVE",
@@ -317,7 +402,7 @@ test("EVIDENCE GATE: a fully compromised gate cannot obtain a grant for unapprov
 
   // ── ATTACK 5 — mix and match: another hold's genuine approval, this hold's envelope. ──────────
   const Bh = freshHold("chain-other");
-  const bApproval = signPhoneDecision({ trust: H.trust, deferredReceipt: Bh.deferred, holdEnvelope: Bh.holdEnvelope, decision: "APPROVE" });
+  const bApproval = signPhoneDecision({ trust: H.trust, signer: H.phone, deferredReceipt: Bh.deferred, holdEnvelope: Bh.holdEnvelope, decision: "APPROVE" });
   const mixed = rawCall({
     op: "sign-grant",
     artifact: grantDoc({ grantId: "attack-5", holdId: A.holdId, paramsHash: A.paramsHash, holdEnvelope: A.holdEnvelope, approvalReceipt: bApproval.receipt }),
@@ -329,6 +414,7 @@ test("EVIDENCE GATE: a fully compromised gate cannot obtain a grant for unapprov
   // ── ATTACK 6 — a genuine but STALE approval, resurrected by the compromised gate. ─────────────
   const stale = signPhoneDecision({
     trust: H.trust,
+    signer: H.phone,
     deferredReceipt: A.deferred,
     holdEnvelope: A.holdEnvelope,
     decision: "APPROVE",
@@ -420,7 +506,7 @@ test("the ATTESTATION op still works, and cannot be turned into authority", () =
   // this proves the gate can still resolve a hold — otherwise the split would be a liveness break
   // wearing a security costume.
   const C = freshHold("chain-deny");
-  const denial = signPhoneDecision({ trust: H.trust, deferredReceipt: C.deferred, holdEnvelope: C.holdEnvelope, decision: "DENY" });
+  const denial = signPhoneDecision({ trust: H.trust, signer: H.phone, deferredReceipt: C.deferred, holdEnvelope: C.holdEnvelope, decision: "DENY" });
   const decided = H.engine.decide(C.holdId, body({ receipt: denial.receipt, decisionArtifact: denial.decisionArtifact }));
   assert.equal(decided.status, 200, JSON.stringify(decided.body));
   const dv = decided.body as { status: string; holdResolution: Record<string, unknown> };
@@ -434,23 +520,306 @@ test("the ATTESTATION op still works, and cannot be turned into authority", () =
   assert.ok(resCheck.ok, `hold resolution must verify under the remote signer: ${resCheck.reason}`);
 });
 
-test("HONEST LIMIT (measured, not assumed): an attacker holding the APPROVER key does get a grant", () => {
-  // The property above is conditional on the approver's device key not being co-resident with the
-  // gate. `createAlphaTrust` mints that key in-process for the alpha demo, so this run CAN play the
-  // stronger attacker — and it succeeds. Recorded here rather than in prose so the precondition is a
-  // measurement someone can re-run, and so a future change that quietly weakens it has a test to
-  // break. `NON-CLAIMS.md` states the same limit in words.
-  const D = freshHold("chain-honest-limit");
-  const attackerApproval = signPhoneDecision({
-    trust: H.trust, // includes trust.approver.privateKey — the phone key, present only in the alpha
+test("the phone key is what the boundary rests on, and the gate no longer holds it", () => {
+  // THE PRECONDITION, MEASURED FROM BOTH SIDES.
+  //
+  // Positive: whoever holds the phone key can produce an approval this signer accepts — that is not
+  // a weakness, it is what an approver IS, and it keeps this suite from proving its refusals by
+  // being unable to approve at all.
+  const D = freshHold("chain-phone-key");
+  const approval = signPhoneDecision({
+    trust: H.trust,
+    signer: H.phone, // the PHONE's key — held by this test, absent from H.trust
     deferredReceipt: D.deferred,
     holdEnvelope: D.holdEnvelope,
     decision: "APPROVE",
   });
   const got = rawCall({
     op: "sign-grant",
-    artifact: grantDoc({ grantId: "limit-1", holdId: D.holdId, paramsHash: D.paramsHash, holdEnvelope: D.holdEnvelope, approvalReceipt: attackerApproval.receipt }),
-    proof: { holdEnvelope: D.holdEnvelope, decisionArtifact: attackerApproval.decisionArtifact, deferredReceipt: D.deferred, approvalReceipt: attackerApproval.receipt },
+    artifact: grantDoc({ grantId: "phone-1", holdId: D.holdId, paramsHash: D.paramsHash, holdEnvelope: D.holdEnvelope, approvalReceipt: approval.receipt }),
+    proof: { holdEnvelope: D.holdEnvelope, decisionArtifact: approval.decisionArtifact, deferredReceipt: D.deferred, approvalReceipt: approval.receipt },
   });
-  assert.ok(got["artifact"], `expected the approver-key-holding attacker to SUCCEED, got ${String(got["error"])}`);
+  assert.ok(got["artifact"], `the enrolled approver must be able to approve, got ${String(got["error"])}`);
+
+  // Negative: and the compromised gate cannot reach that key, because the trust root it was built
+  // with never received it. The earlier version of this file asserted the OPPOSITE and called it an
+  // honest limit while shipping the co-resident wiring as the only path.
+  assert.equal(H.trust.approver.privateKey, undefined);
+  assert.equal(H.trust.approver.kid, H.phone.kid);
+  assert.equal(H.trust.approver.publicKey, H.phone.publicKey);
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+// REGRESSION SUITE — ONE TEST PER FINDING FROM THE 2026-08-12 ADVERSARIAL REVIEW.
+//
+// Every one of these was reproducible against commit 44ab9dc while the gate's own 251-test suite
+// passed. That is the lesson worth keeping: the earlier tests modelled what the author intended,
+// not what the attacker could reach. Each test below names its finding and fails without its fix.
+// ════════════════════════════════════════════════════════════════════════════════════════════════
+
+test("F1 (CRITICAL): a trust file whose two keyrings disagree about a kid is refused at startup", () => {
+  // THE ATTACK: `keyring[kid]` = the phone's real public key, `receiptKeyring.keys[kid]` = the
+  // COMPROMISED GATE's public key, same kid. A genuine phone Decision then authenticates against one
+  // map while a gate-forged ALLOWED receipt carrying attacker parameters authenticates against the
+  // other, and a kid-string comparison sees one approver. Reproduced end to end: the sidecar signed,
+  // and the shipped verifier returned ok:true on the result.
+  const genuine = JSON.parse(readFileSync(H.trustFile, "utf8")) as {
+    keyring: Record<string, { publicKey: string }>;
+    receiptKeyring: { keys: Record<string, { publicKey: string }> };
+  };
+  const confused = JSON.parse(JSON.stringify(genuine)) as typeof genuine;
+  confused.receiptKeyring.keys[H.phone.kid]!.publicKey = H.trust.gate.publicKey;
+  const file = path.join(H.dir, "confused-trust.json");
+  writeFileSync(file, JSON.stringify(confused), { mode: 0o600 });
+
+  assert.throws(
+    () => loadGrantSignerTrust(file),
+    /DIFFERENT public keys in keyring and receiptKeyring/,
+    "a kid that denotes two different keys is two trust roots, and this process must have exactly one",
+  );
+
+  // The same confusion refused at the POINT OF USE, so a trust object that never went through the
+  // loader cannot reintroduce it. These two controls fail independently on purpose.
+  const perRequest = validateGrantRequest({
+    grant: { spec: "noa.execution-grant/0.1" },
+    proof: {},
+    trust: {
+      spec: "noa.grant-signer-trust/1",
+      tenant: H.trust.tenant,
+      keyring: { [H.phone.kid]: { publicKey: H.phone.publicKey, type: "APPROVER", roles: ["approve-high"] } },
+      receiptKeyring: { spec: "noa.signing-key-lifecycle/0.1", keys: { [H.phone.kid]: { publicKey: H.trust.gate.publicKey, retiredAt: null } } },
+    } as never,
+    schemas,
+    nowMs: Date.now(),
+    maxApprovalAgeMs: 900_000,
+    maxGrantTtlMs: 300_000,
+  });
+  assert.equal(perRequest.ok, false);
+});
+
+test("F2 (CRITICAL): an external grant signer with an in-process approver key is refused outright", () => {
+  // The gate's out-of-process authority root authorizes on exactly one thing an attacker inside the
+  // gate cannot forge: the approver's signature. Generating that key in the gate makes the boundary
+  // decorative — and it was the ONLY shipped wiring, while this file called it an honest limit.
+  assert.throws(
+    () => createAlphaTrust({ tenant: "t", executionSigner: { kid: "grant-signer-1", publicKey: H.trust.executionSigner!.publicKey } }),
+    /requires `approverPublicKey`/,
+    "coupling the two is the fix; documenting the danger is not",
+  );
+  // ANTI-VACUITY: the correct combination is accepted, so the refusal above is a discrimination and
+  // not a blanket failure.
+  const ok = createAlphaTrust({
+    tenant: "t",
+    executionSigner: { kid: "grant-signer-1", publicKey: H.trust.executionSigner!.publicKey },
+    approverPublicKey: { kid: H.phone.kid, publicKey: H.phone.publicKey, hpkePublicKey: generateX25519PublicForTest() },
+  });
+  assert.equal(ok.approver.privateKey, undefined);
+});
+
+test("F3 (CRITICAL): the signer's identity comes from the operator, not from the socket", async () => {
+  // The gate MINTS A KEY MANIFEST naming its execution-signer. Learning that identity from the
+  // socket meant anyone who could replace the listener before startup could publish themselves as
+  // the tenant's authority root and sign without any policy checks at all.
+  const attacker = generateKeyPair("attacker-signer-1");
+  const rogueSocket = path.join(H.dir, "rogue.sock");
+  const server = await rogueSigner(rogueSocket, `() => (${JSON.stringify({ kid: attacker.kid, pub: attacker.publicKey, alg: "ed25519" })})`);
+  try {
+    assert.throws(
+      () => remoteExecutionSigner({
+        socketPath: rogueSocket,
+        expect: { kid: H.trust.executionSigner!.kid, publicKey: H.trust.executionSigner!.publicKey },
+      }),
+      /do not match the operator-pinned identity/,
+      "a signer that can name itself is not an authority root",
+    );
+  } finally {
+    server.kill("SIGTERM");
+  }
+});
+
+test("F4 (HIGH): a returned signature that does not verify is refused, not shipped", async () => {
+  // `assertSignedDocMatches` checked fields, shape and kid and never ran Ed25519. Reproduced: a
+  // response echoing the exact document with value:"not-a-signature" made decide() return 200 and
+  // persist an APPROVED hold with an UNUSED grant — the gate believing in authority it never got.
+  const real = H.trust.executionSigner!;
+  const rogueSocket = path.join(H.dir, "liar.sock");
+  const server = await rogueSigner(
+    rogueSocket,
+    `(req) => req.op === "pubkey"
+      ? ${JSON.stringify({ kid: real.kid, pub: real.publicKey, alg: "ed25519" })}
+      : { artifact: { ...req.artifact, sig: { alg: "ed25519", kid: ${JSON.stringify(real.kid)}, value: "not-a-signature" } } }`,
+  );
+  try {
+    // The liar passes the identity check — it presents the pinned kid and public key — so only the
+    // cryptographic check can catch it. That is exactly the gap this closes.
+    const signer = remoteExecutionSigner({ socketPath: rogueSocket, expect: { kid: real.kid, publicKey: real.publicKey } });
+    assert.throws(
+      () => signer.signAttestation({
+        spec: "noa.execution-consumption/0.1",
+        grantHash: "sha256:" + "c".repeat(64),
+        consumedAt: new Date().toISOString(),
+        attemptReceiptHash: "sha256:" + "d".repeat(64),
+        result: "DISPATCHED",
+      }),
+      /does not verify under the pinned public key/,
+    );
+  } finally {
+    server.kill("SIGTERM");
+  }
+});
+
+test("F5 (HIGH): a hold that has already expired can never carry a grant", () => {
+  const E = freshHold("chain-expiry");
+  const approval = signPhoneDecision({ trust: H.trust, signer: H.phone, deferredReceipt: E.deferred, holdEnvelope: E.holdEnvelope, decision: "APPROVE" });
+  const envelopeExpiryMs = Date.parse(E.holdEnvelope.expiresAt);
+  // Driven through the pure validator so the clock is an argument rather than a sleep. The approval
+  // itself is still inside its freshness window — only the HOLD has run out, which is precisely the
+  // case the freshness check could not see.
+  const afterExpiry = envelopeExpiryMs + 120_000;
+  const verdict = validateGrantRequest({
+    grant: grantDoc({
+      grantId: "expired-1", holdId: E.holdId, paramsHash: E.paramsHash, holdEnvelope: E.holdEnvelope,
+      approvalReceipt: approval.receipt,
+      issuedAt: new Date(afterExpiry).toISOString(),
+      expiresAt: new Date(afterExpiry + 60_000).toISOString(),
+    }),
+    proof: { holdEnvelope: E.holdEnvelope, decisionArtifact: approval.decisionArtifact, deferredReceipt: E.deferred, approvalReceipt: approval.receipt },
+    trust: loadGrantSignerTrust(H.trustFile),
+    schemas,
+    nowMs: afterExpiry,
+    maxApprovalAgeMs: 24 * 60 * 60 * 1000, // deliberately generous: isolate the HOLD deadline
+    maxGrantTtlMs: 300_000,
+  });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.ok ? "" : verdict.reason, /hold expired/);
+});
+
+test("F6 (HIGH): a spent approval stays spent across a restart", () => {
+  // An in-memory-only anti-replay set records this process's uptime, not what has been authorized.
+  const journal = path.join(H.dir, "f6-replay.jsonl");
+  const t0 = Date.now();
+  const first = new ApprovalReplayStore(900_000, journal);
+  assert.equal(first.claim("sha256:approval-f6", t0, t0), true);
+  // A NEW instance over the same journal is what a restart looks like.
+  const afterRestart = new ApprovalReplayStore(900_000, journal);
+  assert.equal(afterRestart.claim("sha256:approval-f6", t0, t0 + 1000), false, "the restart must not forget a spent approval");
+});
+
+test("F7 (HIGH): retention is anchored to the approval, not to when it was first used", () => {
+  // Reproduced: an approval stamped t0+60s (accepted, inside the skew allowance) first granted at
+  // t0 was evicted at t0+900001ms — while still inside its own freshness window — and granted again.
+  const t0 = Date.now();
+  const store = new ApprovalReplayStore(900_000, null);
+  assert.equal(store.claim("sha256:approval-f7", t0 + 60_000, t0), true);
+  assert.equal(
+    store.claim("sha256:approval-f7", t0 + 60_000, t0 + 900_001),
+    false,
+    "the entry must outlive the freshness window of the approval it records, not of the moment it was used",
+  );
+});
+
+test("F8 (HIGH): a request that fails after validation does not burn the human's approval", () => {
+  // The slot was claimed BEFORE signing and BEFORE the schema self-check, so one schema-forbidden
+  // extra property on the submitted document permanently wedged a genuine approval.
+  const G = freshHold("chain-wedge");
+  const approval = signPhoneDecision({ trust: H.trust, signer: H.phone, deferredReceipt: G.deferred, holdEnvelope: G.holdEnvelope, decision: "APPROVE" });
+  const proof = { holdEnvelope: G.holdEnvelope, decisionArtifact: approval.decisionArtifact, deferredReceipt: G.deferred, approvalReceipt: approval.receipt };
+  const base = grantDoc({ grantId: "wedge-1", holdId: G.holdId, paramsHash: G.paramsHash, holdEnvelope: G.holdEnvelope, approvalReceipt: approval.receipt });
+
+  const rejected = rawCall({ op: "sign-grant", artifact: { ...base, smuggled: "extra" }, proof });
+  assert.equal(rejected["artifact"], undefined);
+  assert.match(String(rejected["error"]), /fails its own schema/);
+
+  // THE POINT: the same approval must still be usable. A refusal that costs a human another tap is
+  // a denial-of-service delivered by the security control.
+  const accepted = rawCall({ op: "sign-grant", artifact: base, proof });
+  assert.ok(accepted["artifact"], `the approval was burnt by a refused request: ${String(accepted["error"])}`);
+});
+
+test("F9 (HIGH): a gate refuses to hold a grant key unless the unsafe posture is stated", () => {
+  // Protection was the opt-in and the defect was the default. For an authority root that is
+  // backwards: the UNSAFE configuration is the one that must be typed out.
+  const trust = createAlphaTrust({ tenant: "t" });
+  assert.throws(
+    () => new GateEngine({ store: new InMemoryStore(), config: resolveGateConfig({}), trust, schemas }),
+    /unsafeInProcessGrantKey/,
+  );
+  // ANTI-VACUITY: stating it explicitly still works, or every existing test would be measuring the
+  // throw rather than the gate.
+  assert.ok(new GateEngine({ store: new InMemoryStore(), config: resolveGateConfig({}), trust, schemas, unsafeInProcessGrantKey: true }));
+});
+
+test("F11 (HIGH): the trust file and the socket directory are held to their own permissions", () => {
+  // This file decides WHICH KEYS MAY APPROVE. It was read with a plain readFileSync on a path: a
+  // symlink was followed, the mode was never looked at.
+  const groupWritable = path.join(H.dir, "f11-trust.json");
+  writeFileSync(groupWritable, readFileSync(H.trustFile, "utf8"), { mode: 0o660 });
+  chmodSync(groupWritable, 0o660);
+  assert.throws(() => loadGrantSignerTrust(groupWritable), /writable by group or others/);
+
+  const link = path.join(H.dir, "f11-link.json");
+  symlinkSync(H.trustFile, link);
+  assert.throws(() => loadGrantSignerTrust(link), /is a symlink/);
+
+  // A group-writable socket directory lets anyone in that group unlink the socket and bind their
+  // own listener in its place — a full impersonation of the authority root.
+  const openDir = path.join(H.dir, "f11-dir");
+  mkdirSync(openDir, { mode: 0o770 });
+  chmodSync(openDir, 0o770);
+  assert.throws(() => assertSocketDirIsNotWorldAccessible(path.join(openDir, "s.sock")), /world-accessible or group-writable/);
+  // ANTI-VACUITY: the deployment posture this rule exists to permit — group READ + traverse, for a
+  // sidecar running as a different OS user — is still allowed.
+  const sharedDir = path.join(H.dir, "f11-shared");
+  mkdirSync(sharedDir, { mode: 0o750 });
+  chmodSync(sharedDir, 0o750);
+  assert.doesNotThrow(() => assertSocketDirIsNotWorldAccessible(path.join(sharedDir, "s.sock")));
+});
+
+test("F12 (MEDIUM): a signing failure inside the background sweep does not kill the gate", async () => {
+  // Before the execution signer moved out of process these sweepers could not fail: they signed
+  // with a local key. Now a socket hiccup inside `sweepExpired` reaches a `setInterval` callback,
+  // and an uncaught throw there takes the whole process down — a custody improvement shipping an
+  // availability regression alongside it.
+  const clock = { t: Date.parse("2026-07-14T12:00:00Z") };
+  const trust = createAlphaTrust({ tenant: "sweep-tenant", now: () => clock.t });
+  const events: string[] = [];
+  const exploding: ExecutionSigner = {
+    kid: trust.gate.kid,
+    publicKey: trust.gate.publicKey,
+    signGrant: () => { throw new Error("signer unreachable"); },
+    signAttestation: () => { throw new Error("signer unreachable"); },
+  };
+  const store = new InMemoryStore();
+  const apiKey = "noa_gateagent_sweep-secret-000000";
+  store.putAgent({ id: "agent-sweep", name: "sweep", apiKeyHash: hashSecret(apiKey), createdAt: clock.t });
+  const gate = createGate({
+    trust,
+    store,
+    schemas,
+    sealDisplay: testSealer,
+    executionSigner: exploding,
+    config: { bindAddress: "127.0.0.1", port: 0, now: () => clock.t, expirySweepMs: 10 },
+    log: (event) => events.push(event),
+  });
+  await gate.listen();
+  try {
+    const created = gate.engine.createHold(store.findAgentByApiKeyHash(hashSecret(apiKey))!, "idem-sweep", body({
+      mode: "ENFORCED",
+      action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
+      params: sampleCommandParams(),
+      chain: "chain-sweep",
+    }));
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    // Push the hold past its TTL so the sweeper tries to mint a Hold Resolution — and fails.
+    clock.t += 60 * 60 * 1000;
+    await new Promise((r) => setTimeout(r, 120));
+    // If the throw had escaped the interval, this process would be gone and there would be no
+    // assertion to run. Reaching this line at all is half the measurement; the log is the other.
+    assert.ok(events.includes("sweep.failed"), `expected the failure to be recorded, saw ${JSON.stringify(events)}`);
+    // FAIL-CLOSED, not fail-quiet: the hold is still PENDING, so nothing was resolved without its
+    // attestation and the next tick will try again.
+    assert.equal(store.getHold((created.body as { holdId: string }).holdId)!.status, "PENDING");
+  } finally {
+    await gate.close();
+  }
 });

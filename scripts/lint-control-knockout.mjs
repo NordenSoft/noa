@@ -764,6 +764,43 @@ const KNOCKOUTS = [
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
+    id: "s0-cross-keyring-kid-agreement",
+    control:
+      "S0 (adversarial review 2026-08-12, CRITICAL) — the grant signer refuses a trust file in which one kid " +
+      "denotes DIFFERENT public keys in the artifact keyring and the receipt keyring. Without it a genuine phone " +
+      "Decision and a gate-forged ALLOWED receipt carrying attacker parameters both verify under one kid string, " +
+      "and the sidecar signs a grant the shipped verifier then accepts.",
+    file: "packages/gate/src/grant-sidecar.ts",
+    find: '    if (receiptPub !== entry["publicKey"]) {',
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
+    id: "s0-approver-key-not-co-resident",
+    control:
+      "S0 (adversarial review 2026-08-12, CRITICAL) — an EXTERNAL execution signer may not be combined with a " +
+      "gate-generated approver key. The sidecar authorizes on the one signature an attacker inside the gate cannot " +
+      "forge; generating that key in the gate makes the whole boundary decorative, and it was the only shipped wiring.",
+    file: "packages/gate/src/trust.ts",
+    find: "  if (external && !enrolledApprover) {",
+    replace: "  if (false) {",
+    kind: "tests",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
+    id: "s0-returned-signature-is-verified",
+    control:
+      "S0 (adversarial review 2026-08-12, HIGH) — the gate cryptographically verifies every signature the signer " +
+      "returns before treating it as its own authority. Without it a response echoing the document with a junk " +
+      "sig value made decide() return 200 and persist an APPROVED hold with a grant record.",
+    file: "packages/gate/src/exec-signer.ts",
+    find: '  if (!verifyEd25519(expectPublicKey, signingMessage(domain, signHashInput(signed)), s["value"] as string)) {',
+    replace: "  if (false) {",
+    kind: "tests",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
     id: "s0-grant-params-bound-to-approval",
     control:
       "S0 — the out-of-process grant signer refuses to sign a grant whose paramsHash is not the one a human " +

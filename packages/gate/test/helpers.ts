@@ -52,6 +52,20 @@ export const testSealer: DisplaySealer = ({ tenant, holdId, deferredReceiptHash,
   aadHash: sha256Prefixed(canonicalize({ tenant, holdId, deferredReceiptHash, expiresAt })),
 });
 
+/**
+ * The alpha/test configuration is the ONLY one in which the gate process holds the approver's
+ * private half — `createAlphaTrust` refuses to generate it once the grant signer is external. This
+ * accessor is where that assumption is stated once and checked, so a fixture built the other way
+ * fails loudly here instead of type-erroring in nine test files.
+ */
+export function alphaPhoneSigner(trust: GateTrust): { kid: string; privateKey: string } {
+  const privateKey = trust.approver.privateKey;
+  if (!privateKey) {
+    throw new Error("alphaPhoneSigner: this trust root holds no approver private key — it was built with an ENROLLED approver public key, which is the production posture. Simulate the phone with the key you enrolled.");
+  }
+  return { kid: trust.approver.kid, privateKey };
+}
+
 export interface GateFixture {
   clock: Clock;
   trust: GateTrust;
@@ -79,7 +93,9 @@ export function setupGate(opts: {
   const agent: AgentRecord = { id: "agent-1", name: "test-agent", apiKeyHash: hashSecret(apiKey), createdAt: now() };
   store.putAgent(agent);
   const config = resolveGateConfig({ now, ...(opts.config ?? {}) });
-  const engine = new GateEngine({ store, config, trust, schemas: loadSchemas(), sealDisplay: opts.sealer ?? testSealer });
+  // The fixture is the DEVELOPMENT posture and now has to say so: the engine refuses to hold a
+  // grant key without an explicit acknowledgement (adversarial review 2026-08-12, finding 9).
+  const engine = new GateEngine({ store, config, trust, schemas: loadSchemas(), sealDisplay: opts.sealer ?? testSealer, unsafeInProcessGrantKey: true });
   return { clock, trust, store, engine, agent, apiKey };
 }
 
@@ -95,8 +111,12 @@ export function signPhoneDecision(args: {
   decision: "APPROVE" | "DENY";
   reasonCode?: "vendor-verified" | "suspicious" | "other" | null;
   at?: string;
+  /** The phone's key. Defaults to the alpha in-process pair; a test running the PRODUCTION posture
+   *  (approver enrolled by public key only) passes the key it kept for itself. */
+  signer?: { kid: string; privateKey: string };
 }): { receipt: Receipt; decisionArtifact: Record<string, unknown> } {
   const { trust, deferredReceipt, holdEnvelope } = args;
+  const phone = args.signer ?? alphaPhoneSigner(trust);
   const at = args.at ?? new Date(trust.now()).toISOString();
   const verdict = args.decision === "APPROVE" ? "ALLOWED" : "BLOCKED";
   const ruleId = args.decision === "APPROVE" ? "human-approved" : "human-denied";
@@ -112,12 +132,12 @@ export function signPhoneDecision(args: {
         mode: "approvals_on",
         verdict,
         ruleId,
-        approval: { by: trust.approver.kid, at }, // opaque approver id (D8), never raw PII
+        approval: { by: phone.kid, at }, // opaque approver id (D8), never raw PII
         sandboxed: false,
       },
     },
     deferredReceipt,
-    { kid: trust.approver.kid, privateKey: trust.approver.privateKey },
+    phone,
   );
 
   const decisionArtifact = signArtifact(
@@ -128,10 +148,10 @@ export function signPhoneDecision(args: {
       reasonCode: args.reasonCode ?? "vendor-verified",
       reasonEncryption: null,
       decidedAt: at,
-      approverKid: trust.approver.kid,
+      approverKid: phone.kid,
     }),
     "NOA-Decision-v0.1-sig",
-    { kid: trust.approver.kid, privateKey: trust.approver.privateKey },
+    phone,
   ) as unknown as Record<string, unknown>;
 
   return { receipt, decisionArtifact };

@@ -28,7 +28,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { setupGate, sampleCommandParams, body, b } from "./helpers.js";
+import { setupGate, sampleCommandParams, body, b, alphaPhoneSigner } from "./helpers.js";
 import { buildReceipt } from "noa-receipt";
 import { signArtifact, refHash } from "noa-approval-artifacts";
 
@@ -65,10 +65,7 @@ function decideWith(mutate: Mutate): { status: number; error: string; grant: boo
   };
   mutate(core);
 
-  const receipt = buildReceipt(core as never, hold.deferredReceipt!, {
-    kid: fx.trust.approver.kid,
-    privateKey: fx.trust.approver.privateKey,
-  });
+  const receipt = buildReceipt(core as never, hold.deferredReceipt!, alphaPhoneSigner(fx.trust));
   const decisionArtifact = signArtifact(
     b({
       spec: "noa.decision/0.1",
@@ -80,7 +77,7 @@ function decideWith(mutate: Mutate): { status: number; error: string; grant: boo
       approverKid: fx.trust.approver.kid,
     }),
     "NOA-Decision-v0.1-sig",
-    { kid: fx.trust.approver.kid, privateKey: fx.trust.approver.privateKey },
+    alphaPhoneSigner(fx.trust),
   ) as unknown as Record<string, unknown>;
 
   const d = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));

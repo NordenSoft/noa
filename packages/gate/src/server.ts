@@ -8,6 +8,7 @@
  */
 
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { describeThrown } from "noa-mcp-adapter-core/safe-throw";
 import { resolveGateConfig, isLoopbackAddress, type GateConfig } from "./config.js";
 import { InMemoryStore, type Store } from "./store.js";
 import { GateEngine, type EngineResult, type DisplaySealer } from "./engine.js";
@@ -23,8 +24,10 @@ export interface CreateGateOptions {
   store?: Store;
   schemas?: Record<string, unknown>;
   sealDisplay?: DisplaySealer;
-  /** Where the `execution-signer` key lives. Omitted = in-process (alpha default). */
+  /** Where the `execution-signer` key lives. Omitting it now requires `unsafeInProcessGrantKey`. */
   executionSigner?: ExecutionSigner;
+  /** Explicit acknowledgement that the grant key stays on this heap (see GateEngineDeps). */
+  unsafeInProcessGrantKey?: true;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -49,6 +52,7 @@ export function createGate(opts: CreateGateOptions): Gate {
     schemas,
     ...(opts.sealDisplay ? { sealDisplay: opts.sealDisplay } : {}),
     ...(opts.executionSigner ? { executionSigner: opts.executionSigner } : {}),
+    ...(opts.unsafeInProcessGrantKey ? { unsafeInProcessGrantKey: opts.unsafeInProcessGrantKey } : {}),
     ...(opts.log ? { log: opts.log } : {}),
   });
   const limiter = new RateLimiter({ burst: config.rateLimitBurst, refillPerMin: config.rateLimitRefillPerMin, now: config.now });
@@ -85,8 +89,19 @@ export function createGate(opts: CreateGateOptions): Gate {
         httpServer.listen(config.port, config.bindAddress, () => {
           httpServer.removeListener("error", reject);
           sweepTimer = setInterval(() => {
-            engine.sweepExpired();
-            engine.sweepUncertainty();
+            // A THROW IN A TIMER CALLBACK KILLS THE PROCESS. It never could before: these sweepers
+            // only signed with an in-process key, which does not fail. With the execution signer out
+            // of process a socket hiccup inside `sweepExpired` would take the whole gate down, so a
+            // custody improvement would have shipped an availability regression with it
+            // (adversarial review 2026-08-12). The sweeps are BACKGROUND work with no caller — the
+            // right response to a failed one is to log it and try again next tick. Nothing is
+            // swallowed on a REQUEST path: there the error still reaches the caller as a 5xx.
+            try {
+              engine.sweepExpired();
+              engine.sweepUncertainty();
+            } catch (err) {
+              opts.log?.("sweep.failed", { detail: describeThrown(err) });
+            }
           }, config.expirySweepMs);
           if (typeof sweepTimer.unref === "function") sweepTimer.unref();
           const addr = httpServer.address();

@@ -31,7 +31,7 @@ import assert from "node:assert/strict";
 import { signArtifact, verifyArtifact, type KeyEntry } from "noa-approval-artifacts";
 import { createAlphaTrust } from "../src/trust.js";
 import { loadSchemas } from "../src/schemas.js";
-import { setupGate, signPhoneDecision, sampleCommandParams, body } from "./helpers.js";
+import { setupGate, signPhoneDecision, sampleCommandParams, body, alphaPhoneSigner } from "./helpers.js";
 import { b } from "./helpers/bytes.js";
 
 const schemas = loadSchemas();
@@ -120,10 +120,7 @@ test("[PROOF:RES-PAR-GATE-KEYRING] offline consumer: a pre-activation trusted ti
 
   // The caller supplies the independent time at which it accepted the decision. The phone-written
   // decidedAt is deliberately not an activation witness.
-  const probe = signArtifact(signed(preIso), "NOA-Decision-v0.1-sig", {
-    kid: trust.approver.kid,
-    privateKey: trust.approver.privateKey,
-  });
+  const probe = signArtifact(signed(preIso), "NOA-Decision-v0.1-sig", alphaPhoneSigner(trust));
   const r = verifyArtifact(b(probe), b({ schemas, keyring: trust.keyring, now: new Date(T0).toISOString(), authorizationTime: preIso, riskClass: "HIGH" }));
   assert.equal(
     r.ok,
@@ -134,10 +131,7 @@ test("[PROOF:RES-PAR-GATE-KEYRING] offline consumer: a pre-activation trusted ti
   assert.match(r.reason ?? "", /before its validFrom/, `refused for the wrong reason: ${r.reason}`);
 
   // ANTI-VACUITY control, same run: an in-window decision verifies clean through the same keyring.
-  const ctl = signArtifact(signed(new Date(T0).toISOString()), "NOA-Decision-v0.1-sig", {
-    kid: trust.approver.kid,
-    privateKey: trust.approver.privateKey,
-  });
+  const ctl = signArtifact(signed(new Date(T0).toISOString()), "NOA-Decision-v0.1-sig", alphaPhoneSigner(trust));
   const c = verifyArtifact(b(ctl), b({ schemas, keyring: trust.keyring, now: new Date(T0).toISOString(), authorizationTime: new Date(T0).toISOString(), riskClass: "HIGH" }));
   assert.equal(c.ok, true, `control failed — probe wiring broken, not the activation check: ${c.reason}`);
 });

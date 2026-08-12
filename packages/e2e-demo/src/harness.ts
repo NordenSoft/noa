@@ -92,6 +92,8 @@ export async function setupHarness(opts: { echo?: boolean; sink?: string[] } = {
   //    hold-created event to the bridge; both share the injected clock.
   const gateHoldQueue: string[] = [];
   const gate = createGate({
+    // Demo harness: the grant key stays in process, stated explicitly (noa-gate finding 9).
+    unsafeInProcessGrantKey: true,
     trust,
     config: { port: 0, now: () => clock.now() },
     sealDisplay: realDisplaySealer(),

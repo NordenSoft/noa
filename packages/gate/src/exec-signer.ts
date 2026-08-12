@@ -40,7 +40,7 @@
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { ARTIFACTS, signArtifact } from "noa-approval-artifacts";
+import { ARTIFACTS, signArtifact, signHashInput, signingMessage, verifyEd25519 } from "noa-approval-artifacts";
 import { intrinsics } from "noa-receipt";
 import { describeThrown } from "noa-mcp-adapter-core/safe-throw";
 import { encodeDocument } from "./bytes.js";
@@ -189,13 +189,20 @@ function callSidecar(socketPath: string, request: GrantSignerRequest, timeoutMs:
 
 /**
  * The returned artifact must be the document we asked to have signed, plus exactly one new member —
- * `sig` — under the kid we pinned at construction.
+ * `sig` — carrying a signature that ACTUALLY VERIFIES under the operator-pinned public key.
  *
- * This is not politeness towards a trusted peer: the response crosses a process boundary and lands
- * in a gate-signed evidence bundle. A sidecar that silently rewrote a field would produce a
- * perfectly valid signature over something the gate never computed, and the gate would ship it.
+ * ── THIS FUNCTION USED TO CHECK EVERYTHING EXCEPT THE SIGNATURE ─────────────────────────────────
+ * It compared fields, shape and `kid` and never ran Ed25519 over `sig.value` (adversarial review
+ * 2026-08-12). Measured: a response echoing the exact document with `value: "not-a-signature"` made
+ * `decide()` return 200 and persist an APPROVED hold with an UNUSED grant record — the gate
+ * believing it held authority it had never been given. A "verified" that never verifies is worse
+ * than no check, because it is quoted as one.
+ *
+ * The preimage is rebuilt from the SHIPPED primitives `signArtifact` itself uses — `signHashInput`
+ * is `canonicalize(document without sig)` and `signingMessage` is the domain tag — so this is the
+ * same construction, not a second opinion about what a signature covers.
  */
-function assertSignedDocMatches(doc: Record<string, unknown>, signed: Record<string, unknown>, expectKid: string): void {
+function assertSignedDocMatches(doc: Record<string, unknown>, signed: Record<string, unknown>, expectKid: string, expectPublicKey: string): void {
   for (const k of Object.keys(doc)) {
     if (JSON.stringify(signed[k]) !== JSON.stringify(doc[k])) {
       throw new Error(`grant signer: sidecar returned an artifact whose "${k}" differs from the document submitted`);
@@ -213,12 +220,36 @@ function assertSignedDocMatches(doc: Record<string, unknown>, signed: Record<str
     throw new Error("grant signer: sidecar returned a malformed sig");
   }
   if (s["kid"] !== expectKid) {
-    throw new Error(`grant signer: sidecar signed under kid ${JSON.stringify(s["kid"])}, not the kid observed at startup ${JSON.stringify(expectKid)}`);
+    throw new Error(`grant signer: sidecar signed under kid ${JSON.stringify(s["kid"])}, not the pinned kid ${JSON.stringify(expectKid)}`);
+  }
+  const domain = executionDomainFor(signed["spec"]);
+  if (!verifyEd25519(expectPublicKey, signingMessage(domain, signHashInput(signed)), s["value"] as string)) {
+    throw new Error(
+      `grant signer: the signature returned for ${String(signed["spec"])} does not verify under the pinned public key for kid ${JSON.stringify(expectKid)} — ` +
+        `refusing to treat an unverified blob as this gate's authority`,
+    );
   }
 }
 
 export interface RemoteExecutionSignerOptions {
   socketPath: string;
+  /**
+   * THE OPERATOR'S PINNED IDENTITY for the signer, REQUIRED — supplied out of band, never learned
+   * from the socket.
+   *
+   * ── WHY THIS IS NOT OPTIONAL (adversarial review 2026-08-12) ─────────────────────────────────
+   * This function used to ask the socket `pubkey` and believe the answer, and the gate then MINTED
+   * A KEY MANIFEST naming whatever kid came back as the tenant's only `execution-signer`. So an
+   * attacker who could replace the listener (or the client shim) before startup had only to answer
+   * with their own key and sign without any policy checks: the gate would publish the attacker's
+   * key as its authority root and every forged grant would verify. "Pinned" meant pinned to the
+   * attacker-controlled first response.
+   *
+   * Bootstrapping trust from the channel you are defending against is not bootstrapping trust. The
+   * expected kid and public key now come from the operator, and the socket must AGREE with them or
+   * this refuses to return a signer at all.
+   */
+  expect: { kid: string; publicKey: string };
   timeoutMs?: number;
   /** Overridable only so a test can point at a build output outside this file's own directory. */
   callScript?: string;
@@ -235,11 +266,25 @@ export function remoteExecutionSigner(options: RemoteExecutionSignerOptions): Ex
   const timeoutMs = options.timeoutMs ?? DEFAULT_CALL_TIMEOUT_MS;
   const scriptPath = options.callScript ?? callScriptPath();
 
+  const expect = options.expect;
+  if (!expect || typeof expect.kid !== "string" || expect.kid.length === 0 || typeof expect.publicKey !== "string" || expect.publicKey.length === 0) {
+    throw new Error(
+      "remoteExecutionSigner: `expect: { kid, publicKey }` is required — the signer's identity is operator-supplied trust material, " +
+        "never something to learn from the socket it is meant to authenticate",
+    );
+  }
   const hello = callSidecar(socketPath, { op: "pubkey" }, timeoutMs, scriptPath);
   const kid = hello["kid"];
   const pub = hello["pub"];
   if (typeof kid !== "string" || kid.length === 0 || typeof pub !== "string" || pub.length === 0) {
     throw new Error("remoteExecutionSigner: sidecar's pubkey response is malformed (expected { kid, pub })");
+  }
+  // The socket does not get a vote on who it is. It only gets to AGREE.
+  if (kid !== expect.kid || pub !== expect.publicKey) {
+    throw new Error(
+      `remoteExecutionSigner: the process listening on ${socketPath} presents kid ${JSON.stringify(kid)} and a public key that do not match the ` +
+        `operator-pinned identity ${JSON.stringify(expect.kid)}. Refusing to start: a signer that can name itself is not an authority root.`,
+    );
   }
 
   const ask = <T extends Record<string, unknown>>(op: "sign-grant" | "sign-attestation", doc: T, proof?: GrantApprovalProof) => {
@@ -256,13 +301,13 @@ export function remoteExecutionSigner(options: RemoteExecutionSignerOptions): Ex
     if (typeof signed !== "object" || signed === null || Array.isArray(signed)) {
       throw new Error("grant signer: sidecar response carries no artifact");
     }
-    assertSignedDocMatches(doc, signed as Record<string, unknown>, kid);
+    assertSignedDocMatches(doc, signed as Record<string, unknown>, expect.kid, expect.publicKey);
     return signed as T & { sig: { alg: "ed25519"; kid: string; value: string } };
   };
 
   return {
-    kid,
-    publicKey: pub,
+    kid: expect.kid,
+    publicKey: expect.publicKey,
     signGrant: (doc, proof) => ask("sign-grant", doc, proof),
     signAttestation: (doc) => ask("sign-attestation", doc),
   };

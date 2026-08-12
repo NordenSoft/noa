@@ -22,22 +22,65 @@ import { hashSecret } from "./auth.js";
 import { InMemoryStore } from "./store.js";
 import { guard, HttpGateClient } from "./wrapper.js";
 
+/** An operator-supplied value with no safe default: absent means refuse to start, never guess. */
+function requireEnv(name: string): string {
+  const v = process.env[name];
+  if (!v) throw new Error(`noa-gate serve: ${name} is required when NOA_GATE_GRANT_SIGNER_SOCKET is set`);
+  return v;
+}
+
 async function serve(): Promise<void> {
   const tenant = process.env["NOA_GATE_TENANT"] ?? "alpha-tenant";
   const bindAddress = process.env["NOA_GATE_BIND"] ?? "127.0.0.1";
   const port = Number.parseInt(process.env["NOA_GATE_PORT"] ?? "8899", 10);
 
-  // THE AUTHORITY ROOT LEAVES THIS PROCESS when NOA_GATE_GRANT_SIGNER_SOCKET names a running
-  // `noa-gate-grant-signer`. The signer is bound BEFORE the trust root is built, because the key
-  // manifest must name ITS kid as the tenant's only `execution-signer` — minting the manifest first
-  // and reaching for the signer afterwards would publish authority for a key we had not yet proven
-  // we could reach, and the failure would surface on the first human approval instead of at boot.
+  // ── THE AUTHORITY ROOT LEAVES THIS PROCESS ────────────────────────────────────────────────────
+  // PROTECTED is the configuration you get by naming a running `noa-gate-grant-signer`; UNSAFE is
+  // the one you have to type out. That order is deliberate and it is a correction: the first cut
+  // shipped the in-process grant key as the silent default, which meant the posture NON-CLAIMS.md
+  // calls the defect was what an operator got by saying nothing (adversarial review 2026-08-12).
+  //
+  // Three env vars, not one, and the two extra ones are the whole fix for two more findings:
+  //   *_SIGNER_KID / *_SIGNER_PUBLIC_KEY — the signer's identity, from the OPERATOR. Asking the
+  //     socket who it is and then minting a manifest naming that answer let anyone who could
+  //     replace the listener publish themselves as the tenant's execution-signer.
+  //   *_APPROVER_KID / *_APPROVER_PUBLIC_KEY / *_APPROVER_HPKE_PUBLIC_KEY — the phone's enrolled
+  //     public half. Without it `createAlphaTrust` would GENERATE the approver key here, leaving
+  //     the one signature the sidecar relies on inside the process it is defending against.
   const grantSignerSocket = process.env["NOA_GATE_GRANT_SIGNER_SOCKET"];
-  const executionSigner = grantSignerSocket ? remoteExecutionSigner({ socketPath: grantSignerSocket }) : undefined;
+  const unsafeInProcess = process.env["NOA_GATE_UNSAFE_IN_PROCESS_GRANT_KEY"] === "1";
+  if (!grantSignerSocket && !unsafeInProcess) {
+    throw new Error(
+      "noa-gate serve: refusing to start with the grant-signing key on this process's heap. Either set " +
+        "NOA_GATE_GRANT_SIGNER_SOCKET (plus NOA_GATE_GRANT_SIGNER_KID, NOA_GATE_GRANT_SIGNER_PUBLIC_KEY and the " +
+        "NOA_GATE_APPROVER_* enrolment), or state the development posture with NOA_GATE_UNSAFE_IN_PROCESS_GRANT_KEY=1. " +
+        "See NON-CLAIMS.md, the authority-root corollary.",
+    );
+  }
+
+  let executionSigner;
+  let approverPublicKey;
+  if (grantSignerSocket) {
+    const expectKid = requireEnv("NOA_GATE_GRANT_SIGNER_KID");
+    const expectPublicKey = requireEnv("NOA_GATE_GRANT_SIGNER_PUBLIC_KEY");
+    approverPublicKey = {
+      kid: requireEnv("NOA_GATE_APPROVER_KID"),
+      publicKey: requireEnv("NOA_GATE_APPROVER_PUBLIC_KEY"),
+      hpkePublicKey: requireEnv("NOA_GATE_APPROVER_HPKE_PUBLIC_KEY"),
+    };
+    // Bound BEFORE the trust root is built: the manifest must name this kid as the tenant's only
+    // execution-signer, and a signer we cannot reach must stop the boot rather than surface on the
+    // first human approval.
+    executionSigner = remoteExecutionSigner({
+      socketPath: grantSignerSocket,
+      expect: { kid: expectKid, publicKey: expectPublicKey },
+    });
+  }
 
   const trust = createAlphaTrust({
     tenant,
     ...(executionSigner ? { executionSigner: { kid: executionSigner.kid, publicKey: executionSigner.publicKey } } : {}),
+    ...(approverPublicKey ? { approverPublicKey } : {}),
   });
   const store = new InMemoryStore();
   const apiKey = "noa_gateagent_" + randomBytes(24).toString("base64url");
@@ -47,7 +90,7 @@ async function serve(): Promise<void> {
     trust,
     store,
     config: { bindAddress, port },
-    ...(executionSigner ? { executionSigner } : {}),
+    ...(executionSigner ? { executionSigner } : { unsafeInProcessGrantKey: true as const }),
   });
   const { address, port: boundPort } = await gate.listen();
   process.stdout.write(

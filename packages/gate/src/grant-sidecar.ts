@@ -60,12 +60,18 @@
  *   --max-approval-age-ms <n>  optional, default 900000 (15 min — the gate's default hold TTL).
  *   --max-grant-ttl-ms <n>     optional, default 300000 (5 min — the gate's default grant TTL). The
  *                        longest lifetime this signer will put its key behind.
+ *   --replay-file <path> optional, defaults to `<key-file>.spent-approvals.jsonl`. The DURABLE
+ *                        record of which approvals have already been granted. Survives restart by
+ *                        design: an in-memory-only version handed a second grant to the same
+ *                        approval across a bounce.
  */
 
 import { createServer, connect } from "node:net";
-import { statSync, unlinkSync, chmodSync, existsSync } from "node:fs";
+import {
+  chmodSync, closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync,
+  openSync, readFileSync, renameSync, statSync, unlinkSync, writeSync,
+} from "node:fs";
 import { dirname } from "node:path";
-import { readFileSync } from "node:fs";
 import {
   ARTIFACTS,
   evalSchema,
@@ -129,12 +135,50 @@ function getPath(obj: unknown, dotted: string): unknown {
 }
 
 /**
+ * Read `--trust-file` through ONE hardened descriptor.
+ *
+ * This file IS the trust root of the policy gate: it names the keys an approval is authenticated
+ * against. It was being read with a plain `readFileSync` on a PATH — which follows a symlink, never
+ * looks at the mode, and re-opens what an earlier check inspected. `--key-file` next door has had
+ * the CWE-367 treatment since `noa-mcp-adapter-core`'s `key-file.mjs`; the file that decides WHO MAY
+ * APPROVE had none of it (adversarial review 2026-08-12). Same discipline, applied to it:
+ * O_NOFOLLOW so a planted symlink fails the open itself, `fstat` on the descriptor rather than a
+ * second stat on the path, regular-file only, and no group/other WRITE — a trust root anyone else
+ * can rewrite is not a trust root. Group READ stays legal: the different-UID deployment this whole
+ * process exists for needs it.
+ */
+function readTrustFile(trustFile: string): string {
+  let fd: number;
+  try {
+    fd = openSync(trustFile, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+  } catch (err) {
+    if (thrownCode(err) === "ELOOP") {
+      throw new Error(`grant sidecar: --trust-file "${trustFile}" is a symlink — refusing to follow it (CWE-367 symlink-attack guard). Point it directly at the intended regular file.`);
+    }
+    throw new Error(`grant sidecar: --trust-file "${trustFile}" could not be opened (${describeThrown(err)})`);
+  }
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new Error(`grant sidecar: --trust-file "${trustFile}" is not a regular file — refusing to load trust material from a special file`);
+    if ((st.mode & 0o022) !== 0) {
+      throw new Error(
+        `grant sidecar: --trust-file "${trustFile}" is writable by group or others (mode 0${(st.mode & 0o777).toString(8)}) — ` +
+          `this file decides which keys may approve, so anyone who can rewrite it can authorize anything. chmod it to 0400 or 0600.`,
+      );
+    }
+    return readFileSync(fd, "utf8");
+  } finally {
+    closeSync(fd);
+  }
+}
+
+/**
  * Load the sidecar's OWN trust material. Refuses a file that contains no APPROVER key: a policy gate
  * with nothing to check an approval against can never authorize anything, and a signer that can
  * never authorize is a misconfiguration wearing the costume of a security posture.
  */
 export function loadGrantSignerTrust(trustFile: string): GrantSignerTrust {
-  const parsed = parseDocument(readFileSync(trustFile, "utf8"), "trust file");
+  const parsed = parseDocument(readTrustFile(trustFile), "trust file");
   if (!parsed.ok) throw new Error(`grant sidecar: --trust-file "${trustFile}" is not a valid document (${parsed.reason})`);
   const doc = parsed.value;
   if (!isRecord(doc)) throw new Error(`grant sidecar: --trust-file "${trustFile}" is not an object`);
@@ -154,6 +198,36 @@ export function loadGrantSignerTrust(trustFile: string): GrantSignerTrust {
     throw new Error(
       `grant sidecar: --trust-file "${trustFile}" contains no APPROVER key — this process would refuse every request. A policy gate with nothing to verify an approval against is a misconfiguration, not a posture.`,
     );
+  }
+  // ── CROSS-KEYRING AGREEMENT (CRITICAL, found by adversarial review 2026-08-12) ─────────────────
+  // THE DEFECT: this file authenticates the Decision Artifact against `keyring` and the ALLOWED
+  // receipt against `receiptKeyring`, then bound the two together by comparing `kid` STRINGS. A
+  // trust file in which one kid maps to the phone's public key in one map and to the compromised
+  // GATE's public key in the other therefore satisfied every check: the decision verified against
+  // the real approver, the receipt verified against the attacker, the strings matched, and the
+  // sidecar signed a grant for attacker-chosen parameters. Reproduced end to end; the shipped
+  // verifier then returned ok:true on the result.
+  //
+  // A kid is a NAME. Two maps that disagree about which KEY a name denotes do not describe one
+  // trust root, they describe two — and the whole point of this process is to have exactly one. So
+  // agreement is enforced here, at load, where the operator can still fix it, and re-checked per
+  // request in `validateGrantRequest` (defence in depth: these fail independently).
+  //
+  // The gate engine already had this exact control for its own two keyrings
+  // (`engine.ts`, TRUST_KEYRING_INCONSISTENT). It was not mirrored here. Same class, one file over.
+  const receiptKeys = receiptKeyring["keys"] as Record<string, unknown>;
+  for (const [kid, entry] of Object.entries(keyring)) {
+    if (!isRecord(entry)) throw new Error(`grant sidecar: --trust-file keyring entry ${JSON.stringify(kid)} is not an object`);
+    if (!Object.prototype.hasOwnProperty.call(receiptKeys, kid)) continue;
+    const receiptEntry = receiptKeys[kid];
+    const receiptPub = isRecord(receiptEntry) ? receiptEntry["publicKey"] : receiptEntry;
+    if (receiptPub !== entry["publicKey"]) {
+      throw new Error(
+        `grant sidecar: --trust-file resolves kid ${JSON.stringify(kid)} to DIFFERENT public keys in keyring and receiptKeyring. ` +
+          `A kid is a name; two maps that disagree about which key it denotes are two trust roots, and this process must have exactly one. ` +
+          `Refusing to start rather than authenticate a decision against one key and its receipt against another.`,
+      );
+    }
   }
   const maxAge = doc["maxApprovalAgeMs"];
   return {
@@ -180,7 +254,7 @@ export interface ValidateGrantInput {
 }
 
 export type ValidateGrantResult =
-  | { ok: true; approvalRef: string }
+  | { ok: true; approvalRef: string; approvalMs: number }
   | { ok: false; reason: string };
 
 const refuse = (reason: string): ValidateGrantResult => ({ ok: false, reason });
@@ -233,6 +307,19 @@ export function validateGrantRequest(input: ValidateGrantInput): ValidateGrantRe
   if (!approverEntry || approverEntry.type !== "APPROVER") {
     return refuse(`the approval receipt's signer ${JSON.stringify(receiptKid)} is not an APPROVER key in this signer's own trust material`);
   }
+  // CROSS-KEYRING AGREEMENT, per request. `loadGrantSignerTrust` refuses a disagreeing trust file at
+  // startup; this is the same check at the point of use, so an injected or hand-built trust object
+  // that never went through the loader cannot reintroduce the confusion. The two controls fail
+  // independently on purpose — that is what makes this defence in depth rather than a duplicate.
+  const receiptKeyEntry = Object.prototype.hasOwnProperty.call(trust.receiptKeyring.keys, receiptKid)
+    ? trust.receiptKeyring.keys[receiptKid]
+    : undefined;
+  if (!receiptKeyEntry || receiptKeyEntry.publicKey !== approverEntry.publicKey) {
+    return refuse(
+      `kid ${JSON.stringify(receiptKid)} resolves to different public keys in the artifact keyring and the receipt keyring — ` +
+        `a decision authenticated against one key and its receipt against another is not one approval`,
+    );
+  }
 
   // 2. THE APPROVAL IS FRESH, by THIS process's clock. Every timestamp in the request is chosen by
   //    the caller, so a bound derived from the request alone bounds nothing; the only independent
@@ -273,6 +360,17 @@ export function validateGrantRequest(input: ValidateGrantInput): ValidateGrantRe
   if (!envCheck.ok) return refuse(`hold envelope invalid: ${envCheck.reason}`);
   if (holdEnvelope["mode"] !== "ENFORCED") {
     return refuse("hold envelope is not ENFORCED — a RAW acknowledgement is not authorization and may never carry a grant");
+  }
+  // THE HOLD'S OWN DEADLINE, against THIS process's clock (adversarial review 2026-08-12).
+  // The approval-freshness window bounds how old an APPROVAL may be; it said nothing about the hold
+  // the approval belongs to. Measured before this check existed: a hold with a 1-minute TTL was
+  // granted two minutes after it expired, and the grant passed the shipped verifier. A hold that has
+  // run out is a hold whose human answer arrived too late — `EXPIRED` is a distinct terminal state,
+  // never an approval (Red Line 6), and no grant may outlive it.
+  const envelopeExpiryMs = sidecarDateParse(asString(holdEnvelope["expiresAt"]) ?? "");
+  if (!Number.isFinite(envelopeExpiryMs)) return refuse("hold envelope carries no parseable expiresAt");
+  if (nowMs > envelopeExpiryMs + CLOCK_SKEW_MS) {
+    return refuse(`the hold expired ${Math.round((nowMs - envelopeExpiryMs) / 1000)}s ago — an expired hold is not an approval and may never carry a grant`);
   }
   if (asString(grant["holdEnvelopeHash"]) !== refHash(holdEnvelope)) return refuse("grant.holdEnvelopeHash does not hash this envelope");
   if (grant["holdId"] !== holdEnvelope["holdId"]) return refuse("grant.holdId does not match the envelope's holdId");
@@ -325,40 +423,131 @@ export function validateGrantRequest(input: ValidateGrantInput): ValidateGrantRe
     return refuse(`grant lifetime ${Math.round((expiresMs - issuedMs) / 1000)}s exceeds the ${Math.round(input.maxGrantTtlMs / 1000)}s this signer will authorize`);
   }
 
-  return { ok: true, approvalRef };
+  return { ok: true, approvalRef, approvalMs };
 }
 
 // ── replay: one grant per approval ───────────────────────────────────────────────────────────────
 
 /**
- * ONE GRANT PER APPROVAL, enforced here rather than only in the gate's store.
+ * ONE GRANT PER APPROVAL — DURABLE, and expiring on the APPROVAL's clock, not on ours.
  *
  * The gate's `UNUSED→RESERVED` compare-and-set is single-use enforcement for a grant that EXISTS; it
  * cannot stop a compromised gate from asking for a second grant over the same approval with a fresh
  * `grantId` and `nonce`, which would be two independently valid authorizations for one human
  * decision. Keyed on the approval's own receipt hash — approver-signed content — never on a
  * caller-chosen id.
+ *
+ * ── TWO DEFECTS THIS SHAPE EXISTS TO CLOSE (adversarial review 2026-08-12) ──────────────────────
+ * 1. IT WAS PROCESS-LOCAL. A restart inside the freshness window forgot every claim, and the same
+ *    approval bought a second valid grant. An anti-replay record that does not survive the process
+ *    is a record of this process's uptime, not of what has been authorized. It is now appended to a
+ *    file and fsync'd BEFORE the response is written, so a crash can only ever lose liveness (an
+ *    approval burnt without a grant delivered), never safety (two grants for one approval).
+ * 2. RETENTION STARTED AT FIRST USE. An entry was dropped `maxApprovalAgeMs` after the GRANT, while
+ *    an approval is accepted up to `CLOCK_SKEW_MS` into the future — so an approval stamped `t0+60s`
+ *    first granted at `t0` was forgotten at `t0+900001ms` while still inside its own freshness
+ *    window, and granted again. Reproduced. Retention is now anchored to the APPROVAL's timestamp
+ *    plus the same window and skew the freshness check uses, so an entry can only be evicted once
+ *    the approval it records would itself be refused as stale. The two rules are derived from one
+ *    pair of constants and cannot drift apart.
  */
 export class ApprovalReplayStore {
   private readonly seen = new Map<string, number>();
-  constructor(private readonly retentionMs: number) {}
 
-  /** True when this approval had not been granted before (and is now recorded). */
-  claim(approvalRef: string, nowMs: number): boolean {
+  /**
+   * @param retentionMs the approval-freshness window; an entry lives until the approval it records
+   *        is itself too old to be accepted.
+   * @param persistPath append-only durability. `null` is IN-MEMORY ONLY and is for tests that drive
+   *        the class directly; the shipped process always passes a path.
+   */
+  constructor(private readonly retentionMs: number, private readonly persistPath: string | null = null) {
+    if (persistPath !== null) this.load(persistPath);
+  }
+
+  /** True when this approval had not been granted before (and is now durably recorded). */
+  claim(approvalRef: string, approvalMs: number, nowMs: number): boolean {
     this.prune(nowMs);
     if (this.seen.has(approvalRef)) return false;
     if (this.seen.size >= MAX_REPLAY_ENTRIES) {
       // Fail CLOSED. Evicting a live entry to make room is how a replay window opens quietly.
       throw new Error("grant sidecar: anti-replay set is full — refusing to sign rather than forget an approval");
     }
-    this.seen.set(approvalRef, nowMs);
+    // DURABILITY BEFORE THE ANSWER. If this throws, nothing is claimed and nothing is returned; if
+    // it succeeds and the caller then dies, the approval is spent. That asymmetry is the correct
+    // one for an authority root: a lost grant costs a human one more tap, a duplicated grant costs
+    // an unapproved execution.
+    if (this.persistPath !== null) this.append(approvalRef, approvalMs);
+    this.seen.set(approvalRef, approvalMs);
     return true;
   }
 
+  /** An entry survives until the approval it records is itself outside the freshness window. */
+  private expiryFor(approvalMs: number): number {
+    return approvalMs + this.retentionMs + CLOCK_SKEW_MS;
+  }
+
   private prune(nowMs: number): void {
-    for (const [ref, at] of this.seen) {
-      if (nowMs - at > this.retentionMs) this.seen.delete(ref);
+    for (const [ref, approvalMs] of this.seen) {
+      if (nowMs > this.expiryFor(approvalMs)) this.seen.delete(ref);
     }
+  }
+
+  private append(ref: string, approvalMs: number): void {
+    const fd = openSync(this.persistPath!, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_APPEND | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
+    try {
+      writeSync(fd, JSON.stringify({ ref, approvalMs }) + "\n");
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+  }
+
+  /** Rebuild from the journal. A malformed line is FATAL, never skipped: a record we cannot read is
+   *  an approval we cannot prove is unspent, and quietly dropping it is the replay this class
+   *  exists to prevent. */
+  private load(file: string): void {
+    let text: string;
+    try {
+      text = readFileSync(file, "utf8");
+    } catch (err) {
+      if (thrownCode(err) === "ENOENT") return; // first run
+      throw err;
+    }
+    for (const line of text.split("\n")) {
+      if (line.trim() === "") continue;
+      const parsed = parseDocument(line, "replay journal entry");
+      if (!parsed.ok || !isRecord(parsed.value)) {
+        throw new Error(`grant sidecar: replay journal "${file}" has an unreadable entry — refusing to start with an anti-replay record it cannot read`);
+      }
+      const ref = asString(parsed.value["ref"]);
+      const at = parsed.value["approvalMs"];
+      if (!ref || typeof at !== "number" || !Number.isFinite(at)) {
+        throw new Error(`grant sidecar: replay journal "${file}" has a malformed entry — refusing to start`);
+      }
+      this.seen.set(ref, at);
+    }
+  }
+
+  /** Rewrite the journal without entries whose approvals are already too stale to be accepted.
+   *  Safe by construction: only entries the freshness check would refuse anyway are dropped. */
+  compact(nowMs: number): void {
+    if (this.persistPath === null) return;
+    this.prune(nowMs);
+    const body = [...this.seen].map(([ref, approvalMs]) => JSON.stringify({ ref, approvalMs })).join("\n");
+    const tmp = `${this.persistPath}.compact`;
+    const fd = openSync(tmp, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_TRUNC | (fsConstants.O_NOFOLLOW ?? 0), 0o600);
+    try {
+      writeSync(fd, body === "" ? "" : body + "\n");
+      fsyncSync(fd);
+    } finally {
+      closeSync(fd);
+    }
+    renameSync(tmp, this.persistPath);
+  }
+
+  /** Test/diagnostic reader — how many approvals are currently remembered. */
+  get size(): number {
+    return this.seen.size;
   }
 }
 
@@ -371,10 +560,11 @@ interface SidecarOptions {
   socketMode: number;
   maxApprovalAgeMs: number | null;
   maxGrantTtlMs: number | null;
+  replayFile: string | null;
 }
 
 export function parseSidecarArgs(argv: string[]): SidecarOptions {
-  const opts: Partial<SidecarOptions> = { socketMode: 0o600, maxApprovalAgeMs: null, maxGrantTtlMs: null };
+  const opts: Partial<SidecarOptions> = { socketMode: 0o600, maxApprovalAgeMs: null, maxGrantTtlMs: null, replayFile: null };
   for (let i = 0; i < argv.length; i++) {
     const flag = argv[i];
     const value = argv[++i];
@@ -385,6 +575,7 @@ export function parseSidecarArgs(argv: string[]): SidecarOptions {
     else if (flag === "--socket-mode") opts.socketMode = Number.parseInt(value, 8);
     else if (flag === "--max-approval-age-ms") opts.maxApprovalAgeMs = Number.parseInt(value, 10);
     else if (flag === "--max-grant-ttl-ms") opts.maxGrantTtlMs = Number.parseInt(value, 10);
+    else if (flag === "--replay-file") opts.replayFile = value;
     else throw new Error(`grant sidecar: unknown flag "${flag}"`);
   }
   if (!opts.keyFile) throw new Error("grant sidecar: --key-file is required");
@@ -419,9 +610,16 @@ export function assertSocketDirIsNotWorldAccessible(socketPath: string): void {
     throw new Error(`grant sidecar: --socket directory "${dir}" does not exist (${describeThrown(err)}). Create it with mode 0700 (or 0750 with a shared group) first.`);
   }
   if (!st.isDirectory()) throw new Error(`grant sidecar: --socket directory "${dir}" is not a directory`);
-  if ((st.mode & 0o007) !== 0) {
+  // No WORLD access at all, and no GROUP WRITE. The earlier rule masked `0o007` only, so a
+  // group-writable directory (0770) was accepted — and anyone in that group can unlink the socket
+  // and bind their own listener in its place, which is a full impersonation of the authority root
+  // (adversarial review 2026-08-12). Group READ+TRAVERSE stays legal because the different-UID
+  // deployment this process exists for requires it.
+  if ((st.mode & 0o007) !== 0 || (st.mode & 0o020) !== 0) {
     throw new Error(
-      `grant sidecar: --socket directory "${dir}" is world-readable/writable/traversable (mode 0${(st.mode & 0o777).toString(8)}) — refusing to listen for signing requests there. chmod it to 0700, or 0750 with a group shared with the gate.`,
+      `grant sidecar: --socket directory "${dir}" is world-accessible or group-writable (mode 0${(st.mode & 0o777).toString(8)}) — ` +
+        `refusing to listen for signing requests there. A directory a third party can write is a directory in which they can replace this socket. ` +
+        `chmod it to 0700, or 0750 with a group shared with the gate.`,
     );
   }
 }
@@ -520,28 +718,39 @@ export function handleGrantSignerRequest(deps: GrantSidecarHandlerDeps, line: st
     if (spec === EXECUTION_GRANT_SPEC) {
       return { error: "sign-attestation: an Execution Grant is authority, not an attestation — use sign-grant with an approval proof" };
     }
-  } else {
+  }
+
+  // ── ORDER OF OPERATIONS, AND IT IS THE WHOLE OF FINDING 8 ────────────────────────────────────
+  // The replay slot used to be claimed BEFORE signing and BEFORE the schema self-check. Every way
+  // the request could still fail after that point therefore BURNED the human's approval: one
+  // schema-forbidden extra property on the submitted document permanently wedged a genuine
+  // approval, with the only remedy being another human tap. Measured.
+  //
+  // The order is now: validate the approval -> sign -> check the signed bytes against the shipped
+  // schema -> claim the slot -> answer. Claiming last means every refusal is FREE, and only a
+  // request that is about to be answered spends the approval.
+  //
+  // WHAT REMAINS, STATED RATHER THAN HIDDEN: the claim and the delivery of the response are in two
+  // different processes, so no ordering makes them one transaction. A response lost after the claim
+  // burns the approval. That is the direction to fail — an approval spent without a grant delivered
+  // costs one more tap, whereas a grant delivered without the approval spent is a second
+  // authorization for one human decision. `NON-CLAIMS.md` says so too.
+  let grantClaim: { ref: string; approvalMs: number } | null = null;
+  if (op === "sign-grant") {
     if (spec !== EXECUTION_GRANT_SPEC) return { error: "sign-grant: artifact is not an Execution Grant" };
     const proof = req["proof"];
     if (!isRecord(proof)) return { error: "sign-grant: an approval proof is required" };
-    const nowMs = deps.now();
     const verdict = validateGrantRequest({
       grant: artifact,
       proof,
       trust: deps.trust,
       schemas: deps.schemas,
-      nowMs,
+      nowMs: deps.now(),
       maxApprovalAgeMs: deps.maxApprovalAgeMs,
       maxGrantTtlMs: deps.maxGrantTtlMs,
     });
     if (!verdict.ok) return { error: `REFUSED: ${verdict.reason}` };
-    try {
-      if (!deps.replay.claim(verdict.approvalRef, nowMs)) {
-        return { error: "REFUSED: this approval has already been granted once — one human decision authorizes one grant" };
-      }
-    } catch (err) {
-      return { error: describeThrown(err) };
-    }
+    grantClaim = { ref: verdict.approvalRef, approvalMs: verdict.approvalMs };
   }
 
   let signed: Record<string, unknown>;
@@ -561,6 +770,18 @@ export function handleGrantSignerRequest(deps: GrantSidecarHandlerDeps, line: st
   const structural = evalSchema(schema as Record<string, unknown>, signed);
   if (!structural.ok) return { error: `signed artifact fails its own schema: ${structural.errors.join("; ")}` };
 
+  if (grantClaim !== null) {
+    try {
+      if (!deps.replay.claim(grantClaim.ref, grantClaim.approvalMs, deps.now())) {
+        return { error: "REFUSED: this approval has already been granted once — one human decision authorizes one grant" };
+      }
+    } catch (err) {
+      // A durability failure must never return a signature. The bytes exist in this frame; they do
+      // not leave it.
+      return { error: `REFUSED: could not durably record this approval as spent (${describeThrown(err)})` };
+    }
+  }
+
   return { artifact: signed };
 }
 
@@ -571,6 +792,14 @@ async function main(): Promise<void> {
 
   const trust = loadGrantSignerTrust(opts.trustFile);
   const maxApprovalAgeMs = opts.maxApprovalAgeMs ?? trust.maxApprovalAgeMs ?? DEFAULT_MAX_APPROVAL_AGE_MS;
+  // DURABLE ANTI-REPLAY, always. Defaults beside the key file rather than being optional: an
+  // in-memory-only anti-replay set is a record of this process's uptime, and a restart inside the
+  // freshness window handed a second grant to the same approval (adversarial review 2026-08-12).
+  const replayFile = opts.replayFile ?? `${opts.keyFile}.spent-approvals.jsonl`;
+  const replay = new ApprovalReplayStore(maxApprovalAgeMs, replayFile);
+  // Drop entries whose approvals are already too stale to be accepted, so the journal cannot grow
+  // without bound. Only ever removes records the freshness check would refuse anyway.
+  replay.compact(Date.now());
   const identity = loadOrCreateKeyFile({
     keyFile: opts.keyFile,
     mintKeyPair: () => generateKeyPair(`noa-grant-signer:${new Date().toISOString()}-${process.pid}`),
@@ -580,7 +809,7 @@ async function main(): Promise<void> {
     identity,
     trust,
     schemas: loadSchemas(),
-    replay: new ApprovalReplayStore(maxApprovalAgeMs),
+    replay,
     maxApprovalAgeMs,
     maxGrantTtlMs: opts.maxGrantTtlMs ?? DEFAULT_MAX_GRANT_TTL_MS,
     now: () => Date.now(),
@@ -609,7 +838,8 @@ async function main(): Promise<void> {
   await new Promise<void>((resolve) => server.listen(opts.socket, () => resolve()));
   chmodSync(opts.socket, opts.socketMode);
   console.error(
-    `noa-gate-grant-signer: listening on ${opts.socket} (kid=${identity.kid}, tenant=${trust.tenant}, approval freshness ${maxApprovalAgeMs}ms)`,
+    `noa-gate-grant-signer: listening on ${opts.socket} (kid=${identity.kid}, tenant=${trust.tenant}, ` +
+      `approval freshness ${maxApprovalAgeMs}ms, ${replay.size} spent approval(s) recovered from ${replayFile})`,
   );
 
   const shutdown = (): void => {

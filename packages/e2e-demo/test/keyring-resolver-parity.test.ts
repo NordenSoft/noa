@@ -395,8 +395,14 @@ test('[PROOF:RES-PAR-XRES-EQUIV] evidence, gate and e2e resolvers yield the SAME
     assert.ok(typeof alphaFrom === 'string', 'alpha resolver dropped validFrom — P0-5 regressed');
     const preAt = new Date(Date.parse(alphaFrom) - 3_600_000).toISOString();
     const postAt = new Date(T0 + 1_000).toISOString();
-    const pre = verdict(decisionBy(alpha.approver.kid, alpha.approver.privateKey, preAt), alpha.keyring, preAt);
-    const post = verdict(decisionBy(alpha.approver.kid, alpha.approver.privateKey, postAt), alpha.keyring, postAt);
+    // `GateTrust.approver.privateKey` is OPTIONAL as of the S0 authority-root split: it is present
+    // only in the self-generated alpha configuration, which is the one built here. Asserted rather
+    // than cast, so a future change that enrols the approver by public key fails loudly instead of
+    // signing with `undefined`.
+    const alphaPhoneKey = alpha.approver.privateKey;
+    assert.ok(typeof alphaPhoneKey === 'string', 'the alpha fixture must hold the simulated phone key');
+    const pre = verdict(decisionBy(alpha.approver.kid, alphaPhoneKey, preAt), alpha.keyring, preAt);
+    const post = verdict(decisionBy(alpha.approver.kid, alphaPhoneKey, postAt), alpha.keyring, postAt);
     assert.match(pre.reason ?? '', /before its validFrom/, `gate resolver: pre-activation reason: ${pre.reason}`);
     outcomes['gate.createAlphaTrust'] = { preRefused: !pre.ok, postAccepted: post.ok };
   }

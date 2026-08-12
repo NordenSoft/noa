@@ -461,64 +461,82 @@ document told them what it means.
 > boundary.** Found by an independent adversarial review; no fix attempted here, because the fix is
 > architectural."*
 >
-> That text is quoted rather than deleted because it is still TRUE of the default configuration
-> (see "what is still not claimed", first bullet). What changed is that it is no longer the only
-> configuration available, and the alternative is measured rather than asserted.
+> That text is quoted rather than deleted because it remains exactly true of a gate that keeps its
+> grant key in process. What changed is that such a gate now REFUSES TO START unless an operator
+> writes the unsafe posture down, and that a protected alternative exists and is measured.
+>
+> **A first attempt at this replacement was itself withdrawn**, on 2026-08-12, after an independent
+> adversarial review reproduced three CRITICAL bypasses of the boundary it described — including one
+> in which the only shipped wiring left the approver's private key inside the process the sidecar was
+> defending against. The claims below are the ones that survived that review, and the paragraph
+> immediately above is the reason the wording here is narrower than the engineering effort might
+> suggest.
 
-**What is now true.** A gate can be run with its `execution-signer` key held by a separate process
-behind a **policy gate** (`packages/gate/src/grant-sidecar.ts`), reached over a Unix domain socket
-(`packages/gate/src/exec-signer.ts`). In that configuration the key manifest names the sidecar's kid
-as the tenant's **only** `execution-signer` and drops the gate key to `hold-signer`
-(`packages/gate/src/trust.ts`, `createAlphaTrust`'s `executionSigner` input), so a grant signed by
-any key the gate process holds is refused by the shipped verifier for lack of the role.
+**What is now true, and how it is measured.** A gate can be run with its `execution-signer` key held
+by a separate process behind a **policy gate** (`packages/gate/src/grant-sidecar.ts`), reached over a
+Unix domain socket (`packages/gate/src/exec-signer.ts`). In that configuration the key manifest names
+the sidecar's kid as the tenant's **only** `execution-signer` and drops the gate key to
+`hold-signer`, so a grant signed by any key the gate process holds is refused by the shipped verifier
+for lack of the role.
 
-A signing oracle alone would not have been enough, and we do not pretend otherwise: an attacker who
-can *ask* an HSM to sign has the key in effect, which `packages/signer-sidecar`'s own README states
-about itself. So the sidecar independently verifies, per request and against trust material it holds
-itself, that the grant is backed by an approver-signed decision and an approver-signed ALLOWED
-receipt, and that the grant's `paramsHash` is **the one that receipt carries**. It also enforces one
-grant per approval, an approval-freshness window, and a ceiling on the grant's own lifetime — the
-last two measured on its own clock, because every timestamp in the request is the caller's to choose.
+A signing oracle alone would not have closed anything — an attacker who can *ask* an HSM to sign has
+the key in effect, which `packages/signer-sidecar`'s own README states about itself. So the sidecar
+independently verifies, per request and against trust material it holds itself, that the grant is
+backed by an approver-signed decision and an approver-signed ALLOWED receipt, and that the grant's
+`paramsHash` is **the one that receipt carries**. It also enforces one grant per approval (durably,
+across restarts), an approval-freshness window, the hold's own deadline, and a ceiling on the grant's
+lifetime — the time bounds all measured on its own clock, because every timestamp in the request is
+the caller's to choose.
 
-Stripping the role from the gate key would buy nothing if the gate could re-sign the key manifest and
-hand the role back to itself. It cannot: `createAlphaTrust` mints the root and the delegated manifest
-signer as locals and returns neither, so the only private keys reachable from a `GateTrust` are the
-gate's own and — in the alpha only — the simulated phone's. That is asserted by enumeration in the
-same test, not by reading the constructor.
+Three things make that more than an assertion, and each is a control that has been observed to fail:
 
-Measured, not asserted: `packages/gate/test/grant-authority-root.test.ts` runs a real sidecar process
-and an attacker holding everything the gate process holds — every private key on its heap, the store,
-the trust root, the socket and the client shim — and that attacker cannot obtain a signed grant for
-parameters no human approved. The honest path in the same run does obtain one, and it verifies
-against the manifest. Each control is registered in `scripts/lint-control-knockout.mjs`
-(`s0-grant-authority-out-of-gate-process`, `s0-grant-params-bound-to-approval`) and is proven to turn
-the suite red when removed.
+- The signer's identity is **operator-pinned**, not learned from the socket. A gate that asked the
+  socket who it was and then minted a manifest naming the answer would publish an attacker as its own
+  authority root.
+- The gate **cryptographically verifies** every signature it receives back before treating it as its
+  own authority.
+- `createAlphaTrust` **refuses** to combine an external execution signer with a gate-generated
+  approver key, because the sidecar authorizes on exactly one thing an attacker inside the gate
+  cannot forge: the approver's signature.
+
+`packages/gate/test/grant-authority-root.test.ts` runs a real sidecar process against an attacker
+holding everything the gate process holds, and every control above is registered as a knockout that
+turns the suite red when removed.
 
 **What is still not claimed.**
 
-- **The default is still the old text.** A gate started without a grant sidecar keeps its
-  `execution-signer` key in process, and every word of the superseded paragraph applies to it
-  verbatim. This is a mechanism, not a migration: which configuration a deployment runs is a
-  deployment fact, and `noa-gate serve` prints `grantKeyCustody` at boot so it is not a guess.
-- **The approver's key must not be co-resident with the gate.** The property is conditional on it,
-  and the condition is measured rather than assumed: the same test file demonstrates that an attacker
-  who *also* holds the approver device key does obtain a grant. In production that key is on the
-  phone; in the alpha `createAlphaTrust` mints it in-process for the demo, and any deployment that
-  keeps it beside the gate has no approval boundary for this sidecar to defend.
+- **"Everything the gate process holds" is a claim about the trust root this repository constructs,
+  not about a compromised V8 heap.** What is asserted, and asserted by enumeration over the
+  constructed object, is that `GateTrust` carries exactly one private key — the gate's own. The root
+  and delegated manifest-signing keys are locals inside `createAlphaTrust` and are never returned, so
+  a runtime compromise cannot re-sign the key manifest; they do exist transiently during boot.
+  Nothing here proves an absence of key material anywhere in a process's memory, and no test can.
+- **The approver's key must not be co-resident with the gate.** The shipped constructor now refuses
+  that combination outright rather than documenting it, but a deployment that enrols the phone's
+  public key and then keeps the private half beside the gate for its own reasons has no approval
+  boundary for this sidecar to defend, and the code cannot detect it.
 - **This is process isolation, not an HSM** — the same limit `packages/signer-sidecar/README.md`
   states under "Honest limits". Root, or the same OS user the sidecar runs as, can read its
   `--key-file` or attach a debugger. "The gate process cannot reach this key" is only true when the
-  sidecar runs as a *different* OS user (or on different hardware); the socket-directory rule is
-  written to permit exactly that deployment, and the code cannot verify that an operator chose it.
+  sidecar runs as a *different* OS user (or on different hardware); the socket and trust-file
+  permission rules are written to permit exactly that deployment, and the code cannot verify that an
+  operator chose it.
 - **The three execution ATTESTATIONS are signed, not authorized.** The Consumption, the Execution
   Uncertainty and the Hold Resolution require the same `execution-signer` role as the grant, so they
   moved to the sidecar with it — but they are signed on an ungated op after spec and domain
-  validation. A compromised gate can therefore still obtain a signed attestation asserting something
-  false (for instance a Hold Resolution claiming `APPROVED`), exactly as it could before this change.
-  It cannot turn one into a grant: the op refuses the grant spec, and the domain tags differ.
-- **Anti-replay is process-local and time-bounded.** The one-grant-per-approval record lives in the
-  sidecar's memory with retention equal to the freshness window; a sidecar restart forgets it, and an
-  approval still inside the window could then be granted a second time.
+  validation. A compromised gate can still obtain a signed attestation asserting something false (for
+  instance a Hold Resolution claiming `APPROVED`), exactly as it could before this change. It cannot
+  turn one into a grant: the op refuses the grant spec, and the domain tags differ.
+- **One grant per approval is at-most-once, and the failure direction is deliberate.** The claim is
+  durable and is taken immediately before the response is written, but the claim and the delivery
+  live in two processes and no ordering makes them one transaction. A response lost in flight burns
+  the approval and costs the human another tap. That is the direction chosen: a spent approval with
+  no grant delivered is recoverable, a grant delivered without the approval spent is a second
+  authorization for one human decision.
+- **The gate's own record-keeping is not transactional.** `decide()` writes the grant record and the
+  hold separately, and the `Store` interface exposes no compare-and-swap (`store.ts` says so about
+  itself). This is safe for the shipped single-process in-memory driver and is a precondition on any
+  durable driver that replaces it, not a property of the interface.
 - **None of this makes an approval load-bearing at the target.** A grant nobody validates authorizes
   nothing. NC-6.x and `docs/ADR-0003-enforcement-boundary.md` are unchanged by this work: this closes
   the custody of the authority root, not the question of who enforces it.

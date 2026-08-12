@@ -10,7 +10,7 @@ import { createAlphaTrust } from "../src/trust.js";
 import { testSealer } from "./helpers.js";
 
 function gate(config: Record<string, unknown>) {
-  return createGate({ trust: createAlphaTrust({ tenant: "t" }), config, sealDisplay: testSealer });
+  return createGate({ trust: createAlphaTrust({ tenant: "t" }), config, sealDisplay: testSealer, unsafeInProcessGrantKey: true });
 }
 
 test("loopback bind (127.0.0.1) is allowed and serves; /health responds", async () => {

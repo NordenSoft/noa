@@ -30,6 +30,7 @@ import { testSealer } from "./helpers.js";
 
 function bootGate(config: Record<string, unknown>, store = new InMemoryStore()) {
   return createGate({
+    unsafeInProcessGrantKey: true,
     trust: createAlphaTrust({ tenant: "ratelimit-tenant" }),
     store,
     sealDisplay: testSealer,
