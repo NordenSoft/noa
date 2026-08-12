@@ -122,29 +122,57 @@ export function runApproveCli(argv) {
   // retained NOWHERE (neither signed nor local) — the operator supplied it on their own command line.
   const by = `HUMAN:${opaqueApproverId(opts.by, record.tenant)}`;
 
+  // ── ORDERING IS THE CONTROL (reproduced 2026-08-12 against the real proxy, not theoretical) ────
+  // The pending-store write is what makes a decision LIVE: an "approved" event mints the single-use
+  // ticket the proxy consumes on the agent's retry, and the held action then EXECUTES. So every
+  // other step that can fail has to fail BEFORE it.
+  //
+  // The pre-fix order was `recordApproved(...)` and only then `appendReceiptLog(...)`, both inside
+  // one try that returns exit 1. Pointing `--receipt-log` at a DIRECTORY made the log write throw
+  // EISDIR: the approver's shell reported exit 1 — "the approval failed" — while the pending store
+  // already held `created, approved`, and the retried tool call executed a 7000-minor-unit transfer.
+  // The approver was told the approval failed and the money moved. The deny branch had the mirror
+  // shape: a denial durably recorded while its own log write fails is reported to the operator as a
+  // denial that did not happen.
+  //
+  // Fixed by making the pending-store write the LAST durable act in BOTH branches. The residual
+  // failure direction is the safe one: a receipt appended to the log for a decision that was never
+  // recorded leaves the action STILL HELD for a human, which is this product's whole default.
+  let successLine = "";
   try {
     if (command === "approve") {
       const { receipt, ticket, ticketExpiresAt } = buildApprovalReceipt({ deferredReceipt: record.deferredReceipt, by, ts, signer, ticketTtlMs: opts.ttlMs });
-      // `tenant`/`sessionId: record.{tenant,sessionId}` — read back off the DEFERRED hold so this
-      // "approved" event folds onto the SAME (tenant, sessionId, id) record it approves (see
-      // pending-store's recordKeyOf).
-      recordApproved(opts.pendingStorePath, { id: opts.id, by, ticket, ticketExpiresAt, allowedReceipt: receipt, tenant: record.tenant, sessionId: record.sessionId, ts });
       appendReceiptLog(opts.receiptLogPath, receipt);
-      process.stdout.write(`APPROVED ${opts.id} -> ${receipt.id} (ticket expires ${ticketExpiresAt})\n`);
+      successLine = `APPROVED ${opts.id} -> ${receipt.id} (ticket expires ${ticketExpiresAt})\n`;
+      // LAST durable act. `tenant`/`sessionId: record.{tenant,sessionId}` — read back off the
+      // DEFERRED hold so this "approved" event folds onto the SAME (tenant, sessionId, id) record it
+      // approves (see pending-store's recordKeyOf). The ticket is live from this line onward.
+      recordApproved(opts.pendingStorePath, { id: opts.id, by, ticket, ticketExpiresAt, allowedReceipt: receipt, tenant: record.tenant, sessionId: record.sessionId, ts });
     } else {
       // D8: the free-text `--reason` is NOT passed into the signed receipt (buildDenialReceipt fixes
       // ruleId to "human-denied"). It is kept only in the LOCAL, non-signed pending-store index below
       // (recordDenied), for operator audit — never in the signed, hash-chained bytes.
       const { receipt } = buildDenialReceipt({ deferredReceipt: record.deferredReceipt, by, ts, signer });
-      recordDenied(opts.pendingStorePath, { id: opts.id, by, reason: opts.reason, deniedReceipt: receipt, tenant: record.tenant, sessionId: record.sessionId, ts });
       appendReceiptLog(opts.receiptLogPath, receipt);
-      process.stdout.write(`DENIED ${opts.id} -> ${receipt.id}\n`);
+      successLine = `DENIED ${opts.id} -> ${receipt.id}\n`;
+      // LAST durable act — same ordering rule as the approve branch above.
+      recordDenied(opts.pendingStorePath, { id: opts.id, by, reason: opts.reason, deniedReceipt: receipt, tenant: record.tenant, sessionId: record.sessionId, ts });
     }
-    return 0;
   } catch (err) {
     process.stderr.write(`noa-approve: ${describeThrown(err)}\n`);
     return 1;
   }
+
+  // OUTSIDE the try ON PURPOSE. Past this point the decision is already durable, so a failure to
+  // PRINT it is a terminal problem, never an approval problem — reporting it as exit 1 would
+  // re-create the exact lie this fix removes, one step later. Say so on stderr and still exit 0,
+  // because the ticket really is live.
+  try {
+    process.stdout.write(successLine);
+  } catch (err) {
+    process.stderr.write(`noa-approve: the decision WAS recorded, but writing the confirmation line failed (${describeThrown(err)}) — treat this run as successful\n`);
+  }
+  return 0;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`) {

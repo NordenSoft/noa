@@ -1,13 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { generateKeyPair, verifyChain } from "noa-receipt";
 import { b } from "./helpers/bytes.mjs";
 import { preCheck } from "../src/pre-check.mjs";
 import { REFUND_GUARD_POLICY } from "../src/policy.mjs";
-import { recordDeferred, loadPendingIndex } from "../src/pending-store.mjs";
+import { recordDeferred, loadPendingIndex, findOutstanding, consumeApprovalTicket } from "../src/pending-store.mjs";
 import { runApproveCli } from "../src/approve-cli.mjs";
 import { opaqueApproverId } from "../src/opaque-id.mjs";
 
@@ -135,4 +135,71 @@ test("runApproveCli: usage errors (missing --id, unknown --id) exit non-zero, ne
   const lines = readFileSync(receiptLogPath, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
   assert.equal(lines.length, 2);
   assert.equal(lines[1].governance.verdict, "ALLOWED");
+});
+
+// ── ORDERING: THE PENDING-STORE WRITE IS THE LAST DURABLE ACT ────────────────────────────────────
+// Reproduced 2026-08-12 against the real proxy and the real `noa-approve`: with `--receipt-log`
+// pointing at a DIRECTORY, the log append threw EISDIR and the CLI exited 1 — "the approval
+// failed" on the approver's terminal — but `recordApproved()` had ALREADY run, so the store held
+// `created, approved`, the ticket was live, and the retried tool call executed the transfer. These
+// two tests pin the exit code and the on-disk state TOGETHER, because either one alone was already
+// true before the fix: the bug was that they disagreed.
+//
+// `--receipt-log <a directory>` is chosen as the failure injector precisely because it is the shape
+// an operator hits by accident (a trailing path component that is a folder), needs no chmod, and
+// behaves identically on macOS and Linux.
+
+function reportedFailureButRecordedNothing(command, extraArgs) {
+  const dir = tmpDir();
+  const pendingStorePath = join(dir, "pending.jsonl");
+  const keyFile = join(dir, "approver-key.json");
+  const receiptLogPath = join(dir, "receipt-log-is-a-directory");
+  mkdirSync(receiptLogPath); // appending to a directory fails EISDIR
+  const agentKp = generateKeyPair(`agent-cli-ordering-${command}`);
+  const deferred = seedDeferred(pendingStorePath, { kid: agentKp.kid, privateKey: agentKp.privateKey });
+
+  const exitCode = runApproveCli([
+    command, "--id", deferred.id, "--by", "jane@acme.example",
+    "--pending-store", pendingStorePath, "--key-file", keyFile,
+    "--receipt-log", receiptLogPath, ...extraArgs,
+  ]);
+  return { dir, pendingStorePath, deferred, exitCode };
+}
+
+test("runApproveCli approve: when the --receipt-log write fails, the operator's exit 1 and the pending store AGREE — no live ticket, and the retried call is still held for a human", () => {
+  const { pendingStorePath, deferred, exitCode } = reportedFailureButRecordedNothing("approve", []);
+
+  assert.equal(exitCode, 1, "the approver's shell must report failure");
+
+  // The raw file, not just the fold: pre-fix this held two lines (created + approved).
+  const rawLines = readFileSync(pendingStorePath, "utf8").split("\n").filter((l) => l.trim().length > 0);
+  assert.equal(rawLines.length, 1, `an approval the operator was told FAILED must leave exactly one event on disk, got ${rawLines.length}: ${rawLines.join(" | ")}`);
+  assert.equal(JSON.parse(rawLines[0]).event, "created", "the only durable event may be the original hold");
+
+  const rec = loadPendingIndex(pendingStorePath).get(deferred.id);
+  assert.equal(rec.status, "pending", "no ticket may be live after an approval that reported exit 1");
+  assert.equal(rec.ticket, undefined, "no ticket may have been minted into the store");
+
+  // ...and the agent's retry is therefore STILL HELD: both of the proxy's own gates refuse.
+  const outstanding = findOutstanding(pendingStorePath, { tenant: "default-tenant", agentId: "mcp-agent" });
+  assert.equal(outstanding.status, "pending", "the retried tool call must still be blocked awaiting a human");
+  assert.throws(
+    () => consumeApprovalTicket(pendingStorePath, deferred.id, Date.now(), { tenant: "default-tenant" }),
+    /not in "approved" status/,
+    "there must be no ticket for the retry to consume",
+  );
+});
+
+test("runApproveCli deny: the mirror ordering — a failing --receipt-log write leaves the record untouched, so a denial reported as failed really did not happen", () => {
+  const { pendingStorePath, deferred, exitCode } = reportedFailureButRecordedNothing("deny", ["--reason", "fraud-suspected"]);
+
+  assert.equal(exitCode, 1, "the approver's shell must report failure");
+
+  const rawLines = readFileSync(pendingStorePath, "utf8").split("\n").filter((l) => l.trim().length > 0);
+  assert.equal(rawLines.length, 1, `a denial the operator was told FAILED must leave exactly one event on disk, got ${rawLines.length}: ${rawLines.join(" | ")}`);
+  assert.equal(JSON.parse(rawLines[0]).event, "created");
+
+  const rec = loadPendingIndex(pendingStorePath).get(deferred.id);
+  assert.equal(rec.status, "pending", "a denial reported as failed must not be durably recorded — the operator will retry it");
+  assert.equal(rec.deniedReceipt, undefined);
 });
