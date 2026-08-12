@@ -18,17 +18,24 @@ import { fileURLToPath } from "node:url";
 import path from "node:path";
 import fs from "node:fs";
 import os from "node:os";
+import { execFileSync } from "node:child_process";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import { runInitCli } from "../src/init.mjs";
+import { runInitCli, mintApproverIdentityExclusive, createFileExclusive } from "../src/init.mjs";
 import { APPROVAL_RULES } from "../src/policy.mjs";
+import { generateKeyPair } from "noa-mcp-adapter-core";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROXY_CLI = path.join(__dirname, "..", "src", "proxy.mjs");
 const DEMO_DOWNSTREAM = path.join(__dirname, "..", "src", "demo-downstream.mjs");
 
 function tmpDir() {
-  return fs.mkdtempSync(path.join(os.tmpdir(), "noa-mcp-proxy-init-test-"));
+  // realpathSync: os.tmpdir() sits behind macOS's own /var -> /private/var symlink, which has
+  // nothing to do with the ancestor-symlink VULNERABILITY (HIGH 4) init.mjs now refuses on — it is
+  // the OS's own baseline layout, present for every process regardless of --dir. Resolving here
+  // once keeps every OTHER test's tmpDir() free of that unrelated OS-level symlink, so only tests
+  // that deliberately plant a symlink INSIDE the tree exercise the new guard.
+  return fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "noa-mcp-proxy-init-test-")));
 }
 
 async function expectDeny(promise) {
@@ -228,4 +235,153 @@ test("init --force removes a dangling symlink at a target path and writes a REAL
   assert.ok(finalStat.isFile() && !finalStat.isSymbolicLink(), "approver-keyring.json must end up a REAL regular file, not a surviving/re-created symlink");
   const keyring = JSON.parse(fs.readFileSync(path.join(dir, "approver-keyring.json"), "utf8"));
   assert.equal(Object.keys(keyring).length, 1);
+});
+
+// ---------------------------------------------------------------------------------------------
+// ROUND 2 — Codex (cross-family) reproduced three CRITICALs and four lower-severity findings
+// end-to-end against the round-1 fix. Each test below reproduces the STATE the finding depends
+// on (not necessarily the exact timing mechanism, where that would make the test flaky) and
+// proves the code's response to that state, per the "verify by reproducing" instruction.
+// ---------------------------------------------------------------------------------------------
+
+// CRITICAL 1 — `loadOrCreateKeyFile` is LOAD-or-create, not create-only. If a valid 0600 key
+// appears at the target path between init's preflight check and this call (a real TOCTOU window:
+// two OTHER files are written synchronously in between), the LOAD branch silently returns the
+// planted identity without ever calling `mintKeyPair`. Reproduced here by pre-planting a
+// well-formed, correctly-permissioned key at the path BEFORE calling the extracted unit directly
+// — the exact state the race produces, deterministically, with no timing dependency.
+test("mintApproverIdentityExclusive refuses to adopt a pre-existing key instead of minting a fresh one (closes the load-or-create TOCTOU)", () => {
+  const dir = tmpDir();
+  const keyPath = path.join(dir, "approver-key.json");
+  const attackerKp = generateKeyPair("attacker-planted-identity");
+  fs.writeFileSync(keyPath, JSON.stringify({ kid: attackerKp.kid, privateKey: attackerKp.privateKey, publicKey: attackerKp.publicKey }), { mode: 0o600 });
+
+  assert.throws(
+    () => mintApproverIdentityExclusive(keyPath),
+    /already exists|did not mint|refus/i,
+    "must refuse rather than silently adopt a key it did not itself mint",
+  );
+
+  // The attacker's planted file must be left completely untouched — never adopted, never
+  // overwritten, never reported as success.
+  const stillThere = JSON.parse(fs.readFileSync(keyPath, "utf8"));
+  assert.equal(stillThere.kid, attackerKp.kid, "the planted file must be untouched after the refusal");
+});
+
+test("mintApproverIdentityExclusive mints and persists a genuinely fresh identity when the path is free", () => {
+  const dir = tmpDir();
+  const keyPath = path.join(dir, "approver-key.json");
+  const kp = mintApproverIdentityExclusive(keyPath);
+  assert.equal(typeof kp.kid, "string");
+  const onDisk = JSON.parse(fs.readFileSync(keyPath, "utf8"));
+  assert.equal(onDisk.kid, kp.kid, "the persisted file must match what was actually minted and returned");
+});
+
+// CRITICAL 3 — 0600 (POSIX mode bits) does not prevent disclosure on macOS: a directory carrying
+// an inheritable "everyone allow read" ACL propagates that ACL to files created inside it
+// REGARDLESS of the requested mode, and `stat`/the mode bits alone never reveal it. Reproduced
+// with the REAL macOS ACL mechanism (chmod +a ... file_inherit,directory_inherit on the parent),
+// not a simulation.
+test(
+  "approver-key.json carries no inherited ACL after init, even under a directory with an inheritable everyone-read ACL (macOS)",
+  { skip: process.platform !== "darwin" ? "ACL inheritance is a macOS-specific mechanism" : false },
+  () => {
+    const dir = tmpDir();
+    execFileSync("/bin/chmod", ["+a", "everyone allow read,file_inherit,directory_inherit", dir]);
+
+    const exitCode = runInitCli(["--dir", dir]);
+    assert.equal(exitCode, 0);
+
+    const keyPath = path.join(dir, "approver-key.json");
+    const lsOut = execFileSync("/bin/ls", ["-le", keyPath], { encoding: "utf8" });
+    const lines = lsOut.split("\n").filter((l) => l.trim().length > 0);
+    assert.equal(lines.length, 1, `expected no ACL entries on approver-key.json (mode bits alone are not the real readability), got:\n${lsOut}`);
+  },
+);
+
+// HIGH 4 — O_NOFOLLOW only protects the FINAL path component; a symlinked ANCESTOR directory in
+// --dir's chain is followed by mkdirSync/openSync regardless, silently placing every artifact
+// (including the private key) outside the requested tree while the tool reports the lexical path.
+test("init refuses when --dir resolves through a symlinked ANCESTOR directory (escapes the requested tree)", () => {
+  const root = tmpDir();
+  const outside = tmpDir();
+  fs.symlinkSync(outside, path.join(root, "parent-link"));
+  const requestedDir = path.join(root, "parent-link", "child");
+
+  const exitCode = runInitCli(["--dir", requestedDir]);
+  assert.notEqual(exitCode, 0, "must refuse when the resolved directory chain escapes the requested lexical path");
+  assert.equal(fs.existsSync(path.join(outside, "child", "approver-key.json")), false, "the private key must never land outside --dir via a symlinked ancestor");
+});
+
+test("init still succeeds for an ordinary nested --dir with no symlinks anywhere in the chain (no false positive)", () => {
+  const root = tmpDir();
+  const nested = path.join(root, "a", "b", "c");
+  const exitCode = runInitCli(["--dir", nested]);
+  assert.equal(exitCode, 0, "an ordinary nested --dir with no symlinks must still succeed");
+  assert.ok(fs.existsSync(path.join(nested, "approver-key.json")));
+});
+
+// MEDIUM 6 — the --force unlink loop deleted all preexisting targets BEFORE any validation that
+// they could actually be replaced. A target that cannot be replaced (e.g. a directory sitting
+// where a file belongs) then stranded the operator with the OLD identity destroyed and no new one
+// created.
+test("init --force refuses upfront (destroying NOTHING) when a preexisting target cannot possibly be replaced", () => {
+  const dir = tmpDir();
+  assert.equal(runInitCli(["--dir", dir]), 0);
+  const beforeRules = fs.readFileSync(path.join(dir, "approval-rules.json"), "utf8");
+  const beforeKey = fs.readFileSync(path.join(dir, "approver-key.json"), "utf8");
+
+  // approver-keyring.json becomes a DIRECTORY — --force can never turn a directory back into a file.
+  fs.unlinkSync(path.join(dir, "approver-keyring.json"));
+  fs.mkdirSync(path.join(dir, "approver-keyring.json"));
+
+  const exitCode = runInitCli(["--dir", dir, "--force"]);
+  assert.notEqual(exitCode, 0, "must refuse rather than destroy the other three targets for a run that could never succeed");
+
+  assert.equal(fs.readFileSync(path.join(dir, "approval-rules.json"), "utf8"), beforeRules, "approval-rules.json must survive an upfront refusal");
+  assert.equal(fs.readFileSync(path.join(dir, "approver-key.json"), "utf8"), beforeKey, "approver-key.json must survive an upfront refusal");
+});
+
+// MEDIUM 7 — `createFileExclusive` creates the file (openSync/O_CREAT) BEFORE writing its content;
+// if the write itself fails, the empty/partial file it just created was left on disk while the
+// caller's bookkeeping still says "0 files were written" — a false claim. The fix must make the
+// on-disk reality match the claim: either the file has its full content, or it does not exist.
+test("createFileExclusive removes the file it just created if writing the content fails, so nothing lands half-written", () => {
+  const dir = tmpDir();
+  const target = path.join(dir, "will-fail.json");
+  assert.throws(() => createFileExclusive(target, undefined), /./, "a content type writeFileSync rejects must still propagate");
+  assert.equal(fs.existsSync(target), false, "the half-created file must be removed on a write failure, not left as an empty stub");
+});
+
+// LOW 8 — the generic creator used mode 0644 unconditionally, so pending-store.jsonl (tenant/
+// session/action metadata, approval tickets, free-text denial reasons) was world-readable.
+test("pending-store.jsonl is created mode 0600, not world/group-readable", () => {
+  const dir = tmpDir();
+  assert.equal(runInitCli(["--dir", dir]), 0);
+  const st = fs.statSync(path.join(dir, "pending-store.jsonl"));
+  assert.equal(st.mode & 0o777, 0o600, `expected pending-store.jsonl mode 0600, got 0${(st.mode & 0o777).toString(8)}`);
+});
+
+// LOW 9 — generated paths were interpolated BARE into printed example shell commands. A --dir
+// containing a space or shell metacharacter becomes a command-injection trap for anyone who
+// copy-pastes the printed line.
+test("the printed next-steps commands shell-quote generated paths (a --dir with shell metacharacters must not print an unsafe copy-paste command)", () => {
+  const dir = tmpDir();
+  const nasty = path.join(dir, "weird dir; $(touch pwned-if-run) 'q");
+  let captured = "";
+  const realWrite = process.stdout.write;
+  process.stdout.write = (chunk) => {
+    captured += chunk;
+    return true;
+  };
+  let exitCode;
+  try {
+    exitCode = runInitCli(["--dir", nasty]);
+  } finally {
+    process.stdout.write = realWrite;
+  }
+  assert.equal(exitCode, 0);
+  const rulesPath = path.join(nasty, "approval-rules.json");
+  assert.ok(!captured.includes(`--approval-rules ${rulesPath} \\`), "the raw, unquoted path must not appear in the printed example command");
+  assert.ok(captured.includes(`'${rulesPath.replace(/'/g, "'\\''")}'`), "the printed example command must shell-quote the generated path");
 });
