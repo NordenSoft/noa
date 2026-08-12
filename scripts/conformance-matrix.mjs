@@ -53,6 +53,14 @@ const IMPL_RUST_SCRIPT = join(IMPL_RUST_DIR, "conformance.sh");
 const IMPL_CSHARP_DIR = join(ROOT, "impl-csharp");
 const IMPL_CSHARP_SCRIPT = join(IMPL_CSHARP_DIR, "conformance.sh");
 
+// QA round 1 finding F (LOW): a hung subprocess (Go/Rust/C# builds, or impl-py/conformance.mjs
+// itself) previously had no timeout — killed and absent runners were handled, a hang was not, and
+// would block indefinitely rather than surfacing as a clear, attributable BROKEN column. 5 minutes
+// comfortably covers the slowest observed single step locally (a `cargo build --release` cold
+// compile) with headroom, while still failing fast instead of relying on CI's own job-level timeout
+// (25 min for `five-verifier-conformance`) as the only backstop.
+const SUBPROCESS_TIMEOUT_MS = 5 * 60 * 1000;
+
 const VECTOR_CLASSES = [
   "structural",
   "hash",
@@ -109,26 +117,51 @@ function implOf(label) {
   return "Python"; // untagged lines are pyVerify(...)-only checks (the file's original convention)
 }
 
+/** True when execFileSync's catch reflects a killed/timed-out child (e.g. our own `timeout` option
+ * fired) rather than a normal nonzero exit — `e.status` is null and `e.signal` is set in that case. */
+function wasKilledOrTimedOut(e) {
+  return e.signal != null || e.killed === true;
+}
+
 function runPyConformance() {
   let stdout = "";
   let exitCode = 0;
+  let timedOut = false;
   try {
     stdout = execFileSync("node", [CONFORMANCE_SCRIPT], {
       encoding: "utf8",
       cwd: ROOT,
+      timeout: SUBPROCESS_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "pipe"], // capture child stderr too (Python's argparse usage-text) — don't leak it to our terminal
     });
   } catch (e) {
     stdout = (e.stdout ?? "") + (e.stderr ?? "");
     exitCode = typeof e.status === "number" ? e.status : 1;
+    timedOut = wasKilledOrTimedOut(e);
   }
-  return { stdout, exitCode };
+  return { stdout, exitCode, timedOut };
 }
 
 function parseTsPyLines(stdout) {
   const results = [];
   for (const line of stdout.split("\n")) {
-    const m = /^([✓✗])\s(.+?):\s*(.+)$/.exec(line);
+    // GREEDY (.+), not lazy (.+?) — QA round 1 finding D investigation surfaced a real, PRE-EXISTING
+    // bug here (present before this file grew 3 more columns; confirmed via `git show
+    // ee6aef2:scripts/conformance-matrix.mjs`, same regex). A label CAN legitimately contain an
+    // internal colon (e.g. "MALFORMED (bad enum: action.riskClass) [TS verifyChain]"), and a lazy
+    // `(.+?)` stops at the FIRST colon in the line — here, the one INSIDE the label — because the
+    // unrestricted `(.+)$` after it can absorb literally anything, so the lazy engine never needs to
+    // try a later split point. That silently truncated the label to "MALFORMED (bad enum" and pushed
+    // "action.riskClass) [TS verifyChain]: MALFORMED (want MALFORMED)" into `detail` — losing the
+    // "[TS verifyChain]" tag from the label entirely. `implOf()` reads that tag to attribute a check
+    // to the TS column; without it, this ONE check silently fell through to the "untagged -> Python"
+    // default and was mis-credited to the Python column instead of TS. It also meant the TS-tagged
+    // and PY-tagged lines for THIS vector printed the identical truncated label — a spurious
+    // duplicate `findDuplicateLabels()` now catches. GREEDY `(.+)` prefers the LAST colon in the
+    // line (backtracks only as far as needed to leave `\s*(.+)$` a match), which is exactly the real
+    // label/detail separator here — verified against the live corpus: 99/99 labels parse with zero
+    // duplicates and the "bad enum" check now attributes to TS, not Python.
+    const m = /^([✓✗])\s(.+):\s*(.+)$/.exec(line);
     if (!m) continue; // not a check-result line (blank lines, the final PASS banner, python usage text)
     const [, mark, label, detail] = m;
     results.push({ ok: mark === "✓", label, detail, class: classify(label), impl: implOf(label) });
@@ -251,7 +284,17 @@ const FILE_VECTOR_CLASS_RULES = [
   // The negative lookbehind keeps `forged-genesis` OUT of this bucket (see the intentionally-
   // unclassified list in the doc comment above `attack/forged-genesis` is a chain-linkage/genesis-
   // prevHash rule, not a parse/shape rule, even though its name contains "genesis").
-  [/pii-smuggle|float-number|proto-pollution|trailing-garbage|deep-nest|(?<!forged-)\bgenesis\b|\bmulti\b|valid-chain/i, "structural"],
+  //
+  // QA round 1 finding E: `\bgenesis\b` and `\bmulti\b` (bare word-boundary matches) would ALSO
+  // swallow a future `attack/genesis-tenant-drift.json` or `attack/multi-tenant-drift.json` vector —
+  // a TENANT property reported as a STRUCTURAL one, exactly the "nearest-sounding bucket" failure
+  // this file's own design says it avoids (a hyphen is a word-boundary character, so `\bmulti\b`
+  // matches inside "multi-tenant" too). Both are narrowed to require the word be followed by a
+  // space, comma, `+` or `(` — the ONLY shapes the real corpus uses ("golden/multi + keyring",
+  // "golden multi no-keyring (...)", "multi, no keyring (...)" [rust]) — so a future hyphenated
+  // compound falls through to unclassified (forcing the conscious decision the design intends)
+  // instead of being silently misfiled. Proven in --selftest.
+  [/pii-smuggle|float-number|proto-pollution|trailing-garbage|deep-nest|(?<!forged-)\bgenesis[\s,+(]|\bmulti[\s,+(]|valid-chain/i, "structural"],
 ];
 
 function classifyFileVector(label) {
@@ -264,12 +307,20 @@ function runBashScript(scriptPath, cwd) {
     const stdout = execFileSync("bash", [scriptPath], {
       encoding: "utf8",
       cwd,
+      timeout: SUBPROCESS_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "pipe"],
     });
     return { stdout, exitCode: 0, spawnError: null };
   } catch (e) {
     if (e.code === "ENOENT") {
       return { stdout: "", exitCode: null, spawnError: `bash (or ${scriptPath}) not found: ${e.message}` };
+    }
+    if (wasKilledOrTimedOut(e)) {
+      return {
+        stdout: "",
+        exitCode: null,
+        spawnError: `${scriptPath} TIMED OUT after ${SUBPROCESS_TIMEOUT_MS / 1000}s and was killed (signal ${e.signal}) — a hang must never block the whole run indefinitely`,
+      };
     }
     const stdout = (e.stdout ?? "") + (e.stderr ?? "");
     const exitCode = typeof e.status === "number" ? e.status : 1;
@@ -281,8 +332,15 @@ function runBashScript(scriptPath, cwd) {
 function runFileLang(lang) {
   for (const step of lang.preSteps) {
     try {
-      execFileSync(step.cmd, step.args, { cwd: step.cwd, stdio: ["ignore", "pipe", "pipe"] });
+      execFileSync(step.cmd, step.args, { cwd: step.cwd, timeout: SUBPROCESS_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) {
+      if (wasKilledOrTimedOut(e)) {
+        return {
+          stdout: "",
+          exitCode: null,
+          spawnError: `pre-step '${step.cmd} ${step.args.join(" ")}' TIMED OUT after ${SUBPROCESS_TIMEOUT_MS / 1000}s and was killed (signal ${e.signal})`,
+        };
+      }
       const reason = e.code === "ENOENT" ? `${step.cmd} not found on PATH` : (e.stderr ?? e.message ?? "").toString().slice(0, 2000);
       return { stdout: "", exitCode: null, spawnError: `pre-step '${step.cmd} ${step.args.join(" ")}' failed: ${reason}` };
     }
@@ -320,6 +378,23 @@ function verifyLangExecuted(langKey, runResult, parsedCount) {
     };
   }
   return { broken: false, reason: null };
+}
+
+/**
+ * QA round 1 finding D: `PASS(n)` counts LINES, not distinct vectors — a runner that prints the same
+ * case label twice (a copy-paste bug in a `run_case`/`expect()` call, a retry loop, a future
+ * refactor) would silently inflate `n` in a public trust artifact even though every individual check
+ * genuinely passed. Investigating this surfaced a REAL, pre-existing instance: a label-parsing bug
+ * (now fixed in parseTsPyLines, see its comment) truncated "MALFORMED (bad enum: action.riskClass)
+ * [TS verifyChain]" and its "[PY verifier]" counterpart to the SAME truncated string, which this
+ * function would have caught as a spurious duplicate even before the root cause was found — exactly
+ * the kind of anomaly a duplicate label should surface rather than silently double-count. Pure, no
+ * I/O, hermetically testable via --selftest.
+ */
+function findDuplicateLabels(results) {
+  const freq = new Map();
+  for (const r of results) freq.set(r.label, (freq.get(r.label) ?? 0) + 1);
+  return [...freq.entries()].filter(([, n]) => n > 1).map(([label, count]) => ({ label, count }));
 }
 
 // ══════════════════════════════════════════════════════════════════════════════════════════════
@@ -378,6 +453,66 @@ function buildMatrix(tsPyResults, fileLangResults) {
   return { table, unclassified, otherChecks };
 }
 
+/**
+ * QA round 1 finding A (HIGH): the empty-runner guard (verifyLangExecuted) catches a Go/Rust/C#
+ * PROCESS that produced nothing — it does NOT catch an implementation COLUMN silently emptying
+ * inside a runner that still runs fine. Concretely: if `impl-py/conformance.mjs` stopped emitting
+ * `[TS ...]`-tagged lines (a rename, a refactor), `implOf()` would default every line to "Python",
+ * the TS column would render "not asserted here†" across ALL 10 classes, and — because the runner
+ * itself still exited 0 with plenty of parsed lines — nothing before this function would notice. The
+ * TS column is the REFERENCE every other column is judged against; an empty reference is the worst
+ * possible silent failure this artifact could have. This generalizes the guard from per-RUNNER to
+ * per-COLUMN: sums pass+fail for one column across all 10 classes and treats an all-zero column as
+ * BROKEN, independent of whether its underlying process succeeded. Applied uniformly to all five
+ * columns (not just TS) — the same defect shape could hit Python (if `implOf` broke the other way)
+ * or a file-lang (if its classifier routed every line into "otherChecks" instead of the table) just
+ * as easily. Pure, no I/O, hermetically testable via --selftest. Skips a column already sentineled
+ * by a runner-level guard (pass===-1) to avoid a redundant/confusing second report of the same defect.
+ */
+function verifyColumnHasCoverage(colKey, table) {
+  let total = 0;
+  for (const cls of VECTOR_CLASSES) {
+    const cell = table.get(cls)[colKey];
+    if (cell.pass === -1 && cell.fail === -1) return { broken: false, reason: null };
+    total += cell.pass + cell.fail;
+  }
+  if (total === 0) {
+    return {
+      broken: true,
+      reason:
+        `the ${colKey} column has ZERO classified checks across all ${VECTOR_CLASSES.length} vector ` +
+        `classes even though its underlying run reported output — the implementation identity itself ` +
+        `appears to have stopped being attributed any result (e.g. a tag/label rename upstream), ` +
+        `independent of whether the runner process succeeded`,
+    };
+  }
+  return { broken: false, reason: null };
+}
+
+/**
+ * QA round 1 finding B (HIGH): the hard-fail decision for TS/Python currently relies SOLELY on
+ * `impl-py/conformance.mjs`'s own exit code as a proxy for "the table has no FAIL cells" — verified
+ * (see the comment on the call site) that this file's OWN current code cannot actually produce a
+ * FAIL(✗) line while exiting 0 (single exit path: `if (failures) { …; process.exit(1); }`, nothing
+ * after it), so this is NOT a live bug today. But coupling the generator's truthfulness SOLELY to a
+ * child process's exit code — a file this generator does not own and cannot re-verify — is exactly
+ * the fragile assumption this artifact's whole design otherwise refuses to make. This is a second,
+ * INDEPENDENT check: scan the fully-built table itself (all 5 columns, all 10 classes) for any FAIL
+ * cell, regardless of what any exit code claimed. Skips sentinel (already-BROKEN) cells, which are
+ * handled by their own guard. Pure, no I/O, hermetically testable via --selftest.
+ */
+function tableHasAnyFail(table) {
+  for (const cls of VECTOR_CLASSES) {
+    const row = table.get(cls);
+    for (const col of COLUMNS) {
+      const cell = row[col.key];
+      if (cell.pass === -1 && cell.fail === -1) continue; // sentinel — already reported as BROKEN
+      if (cell.fail > 0) return { cls, col: col.key, fail: cell.fail };
+    }
+  }
+  return null;
+}
+
 /** '‡' cells (Go/Rust/C#) mean "not covered by the file-based corpus"; '†' cells (TS) mean "not
  * explicitly [TS ...]-tagged in impl-py/conformance.mjs" — two DIFFERENT reasons, kept as two
  * distinct marks so neither is misread as the other. */
@@ -396,7 +531,7 @@ function cellVerdictOrBroken(cell, mark) {
   return cellVerdict(cell, mark);
 }
 
-function renderMarkdown({ table, totalTsPyResults, tsPyExitCode, fileLangRuns, otherChecks }) {
+function renderMarkdown({ table, totalTsPyResults, tsPyExitCode, fileLangRuns, otherChecks, tsPyColumnStatus }) {
   const lines = [];
   lines.push("# Conformance pass/fail matrix");
   lines.push("");
@@ -487,8 +622,15 @@ function renderMarkdown({ table, totalTsPyResults, tsPyExitCode, fileLangRuns, o
     lines.push(`- **${col.label}:** ${verdict} — see \`${fileLangRuns[col.key].scriptRelPath}\` for the full list.`);
   }
   lines.push("");
+  // Concatenated, not either/or — if BOTH TS and Python went broken at once (e.g. a completely
+  // garbled impl-py/conformance.mjs run), the note must name both, not silently drop the second.
+  const tsPyBrokenNote = ["TS", "Python"]
+    .filter((k) => tsPyColumnStatus?.[k]?.broken)
+    .map((k) => ` **${k} column BROKEN** — ${tsPyColumnStatus[k].reason}.`)
+    .join("");
   const tsPyLine =
-    `\`node impl-py/conformance.mjs\`: **${totalTsPyResults}** checks, exit **${tsPyExitCode}** (0 = every check agreed).`;
+    `\`node impl-py/conformance.mjs\`: **${totalTsPyResults}** checks, exit **${tsPyExitCode}** ` +
+    `(0 = every check agreed).${tsPyBrokenNote}`;
   const fileLangLines = COLUMNS.filter((c) => fileLangRuns[c.key]).map((c) => {
     const run = fileLangRuns[c.key];
     if (run.broken) return `\`bash ${run.scriptRelPath}\`: **BROKEN** — ${run.brokenReason}`;
@@ -576,6 +718,70 @@ function selftest() {
     check("Rust parser: the SWEEP summary line is NOT parsed as a case", rrust.length === 1);
   }
 
+  console.log("\nQA round 1 finding A — per-COLUMN coverage guard (not just per-runner):");
+  {
+    // RED: build a table where every OTHER column has real data but ONE column (TS) is all-zero —
+    // exactly what a runner producing plenty of output but zero [TS ...]-tagged lines would leave
+    // behind. verifyColumnHasCoverage must flag it, independent of any runner-level exit code.
+    const emptyTsTable = new Map();
+    for (const cls of VECTOR_CLASSES) {
+      emptyTsTable.set(cls, { TS: { pass: 0, fail: 0 }, Python: { pass: 3, fail: 0 }, Go: { pass: 1, fail: 0 }, Rust: { pass: 1, fail: 0 }, CSharp: { pass: 1, fail: 0 } });
+    }
+    const tsCoverage = verifyColumnHasCoverage("TS", emptyTsTable);
+    check("all-10-classes-zero TS column -> flagged BROKEN (red)", tsCoverage.broken === true);
+    const pyCoverage = verifyColumnHasCoverage("Python", emptyTsTable);
+    check("Python column with real data -> NOT flagged broken (green)", pyCoverage.broken === false);
+
+    // GREEN: a column with real data anywhere in the 10 rows must not be flagged.
+    const healthyTable = new Map();
+    for (const cls of VECTOR_CLASSES) healthyTable.set(cls, { TS: { pass: 2, fail: 0 }, Python: { pass: 2, fail: 0 }, Go: { pass: 2, fail: 0 }, Rust: { pass: 2, fail: 0 }, CSharp: { pass: 2, fail: 0 } });
+    check("all-columns-healthy table -> TS NOT flagged broken (green)", verifyColumnHasCoverage("TS", healthyTable).broken === false);
+
+    // A column already sentineled (runner-level broken) must not be double-reported by this check.
+    const sentineledTable = new Map();
+    for (const cls of VECTOR_CLASSES) sentineledTable.set(cls, { TS: { pass: 1, fail: 0 }, Python: { pass: 1, fail: 0 }, Go: { pass: -1, fail: -1 }, Rust: { pass: 1, fail: 0 }, CSharp: { pass: 1, fail: 0 } });
+    check("already-sentineled column -> NOT re-flagged (avoids a confusing double report)", verifyColumnHasCoverage("Go", sentineledTable).broken === false);
+  }
+
+  console.log("\nQA round 1 finding B — independent whole-table FAIL scan (not just exit-code-based):");
+  {
+    const cleanTable = new Map();
+    for (const cls of VECTOR_CLASSES) cleanTable.set(cls, { TS: { pass: 2, fail: 0 }, Python: { pass: 2, fail: 0 }, Go: { pass: 2, fail: 0 }, Rust: { pass: 2, fail: 0 }, CSharp: { pass: 2, fail: 0 } });
+    check("all-PASS table -> tableHasAnyFail finds nothing (green)", tableHasAnyFail(cleanTable) === null);
+
+    // RED: a FAIL cell buried in the table must be found even with no other signal pointing at it.
+    const dirtyTable = new Map();
+    for (const cls of VECTOR_CLASSES) dirtyTable.set(cls, { TS: { pass: 2, fail: 0 }, Python: { pass: 2, fail: 0 }, Go: { pass: 2, fail: 0 }, Rust: { pass: 2, fail: 0 }, CSharp: { pass: 2, fail: 0 } });
+    dirtyTable.get("sig").Rust = { pass: 1, fail: 1 };
+    const found = tableHasAnyFail(dirtyTable);
+    check("a single buried FAIL cell (sig/Rust) -> found (red)", found?.cls === "sig" && found?.col === "Rust");
+
+    // A sentinel (already-BROKEN) cell must not be misread as a FAIL.
+    const sentinelOnlyTable = new Map();
+    for (const cls of VECTOR_CLASSES) sentinelOnlyTable.set(cls, { TS: { pass: -1, fail: -1 }, Python: { pass: 2, fail: 0 }, Go: { pass: 2, fail: 0 }, Rust: { pass: 2, fail: 0 }, CSharp: { pass: 2, fail: 0 } });
+    check("a sentinel (BROKEN) cell is NOT mistaken for a FAIL cell", tableHasAnyFail(sentinelOnlyTable) === null);
+  }
+
+  console.log("\nQA round 1 finding D — duplicate-label detection (incl. the real bug it surfaced):");
+  {
+    check("no duplicates in a clean 3-item list", findDuplicateLabels([{ label: "a" }, { label: "b" }, { label: "c" }]).length === 0);
+    const dupResult = findDuplicateLabels([{ label: "a" }, { label: "b" }, { label: "a" }]);
+    check("a repeated label IS detected", dupResult.length === 1 && dupResult[0].label === "a" && dupResult[0].count === 2);
+    // The actual live corpus, with the label-parsing bug this investigation found and fixed, must
+    // now be duplicate-free — regression guard for the exact defect that motivated this section.
+    const badEnumTs = parseTsPyLines("✓ MALFORMED (bad enum: action.riskClass) [TS verifyChain]: MALFORMED (want MALFORMED)\n✓ MALFORMED (bad enum: action.riskClass) [PY verifier]: exit 3 (want 3)\n");
+    check("the real 'bad enum' TS/PY line pair no longer collapses to one truncated label", findDuplicateLabels(badEnumTs).length === 0);
+    check("...and the TS-tagged line is now correctly attributed to TS (was silently Python before the fix)", badEnumTs[0].impl === "TS");
+  }
+
+  console.log("\nQA round 1 finding E — tightened classifier net (a future 'multi-tenant'/'genesis-tenant' vector must not misfile as structural):");
+  check('"attack/multi-tenant-drift + keyring" is left UNCLASSIFIED, not misfiled as structural', classifyFileVector("attack/multi-tenant-drift + keyring") === null);
+  check('"attack/genesis-tenant-drift + keyring" is left UNCLASSIFIED, not misfiled as structural', classifyFileVector("attack/genesis-tenant-drift + keyring") === null);
+  // ...while every REAL corpus label that legitimately needs these keywords still classifies.
+  check('"golden/multi + keyring" (real corpus) still classifies structural', classifyFileVector("golden/multi + keyring") === "structural");
+  check('"golden/genesis + keyring" (real corpus) still classifies structural', classifyFileVector("golden/genesis + keyring") === "structural");
+  check('"multi, no keyring (UNVERIFIED)" (rust real corpus) still classifies structural', classifyFileVector("multi, no keyring (UNVERIFIED)") === "structural");
+
   console.log(failed === 0 ? "\nSELFTEST PASS" : `\nSELFTEST FAILED: ${failed} check(s)`);
   process.exit(failed === 0 ? 0 : 1);
 }
@@ -589,8 +795,21 @@ if (argv.includes("--selftest")) {
   selftest();
 }
 
-const { stdout: tsPyStdout, exitCode: tsPyExitCode } = runPyConformance();
+let hardFail = false;
+
+const { stdout: tsPyStdout, exitCode: tsPyExitCode, timedOut: tsPyTimedOut } = runPyConformance();
 const tsPyResults = parseTsPyLines(tsPyStdout);
+
+const tsPyDuplicates = findDuplicateLabels(tsPyResults);
+if (tsPyDuplicates.length > 0) {
+  console.error(`\n${tsPyDuplicates.length} duplicate TS/Python label(s) — a genuine vector should be identified once:`);
+  for (const d of tsPyDuplicates) console.error(`  - "${d.label}" appeared ${d.count} times`);
+  hardFail = true;
+}
+if (tsPyTimedOut) {
+  console.error(`\nimpl-py/conformance.mjs TIMED OUT after ${SUBPROCESS_TIMEOUT_MS / 1000}s — matrix reflects a FAILING run.`);
+  hardFail = true;
+}
 
 const fileLangResults = {};
 const fileLangRuns = {};
@@ -603,6 +822,12 @@ for (const lang of FILE_LANGS) {
   if (executed.broken) {
     console.error(`\n${lang.key}: ${executed.reason}`);
   }
+  const langDuplicates = findDuplicateLabels(parsed);
+  if (langDuplicates.length > 0) {
+    console.error(`\n${langDuplicates.length} duplicate ${lang.key} label(s) — a genuine vector should be identified once:`);
+    for (const d of langDuplicates) console.error(`  - "${d.label}" appeared ${d.count} times`);
+    hardFail = true;
+  }
 }
 
 const { table, unclassified, otherChecks } = buildMatrix(tsPyResults, fileLangResults);
@@ -614,22 +839,37 @@ for (const lang of FILE_LANGS) {
   for (const cls of VECTOR_CLASSES) table.get(cls)[lang.key] = { pass: -1, fail: -1 }; // sentinel, rendered specially below
 }
 
+// QA round 1 finding A: the per-RUNNER guard above (verifyLangExecuted / fileLangRuns[*].broken)
+// cannot see a COLUMN silently emptying inside a runner that still executes fine — checked here,
+// uniformly, for ALL FIVE columns (not just the 3 file-langs) against the now-fully-built table.
+const tsPyColumnStatus = { TS: verifyColumnHasCoverage("TS", table), Python: verifyColumnHasCoverage("Python", table) };
+for (const [colKey, status] of Object.entries(tsPyColumnStatus)) {
+  if (!status.broken) continue;
+  console.error(`\n${colKey} column: ${status.reason}`);
+  for (const cls of VECTOR_CLASSES) table.get(cls)[colKey] = { pass: -1, fail: -1 };
+  hardFail = true;
+}
+for (const lang of FILE_LANGS) {
+  if (fileLangRuns[lang.key].broken) continue; // already sentineled + reported by the runner-level guard
+  const status = verifyColumnHasCoverage(lang.key, table);
+  if (!status.broken) continue;
+  console.error(`\n${lang.key} column: ${status.reason}`);
+  for (const cls of VECTOR_CLASSES) table.get(cls)[lang.key] = { pass: -1, fail: -1 };
+  fileLangRuns[lang.key] = { ...fileLangRuns[lang.key], broken: true, brokenReason: status.reason };
+  hardFail = true;
+}
+
 const md = renderMarkdown({
   table,
   totalTsPyResults: tsPyResults.length,
   tsPyExitCode,
   fileLangRuns,
   otherChecks,
+  tsPyColumnStatus,
 });
 
 process.stdout.write(md + "\n");
 
-if (argv.includes("--write")) {
-  writeFileSync(MATRIX_MD, md);
-  console.error(`\nwrote ${MATRIX_MD}`);
-}
-
-let hardFail = false;
 if (tsPyExitCode !== 0) {
   console.error(`\nimpl-py/conformance.mjs itself failed (exit ${tsPyExitCode}) — matrix reflects a FAILING run.`);
   hardFail = true;
@@ -656,6 +896,31 @@ for (const lang of FILE_LANGS) {
   if (acc && acc.fail > 0) {
     console.error(`\n${acc.fail} additional (outside-the-10-class) check(s) FAILED for ${lang.key} — see the table's "additional checks" note.`);
     hardFail = true;
+  }
+}
+
+// QA round 1 finding B: independent of every exit-code-based check above, scan the fully-built
+// table itself for any FAIL cell — a defect this generator's own logic would surface even if some
+// future upstream regression broke the exit-code<->failure correlation this file otherwise trusts.
+const anyFail = tableHasAnyFail(table);
+if (anyFail) {
+  console.error(`\nFAIL cell found in the built table (\`${anyFail.cls}\` / ${anyFail.col}, ${anyFail.fail} failing) independent of any exit code — matrix reflects a FAILING run.`);
+  hardFail = true;
+}
+
+// QA round 1 finding C: --write must never persist a public trust artifact from a FAILING run. The
+// write now happens LAST, gated on the FULLY-computed hardFail — previously it ran before any of the
+// above evaluation, so a hard-failing run (verified live: a zero-check Go mutation) still wrote 12
+// BROKEN cells to disk on top of the last good file. `check:matrix`'s `&&` chain does stop the
+// subsequent `git diff --exit-code` step from running in CI, so a broken write was never at risk of
+// being silently committed there — but a developer's own working tree could still pick up a broken
+// file with no signal beyond a scrollback exit code. Refuse instead.
+if (argv.includes("--write")) {
+  if (hardFail) {
+    console.error(`\nREFUSING to write ${MATRIX_MD} — this run is FAILING (see errors above). The file on disk is left unchanged.`);
+  } else {
+    writeFileSync(MATRIX_MD, md);
+    console.error(`\nwrote ${MATRIX_MD}`);
   }
 }
 

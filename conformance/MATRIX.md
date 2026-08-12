@@ -8,7 +8,7 @@
 
 | Vector class | TS (reference) | Python (`impl-py/noa_verify.py`) | Go (`impl-go/`) | Rust (`impl-rust/`) | C# (`impl-csharp/`) |
 |---|---|---|---|---|---|
-| `structural` | PASS (13) | PASS (21) | PASS (16) | PASS (12) | PASS (11) |
+| `structural` | PASS (14) | PASS (20) | PASS (16) | PASS (12) | PASS (11) |
 | `hash` | not asserted here† | PASS (1) | PASS (1) | PASS (1) | PASS (1) |
 | `sig` | PASS (2) | PASS (3) | PASS (2) | PASS (1) | PASS (1) |
 | `key-swap` | PASS (1) | PASS (1) | PASS (2) | PASS (2) | PASS (2) |
@@ -17,7 +17,7 @@
 | `dup-key` | not asserted here† | PASS (1) | PASS (1) | PASS (1) | PASS (1) |
 | `malleability` | PASS (11) | PASS (11) | not asserted here‡ | not asserted here‡ | not asserted here‡ |
 | `unicode` | PASS (9) | PASS (9) | PASS (3) | PASS (3) | PASS (3) |
-| `tenant` | PASS (4) | PASS (5) | PASS (4) | PASS (4) | PASS (4) |
+| `tenant` | PASS (5) | PASS (4) | PASS (4) | PASS (4) | PASS (4) |
 
 † "not asserted here" (TS/Python columns) means `impl-py/conformance.mjs` does not run an explicitly-tagged check for that implementation in that class (usually because the vector predates the `[TS ...]`/`[PY verifier]` tagging convention and only exercises the Python CLI directly). It does NOT mean untested: TS's own behavior for that vector class is unit-tested elsewhere (`test/verify.test.ts`, `test/safe-json.test.ts`, `test/identity-binding.test.ts`) and gated by `npm test`. Only `hash` and `dup-key` currently carry this caveat for the TS column.
 
