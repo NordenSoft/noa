@@ -169,12 +169,25 @@ comment lines from `git diff v0.6.0 HEAD -- src/` leaves nothing, so no behaviou
   readings disagree — a non-cryptographic failure after sound signatures, and a tampered checkpoint
   over sound receipts.
 
-### Not yet released to the registry
+### Released — this section previously said it was not, and both halves were wrong
 
-This version is tagged in the changelog but **not published**: publishing is an owner-authorised
-action. Until it is, `lint:release-parity` stays red with an accurate message — "0.6.1 has no tag
-and is not on the registry" — rather than the previous, wrong one. No `v0.6.1` git tag was created
-either: a tag with nothing published would assert a release that has not happened.
+**CORRECTED 2026-08-12.** This section read *"tagged in the changelog but **not published**"* and
+*"No `v0.6.1` git tag was created either"*. Measured, both are false:
+
+```console
+$ npm view noa-receipt versions   # → … 0.6.0, 0.6.1, 0.6.2
+$ git rev-list -n1 v0.6.1         # → 8a3fb2af
+```
+
+`0.6.1` went to the registry on 2026-08-04 and the `v0.6.1` tag exists, pointing at `8a3fb2af`. It
+is a **lightweight** tag (`git cat-file -t v0.6.1` → `commit`), so it carries no tagger timestamp and
+none is invented here.
+
+*Why this survived stale, and it is the same shape NC-6.4 recorded:* the text was wrong in the
+**understating** direction — it claimed less than had happened. Review here is tuned to catch
+overclaims and is structurally blind to the opposite, so a sentence that sells the project short
+outlives one that oversells it. The release audit caught this only because a mechanical check
+disagreed with the prose, which is the rule (§7) working exactly as written.
 
 ## [0.6.0] - 2026-08-01
 

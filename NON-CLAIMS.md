@@ -391,15 +391,24 @@ argued (ADR-0001 §2.3). Against a data-only attacker, parsing from text does cl
 because it removes the only route by which untrusted *data* obtains code execution. Against an
 attacker with independent code execution it closes nothing.
 
-### NC-6.4 — The reproduced R7 exploits are pinned in BOTH directions, and are all closed today
+### NC-6.4 — The reproduced R7 exploits are pinned in BOTH directions; 13 are closed and ONE is deliberately open
 **CORRECTED 2026-07-29.** This entry previously read *"Ten of eleven reproduced R7 exploits are still
 open… Only C-04 is closed today,"* and cited the bytes-in boundary and closed primitive set as *"not
 implemented."* All three statements are now false. Measured:
 
 ```console
 $ npm run test:r7-exploits
-closed 13 / open 0
+closed 13 / open 1
 ```
+
+**The one open disposition is `o01_preload_includes`, and it is open on purpose.** It is
+`c02_includes425` with a single variable changed — WHEN the poison is installed. Poisoned *after*
+`noa-receipt` loads, the capture holds and the exploit is pinned CLOSED. Poisoned *before* it loads,
+`src/intrinsics.ts` snapshots the poisoned value at module evaluation and the forgery verifies. That
+is why ADR-0002 §3 **withdrew** the in-realm intrinsic-immunity claim instead of re-scoping it: a
+snapshot of a lie is a lie that can no longer be repaired. The pin exists so the withdrawal keeps a
+re-runnable artifact behind it — if it ever stops reproducing, either a fix landed (update the pin
+and say so) or the program rotted into measuring nothing.
 
 The bytes-in boundary and the closed primitive set shipped on this branch, and the corpus grew from
 11 to 13. `scripts/run-r7-exploits.mjs` runs on every CI build with each disposition pinned in
