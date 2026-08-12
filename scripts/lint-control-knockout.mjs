@@ -741,8 +741,37 @@ const KNOCKOUTS = [
     id: "p05-gate-keyring-validfrom-carried",
     control: "P0-5 — createAlphaTrust carries the generated GATE activation into the live keyring; deleting it makes the registered resolver proof itself fail. [proof: RES-PAR-GATE-KEYRING]",
     file: "packages/gate/src/trust.ts",
-    find: '    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], validFrom, revokedAt: null },',
-    replace: '    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], revokedAt: null },',
+    // RE-AIMED 2026-08-12 (S0 authority-root split). The literal role array on this line became
+    // `gateRoles` when the execution-signer role moved out of the gate process, so `find` matched
+    // 0x and the runner correctly reported MUTATION_NOT_APPLIED — the control was UNMEASURED, not
+    // passing. Same control, same mutation (delete the carried activation), re-aimed at the line as
+    // it is now written.
+    find: '    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: gateRoles, validFrom, revokedAt: null },',
+    replace: '    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: gateRoles, revokedAt: null },',
+    kind: "tests",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
+    id: "s0-grant-authority-out-of-gate-process",
+    control:
+      "S0 — the gate process holds NO key the KEY MANIFEST lets sign an Execution Grant. Give the gate " +
+      "key back its `execution-signer` role and a compromised gate can mint grants with its own key again, " +
+      "which is the defect NON-CLAIMS.md's authority-root corollary recorded.",
+    file: "packages/gate/src/trust.ts",
+    find: '  const gateRoles: string[] = external ? ["hold-signer"] : ["hold-signer", "execution-signer"];',
+    replace: '  const gateRoles: string[] = ["hold-signer", "execution-signer"];',
+    kind: "tests",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
+    id: "s0-grant-params-bound-to-approval",
+    control:
+      "S0 — the out-of-process grant signer refuses to sign a grant whose paramsHash is not the one a human " +
+      "approved. This is the single check that separates a policy gate from a bare signing oracle: without it " +
+      "an attacker who can merely REACH the socket has the key in effect.",
+    file: "packages/gate/src/grant-sidecar.ts",
+    find: '  if (grant["paramsHash"] !== approvedParamsHash) {',
+    replace: '  if (grant["paramsHash"] !== approvedParamsHash && false) {',
     kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },

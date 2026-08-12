@@ -35,8 +35,26 @@ function generateX25519Public(): string {
   return (publicKey.export({ type: "spki", format: "der" }) as Buffer).toString("base64");
 }
 
+/** The PUBLIC half of an execution-signer key held OUTSIDE this process (the grant sidecar). */
+export interface ExternalExecutionSignerKey {
+  kid: string;
+  /** base64(DER SPKI) Ed25519 public key. There is deliberately no private member on this type. */
+  publicKey: string;
+}
+
 export interface CreateTrustInput {
   tenant: string;
+  /**
+   * When supplied, the manifest's authority is SPLIT and this process stops being able to authorize.
+   *
+   * The gate key drops to `["hold-signer"]` and this key becomes the only `execution-signer` in the
+   * manifest, so a relying party rejects any Execution Grant signed by the gate's own key
+   * (`verify.ts`'s F15 block; the shipped `execution-grant/reject-wrong-key` vector is exactly this
+   * case). That is what makes "the compromised gate cannot mint a grant" a mechanical fact rather
+   * than an assertion — and it is also why all four execution-signer artifacts must be signed
+   * remotely once this is set (`exec-signer.ts`).
+   */
+  executionSigner?: ExternalExecutionSignerKey;
   /**
    * riskClass tier the single alpha approver is authorized for (F15). The tiers are ORDERED, not
    * disjoint: `approve-critical` strictly dominates `approve-high`, so a CRITICAL-authorized
@@ -57,8 +75,12 @@ export interface GateTrust {
   now: () => number;
   newId: () => string;
 
-  /** The gate signing key (GATE + hold-signer + execution-signer), also the receipt signer. */
+  /** The gate signing key. GATE + `hold-signer`, also the receipt signer — and `execution-signer`
+   *  TOO unless `executionSigner` below is set, in which case that role has left this process. */
   gate: GateKeyPair;
+  /** Set iff the execution-signer key lives outside this process. The gate holds the PUBLIC half
+   *  only, for verification and for the manifest. */
+  executionSigner?: ExternalExecutionSignerKey;
   /** The single alpha approver signing key (APPROVER). The gate holds only its PUBLIC half at
    *  runtime; the private half lives on the phone. In tests the whole pair is exposed to simulate
    *  the phone (see test/helpers.ts). */
@@ -108,6 +130,11 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
   // both the manifest and `auditKid`, so the manifest entry and the recipient list cannot drift.
   const auditKidValue = "audit-1";
 
+  const external = input.executionSigner;
+  // ONE authority table for the split, read by the manifest AND by the keyring below, so the two
+  // cannot disagree about which key may authorize an execution.
+  const gateRoles: string[] = external ? ["hold-signer"] : ["hold-signer", "execution-signer"];
+
   const iso = (ms: number) => new Date(ms).toISOString();
   const t0 = now();
   const validFrom = iso(t0 - 60_000);
@@ -141,11 +168,21 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
         {
           kid: gate.kid,
           type: "GATE",
-          roles: ["hold-signer", "execution-signer"],
+          roles: gateRoles,
           publicKey: gate.publicKey,
           validFrom,
           revokedAt: null,
         },
+        ...(external
+          ? [{
+              kid: external.kid,
+              type: "GATE",
+              roles: ["execution-signer"],
+              publicKey: external.publicKey,
+              validFrom,
+              revokedAt: null,
+            }]
+          : []),
         {
           kid: approver.kid,
           type: "APPROVER",
@@ -212,7 +249,10 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
   // deliberately NOT built: the test layer already covers it, and a second mechanism would be
   // theatre. Tracked as P1 (F-4).
   const keyring: Record<string, KeyEntry> = {
-    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], validFrom, revokedAt: null },
+    [gate.kid]: { publicKey: gate.publicKey, type: "GATE", roles: gateRoles, validFrom, revokedAt: null },
+    ...(external
+      ? { [external.kid]: { publicKey: external.publicKey, type: "GATE" as const, roles: ["execution-signer"], validFrom, revokedAt: null } }
+      : {}),
     [approver.kid]: { publicKey: approver.publicKey, type: "APPROVER", roles: [approverRole], validFrom, revokedAt: null },
     [authority.kid]: { publicKey: authority.publicKey, type: "DELEGATED", roles: ["key-manifest-sign"], validFrom, revokedAt: null },
     [root.kid]: { publicKey: root.publicKey, type: "ROOT", roles: [], validFrom, revokedAt: null },
@@ -230,6 +270,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
     now,
     newId,
     gate,
+    ...(external ? { executionSigner: { kid: external.kid, publicKey: external.publicKey } } : {}),
     approver,
     approverHpkePublicKey: approverHpke,
     auditKid: auditKidValue,

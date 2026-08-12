@@ -28,7 +28,8 @@
     }
   },
   "bin": {
-    "noa-gate": "dist/src/cli.js"
+    "noa-gate": "dist/src/cli.js",
+    "noa-gate-grant-signer": "dist/src/grant-sidecar.js"
   },
   "engines": {
     "node": ">=20"

@@ -17,6 +17,7 @@ import { describeThrown } from "noa-mcp-adapter-core/safe-throw";
 import { spawnSync } from "node:child_process";
 import { createGate } from "./server.js";
 import { createAlphaTrust } from "./trust.js";
+import { remoteExecutionSigner } from "./exec-signer.js";
 import { hashSecret } from "./auth.js";
 import { InMemoryStore } from "./store.js";
 import { guard, HttpGateClient } from "./wrapper.js";
@@ -26,12 +27,28 @@ async function serve(): Promise<void> {
   const bindAddress = process.env["NOA_GATE_BIND"] ?? "127.0.0.1";
   const port = Number.parseInt(process.env["NOA_GATE_PORT"] ?? "8899", 10);
 
-  const trust = createAlphaTrust({ tenant });
+  // THE AUTHORITY ROOT LEAVES THIS PROCESS when NOA_GATE_GRANT_SIGNER_SOCKET names a running
+  // `noa-gate-grant-signer`. The signer is bound BEFORE the trust root is built, because the key
+  // manifest must name ITS kid as the tenant's only `execution-signer` — minting the manifest first
+  // and reaching for the signer afterwards would publish authority for a key we had not yet proven
+  // we could reach, and the failure would surface on the first human approval instead of at boot.
+  const grantSignerSocket = process.env["NOA_GATE_GRANT_SIGNER_SOCKET"];
+  const executionSigner = grantSignerSocket ? remoteExecutionSigner({ socketPath: grantSignerSocket }) : undefined;
+
+  const trust = createAlphaTrust({
+    tenant,
+    ...(executionSigner ? { executionSigner: { kid: executionSigner.kid, publicKey: executionSigner.publicKey } } : {}),
+  });
   const store = new InMemoryStore();
   const apiKey = "noa_gateagent_" + randomBytes(24).toString("base64url");
   store.putAgent({ id: "agent-1", name: "dev-agent", apiKeyHash: hashSecret(apiKey), createdAt: Date.now() });
 
-  const gate = createGate({ trust, store, config: { bindAddress, port } });
+  const gate = createGate({
+    trust,
+    store,
+    config: { bindAddress, port },
+    ...(executionSigner ? { executionSigner } : {}),
+  });
   const { address, port: boundPort } = await gate.listen();
   process.stdout.write(
     JSON.stringify(
@@ -42,6 +59,10 @@ async function serve(): Promise<void> {
         tenant,
         agentApiKey: apiKey,
         gateKid: trust.gate.kid,
+        executionSignerKid: trust.executionSigner?.kid ?? trust.gate.kid,
+        // Said out loud at boot, because "is the authority root in this process?" is the one
+        // operational fact a reader of this output most needs and cannot otherwise see.
+        grantKeyCustody: trust.executionSigner ? `out-of-process (${grantSignerSocket})` : "IN-PROCESS (alpha default; see NON-CLAIMS.md)",
         keyManifestVersion: trust.keyManifestVersion,
         note: "dev harness; no HPKE sealer wired (RAW display fails closed). Pass encryptedDisplay to POST /v1/holds.",
       },

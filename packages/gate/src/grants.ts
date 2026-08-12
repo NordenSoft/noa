@@ -9,9 +9,8 @@
  *     `bootId`/`uptimeResetAt` liveness (G3). Never wrapper-asserted, never a guessed EXECUTED/FAILED.
  */
 
-import { signArtifact, refHash, receiptRefHash } from "noa-approval-artifacts";
-import type { GateKeyPair } from "./trust.js";
-import { encodeDocument } from "./bytes.js";
+import { refHash, receiptRefHash } from "noa-approval-artifacts";
+import type { ExecutionSigner } from "./exec-signer.js";
 import type {
   ExecutionConsumption,
   ExecutionGrant,
@@ -20,9 +19,18 @@ import type {
   Receipt,
 } from "./types.js";
 
-function execSigner(gate: GateKeyPair): { kid: string; privateKey: string } {
-  return { kid: gate.kid, privateKey: gate.privateKey };
-}
+/**
+ * ── WHO SIGNS ────────────────────────────────────────────────────────────────────────────────────
+ * These four artifacts no longer take a raw `GateKeyPair`. They take an `ExecutionSigner`, which is
+ * either the in-process key (the alpha default, unchanged behaviour) or a separate process holding
+ * the key behind a policy gate. The signing DOMAIN is resolved from each document's own `spec` via
+ * the shipped `ARTIFACTS` table rather than restated here, so the anti-cross-protocol-replay tag and
+ * the artifact registry cannot drift apart.
+ *
+ * `issueGrant` additionally hands the signer the APPROVAL PROOF. A local signer ignores it; a
+ * policy-gating signer refuses to sign a grant whose `paramsHash` is not the one that proof carries.
+ * That argument is the difference between custody and authorization.
+ */
 
 export function issueGrant(args: {
   grantId: string;
@@ -30,10 +38,12 @@ export function issueGrant(args: {
   paramsHash: string;
   holdEnvelope: HoldEnvelope;
   allowedReceipt: Receipt;
+  deferredReceipt: Receipt;
+  decisionArtifact: Record<string, unknown>;
   issuedAt: string;
   expiresAt: string;
   nonce: string;
-  gate: GateKeyPair;
+  signer: ExecutionSigner;
 }): ExecutionGrant {
   const doc = {
     spec: "noa.execution-grant/0.1" as const,
@@ -47,7 +57,12 @@ export function issueGrant(args: {
     maxUses: 1 as const,
     nonce: args.nonce,
   };
-  return signArtifact<typeof doc>(encodeDocument(doc), "NOA-ExecGrant-v0.1-sig", execSigner(args.gate)) as ExecutionGrant;
+  return args.signer.signGrant(doc, {
+    holdEnvelope: args.holdEnvelope,
+    decisionArtifact: args.decisionArtifact,
+    deferredReceipt: args.deferredReceipt,
+    approvalReceipt: args.allowedReceipt,
+  }) as ExecutionGrant;
 }
 
 export function buildConsumption(args: {
@@ -55,7 +70,7 @@ export function buildConsumption(args: {
   consumedAt: string;
   attemptReceipt: Receipt;
   result: "DISPATCHED" | "FAILED_BEFORE_DISPATCH";
-  gate: GateKeyPair;
+  signer: ExecutionSigner;
 }): ExecutionConsumption {
   const doc = {
     spec: "noa.execution-consumption/0.1" as const,
@@ -64,7 +79,7 @@ export function buildConsumption(args: {
     attemptReceiptHash: receiptRefHash(args.attemptReceipt as unknown as Record<string, unknown>),
     result: args.result,
   };
-  return signArtifact<typeof doc>(encodeDocument(doc), "NOA-ExecConsume-v0.1-sig", execSigner(args.gate)) as ExecutionConsumption;
+  return args.signer.signAttestation(doc) as ExecutionConsumption;
 }
 
 export function buildUncertainty(args: {
@@ -72,7 +87,7 @@ export function buildUncertainty(args: {
   detectedAt: string;
   bootId: string;
   uptimeResetAt: string;
-  gate: GateKeyPair;
+  signer: ExecutionSigner;
 }): ExecutionUncertainty {
   const doc = {
     spec: "noa.execution-uncertainty/0.1" as const,
@@ -83,5 +98,5 @@ export function buildUncertainty(args: {
     bootId: args.bootId,
     uptimeResetAt: args.uptimeResetAt,
   };
-  return signArtifact<typeof doc>(encodeDocument(doc), "NOA-ExecUncertainty-v0.1-sig", execSigner(args.gate)) as ExecutionUncertainty;
+  return args.signer.signAttestation(doc) as ExecutionUncertainty;
 }

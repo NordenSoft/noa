@@ -81,6 +81,30 @@ the immutable snapshot and refuse on any mismatch** → reserve → execute → 
   → a plaintext `display` fails closed; the gate never ships plaintext and never fakes encryption.
 - **No receipt-schema field is ever added** (Red Line 5). `buildTimeoutReceipt` (D19) is a pure
   wrapper over `noa-receipt`'s `buildReceipt` using only existing fields.
+- **The authority root can be moved out of this process.** By default the `execution-signer` key —
+  the key that signs an Execution Grant — is on this process's heap, and `NON-CLAIMS.md`'s
+  authority-root corollary applies verbatim. Run `noa-gate-grant-signer` and point the gate at it to
+  change that:
+
+  ```bash
+  mkdir -p -m 700 /var/lib/noa/signer
+  noa-gate-grant-signer \
+    --key-file   /var/lib/noa/signer/grant.key.json \
+    --trust-file /var/lib/noa/signer/trust.json \
+    --socket     /var/lib/noa/signer/grant.sock
+
+  NOA_GATE_GRANT_SIGNER_SOCKET=/var/lib/noa/signer/grant.sock noa-gate serve
+  ```
+
+  The key manifest then names the sidecar's kid as the tenant's **only** `execution-signer` and the
+  gate key drops to `hold-signer`, so a grant signed by anything this process holds is refused by the
+  verifier. The sidecar is not a bare signing oracle: it independently verifies the approver-signed
+  decision and ALLOWED receipt, and refuses any grant whose `paramsHash` is not the one a human
+  approved. `noa-gate serve` prints `grantKeyCustody` at boot so the posture is never a guess.
+
+  For the custody claim to be true the sidecar must run as a **different OS user** from the gate
+  (same UID means the key file and the process memory are readable anyway) — use `--socket-mode 660`
+  with a shared group. Read `NON-CLAIMS.md`'s authority-root corollary for what is still not claimed.
 
 ## Reuse (KURAL 5)
 

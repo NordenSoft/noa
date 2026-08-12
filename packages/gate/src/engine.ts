@@ -34,6 +34,7 @@ import { hashSecret } from "./auth.js";
 import { buildDeferredReceipt, buildTimeoutReceipt, buildAttemptReceipt, type ReceiptActionInput } from "./receipts.js";
 import { buildHoldEnvelope } from "./envelope.js";
 import { issueGrant, buildConsumption, buildUncertainty } from "./grants.js";
+import { localExecutionSigner, type ExecutionSigner } from "./exec-signer.js";
 import { buildHoldResolution } from "./resolution.js";
 import { getProjection } from "./projections.js";
 import { encodeDocument } from "./bytes.js";
@@ -207,6 +208,13 @@ export interface GateEngineDeps {
   trust: GateTrust;
   schemas: Record<string, unknown>;
   sealDisplay?: DisplaySealer;
+  /**
+   * Who holds the `execution-signer` key. Defaults to the in-process gate key (alpha, unchanged).
+   * Supply a `remoteExecutionSigner` to move the authority root out of this process; the constructor
+   * REFUSES a configuration where the two halves disagree, because a silent mismatch there is a
+   * gate that believes it is protected and is not.
+   */
+  executionSigner?: ExecutionSigner;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -216,6 +224,7 @@ export class GateEngine {
   private readonly trust: GateTrust;
   private readonly schemas: Record<string, unknown>;
   private readonly sealDisplay: DisplaySealer | undefined;
+  private readonly execSigner: ExecutionSigner;
   private readonly log: (event: string, fields: Record<string, unknown>) => void;
   private readonly waiters = new Map<string, Set<Waiter>>();
 
@@ -226,6 +235,19 @@ export class GateEngine {
     this.schemas = deps.schemas;
     this.sealDisplay = deps.sealDisplay;
     this.log = deps.log ?? (() => {});
+    // ── THE TWO HALVES MUST AGREE, AND A MISMATCH IS FATAL AT CONSTRUCTION ──────────────────────
+    // The manifest decides which kid may authorize an execution; the signer decides which key
+    // actually signs. If those disagree the gate either emits grants nobody accepts (loud, merely
+    // broken) or keeps an in-process key the manifest still trusts (silent, and the whole custody
+    // property is void). Neither may be discovered on the first human approval.
+    const externalKid = this.trust.executionSigner?.kid;
+    this.execSigner = deps.executionSigner ?? localExecutionSigner(this.trust.gate);
+    const expectedKid = externalKid ?? this.trust.gate.kid;
+    if (this.execSigner.kid !== expectedKid) {
+      throw new Error(
+        `GateEngine: the execution signer's kid ${JSON.stringify(this.execSigner.kid)} is not the kid the key manifest authorizes for execution (${JSON.stringify(expectedKid)})`,
+      );
+    }
   }
 
   private now(): number {
@@ -681,11 +703,12 @@ export class GateEngine {
       deferredReceipt: hold.deferredReceipt,
       gate: this.trust.gate,
     });
-    hold.status = "EXPIRED";
-    hold.reasonCode = "APPROVAL_TIMEOUT";
-    hold.decidedAt = atMs;
-    hold.verdictReceipt = timeoutReceipt;
-    hold.holdResolution = buildHoldResolution({
+    // SIGN FIRST, MUTATE AFTER. Signing used to be a local, infallible operation; with the
+    // execution signer out of process it can fail (socket down, policy refusal), and a throw
+    // BETWEEN the state transition and the attestation would leave a hold terminal with no signed
+    // Hold Resolution — a state no reader could tell from a lost artifact. Building into a local
+    // first makes the failure atomic: either the hold is resolved AND attested, or neither.
+    const holdResolution = buildHoldResolution({
       holdId: hold.id,
       holdEnvelope: hold.holdEnvelope,
       decisionArtifact: null,
@@ -695,8 +718,13 @@ export class GateEngine {
       receivedAt: expiredAt,
       keyManifestVersion: this.trust.keyManifestVersion,
       keyManifestHash: this.trust.keyManifestHash,
-      gate: this.trust.gate,
+      signer: this.execSigner,
     });
+    hold.status = "EXPIRED";
+    hold.reasonCode = "APPROVAL_TIMEOUT";
+    hold.decidedAt = atMs;
+    hold.verdictReceipt = timeoutReceipt;
+    hold.holdResolution = holdResolution;
     this.store.putHold(hold);
     this.log("hold.expired", { holdId: hold.id });
     this.wake(hold);
@@ -733,10 +761,8 @@ export class GateEngine {
     this.lazyExpire(hold, receivedAtMs);
     if (hold.status !== "PENDING") return err(409, "HOLD_ALREADY_RESOLVED", { status: hold.status });
     const receivedAt = this.iso(receivedAtMs);
-    hold.status = "CANCELLED_LOCAL_STATE_LOST";
-    hold.reasonCode = "LOCAL_STATE_LOST";
-    hold.decidedAt = receivedAtMs;
-    hold.holdResolution = buildHoldResolution({
+    // Sign first, mutate after — same reason as `lazyExpire`.
+    const cancelResolution = buildHoldResolution({
       holdId: hold.id,
       holdEnvelope: hold.holdEnvelope,
       decisionArtifact: null,
@@ -746,8 +772,12 @@ export class GateEngine {
       receivedAt,
       keyManifestVersion: this.trust.keyManifestVersion,
       keyManifestHash: this.trust.keyManifestHash,
-      gate: this.trust.gate,
+      signer: this.execSigner,
     });
+    hold.status = "CANCELLED_LOCAL_STATE_LOST";
+    hold.reasonCode = "LOCAL_STATE_LOST";
+    hold.decidedAt = receivedAtMs;
+    hold.holdResolution = cancelResolution;
     this.store.putHold(hold);
     this.log("hold.cancelled_local_state_lost", { holdId });
     this.wake(hold);
@@ -924,71 +954,84 @@ export class GateEngine {
     // Store the SNAPSHOTS. Storing the live caller objects let `report()` — a LATER HTTP REQUEST —
     // re-read them, and the gate signed an attacker-chosen chain link from reads 5 and 6.
     // There is nothing else left to store: the live objects no longer exist in this scope.
+    // ── SIGN FIRST, MUTATE AFTER (2026-08-12, with the execution signer out of process) ──────────
+    // Signing was a local, infallible operation when the key was on this heap. It is now a round
+    // trip to a process that can be down, and to a POLICY that can REFUSE. A throw partway through
+    // the block below would leave this hold terminal with a missing attestation — or, worse,
+    // APPROVED with no grant while the caller saw a 500 and could not tell which. So every remotely
+    // signed artifact is built into a local BEFORE the record is touched: either the decision is
+    // recorded AND attested AND (if ENFORCED) granted, or none of it happened and the hold is still
+    // PENDING for a retry.
+    const approved = decisionVal === "APPROVE";
+    // OWNER DECISION 2026-07-30: RAW is UNENFORCED. It may never claim HUMAN_APPROVED and may never
+    // carry an execution grant, because in RAW nothing derived the display the human saw — so the
+    // receipt would attest an approval of something the boundary never computed.
+    const enforced = hold.mode === "ENFORCED";
+    // OWNER AUTHORIZATION 2026-08-04. This used to read `"HUMAN_APPROVED"`, and that token is
+    // forbidden by the owner's own invariant while the execution leg is unsourced (NON-CLAIMS.md,
+    // amended 2026-07-29): the approval, grant and EXECUTION intent digests must all be equal
+    // before any component claims it. Two of the three are established here; the third has no
+    // admissible source, and NC-6.8 declined one of the only two ways it could ever get one.
+    //
+    // So the gate says the true thing instead of the strong thing. `HUMAN_APPROVED` remains in the
+    // union, reserved, and this is the line that moves back to it the day an execution witness
+    // exists.
+    const reasonCode = approved
+      ? (enforced ? "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND" as const : "HUMAN_ACK_UNENFORCED" as const)
+      : "HUMAN_DENIED" as const;
+    // F10 Hold Resolution (trusted receivedAt).
+    // ⚠ THE ARGUMENT BELOW WAS THE DEFECT, AND ITS FIX IS NOW ENFORCED BY THE COMPILER. It read
+    // `decisionArtifact,` — the live caller object — while the line under it correctly used the
+    // `rDoc` snapshot. `buildHoldResolution` passes it to `refHash` (`resolution.ts:32`), which
+    // canonicalizes it and invokes its accessors, so the gate signed a `decisionArtifactHash` over
+    // bytes it never verified. After Slice 1 that identifier does not exist in this scope and
+    // `tsc` refuses the file outright:
+    //     src/engine.ts(698,9): error TS18004: No value exists in scope for the shorthand
+    //                           property 'decisionArtifact'.
+    // A defect that cannot be written does not need a reviewer to catch it.
+    const holdResolution = buildHoldResolution({
+      holdId: hold.id,
+      holdEnvelope: hold.holdEnvelope,
+      decisionArtifact: daDoc,
+      verdictReceipt: rDoc as unknown as Receipt,
+      status: approved ? "APPROVED" : "DENIED",
+      // The SIGNED artifact carries the same token as the record below — deliberately the same
+      // value, because a relying party reads the signed resolution, not the in-memory field.
+      // Letting these two disagree is how a false claim survives a corrected record.
+      reasonCode,
+      receivedAt,
+      keyManifestVersion: this.trust.keyManifestVersion,
+      keyManifestHash: this.trust.keyManifestHash,
+      signer: this.execSigner,
+    });
+
+    // D13/D18: the GATE (never the phone) issues the pre-execution Execution Grant.
+    // OWNER DECISION 2026-07-30: only an ENFORCED hold may carry one. A grant is authorization to
+    // act, and RAW derived nothing — there is no bound intent for a grant to authorize.
+    const grantId = approved && enforced ? this.trust.newId() : null;
+    const grant = grantId === null ? null : issueGrant({
+      grantId,
+      holdId: hold.id,
+      paramsHash: hold.action.paramsHash,
+      holdEnvelope: hold.holdEnvelope,
+      allowedReceipt: rDoc as unknown as Receipt,
+      issuedAt: receivedAt,
+      expiresAt: this.iso(receivedAtMs + this.cfg.grantTtlMs),
+      nonce: this.trust.newId(),
+      deferredReceipt: hold.deferredReceipt,
+      decisionArtifact: daDoc,
+      signer: this.execSigner,
+    });
+
+    // ── FROM HERE DOWN NOTHING CAN FAIL: pure record mutation. ────────────────────────────────────
     hold.decisionReceipt = rDoc as unknown as Receipt;
     hold.decisionArtifact = daDoc;
     hold.decidedAt = receivedAtMs;
     hold.verdictReceipt = rDoc as unknown as Receipt;
-
-    if (decisionVal === "APPROVE") {
-      hold.status = "APPROVED";
-      // OWNER DECISION 2026-07-30: RAW is UNENFORCED. It may never claim HUMAN_APPROVED and may never
-      // carry an execution grant, because in RAW nothing derived the display the human saw — so the
-      // receipt would attest an approval of something the boundary never computed.
-      const enforced = hold.mode === "ENFORCED";
-      // OWNER AUTHORIZATION 2026-08-04. This line used to read `"HUMAN_APPROVED"`, and that token is
-      // forbidden by the owner's own invariant while the execution leg is unsourced (NON-CLAIMS.md,
-      // amended 2026-07-29): the approval, grant and EXECUTION intent digests must all be equal
-      // before any component claims it. Two of the three are established here; the third has no
-      // admissible source, and NC-6.8 declined one of the only two ways it could ever get one.
-      //
-      // So the gate now says the true thing instead of the strong thing. `HUMAN_APPROVED` remains
-      // in the union, reserved, and this is the line that moves back to it the day an execution
-      // witness exists.
-      hold.reasonCode = enforced ? "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND" : "HUMAN_ACK_UNENFORCED";
-      // F10 Hold Resolution (trusted receivedAt).
-      // ⚠ THIS LINE WAS THE DEFECT, AND ITS FIX IS NOW ENFORCED BY THE COMPILER. It read
-      // `decisionArtifact,` — the live caller object — while the line below it correctly used the
-      // `rDoc` snapshot. `buildHoldResolution` passes it to `refHash` (`resolution.ts:32`), which
-      // canonicalizes it and invokes its accessors, so the gate signed a `decisionArtifactHash` over
-      // bytes it never verified. After Slice 1 that identifier does not exist in this scope and
-      // `tsc` refuses the file outright:
-      //     src/engine.ts(698,9): error TS18004: No value exists in scope for the shorthand
-      //                           property 'decisionArtifact'.
-      // A defect that cannot be written does not need a reviewer to catch it.
-      hold.holdResolution = buildHoldResolution({
-        holdId: hold.id,
-        holdEnvelope: hold.holdEnvelope,
-        decisionArtifact: daDoc,
-        verdictReceipt: rDoc as unknown as Receipt,
-        status: "APPROVED",
-        // The SIGNED artifact carries the same token as the record above — deliberately identical,
-        // because a relying party reads the signed resolution, not the in-memory field. Letting
-        // these two disagree is how a false claim survives a corrected record.
-        reasonCode: enforced ? "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND" : "HUMAN_ACK_UNENFORCED",
-        receivedAt,
-        keyManifestVersion: this.trust.keyManifestVersion,
-        keyManifestHash: this.trust.keyManifestHash,
-        gate: this.trust.gate,
-      });
-      // D13/D18: the GATE (never the phone) issues the pre-execution Execution Grant.
-      // OWNER DECISION 2026-07-30: only an ENFORCED hold may carry one. A grant is authorization to
-      // act, and RAW derived nothing — there is no bound intent for a grant to authorize.
-      if (!enforced) {
-        this.store.putHold(hold);
-        return { status: 200, body: this.holdView(hold) };
-      }
-      const grantId = this.trust.newId();
-      const grant = issueGrant({
-        grantId,
-        holdId: hold.id,
-        paramsHash: hold.action.paramsHash,
-        holdEnvelope: hold.holdEnvelope,
-        allowedReceipt: rDoc as unknown as Receipt,
-        issuedAt: receivedAt,
-        expiresAt: this.iso(receivedAtMs + this.cfg.grantTtlMs),
-        nonce: this.trust.newId(),
-        gate: this.trust.gate,
-      });
+    hold.status = approved ? "APPROVED" : "DENIED";
+    hold.reasonCode = reasonCode;
+    hold.holdResolution = holdResolution;
+    if (grant !== null && grantId !== null) {
       const grantRec: GrantRecord = {
         grant,
         status: "UNUSED",
@@ -1005,21 +1048,6 @@ export class GateEngine {
       };
       hold.grantId = grantId;
       this.store.putGrant(grantRec);
-    } else {
-      hold.status = "DENIED";
-      hold.reasonCode = "HUMAN_DENIED";
-      hold.holdResolution = buildHoldResolution({
-        holdId: hold.id,
-        holdEnvelope: hold.holdEnvelope,
-        decisionArtifact: daDoc,
-        verdictReceipt: rDoc as unknown as Receipt,
-        status: "DENIED",
-        reasonCode: "HUMAN_DENIED",
-        receivedAt,
-        keyManifestVersion: this.trust.keyManifestVersion,
-        keyManifestHash: this.trust.keyManifestHash,
-        gate: this.trust.gate,
-      });
     }
     this.store.putHold(hold);
     this.log("hold.decided", { holdId, status: hold.status });
@@ -1212,7 +1240,7 @@ export class GateEngine {
       consumedAt: this.iso(this.now()),
       attemptReceipt,
       result: "DISPATCHED", // the only outcome this method can still sign
-      gate: this.trust.gate,
+      signer: this.execSigner,
     });
     rec.status = "REPORTED";
     rec.reportedAt = this.now();
@@ -1240,7 +1268,7 @@ export class GateEngine {
       detectedAt: this.iso(this.now()),
       bootId: this.trust.bootId,
       uptimeResetAt: this.trust.uptimeResetAt,
-      gate: this.trust.gate,
+      signer: this.execSigner,
     });
     this.store.putGrant(rec);
     this.log("grant.uncertainty_signed", { grantId: rec.grant.grantId });

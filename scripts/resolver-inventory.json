@@ -1,6 +1,6 @@
 {
   "spec": "noa.resolver-inventory/1",
-  "updated": "2026-08-11",
+  "updated": "2026-08-12",
   "authority": "Declared machine-readable inventory of AST-recognized trust-key sites plus human-reviewed anchors. scripts/lint-resolver-parity.mjs blocks drift for syntax it recognizes; it does not prove a whole-program census. Factory returns, callbacks, property mutation, dynamic/CommonJS indirection, verifier reassignment and ambiguous aliases require the manual wrapper trace in docs/P0-14-VERIFICATION-SURFACES.md. `line` is informational (reported on drift, not failed): identity is (file, scope, ordinal).",
   "limitations": {
     "mechanicalGuarantee": "Exact reconciliation for scanner-recognized sites and declared anchors only.",
@@ -1056,6 +1056,25 @@
       "proofs": []
     },
     {
+      "id": "gate-createalphatrust-keymanifest-keys-3",
+      "package": "gate",
+      "file": "packages/gate/src/trust.ts",
+      "scope": "createAlphaTrust>keyManifest>keys",
+      "ordinal": 3,
+      "line": 195,
+      "kind": "declare",
+      "class": "production",
+      "input": "clock-derived bootstrap window (iso(t0-60s)); present only when an EXTERNAL execution-signer is configured, which also strips execution-signer from the gate's own entry",
+      "output": "signed noa.key-manifest/0.1 key entry",
+      "validFrom": "explicit",
+      "revokedAt": "explicit",
+      "missingValue": "not expressible: generator always sets validFrom + revokedAt",
+      "malformedValue": "not expressible: clock-derived canonical toISOString",
+      "timestampParser": "new Date(ms).toISOString() at generation",
+      "consumer": "manifest verification: this is the entry that makes the OUT-OF-PROCESS grant signer the tenant's only execution-signer (S0 authority-root split)",
+      "proofs": []
+    },
+    {
       "id": "gate-createalphatrust-keyring-0",
       "package": "gate",
       "file": "packages/gate/src/trust.ts",
@@ -1138,6 +1157,28 @@
       "malformedValue": "not expressible: clock-derived canonical toISOString",
       "timestampParser": "new Date(ms).toISOString() at generation",
       "consumer": "verifyArtifact via gate engine.ts:711 (LIVE decision verification)",
+      "proofs": [
+        "RES-PAR-GATE-KEYRING",
+        "RES-PAR-XRES-EQUIV"
+      ]
+    },
+    {
+      "id": "gate-createalphatrust-keyring-4",
+      "package": "gate",
+      "file": "packages/gate/src/trust.ts",
+      "scope": "createAlphaTrust>keyring",
+      "ordinal": 4,
+      "line": 258,
+      "kind": "construct",
+      "class": "production",
+      "input": "the same bootstrap window the manifest above declares; present only when an EXTERNAL execution-signer is configured",
+      "output": "KeyEntry (GATE/APPROVER/DELEGATED/ROOT)",
+      "validFrom": "explicit",
+      "revokedAt": "explicit",
+      "missingValue": "not expressible: constructor always sets both fields (P0-5 fix)",
+      "malformedValue": "not expressible: clock-derived canonical toISOString",
+      "timestampParser": "new Date(ms).toISOString() at generation",
+      "consumer": "verifyArtifact — the keyring half of the S0 authority-root split; proven by packages/gate/test/grant-authority-root.test.ts",
       "proofs": [
         "RES-PAR-GATE-KEYRING",
         "RES-PAR-XRES-EQUIV"
@@ -1426,7 +1467,9 @@
     "test/verify.test.ts": "root kernel tests: string-keyring consumers",
     "test/signatures-verified-contract.test.ts": "P1-13 contract tests: the keyring is a plain {kid: publicKey} map handed to verifyChain, never resolved or constructed here — this file only consumes, and exists to pin that signaturesVerified/tailChecked are completed-run success-qualifiers rather than progress reports",
     "packages/relay/test/device-pairing-enrolment.test.ts": "ADR-0007 enrolment tests: publicKeyHex is the raw key a phone PRESENTS at redemption; this file builds no KeyEntry and resolves no keyring — it only consumes the redemption API and asserts its refusals",
-    "packages/relay/test/adr0007-e2e-http.test.ts": "ADR-0007 end-to-end HTTP test: publicKeyHex is the raw key a phone PRESENTS over the wire; this file builds no KeyEntry and resolves no keyring — it drives the real routes and asserts their refusals"
+    "packages/relay/test/adr0007-e2e-http.test.ts": "ADR-0007 end-to-end HTTP test: publicKeyHex is the raw key a phone PRESENTS over the wire; this file builds no KeyEntry and resolves no keyring — it drives the real routes and asserts their refusals",
+    "packages/gate/src/grant-sidecar.ts": "out-of-process grant signer: CONSUMES an operator-provisioned keyring and receiptKeyring wholesale (loadGrantSignerTrust passes the parsed object straight to verifyArtifact/verifyChain, selects no fields and synthesises none), so the P0-1/P0-5/P0-8 dropped-validFrom class is not expressible here — there is no per-entry construction to drop it in",
+    "packages/gate/test/grant-authority-root.test.ts": "gate tests: consume createAlphaTrust fixtures (the authority-root split under a compromised-gate attacker)"
   },
   "proofs": {
     "RES-PAR-GATE-KEYRING": {

@@ -14,7 +14,26 @@ export { InMemoryStore, type Store } from "./store.js";
 export { RateLimiter, type RateDecision } from "./ratelimit.js";
 export { parseBearer, hashSecret, constantTimeEqualHex, type ParsedBearer } from "./auth.js";
 export { DEFAULT_GATE_CONFIG, resolveGateConfig, isLoopbackAddress, type GateConfig } from "./config.js";
-export { createAlphaTrust, type GateTrust, type GateKeyPair, type CreateTrustInput } from "./trust.js";
+export { createAlphaTrust, type GateTrust, type GateKeyPair, type CreateTrustInput, type ExternalExecutionSignerKey } from "./trust.js";
+export {
+  localExecutionSigner,
+  remoteExecutionSigner,
+  executionDomainFor,
+  EXECUTION_GRANT_SPEC,
+  type ExecutionSigner,
+  type GrantApprovalProof,
+  type RemoteExecutionSignerOptions,
+} from "./exec-signer.js";
+export {
+  validateGrantRequest,
+  handleGrantSignerRequest,
+  loadGrantSignerTrust,
+  ApprovalReplayStore,
+  type GrantSignerTrust,
+  type ValidateGrantInput,
+  type ValidateGrantResult,
+  type GrantSidecarHandlerDeps,
+} from "./grant-sidecar.js";
 export { loadSchemas } from "./schemas.js";
 export {
   buildDeferredReceipt,

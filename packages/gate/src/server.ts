@@ -15,6 +15,7 @@ import { loadSchemas } from "./schemas.js";
 import { parseBearer, hashSecret } from "./auth.js";
 import { RateLimiter } from "./ratelimit.js";
 import type { GateTrust } from "./trust.js";
+import type { ExecutionSigner } from "./exec-signer.js";
 
 export interface CreateGateOptions {
   trust: GateTrust;
@@ -22,6 +23,8 @@ export interface CreateGateOptions {
   store?: Store;
   schemas?: Record<string, unknown>;
   sealDisplay?: DisplaySealer;
+  /** Where the `execution-signer` key lives. Omitted = in-process (alpha default). */
+  executionSigner?: ExecutionSigner;
   log?: (event: string, fields: Record<string, unknown>) => void;
 }
 
@@ -45,6 +48,7 @@ export function createGate(opts: CreateGateOptions): Gate {
     trust: opts.trust,
     schemas,
     ...(opts.sealDisplay ? { sealDisplay: opts.sealDisplay } : {}),
+    ...(opts.executionSigner ? { executionSigner: opts.executionSigner } : {}),
     ...(opts.log ? { log: opts.log } : {}),
   });
   const limiter = new RateLimiter({ burst: config.rateLimitBurst, refillPerMin: config.rateLimitRefillPerMin, now: config.now });
