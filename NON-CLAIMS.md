@@ -189,6 +189,35 @@ callers branch on `complete`, not on `note`. Replayed stale anchors therefore re
 `complete: true / QUORUM_CONFIRMED` today. *ADR-0001 §7.1 decides this should become fail-closed;
 that change is **not yet implemented**. Until it is, supply a `FreshnessPolicy` explicitly.*
 
+### NC-4.2a — A witness that is BEHIND your head is discarded, so a rewrite below it is not detected (measured 2026-08-12)
+
+**We do not claim that `verifyCompleteness` — or `verifyChainWitnessed`, which composes it — detects a
+history rewritten at a sequence number BELOW the presented head.**
+
+An anchor is classified purely by its sequence number against the presented head's
+(`src/federation/acceptance.ts:435-457`): a frontier PAST the head is `beyond` (a truncation
+contradiction), a frontier AT the head either confirms or is `divergent`, and a frontier BEHIND the
+head is **`continue`d — dropped, counted toward nothing.** Fail-closed as far as the quorum tally
+goes: a lagging witness never counts as a confirmation. But its anchor is *evidence about the
+sequence it actually reached*, and that evidence is never compared against anything.
+
+So: rewrite the history at seq N, extend the chain to seq N+k, present the head at N+k. Every witness
+still at N is dropped as "lagging". The contradiction sits at N; the comparison only ever happens at
+N+k; nothing looks at N. The rewrite is not detected on this path.
+
+**Where the fault actually lies, because it is not where it looks.** `verifyCompleteness` receives
+`(headBytes, anchorsBytes, trustSetBytes, opts)` — **it never receives the chain**
+(`acceptance.ts:239-244`), so with those inputs the comparison is not possible. The code there is not
+at fault. `verifyChainWitnessed` (`src/federation/verify-witnessed.ts:179`) verifies the chain,
+derives the head, and *then* delegates — holding both the chain and the anchors, with the evidence in
+hand, and discarding it. That is the site a fix belongs at: for each anchor with
+`highestSeq < head.seq`, compare its `headHash` against the presented chain's hash at that sequence;
+differ ⇒ fork, match ⇒ an honest lagging witness (still correctly not a confirmation).
+
+Not fixed in `0.7.0`: it is a change to a published kernel path and probably to a signature, and this
+release is documents and versions. Recorded here rather than in a review thread, because an
+undisclosed limit in a detector is indistinguishable from a claim that it detects.
+
 ### NC-4.3 — There is no transparency log in this repository
 The SCITT draft and the RFC 3161 sidecar exist; neither is deployed. Nothing here contacts a witness
 or a network.
@@ -391,15 +420,24 @@ argued (ADR-0001 §2.3). Against a data-only attacker, parsing from text does cl
 because it removes the only route by which untrusted *data* obtains code execution. Against an
 attacker with independent code execution it closes nothing.
 
-### NC-6.4 — The reproduced R7 exploits are pinned in BOTH directions, and are all closed today
+### NC-6.4 — The reproduced R7 exploits are pinned in BOTH directions; 13 are closed and ONE is deliberately open
 **CORRECTED 2026-07-29.** This entry previously read *"Ten of eleven reproduced R7 exploits are still
 open… Only C-04 is closed today,"* and cited the bytes-in boundary and closed primitive set as *"not
 implemented."* All three statements are now false. Measured:
 
 ```console
 $ npm run test:r7-exploits
-closed 13 / open 0
+closed 13 / open 1
 ```
+
+**The one open disposition is `o01_preload_includes`, and it is open on purpose.** It is
+`c02_includes425` with a single variable changed — WHEN the poison is installed. Poisoned *after*
+`noa-receipt` loads, the capture holds and the exploit is pinned CLOSED. Poisoned *before* it loads,
+`src/intrinsics.ts` snapshots the poisoned value at module evaluation and the forgery verifies. That
+is why ADR-0002 §3 **withdrew** the in-realm intrinsic-immunity claim instead of re-scoping it: a
+snapshot of a lie is a lie that can no longer be repaired. The pin exists so the withdrawal keeps a
+re-runnable artifact behind it — if it ever stops reproducing, either a fix landed (update the pin
+and say so) or the program rotted into measuring nothing.
 
 The bytes-in boundary and the closed primitive set shipped on this branch, and the corpus grew from
 11 to 13. `scripts/run-r7-exploits.mjs` runs on every CI build with each disposition pinned in
@@ -433,8 +471,9 @@ graph") as previously stated in `docs/WHO-IS-PROTECTED.md`. B-1 was the primary 
 isolated-kernel migration. It was refuted by measurement in round 5 and the withdrawal was ratified by
 the owner the same day.
 
-The measurement, reproducible at
-`~/.claude/doctrine/artifacts-2026-07-29-round1/round5/repro/run2.mjs`:
+The measurement, reproducible by anyone who has this repository —
+`node test/security/b1-transport-poisoning-repro.mjs` (29 lines, no repository imports, Node built-ins
+only, so it runs from a bare checkout):
 
 ```
 baseline (honest kernel, no attacker): blocked | action ran: false

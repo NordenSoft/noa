@@ -6,11 +6,74 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [Unreleased]
 
-**No behaviour change in `noa-receipt`.** Not one file under `src/`, `schema/` or `conformance/`
-moved: the work below lives in the opt-in, disjoint `packages/tsa-anchor` (its own npm package, its
-own version) and in two documents the kernel tarball ships. It is listed here because those two
-documents are part of what a stranger installing `noa-receipt` receives, and a shipped document that
-has gone stale is the failure this changelog exists to prevent.
+Nothing yet.
+
+## [0.7.0] - 2026-08-12
+
+**MINOR, and the reason is mechanical.** `src/index.ts` gained nine exported names and removed none
+(`git diff v0.6.2..main -- src/index.ts` → `17 0`), and the frozen `noa.receipt/0.1` wire format did
+not move — `git diff v0.6.2..main -- schema/` is empty. Capability added, nothing broken, so under
+[SemVer §4](https://semver.org/#spec-item-4) major-version-zero this is a MINOR bump. The one
+compatibility break in this release is in `packages/tsa-anchor`, a separate package on its own
+version line, and it is disclosed in its own paragraph below.
+
+### Added
+
+- **`noa.action-digest/0.1`** (`src/action-digest.ts`, `docs/action-digest-spec.md`, 2,588 lines of
+  conformance vectors) — one interoperable correlation value for an authorized action. It commits to
+  a receipt and a grant under a separated domain, and it is **additive and disjoint**: the frozen
+  receipt format gains no field. It is a **linkage** value and never an authentication, which is not
+  a footnote here — the successful result carries that limit inside its own classification string, so
+  a consumer cannot read the digest as proof that the action was authorized without also reading what
+  it does not establish.
+
+### Fixed
+
+- **The approval gate could be turned off by a symlink swap** (CWE-59 / CWE-367, `packages/mcp-proxy`
+  and `packages/adapter-core`). A symlink planted at the configured `approval-rules.json` path made
+  the proxy load attacker-chosen rules; pointed at an empty rule array, an over-threshold transfer
+  executed with **no human approval at all**. This was live in published code. Security artifacts are
+  now read through `openSync(… | O_NOFOLLOW | O_NONBLOCK)`, so the open itself fails with `ELOOP` on
+  a symlink and cannot block on a planted FIFO, and every subsequent check (regular-file, owner,
+  mode) runs against `fstatSync(fd)` on that one descriptor rather than a second `statSync` on the
+  path, which would have reintroduced the race it was meant to close.
+  **Disclosed limits, because the platform does not offer the same guarantee everywhere:**
+  `O_NOFOLLOW` is POSIX-only and degrades to a plain open where it is absent (no worse than before
+  the fix), and the ownership test is skipped — and reported as skipped, never as passed — on a
+  platform with no POSIX uid model.
+- **An un-run conformance verifier read as PASS**, and the published matrix had been **mis-crediting
+  TypeScript checks to Python** for weeks: a lazy pattern truncated a label at its first internal
+  colon, so two different rows collapsed into one. Both are corrected in
+  `scripts/conformance-matrix.mjs`; a verifier that did not run now says so instead of inheriting
+  someone else's result.
+
+### Changed
+
+- **The conformance matrix publishes all five verifiers** — the TypeScript reference plus Python, Go,
+  Rust and C#. Two properties of it are easy to overstate and are stated exactly in
+  `conformance/MATRIX.md`: there is **no partial credit** (an implementation is conformant for a
+  vector class only if it matches on every vector in that class), and the comparison is a **two-hop
+  chain**, not five independent checks against the reference — Python is compared to TypeScript, and
+  Go, Rust and C# are compared to Python.
+
+### Gated
+
+- **`packages/tsa-anchor/src` entered the security-gate inventory** (`scripts/lint-security-gates.mjs`).
+  It was covered by NOTHING — the third instance of a gap this repository had already recorded for
+  `packages/relay/src` and then for adapter-core/mcp-proxy, and it arrives the same way every time: a
+  package is added, no inventory names it, and every layer above keeps printing green about the files
+  it does walk. Measured on first coverage: **L2 22, L3 2, L8 212**. L2 and L3 were driven to **0**
+  and enter BLOCKING with no budget; L8 stands at **97** as a ratcheted warn budget covering modules
+  that predate the coverage. The new decision path (`equivocation.mjs`) is at **0/0/0**. Nothing in
+  `src/`, `schema/` or `conformance/` was touched to achieve that.
+
+---
+
+**The remainder of this entry is `packages/tsa-anchor` and the documents the kernel tarball ships.**
+That work moved no file under `src/`, `schema/` or `conformance/`; it lives in an opt-in, disjoint
+package with its own npm version, and in two documents. It is recorded here because those documents
+are part of what a stranger installing `noa-receipt` receives, and a shipped document that has gone
+stale is the failure this changelog exists to prevent.
 
 ### Documented
 
@@ -169,12 +232,25 @@ comment lines from `git diff v0.6.0 HEAD -- src/` leaves nothing, so no behaviou
   readings disagree — a non-cryptographic failure after sound signatures, and a tampered checkpoint
   over sound receipts.
 
-### Not yet released to the registry
+### Released — this section previously said it was not, and both halves were wrong
 
-This version is tagged in the changelog but **not published**: publishing is an owner-authorised
-action. Until it is, `lint:release-parity` stays red with an accurate message — "0.6.1 has no tag
-and is not on the registry" — rather than the previous, wrong one. No `v0.6.1` git tag was created
-either: a tag with nothing published would assert a release that has not happened.
+**CORRECTED 2026-08-12.** This section read *"tagged in the changelog but **not published**"* and
+*"No `v0.6.1` git tag was created either"*. Measured, both are false:
+
+```console
+$ npm view noa-receipt versions   # → … 0.6.0, 0.6.1, 0.6.2
+$ git rev-list -n1 v0.6.1         # → 8a3fb2af
+```
+
+`0.6.1` went to the registry on 2026-08-04 and the `v0.6.1` tag exists, pointing at `8a3fb2af`. It
+is a **lightweight** tag (`git cat-file -t v0.6.1` → `commit`), so it carries no tagger timestamp and
+none is invented here.
+
+*Why this survived stale, and it is the same shape NC-6.4 recorded:* the text was wrong in the
+**understating** direction — it claimed less than had happened. Review here is tuned to catch
+overclaims and is structurally blind to the opposite, so a sentence that sells the project short
+outlives one that oversells it. The release audit caught this only because a mechanical check
+disagreed with the prose, which is the rule (§7) working exactly as written.
 
 ## [0.6.0] - 2026-08-01
 
@@ -801,6 +877,26 @@ predicate is neutered.
 Initial release, published as the unscoped package `noa-receipt` (renamed pre-publish from the
 scoped `@noa/receipt`).
 
+> **This heading has no link, because it has no tag — but the release itself is real.** `0.1.0` is
+> published and installable; `git ls-remote --tags origin` shows tagging began at `v0.3.0`, so no
+> `v0.1.0` ref exists here or on the remote. The heading is left un-linked rather than pointed at a
+> tag that would have to be invented.
+>
+> *Corrected before release.* The first version of this note also claimed `0.1.0` was not on the
+> registry, citing `npm view noa-receipt versions` as starting at `0.5.0`. It does not:
+>
+> ```console
+> $ npm view noa-receipt versions
+> [ '0.1.0', '0.3.0', '0.4.0', '0.5.0', '0.6.0', '0.6.1', '0.6.2' ]
+> $ npm view noa-receipt@0.1.0 dist.tarball
+> https://registry.npmjs.org/noa-receipt/-/noa-receipt-0.1.0.tgz
+> ```
+>
+> Only `0.2.0` was never published. The false half came from reusing a version list from earlier in
+> the working session instead of re-running the command — inside the very commit whose subject was
+> correcting claims that had drifted from measurement. An independent reviewer caught it. A missing
+> tag and an unpublished version are two different facts, and this note had merged them.
+
 ### Added
 
 - **Receipt spec (v0.1):** mandatory Ed25519 signatures, key-pinning per `agent.id`, genesis and
@@ -817,7 +913,10 @@ scoped `@noa/receipt`).
   "a keyring-trusted key signed this" to "this agent signed this", closing cross-agent
   impersonation in a multi-key keyring.
 
-[Unreleased]: https://github.com/NordenSoft/noa/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/NordenSoft/noa/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/NordenSoft/noa/compare/v0.6.2...v0.7.0
+[0.6.2]: https://github.com/NordenSoft/noa/compare/v0.6.1...v0.6.2
+[0.6.1]: https://github.com/NordenSoft/noa/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/NordenSoft/noa/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/NordenSoft/noa/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/NordenSoft/noa/compare/v0.3.0...v0.4.0

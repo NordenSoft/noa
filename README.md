@@ -7,8 +7,9 @@
 actions: before an agent does something real, a governance layer decides *allow · hold for a human ·
 block*, and emits a tamper-evident, hash-chained record that anyone can verify offline — no account,
 no network, no dependency on us.** This repository is the kernel: the protocol, the reference
-implementations, and the conformance suite that holds every one of them to the identical verdict on
-every vector.
+implementations, and the conformance suite that holds each of them to the identical verdict on every
+vector it is run against — which is not every vector for every implementation, and the matrix says
+per class exactly which.
 
 [![CI](https://github.com/NordenSoft/noa/actions/workflows/ci.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/ci.yml)
 [![doc-truth](https://github.com/NordenSoft/noa/actions/workflows/doc-truth.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/doc-truth.yml)
@@ -17,10 +18,15 @@ every vector.
 [![npm noa-mcp-proxy](https://img.shields.io/npm/v/noa-mcp-proxy?label=noa-mcp-proxy)](https://www.npmjs.com/package/noa-mcp-proxy)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 
-> Every version number on this page comes from a self-updating registry badge, and every claim below
-> is checked mechanically on each push by [`scripts/lint-doc-truth.mjs`](scripts/lint-doc-truth.mjs):
-> the quickstart is *executed*, the counts are re-derived from the repository, and a stale version
-> literal fails the build. A README that can drift silently is a README nobody can rely on.
+> Every version number on this page comes from a self-updating registry badge, and this README (plus
+> SECURITY.md) is gated mechanically on every push by
+> [`scripts/lint-doc-truth.mjs`](scripts/lint-doc-truth.mjs) against 8 specific rules: a version
+> literal next to a package name must match the npm registry, a claimed npm publication must actually
+> resolve, no hardcoded test count, every relative link resolves, the attack/malformed-vector and
+> implementation counts are re-derived from the repository, the quickstart's `bash` blocks are
+> *executed* end to end, `npx noa` (a stranger's package) is refused, and the license badge matches
+> `package.json`. It checks those specific, countable claims — not prose, tone or completeness, and
+> deleting a claim always satisfies it. A README that can drift silently is a README nobody can rely on.
 
 > *Tamper-**evident** provenance: it proves a record was produced under the stated rules and was not
 > altered afterwards — never that the action was right, and never that the action happened.
@@ -110,7 +116,8 @@ VALID, and without a checkpoint it *warns* that tail-truncation cannot be detect
 - **Never carry raw parameters.** Only `action.paramsHash` travels, so a receipt is publishable
   without leaking the payload.
 - **Verify anywhere.** Verification is a pure function of bytes: offline, no account, no network, and
-  five independent implementations are held to the same verdicts in CI — with the exact per-class
+  five independent implementations are held to identical verdicts through a two-hop comparison chain
+  (Python against the TS reference; Go, Rust and C# against Python) — with the exact per-class
   coverage, caveats included, in [`conformance/MATRIX.md`](conformance/MATRIX.md).
 
 ```json
@@ -154,11 +161,14 @@ Read [THREAT-MODEL.md](THREAT-MODEL.md) before you rely on any of this.
 
 - The `noa.receipt/0.1` wire format, **frozen**, with a JSON Schema and a published spec.
 - Three packages on npm under Apache-2.0 (the badges above are the live versions).
-- **five** independent verifier implementations, cross-checked against each other in CI — see the
-  table below and [`conformance/MATRIX.md`](conformance/MATRIX.md).
+- **five** independent verifier implementations, held to identical verdicts through a two-hop
+  comparison chain in CI — Python against the TS reference, then Go, Rust and C# against Python, no
+  partial credit per vector class — see the table below and
+  [`conformance/MATRIX.md`](conformance/MATRIX.md).
 - A conformance corpus of **16** attack vectors and **9** malformed vectors that the verifiers must
-  reject on every push — with the per-class coverage, and the two classes the cross-implementation
-  runner does not tag for TypeScript, written down in `conformance/MATRIX.md` rather than glossed.
+  reject on every push — with the per-class coverage, and the three classes (`hash`, `impersonation`,
+  `dup-key`) the cross-implementation runner does not explicitly tag for TypeScript, written down in
+  `conformance/MATRIX.md` rather than glossed.
 - An offline CLI verifier that runs in its own process with no third-party dependencies.
 - A runtime human-approval gate in the MCP proxy: a risky call is held as a signed `DEFERRED`
   receipt until a human approves it, producing a `DEFERRED → ALLOWED → EXECUTED` chain
@@ -198,9 +208,12 @@ framework adapters, signer sidecar, TSA anchor. They are part of this repository
 ## Independent implementations
 
 Five verifiers, written separately, held to one bar: for every conformance vector an implementation
-must produce the **identical verdict** to the reference. One mismatch fails the whole class — no
-partial credit, because a single silently-accepted attack is a complete security failure regardless
-of how many adjacent checks still pass.
+must produce the **identical verdict** to its own comparison target — a two-hop chain, not five direct
+comparisons to TypeScript: Python is compared directly to the TS reference, and Go, Rust and C# are
+each compared directly to Python (not to TS), exactly as the table below and
+[`conformance/MATRIX.md`](conformance/MATRIX.md) state. One mismatch fails the whole class for that
+implementation — no partial credit, because a single silently-accepted attack is a complete security
+failure regardless of how many adjacent checks still pass.
 
 | Implementation | Path | Conformance parity |
 |---|---|---|

@@ -10,14 +10,17 @@ project; coordinated disclosure is appreciated.
 
 ## Supported versions
 
-Measured against the registry on 2026-08-04, so a reporter knows which line a fix would land on
-before spending time on a report.
+So a reporter knows which line a fix would land on before spending time on a report. The
+`published` cells are badges that read the npm registry at the moment this page is rendered — the
+number is never typed here, so it cannot be stale on the day a release lands. The typed number
+this replaces had already gone stale between releases once and been corrected by hand
+(`git show 634a043 -- SECURITY.md`); that is the failure this shape removes rather than repeats.
 
 | package | published | supported |
 |---|---|---|
-| `noa-receipt` | **0.6.2** | yes — fixes land here |
-| `noa-mcp-adapter-core` | **0.3.2** | yes |
-| `noa-mcp-proxy` | **0.3.2** | yes — **upgrade from 0.3.1**, see below |
+| `noa-receipt` | [![noa-receipt on npm](https://img.shields.io/npm/v/noa-receipt)](https://www.npmjs.com/package/noa-receipt) | yes — fixes land here |
+| `noa-mcp-adapter-core` | [![noa-mcp-adapter-core on npm](https://img.shields.io/npm/v/noa-mcp-adapter-core)](https://www.npmjs.com/package/noa-mcp-adapter-core) | yes |
+| `noa-mcp-proxy` | [![noa-mcp-proxy on npm](https://img.shields.io/npm/v/noa-mcp-proxy)](https://www.npmjs.com/package/noa-mcp-proxy) | yes — **upgrade from 0.3.1**, see below |
 | everything older | — | **no**. Upgrade; 0.6.0 is deliberately stricter than 0.5.0 and artifacts that verified `VALID` under 0.5.0 can verify `REFUSE` or `TAMPERED` under it. That is the point of the release, and it is documented in `CHANGELOG.md`. |
 
 ⚠ **The `noa-mcp-proxy` release published as 0.3.1 shipped a vulnerable `@hono/node-server`. Upgrade to 0.3.2.**
@@ -31,8 +34,10 @@ Measured the same way against 0.3.2, after publication on 2026-08-04: `@hono/nod
 `npm audit` **0 vulnerabilities at every severity**. The fix required moving
 `@modelcontextprotocol/sdk` to 1.30.0 as well — 1.29.0 permits only `^1.19.9`.
 
-`noa-mcp-adapter-core@0.3.2` is behaviour-identical to 0.3.1; it moved only because the two
-packages release in lockstep.
+`noa-mcp-adapter-core` is behaviour-identical across 0.3.1 and 0.3.2; it moved only because the two
+packages release in lockstep. (The version is not typed next to the package name on purpose: a
+literal there reads as a claim about the CURRENT release and goes false at the next one, which is
+the same decay the table above removes.)
 
 0.3.1 has not been unpublished. It is a real release whose own description is correct about the
 forgery fixes it shipped and wrong about this one, which is why the correction is written where an
@@ -56,12 +61,17 @@ This is a **trust layer**, so it is built to be boring and hostile-input-safe:
   ⚠ This bullet describes the **kernel**. `noa-mcp-proxy` is a server, not a verifier, and does have
   runtime dependencies — see its own manifest. Reading this bullet as covering every published package
   would be a mistake: it does not.
-- **Strict parser.** Receipts are parsed by a hardened JSON parser (`safeParse`) that rejects
-  duplicate keys, `__proto__`/`constructor`/`prototype` keys, floats/exponents, unpaired
-  surrogates, and over-deep or over-large input. The `noa verify` CLI and the `verifyChainText()`
-  library entry use it. ⚠️ If you call `verifyChain(value)` with a **pre-parsed** object, the
-  strict-parse guarantees are yours to uphold — use `safeParse`/`verifyChainText`, not a bare
-  `JSON.parse`, on untrusted input (`JSON.parse` silently accepts duplicate keys).
+- **Strict parser, and no way around it.** Receipts are parsed by a hardened JSON parser
+  (`safeParse`) that rejects duplicate keys, `__proto__`/`constructor`/`prototype` keys,
+  floats/exponents, unpaired surrogates, and over-deep or over-large input. Since `0.6.0` there is no
+  entry point that lets a caller skip it: `verifyChain`, `verifyCheckpoint` and
+  `verifyReceiptCompliance` take `Uint8Array | string` **only**, and `verifyChainText` is a pure
+  alias of `verifyChain`. Handing one a pre-parsed object returns `MALFORMED` — *"a security-sensitive
+  document is bytes, never a caller-owned object"* — rather than trusting your parse.
+
+  *This bullet used to warn that `verifyChain(value)` with a pre-parsed object left the strict-parse
+  checks for the caller to perform. That was true through `0.5.0` and has been false since `0.6.0`;
+  it understated the shipped boundary, which is the direction nobody files a bug about.*
 - **Strict schema.** Unknown fields are rejected everywhere (`additionalProperties:false`).
 - **Mandatory signatures.** Ed25519 signatures are required; the signing key id is bound into
   the hash; keys are pinned per `agent.id` within a chain.

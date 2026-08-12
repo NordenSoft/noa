@@ -43,7 +43,7 @@
  * against an attacker who controls this process (they need no file at all), nor against one who
  * owns the directory AND runs as the trusted uid. Defending the CONTENT needs the content to be
  * signed and the signature checked against a key that does not live beside it — see
- * NON-CLAIMS.md NC-7.0. What is closed here is the REDIRECTION class: the path the operator
+ * NON-CLAIMS.md NC-6.9. What is closed here is the REDIRECTION class: the path the operator
  * configured no longer decides which BYTES the process reads.
  */
 import { openSync, fstatSync, readSync, writeFileSync, fsyncSync, fchmodSync, renameSync, unlinkSync, closeSync, constants as fsConstants } from "node:fs";
