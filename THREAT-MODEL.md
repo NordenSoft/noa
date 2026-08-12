@@ -189,8 +189,18 @@ truth or safety.
   receipt over inputs it fabricated (e.g. "balance read = 0"). Closing this needs source/tool
   co-signatures over the read-set (a v1.0 witnessed-input goal); today L2 certifies *consistency of a
   self-reported decision on an authenticated carrier*, not the truth of its inputs.
-- **Enforcement bypass:** see SECURITY.md — `noa.guard()` is advisory unless placed at the
-  credential/write boundary; the MCP proxy must fail-closed.
+- **Enforcement bypass — general (see SECURITY.md):** `noa.guard()` is advisory unless placed at the
+  credential/write boundary.
+- **Enforcement bypass — config-artifact redirection (NON-CLAIMS.md NC-6.9):** until 2026-08-12 the
+  MCP proxy read its own gate config (`--approval-rules`, `--approver-keyring`, `--approver-identity`,
+  `--pending-store`) by path, so a symlink swap turned human approval off entirely — a `transfer_funds`
+  above the configured threshold was forwarded and executed with no approval at all. `config-artifact.mjs`
+  now opens that config through one `O_NOFOLLOW` descriptor, closing the symlink path. Two measured
+  bypasses still execute the identical unapproved transfer against the FIXED code and are **not**
+  closed: an **in-place content rewrite as the same uid** (`printf '[]' > approval-rules.json` — no
+  symlink, no unlink, no mode change, so nothing for `O_NOFOLLOW`, the owner check or the mode check to
+  catch), and an **ancestor-directory repoint** (`O_NOFOLLOW` guards only the FINAL path component, so
+  redirecting an ancestor directory is not caught). Full statement and scope: NC-6.9.
 - **In-process-API hostile-getter class — CLOSED in `0.6.0`, not an ongoing residual:** through
   `0.5.0`, `verifyChain`, `verifyCheckpoint` and `verifyReceiptCompliance` accepted a caller-supplied
   LIVE object and defended it by snapshotting every such input once via `structuredClone`. As of
