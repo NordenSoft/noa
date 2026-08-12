@@ -36,7 +36,6 @@
 import { parseDocument as kernelParseDocument, MAX_INPUT_BYTES } from "noa-receipt";
 
 /** The hard ceiling on one document. THE KERNEL'S value, never a second copy of the number. */
-export const MAX_DOCUMENT_BYTES = MAX_INPUT_BYTES;
 
 const ENCODER = new TextEncoder();
 

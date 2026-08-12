@@ -10,7 +10,6 @@ import {
   pkcs8Ed25519ToRawSeed,
   spkiEd25519ToRawPublicKey,
   rawSeedToPkcs8Der,
-  rawPublicKeyToSpkiDer,
   DerCodecError,
 } from "../src/der.js";
 import { bytesToBase64, base64ToBytes, bytesToHex, hexToBytes } from "../src/bytes.js";
@@ -58,7 +57,7 @@ test("bytesToHex/hexToBytes round-trip losslessly over all 256 byte values", () 
 
 // ── generateKeyPair (WebCrypto entropy + noble derivation) ──────────────────────────────────
 
-test("generateKeyPair: rawSeedToPkcs8Der / rawPublicKeyToSpkiDer round-trip through the decode direction", () => {
+test("generateKeyPair: rawSeedToPkcs8Der round-trips through the decode direction", () => {
   const seed = crypto.getRandomValues(new Uint8Array(32));
   const der = rawSeedToPkcs8Der(seed);
   const roundTripped = pkcs8Ed25519ToRawSeed(der);

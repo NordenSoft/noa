@@ -46,7 +46,6 @@ import {
   OBJECT_PROTOTYPE,
   arrayIndexOf,
   arrayPush,
-  arraySlice,
   getOwnPropertyDescriptor,
   getPrototypeOf,
   hasOwn,
