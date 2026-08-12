@@ -5,18 +5,21 @@ waiting to happen and, worse, a list that can drift from the code it claims to d
 
 Source: `src/index.ts` value exports, resolved through the TypeScript compiler API.
 
-- total value exports: **69**
-- security-sensitive: **17**
-- security-sensitive already bytes-in: **17**
+- total value exports: **73**
+- security-sensitive: **19**
+- security-sensitive already bytes-in: **19**
 - security-sensitive NOT yet bytes-in (ADR §3.1 target): **0**
 
 | Export | Kind | First parameter | Bytes-in | Declared in | Exemption reason |
 |---|---|---|---|---|---|
+| `ACTION_DIGEST_DOMAIN` | CONSTANT | `—` | n/a | `src/action-digest.ts` |  |
+| `ACTION_DIGEST_SPEC` | CONSTANT | `—` | n/a | `src/action-digest.ts` |  |
 | `ANCHOR_SIG_DOMAIN` | CONSTANT | `—` | n/a | `src/federation/acceptance.ts` |  |
 | `AnchorError` | ERROR_CLASS | `—` | n/a | `src/federation/anchor.ts` |  |
 | `anchorForChainHead` | PRODUCER | `readonly Receipt[]` | n/a | `src/federation/anchor.ts` | the signer's own data (ADR §3.3) |
 | `anchorSigningInput` | UTILITY | `Pick<Anchor, "chain" \| "highestSeq" \| "headHash" \| "ts">` | n/a | `src/federation/acceptance.ts` | pure pre-image construction |
 | `assertValidPolicy` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/policy/validate.ts` |  |
+| `buildActionDigest` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/action-digest.ts` |  |
 | `buildAnchor` | PRODUCER | `AnchorFrontier` | n/a | `src/federation/anchor.ts` | the signer's own data (ADR §3.3) |
 | `buildCheckpoint` | PRODUCER | `Receipt` | n/a | `src/builder.ts` | the signer's own data (ADR §3.3) |
 | `BuilderError` | ERROR_CLASS | `—` | n/a | `src/builder.ts` |  |
@@ -74,6 +77,7 @@ Source: `src/index.ts` value exports, resolved through the TypeScript compiler A
 | `SIGNING_KEY_LIFECYCLE_SPEC` | SECURITY_SENSITIVE | `—` | n/a | `src/verification-keyring.ts` |  |
 | `validatePolicy` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/policy/validate.ts` |  |
 | `validateReceiptShape` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/schema.ts` |  |
+| `verifyActionDigest` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/action-digest.ts` |  |
 | `verifyChain` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/verify.ts` |  |
 | `verifyChainText` | SECURITY_SENSITIVE | `string` | YES | `src/verify.ts` |  |
 | `verifyChainWitnessed` | SECURITY_SENSITIVE | `string \| Uint8Array<ArrayBufferLike>` | YES | `src/federation/verify-witnessed.ts` |  |

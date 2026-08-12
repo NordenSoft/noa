@@ -1,6 +1,6 @@
 {
   "spec": "noa.resolver-inventory/1",
-  "updated": "2026-08-11",
+  "updated": "2026-08-12",
   "authority": "Declared machine-readable inventory of AST-recognized trust-key sites plus human-reviewed anchors. scripts/lint-resolver-parity.mjs blocks drift for syntax it recognizes; it does not prove a whole-program census. Factory returns, callbacks, property mutation, dynamic/CommonJS indirection, verifier reassignment and ambiguous aliases require the manual wrapper trace in docs/P0-14-VERIFICATION-SURFACES.md. `line` is informational (reported on drift, not failed): identity is (file, scope, ordinal).",
   "limitations": {
     "mechanicalGuarantee": "Exact reconciliation for scanner-recognized sites and declared anchors only.",
@@ -1385,9 +1385,11 @@
     "packages/signer-core/test/rfc8032-vectors.ts": "signer-core tests: string keyrings for chain verification",
     "packages/signer-core/test/rfc8032.test.ts": "signer-core tests: string keyrings for chain verification",
     "packages/signer-core/test/signing-binding.test.ts": "signer-core tests: string keyrings for chain verification",
+    "scripts/gen-action-digest-vectors.ts": "noa.action-digest/0.1 vector generator: mints the fixed seeded test keyring the corpus verifies against, as a static {kid: base64-SPKI} map. Constructs no KeyEntry and no lifecycle document.",
     "scripts/gen-vectors.ts": "repo tooling touching keyring vocabulary in strings/identifiers; constructs no entries",
     "scripts/lib/resolver-scan.mjs": "this census tooling itself",
     "scripts/lint-resolver-parity.mjs": "the reconciliation gate consuming this inventory",
+    "src/action-digest.ts": "root kernel: string-Keyring CONSUMER, and deliberately not a resolver. It never parses, assembles or narrows a keyring itself — the caller-supplied trust root is handed VERBATIM to verifyChain and to resolveVerificationKey, which is why a lifecycle document and a static map behave here exactly as they do everywhere else, retired-key refusal included. It constructs no KeyEntry (validFrom/revokedAt/roles appear zero times) and reads exactly one field off a resolved result: publicKey, to verify the execution grant's §6 signature. Grant ROLE/expiry semantics are verifyArtifact's and are documented as a residual in docs/action-digest-spec.md §6 rather than approximated here.",
     "src/cli.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/cose/cose-sign1.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/cose/receipt-cose.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
@@ -1397,6 +1399,7 @@
     "src/policy/compliance.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/serve.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
     "src/verify.ts": "root kernel: string-Keyring consumer (verifyChain/verifyCheckpoint, signature-only by design — see EX-STRING-KEYRING)",
+    "test/action-digest.test.ts": "noa.action-digest/0.1 tests: a string-keyring CONSUMER that constructs no KeyEntry (validFrom/revokedAt/roles/KeyEntry all appear zero times in the file). It speaks the vocabulary for exactly one reason — the HONEST LIMIT test mints an ADVERSARIAL keypair under the victim's kid, shows this module ACCEPTS the forged pair, then hands a plain {kid: publicKey} map to verifyChain to prove the kernel's own verifier REFUSES it. That refusal is the mitigation docs/action-digest-spec.md §6 rests on, so the keyring stays: deleting it to quiet this census would remove the only mechanical proof of the precondition.",
     "test/builder-async.test.ts": "root kernel tests: string-keyring consumers",
     "test/builder.test.ts": "root kernel tests: string-keyring consumers",
     "test/checkpoint-scope-warning.test.ts": "root kernel tests: string-keyring consumers",

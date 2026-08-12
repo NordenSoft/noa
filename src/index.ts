@@ -129,6 +129,23 @@ export { validatePolicy, assertValidPolicy, type PolicyValidation } from "./poli
 export { complianceCommit, verifyReceiptCompliance, type ComplianceCommit, type ComplianceResult } from "./policy/compliance.js";
 export type { ReceiptCompliance } from "./types.js";
 
+// `noa.action-digest/0.1` — the ONE interoperable correlation value for an authorized action
+// (docs/action-digest-spec.md, prescribed by docs/carlos.md §3). ADDITIVE and DISJOINT from the
+// receipt: it commits to a receipt and a grant, and the frozen `noa.receipt/0.1` wire format gains
+// no field. It is a LINKAGE value, never an authentication — the successful result says so in its
+// own classification string, and the module header says what it does not establish.
+export {
+  ACTION_DIGEST_SPEC,
+  ACTION_DIGEST_DOMAIN,
+  buildActionDigest,
+  verifyActionDigest,
+  type ActionDigestProjection,
+  type ActionDigestClaim,
+  type ActionDigestContext,
+  type ActionDigestBuildResult,
+  type ActionDigestVerifyResult,
+} from "./action-digest.js";
+
 // Universal envelope — the NOA receipt as a COSE_Sign1 (RFC 9052) / SCITT Signed Statement, so it
 // verifies in ANY conforming COSE implementation without NOA's code. Zero runtime deps.
 export { coseSign1, coseSign1Verify, type CoseSigner, type CoseVerifyResult } from "./cose/cose-sign1.js";

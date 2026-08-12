@@ -111,6 +111,13 @@ export const NOA_RECEIPT: EntryPoint[] = [
   { name: "deepFreeze", cls: "producer-inert", why: "in-place freeze of the CALLER'S OWN constant table; explicitly not the ingest boundary (see its docstring)" },
   { name: "anchorSigningInput", cls: "producer-inert", why: "reads the four frontier fields once into the preimage; callers (buildAnchor, verifyCompleteness) ingest first" },
 
+  // ── noa.action-digest/0.1 (docs/action-digest-spec.md) ─────────────────────────────────────────
+  // Both take documents, so both are `bytes-in`. The BUILDER is deliberately NOT `producer-inert`:
+  // it is handed the receipt and grant of the party being correlated, not the caller's own data, so
+  // calling it a producer would claim a trust relationship it does not have.
+  { name: "buildActionDigest", cls: "bytes-in", why: "receipt and grant are both documents; every hash in the projection is recomputed from those bytes and never accepted from a caller" },
+  { name: "verifyActionDigest", cls: "bytes-in", why: "claim and context are both documents; the two source documents re-enter through buildActionDigest's own byte boundary, so builder and verifier cannot disagree about what they read" },
+
   // ── policy surface ─────────────────────────────────────────────────────────────────────────────
   { name: "evaluate", cls: "bytes-in", why: "policy and inputs are documents; the rule walk runs over safeParse output" },
   { name: "validatePolicy", cls: "bytes-in", why: "the validated bytes ARE the supplied bytes" },
