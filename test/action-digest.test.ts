@@ -38,7 +38,7 @@ import { sha256Prefixed } from "../src/hash.js";
 import { signingMessage } from "../src/signing.js";
 import { receiptHashInput } from "../src/canonicalize.js";
 import { buildReceipt } from "../src/builder.js";
-import { generateKeyPair } from "../src/keys.js";
+import { generateKeyPair, verifyEd25519 } from "../src/keys.js";
 import { verifyChain } from "../src/verify.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -105,11 +105,24 @@ for (const vec of corpus.vectors) {
 }
 
 /** The valid vector's two source documents, reused by the property tests below. */
-function validContext(): { receipt: unknown; grant: unknown; expect: { tenant: string; chain: string } } {
+function validContext(): {
+  chain: unknown[];
+  grant: unknown;
+  keyring: unknown;
+  expect: { tenant: string; chain: string };
+} {
   const valid = corpus.vectors.find((v) => v.expect.ok);
   assert.ok(valid, "corpus must contain an ACCEPT vector");
-  return valid.context as { receipt: unknown; grant: unknown; expect: { tenant: string; chain: string } };
+  return valid.context as {
+    chain: unknown[];
+    grant: unknown;
+    keyring: unknown;
+    expect: { tenant: string; chain: string };
+  };
 }
+
+/** The authorization receipt inside the valid vector's chain. */
+const authorizationOf = (ctx: { chain: unknown[] }): unknown => ctx.chain[0];
 
 test("cross-package parity: executionGrantHash is the SAME F1 rule-b hash noa-approval-artifacts computes", () => {
   // GROUND TRUTH, not a restatement: this file is produced by that package's own generator, and its
@@ -147,18 +160,55 @@ test("schema parity: the enforced grant key list equals the shipped grant schema
   for (const key of schema.required) {
     const grant = JSON.parse(JSON.stringify(ctx.grant)) as Record<string, unknown>;
     delete grant[key];
-    const res = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(grant));
+    const res = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(grant));
     assert.equal(res.ok, false, `a grant missing required key "${key}" was accepted`);
   }
   // And an EXTRA key is refused too (additionalProperties:false parity).
   const extra = JSON.parse(JSON.stringify(ctx.grant)) as Record<string, unknown>;
   extra["surprise"] = 1;
-  assert.equal(buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(extra)).ok, false);
+  assert.equal(buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(extra)).ok, false);
+
+  // ── THE NESTED OBJECT, WHICH THIS TEST USED TO MISS ENTIRELY (round-2 QA) ────────────────────
+  // Walking only `schema.required` measured the top level and nothing else, so `sig.extra` sailed
+  // through here while verifyArtifact refused it. The schema's `$defs.sig` is closed and carries its
+  // own required list; both halves are now derived from the shipped file rather than restated.
+  const sigDef = (schema as unknown as { $defs: { sig: { required: string[]; additionalProperties: boolean } } }).$defs.sig;
+  assert.equal(sigDef.additionalProperties, false, "the grant schema's sig object must stay closed");
+  for (const key of sigDef.required) {
+    const grant = JSON.parse(JSON.stringify(ctx.grant)) as Record<string, unknown>;
+    delete (grant["sig"] as Record<string, unknown>)[key];
+    assert.equal(
+      buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(grant)).ok,
+      false,
+      `a grant whose sig is missing required key "${key}" was accepted`,
+    );
+  }
+  const sigExtra = JSON.parse(JSON.stringify(ctx.grant)) as Record<string, unknown>;
+  (sigExtra["sig"] as Record<string, unknown>)["extra"] = "x";
+  const sigExtraResult = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(sigExtra));
+  assert.equal(sigExtraResult.ok, false, "grant.sig.extra was accepted");
+  assert.match(sigExtraResult.ok ? "" : sigExtraResult.reason, /grant\.sig: unknown property/);
 });
 
-test("projection knockout: deleting ANY projection field changes the digest", () => {
+/**
+ * WHAT THIS TEST PROVES, AND — CORRECTED IN ROUND 2 — WHAT IT DOES NOT.
+ *
+ * It proves each member is IN the hashed bytes: delete one and the digest moves. That is all. It was
+ * previously cited as evidence that each member is independently load-bearing against an attack, and
+ * that citation was FALSE. Pinning `tenant`, `chain`, `actionId`, `actionCanonical`,
+ * `executionGrantId` or `executionNonce` to a constant leaves every corresponding attack vector
+ * REJECTED, because `authorizationReceiptHash` and `executionGrantHash` — hashes over the whole
+ * receipt and the whole grant — already refuse them. `test/action-digest.test.ts` cannot isolate
+ * those six by construction: any source mutation that moves one of them necessarily moves a
+ * whole-document hash as well.
+ *
+ * `tenant` and `chain` are the exception, and not because of the digest: they additionally drive the
+ * expected-scope comparison in `verifyActionDigest`, which is a genuinely independent rejection path
+ * with its own isolating vectors (`reject-cross-tenant-expectation`, `reject-cross-chain-expectation`).
+ */
+test("projection knockout: deleting ANY projection field changes the digest (bytes only — see above)", () => {
   const ctx = validContext();
-  const built = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(ctx.grant));
+  const built = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(ctx.grant));
   assert.ok(built.ok, built.ok ? "" : built.reason);
   const projection = built.projection as unknown as Record<string, unknown>;
   const keys = Object.keys(projection);
@@ -188,11 +238,15 @@ test("projection knockout: deleting ANY projection field changes the digest", ()
  * list prescribes them, and what they buy is that the projection is self-describing: an independent
  * implementer who maps `action.canonical` into the `actionId` slot gets a different digest instead
  * of a lucky agreement. Redundancy stated, not hidden.
+ *
+ * NOTE THE LIMIT OF THIS TEST, corrected in round 2: it shows the digest SEPARATES authorizations
+ * that differ in each slot. It does NOT show the named slot is what separates them — the two
+ * whole-document hashes move too, and would refuse these pairs on their own.
  */
 test("field differential: each projection slot separates authorizations that differ only there", () => {
   const ctx = validContext();
   const baseDigest = (() => {
-    const b = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(ctx.grant));
+    const b = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(ctx.grant));
     assert.ok(b.ok, b.ok ? "" : b.reason);
     return b.digest;
   })();
@@ -206,7 +260,7 @@ test("field differential: each projection slot separates authorizations that dif
    * would test the signer rather than the construction.
    */
   function mutated(mutate: (r: Doc, g: Doc) => void): string {
-    const receipt = clone(ctx.receipt);
+    const receipt = clone(authorizationOf(ctx));
     const grant = clone(ctx.grant);
     mutate(receipt, grant);
     const rehash = sha256Prefixed(receiptHashInput(receipt as never));
@@ -248,7 +302,7 @@ test("field differential: each projection slot separates authorizations that dif
 
 test("domain separation: the SAME projection under any other tag is a different value", () => {
   const ctx = validContext();
-  const built = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(ctx.grant));
+  const built = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(ctx.grant));
   assert.ok(built.ok, built.ok ? "" : built.reason);
   const jcs = canonicalize(built.projection);
   const others = ["NOA-Receipt-v0.1-sig", "NOA-Checkpoint-v0.1-sig", "NOA-ExecGrant-v0.1-sig", "NOA-ActionDigest-v0.1-sig"];
@@ -261,22 +315,22 @@ test("domain separation: the SAME projection under any other tag is a different 
 
 test("determinism: the digest does not depend on JSON key order or on repeated calls", () => {
   const ctx = validContext();
-  const a = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(ctx.grant));
-  const b = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(ctx.grant));
+  const a = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(ctx.grant));
+  const b = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(ctx.grant));
   assert.ok(a.ok && b.ok);
   assert.equal(a.digest, b.digest);
   // Re-serialize the grant with reversed key order: JCS must absorb it.
   const grant = ctx.grant as Record<string, unknown>;
   const reversed: Record<string, unknown> = {};
   for (const k of Object.keys(grant).reverse()) reversed[k] = grant[k];
-  const c = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(reversed));
+  const c = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(reversed));
   assert.ok(c.ok, c.ok ? "" : c.reason);
   assert.equal(c.digest, a.digest, "key order changed the digest — the construction is not canonical");
 });
 
 test("the builder and the verifier agree: the built digest is the one the verifier accepts", () => {
   const ctx = validContext();
-  const built = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(ctx.grant));
+  const built = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(ctx.grant));
   assert.ok(built.ok, built.ok ? "" : built.reason);
   const res = verifyActionDigest(
     JSON.stringify({ spec: ACTION_DIGEST_SPEC, digest: built.digest }),
@@ -286,23 +340,18 @@ test("the builder and the verifier agree: the built digest is the one the verifi
 });
 
 /**
- * THE HONEST LIMIT, PINNED AS A TEST RATHER THAN LEFT AS A SENTENCE.
+ * THE FORGERY THAT USED TO BE ACCEPTED — now the regression test for HIGH-3.
  *
- * `docs/action-digest-spec.md` §6 says a digest match is not an authentication and that a relying
- * party MUST verify both documents first. A sentence in a document is not a control, and the next
- * person to read this module will read the code. So the limit is MEASURED here: a fully forged
- * authorization — attacker's own key, a receipt asserting a HUMAN-APPROVED `wire.transfer`, and a
- * grant whose signature is 64 zero bytes — is ACCEPTED by this module, and is REFUSED by the
- * kernel's own `verifyChain` the moment an honest keyring is applied.
- *
- * Two things follow, and both are why the test asserts the acceptance rather than hiding it:
- *   - the precondition in §6 is load-bearing, not boilerplate;
- *   - if anyone ever adds signature verification here, THIS TEST FAILS and forces the spec's §6 to
- *     be rewritten in the same commit. A limit that can be silently closed is a document that can
- *     silently go stale.
+ * The previous revision of this file asserted that a fully forged pair was ACCEPTED, and defended
+ * that with a prose precondition in `docs/action-digest-spec.md` §6. Round-2 QA refused the defence
+ * and was right: a classification string does not enforce call ordering and does not stop document
+ * substitution, on a surface authorization decisions rest on. `verifyActionDigest` now authenticates
+ * its own inputs, so the same bytes are REFUSED — and refused for the authenticity reason, not by
+ * accident on some later check.
  */
-test("HONEST LIMIT: a forged pair is ACCEPTED here and REFUSED by verifyChain (§6 precondition)", () => {
-  const evil = generateKeyPair("victim-gate-1"); // the attacker's key, claiming the victim's kid
+test("HIGH-3: a forged authorization is REFUSED, and refused for the authenticity reason", () => {
+  const ctx = validContext();
+  const evil = generateKeyPair("gate-prod-1"); // attacker key claiming the gate's kid
   const forged = buildReceipt(
     {
       id: "rcpt_forged",
@@ -339,43 +388,147 @@ test("HONEST LIMIT: a forged pair is ACCEPTED here and REFUSED by verifyChain (�
     expiresAt: "2026-07-14T12:30:00.000Z",
     maxUses: 1,
     nonce: "forged-nonce",
-    sig: { alg: "ed25519", kid: "victim-gate-1", value: Buffer.alloc(64).toString("base64") },
+    sig: { alg: "ed25519", kid: "gate-prod-1", value: Buffer.alloc(64).toString("base64") },
   };
 
+  // The BUILDER is the producer-side construction and still constructs — it takes no trust root and
+  // returns no verdict. That split is the contract, and it is asserted rather than assumed.
   const built = buildActionDigest(JSON.stringify(forged), JSON.stringify(grant));
   assert.ok(built.ok, built.ok ? "" : built.reason);
-  const accepted = verifyActionDigest(
-    JSON.stringify({ spec: ACTION_DIGEST_SPEC, digest: built.digest }),
-    JSON.stringify({ receipt: forged, grant, expect: { tenant: "tenant-acme", chain: "chain-acme-1" } }),
-  );
-  assert.equal(
-    accepted.ok,
-    true,
-    "this module now refuses a forged pair — that is an IMPROVEMENT, and docs/action-digest-spec.md §6 must be rewritten in the same commit",
-  );
-  assert.equal(accepted.ok && accepted.classification, "ACTION_DIGEST_LINKAGE_MATCHED");
 
-  // THE MITIGATION, measured in the same test so the pair is never separated.
-  const honest = generateKeyPair("victim-gate-1"); // the REAL gate key under the same kid
-  const verdict = verifyChain(JSON.stringify([forged]), {
-    keyring: JSON.stringify({ "victim-gate-1": honest.publicKey }),
-  });
-  assert.notEqual(verdict.status, "VALID", "the forged receipt survived the kernel's own chain verifier");
-  assert.equal(verdict.signaturesVerified, false);
-  assert.match(verdict.reason ?? "", /invalid signature/, "refused, but not for the signature reason §6 relies on");
+  const res = verifyActionDigest(
+    JSON.stringify({ spec: ACTION_DIGEST_SPEC, digest: built.digest }),
+    JSON.stringify({ chain: [forged], grant, keyring: ctx.keyring, expect: ctx.expect }),
+  );
+  assert.equal(res.ok, false, "a forged authorization was accepted");
+  assert.match(
+    res.ok ? "" : res.reason,
+    /not authentic/,
+    "refused, but not for the authenticity reason — the control under test never ran",
+  );
+});
+
+test("HIGH-3: the verifier refuses when it cannot authenticate at all", () => {
+  const ctx = validContext();
+  const built = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(ctx.grant));
+  assert.ok(built.ok);
+  const claim = JSON.stringify({ spec: ACTION_DIGEST_SPEC, digest: built.digest });
+  // No keyring at all.
+  const noRoot = verifyActionDigest(claim, JSON.stringify({ chain: ctx.chain, grant: ctx.grant, expect: ctx.expect }));
+  assert.equal(noRoot.ok, false);
+  assert.match(noRoot.ok ? "" : noRoot.reason, /context\.keyring/);
+  // An empty keyring is not a permissive one.
+  const emptyRoot = verifyActionDigest(
+    claim,
+    JSON.stringify({ chain: ctx.chain, grant: ctx.grant, keyring: {}, expect: ctx.expect }),
+  );
+  assert.equal(emptyRoot.ok, false);
+});
+
+/**
+ * GRANT-SIGNATURE PARITY — the one rule this module restates, measured against ground truth.
+ *
+ * `GRANT_SIG_DOMAIN` and the `<domain> ++ SHA256(JCS(doc without sig))` preimage belong to
+ * `packages/approval-artifacts`, which this package has no dependency edge to. So the restatement is
+ * checked against THAT package's own committed conformance vectors: its real gate-signed grant must
+ * verify under this module's rule with its own keyring's public key, and its committed
+ * tampered/wrong-key grants must not. If either package's rule moves, this test fails.
+ */
+test("cross-package parity: the grant signature rule matches noa-approval-artifacts' own vectors", () => {
+  const aaDir = join(ROOT, "packages", "approval-artifacts", "conformance");
+  const keyring = JSON.parse(readFileSync(join(aaDir, "keyring.json"), "utf8")) as Record<string, { publicKey: string }>;
+  const load = (f: string): { artifact: Record<string, unknown> } =>
+    JSON.parse(readFileSync(join(aaDir, "execution-grant", f), "utf8")) as { artifact: Record<string, unknown> };
+
+  const check = (grant: Record<string, unknown>): boolean => {
+    const sig = grant.sig as { kid: string; value: string };
+    const pub = keyring[sig.kid]?.publicKey;
+    if (!pub) return false;
+    const withoutSig: Record<string, unknown> = { ...grant };
+    delete withoutSig.sig;
+    return verifyEd25519(pub, signingMessage("NOA-ExecGrant-v0.1-sig", canonicalize(withoutSig)), sig.value);
+  };
+
+  assert.equal(check(load("valid.json").artifact), true, "the sibling package's REAL signed grant did not verify under this module's rule");
+  assert.equal(check(load("reject-tampered-content.json").artifact), false, "a grant altered after signing verified");
+
+  // ── THE BOUNDARY, ASSERTED RATHER THAN DESCRIBED ────────────────────────────────────────────
+  // The sibling's `reject-wrong-key` vector is an F15 ROLE rejection: `gate-holdonly-9` holds
+  // `hold-signer` only, so `verifyArtifact` refuses it — while its signature is perfectly genuine.
+  // This module checks signatures and does NOT evaluate the F15 role matrix, so it MUST accept that
+  // signature. Pinning the true behaviour here is what stops the module's documented residual
+  // (docs/action-digest-spec.md §6) from quietly becoming false in either direction.
+  assert.equal(
+    check(load("reject-wrong-key.json").artifact),
+    true,
+    "the F15 role-rejection vector's signature must still verify — this module does not evaluate roles, and the residual says so",
+  );
+});
+
+/**
+ * BUILDER-LEVEL CONTROLS THAT AUTHENTICATION NOW SHADOWS AT THE VERIFIER.
+ *
+ * Adding chain authentication made three refusals unreachable through `verifyActionDigest`: a
+ * tampered receipt is refused as inauthentic before its self-hash is recomputed, and a grant that
+ * references another authorization is refused by chain SELECTION before the builder's own tie check
+ * runs. Those are strictly stronger refusals — but the underlying controls still exist, and a
+ * control nothing exercises is a control nobody will notice breaking. They are measured here at the
+ * layer where they remain reachable.
+ */
+test("builder controls stay measured where the verifier now shadows them", () => {
+  const ctx = validContext();
+  const receipt = JSON.parse(JSON.stringify(authorizationOf(ctx))) as Record<string, unknown>;
+  const grant = JSON.parse(JSON.stringify(ctx.grant)) as Record<string, unknown>;
+
+  // (a) receipt edited after hashing — the committed chain.hash no longer describes the body.
+  const edited = JSON.parse(JSON.stringify(receipt)) as Record<string, unknown>;
+  (edited["action"] as Record<string, unknown>)["riskClass"] = "LOW";
+  const editedResult = buildActionDigest(JSON.stringify(edited), JSON.stringify(grant));
+  assert.equal(editedResult.ok, false);
+  assert.match(editedResult.ok ? "" : editedResult.reason, /receipt\.chain\.hash/);
+
+  // (b) a grant bound to a different authorization.
+  const foreign = JSON.parse(JSON.stringify(grant)) as Record<string, unknown>;
+  foreign["approvalReceiptHash"] = "sha256:" + "11".repeat(32);
+  const foreignResult = buildActionDigest(JSON.stringify(receipt), JSON.stringify(foreign));
+  assert.equal(foreignResult.ok, false);
+  assert.match(foreignResult.ok ? "" : foreignResult.reason, /does not reference this receipt/);
+
+  // (c) a tenant-less receipt still yields no digest at the construction layer.
+  const tenantless = JSON.parse(JSON.stringify(receipt)) as Record<string, unknown>;
+  delete (tenantless["scope"] as Record<string, unknown>)["tenant"];
+  const tenantlessResult = buildActionDigest(JSON.stringify(tenantless), JSON.stringify(grant));
+  assert.equal(tenantlessResult.ok, false);
+  assert.match(tenantlessResult.ok ? "" : tenantlessResult.reason, /receipt\.scope\.tenant/);
+});
+
+test("HIGH-1 at the builder: every non-ALLOWED verdict is refused", () => {
+  const ctx = validContext();
+  const grant = ctx.grant;
+  for (const verdict of ["BLOCKED", "DEFERRED", "EXECUTED", "FAILED", "ROLLED_BACK", "SIMULATED"]) {
+    const receipt = JSON.parse(JSON.stringify(authorizationOf(ctx))) as Record<string, unknown>;
+    (receipt["governance"] as Record<string, unknown>)["verdict"] = verdict;
+    // Re-anchor so the ONLY thing wrong is the verdict, not a stale self-hash.
+    (receipt["chain"] as Record<string, unknown>)["hash"] = sha256Prefixed(receiptHashInput(receipt as never));
+    const g = JSON.parse(JSON.stringify(grant)) as Record<string, unknown>;
+    g["approvalReceiptHash"] = (receipt["chain"] as Record<string, unknown>)["hash"];
+    const res = buildActionDigest(JSON.stringify(receipt), JSON.stringify(g));
+    assert.equal(res.ok, false, `verdict ${verdict} was correlated as an authorization`);
+    assert.match(res.ok ? "" : res.reason, /governance\.verdict/, `verdict ${verdict} refused for the wrong reason`);
+  }
 });
 
 test("an expired grant still digests, deliberately — a correlation key must not decay", () => {
   const ctx = validContext();
   const grant = JSON.parse(JSON.stringify(ctx.grant)) as Record<string, unknown>;
   grant["expiresAt"] = "2020-01-01T00:00:00.000Z";
-  const built = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(grant));
+  const built = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(grant));
   // Expiry is the GRANT verifier's job (`verifyArtifact` + `mustBeAfter`). If the digest refused an
   // expired grant, every audit lookup would stop matching the day the grant timed out — a
   // correlation key that decays correlates nothing. It is still a DIFFERENT value, because
   // `expiresAt` is inside the grant document that `executionGrantHash` covers.
   assert.ok(built.ok, built.ok ? "" : built.reason);
-  const original = buildActionDigest(JSON.stringify(ctx.receipt), JSON.stringify(ctx.grant));
+  const original = buildActionDigest(JSON.stringify(authorizationOf(ctx)), JSON.stringify(ctx.grant));
   assert.ok(original.ok);
   assert.notEqual(built.digest, original.digest);
 });

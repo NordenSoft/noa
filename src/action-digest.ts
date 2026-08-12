@@ -44,13 +44,23 @@
  * that a controller or physical claim is true."* Concretely, and each of these is a real limit, not
  * a hedge:
  *
- *   - IT IS NOT AN AUTHENTICATION. This module verifies no Ed25519 signature. It cannot: the
- *     receipt's signature is `verifyChain`'s verdict (`src/verify.ts`) and the grant's is
- *     `verifyArtifact`'s (`packages/approval-artifacts/src/verify.ts`), and re-implementing either
- *     here would create the second definition this file's whole existence argues against. A caller
- *     that feeds this module two documents it has not independently verified gets a digest over two
- *     documents it has not independently verified. The successful result is therefore labelled
- *     `ACTION_DIGEST_LINKAGE_MATCHED` and never anything shorter.
+ *   - THE TWO ENTRY POINTS HAVE DIFFERENT TRUST CONTRACTS, and conflating them is the mistake this
+ *     paragraph exists to prevent. `verifyActionDigest` AUTHENTICATES ITS OWN INPUTS: it requires a
+ *     trust root, runs `verifyChain` over the supplied chain, verifies the grant's Ed25519
+ *     signature through `resolveVerificationKey`, and selects the authorization by the grant's own
+ *     `approvalReceiptHash`. `buildActionDigest` does NOT: it is the producer-side construction, it
+ *     takes a verdict from nobody and returns no verdict, and a caller who feeds it two unverified
+ *     documents gets a digest over two unverified documents.
+ *
+ *     An earlier revision made NEITHER entry point authenticate anything and disclosed that in
+ *     prose. Round-2 QA refused it, correctly: a classification string does not enforce call
+ *     ordering and does not stop document substitution, and disclosure is not a control on a
+ *     surface that authorization decisions rest on.
+ *   - WHAT `verifyActionDigest` STILL DOES NOT COVER, stated because a partial check described as a
+ *     whole one is worse than no check: the grant's §6 SEMANTICS. The F15 signer type/role matrix,
+ *     key activation windows, grant expiry and the envelope refHash chain are `verifyArtifact`'s
+ *     (`packages/approval-artifacts/src/verify.ts`), which this package has no dependency edge to.
+ *     Signature authenticity is checked here; grant AUTHORIZATION semantics are not.
  *   - IT IS NOT A CAPABILITY. Knowing a digest authorizes nothing; the digest is a public
  *     correlation key, safe to log and to index.
  *   - IT IS NOT PROOF THE ACTION HAPPENED. That is the execution-consumption / physical-observation
@@ -71,11 +81,14 @@ import { receiptHashInput } from "./canonicalize.js";
 import { parseDocument } from "./bytes.js";
 import { validateReceiptShapeParsed } from "./schema.js";
 import { isSha256Hash, isParamsHash, isRfc3339 } from "./scan.js";
+import { verifyChain } from "./verify.js";
+import { resolveVerificationKey } from "./verification-keyring.js";
+import { verifyEd25519 } from "./keys.js";
 import { frozenTable } from "./inert.js";
 // CAPTURED INTRINSICS ONLY (ADR §5.5 / lint L8). `Array.isArray`, `JSON.stringify` and `String` are
 // writable properties of a mutable global, and this file decides what bytes get hashed and whether a
 // digest matches — so none of them may be looked up at call time.
-import { arrayIncludes, arrayJoin, hasOwn, isArray, jsonStringify, objectGetOwnPropertyNames, strCodePointCount } from "./intrinsics.js";
+import { arrayIncludes, arrayJoin, hasOwn, isArray, jsonStringify, objectCreateNull, objectGetOwnPropertyNames, strCodePointCount, strTrim } from "./intrinsics.js";
 import type { Receipt } from "./types.js";
 
 /** The spec identifier this module implements. It travels INSIDE the projection and on the claim. */
@@ -117,6 +130,41 @@ const GRANT_KEYS: readonly string[] = frozenTable([
   "sig",
 ]);
 
+/** The grant `sig` object's exact key set — `$defs.sig` in the same shipped schema, also closed. */
+const GRANT_SIG_KEYS: readonly string[] = frozenTable(["alg", "kid", "value"]);
+
+/**
+ * The §6 Ed25519 signing domain for an execution grant
+ * (`packages/approval-artifacts/src/domains.ts`). Restated here because the kernel root has no
+ * dependency edge to that package — and gated rather than trusted: `test/action-digest.test.ts`
+ * verifies THAT package's own committed `execution-grant/valid.json` signature with this constant
+ * and refuses its committed tampered/wrong-key vectors, so a drift in either direction fails.
+ */
+const GRANT_SIG_DOMAIN = "NOA-ExecGrant-v0.1-sig";
+
+/**
+ * The only receipt verdict a grant may descend from.
+ *
+ * ── HIGH-1, AND WHY THIS IS A RECURRENCE RATHER THAN A NEW BUG ──────────────────────────────────
+ * This module checked shape, self-hash, receipt reference, parameter equality and single-use — and
+ * never read `governance.verdict`. So a correctly signed HUMAN DENIAL, wrapped in a correctly
+ * gate-signed grant, correlated as an authorization: `verifyChain` VALID, `verifyArtifact` ok,
+ * and `ACTION_DIGEST_LINKAGE_MATCHED`. Satisfying both of the spec's preconditions did not save it,
+ * because neither precondition asks what the receipt DECIDED.
+ *
+ * `packages/relay/src/engine.ts` records the same class being caught before — a status plane
+ * recording APPROVED over a cryptographically VALID human denial, reproduced. The lesson that did
+ * not travel with it is the general one: AUTHENTICITY AND AUTHORIZATION ARE DIFFERENT QUESTIONS,
+ * and every new module that consumes a receipt has to ask the second one for itself. A signature
+ * proves who wrote the decision, never which decision they wrote.
+ *
+ * `ALLOWED` is the whole set on purpose. `BLOCKED` is a denial; `DEFERRED` is a decision not yet
+ * made; `EXECUTED`/`FAILED`/`ROLLED_BACK` are outcome records that post-date authorization; and
+ * `SIMULATED` is explicitly not a real action. A grant descends from the ALLOWED decision alone —
+ * `packages/gate/src/grants.ts` names its own parameter `allowedReceipt`.
+ */
+const AUTHORIZING_VERDICT = "ALLOWED";
+
 /** The frozen projection. JCS sorts the keys, so the declaration order below is presentational. */
 export interface ActionDigestProjection {
   readonly spec: typeof ACTION_DIGEST_SPEC;
@@ -156,10 +204,23 @@ export type ActionDigestVerifyResult =
 
 /** The verification context, supplied as BYTES like every other boundary in this package. */
 export interface ActionDigestContext {
-  /** The authorization receipt document. */
-  readonly receipt: unknown;
+  /**
+   * The receipt CHAIN containing the authorization — not a lone receipt. `verifyChain` walks
+   * sequence and linkage, so a mid-chain receipt cannot be authenticated on its own (measured:
+   * `verifyChain([midChainReceipt])` returns `TAMPERED — seq gap: missing seq 0`). The
+   * authorization is selected from this chain by the grant's own `approvalReceiptHash`.
+   */
+  readonly chain: readonly unknown[];
   /** The `noa.execution-grant/0.1` document, signature included. */
   readonly grant: unknown;
+  /**
+   * REQUIRED trust root — a static `{kid: base64-SPKI}` map or a `noa.signing-key-lifecycle/0.1`
+   * document. Resolved by this package's own `resolveVerificationKey`, so retired keys are refused
+   * here exactly as they are everywhere else.
+   */
+  readonly keyring: unknown;
+  /** Optional: passed through to `verifyChain`, upgrading VALID to "THIS agent.id signed". */
+  readonly identityManifest?: unknown;
   /**
    * The tenant and chain the RELYING PARTY believes it is operating in — its own value, never read
    * off the documents. Required: a verifier that cannot say which tenant it is cannot detect a
@@ -182,11 +243,55 @@ function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !isArray(v);
 }
 
-/** A bounded, non-empty string — the shape every identifier in the grant/receipt must have. */
+/**
+ * A bounded, NON-BLANK string — the shape every identifier in the grant/receipt must have.
+ *
+ * ── `length === 0` WAS THE WRONG EMPTINESS TEST (round-2 QA, reproduced) ─────────────────────────
+ * It refused `""` and accepted `"   "` and `"\t"`. A whitespace-only tenant is not a tenant; it is
+ * the SEMANTIC "unknown", spelled so that a length check cannot see it — and a receipt carrying one
+ * passed `verifyChain`, `verifyArtifact` and this module together. Emptiness is a property of the
+ * TRIMMED value, so that is what is measured.
+ */
 function boundedString(v: unknown, max: number): v is string {
   if (typeof v !== "string") return false;
-  if (v.length === 0) return false;
+  if (strTrim(v).length === 0) return false;
   return strCodePointCount(v) <= max;
+}
+
+/** Why a candidate identifier was refused — distinct reasons, because a wrong reason misleads. */
+type IdVerdict = "ok" | "absent" | "blank" | "padded" | "too-long";
+
+/**
+ * A SCOPE IDENTIFIER — `tenant` and `chain`, the two values that decide which isolation boundary a
+ * digest belongs to. Stricter than `boundedString`, and the extra rule is the interesting one:
+ *
+ *   THE VALUE MUST EQUAL ITS OWN TRIM.
+ *
+ * Rejecting only whitespace-ONLY values would still admit `" tenant-acme "`, which is a DIFFERENT
+ * string from `"tenant-acme"` here and the SAME tenant to anything downstream that trims — an
+ * aliasing channel between two tenants, which is precisely the isolation failure the mandatory
+ * tenant rule exists to prevent. A padded identifier is therefore refused outright rather than
+ * normalised: normalising would make this module's digest disagree with a producer that did not
+ * normalise, and silently reshaping a value on a correlation path is its own defect.
+ */
+function scopeIdentifier(v: unknown, max: number): IdVerdict {
+  if (typeof v !== "string" || v.length === 0) return "absent";
+  if (strTrim(v).length === 0) return "blank";
+  if (strTrim(v) !== v) return "padded";
+  if (strCodePointCount(v) > max) return "too-long";
+  return "ok";
+}
+
+/** One phrasing per verdict, so "too long" is never reported as "absent or empty" (round-2 QA). */
+function scopeReason(field: string, verdict: IdVerdict, max: number): string {
+  if (verdict === "absent") return `${field}: absent or not a string`;
+  if (verdict === "blank") {
+    return `${field}: blank — whitespace is not an identifier, and a digest whose scope is the semantic "unknown" is replayable across tenants`;
+  }
+  if (verdict === "padded") {
+    return `${field}: has leading or trailing whitespace — it would alias to a different scope anywhere that trims`;
+  }
+  return `${field}: longer than ${max} code points`;
 }
 
 /**
@@ -231,6 +336,19 @@ function checkGrant(grant: unknown): { ok: true; value: Record<string, unknown> 
   if (!boundedString(grant["nonce"], 256)) return fail("grant.nonce: non-empty string ≤256 chars");
   const sig = grant["sig"];
   if (!isObject(sig)) return fail("grant.sig: not an object");
+  // ── THE NESTED OBJECT IS CLOSED TOO (round-2 QA, reproduced) ────────────────────────────────────
+  // Only the TOP level was closed, so `sig.extra` produced a match here while `verifyArtifact`
+  // correctly refused `$.sig: unknown property "extra"`. §4.3 claims each field satisfies the
+  // shipped schema, and the shipped schema's `$defs.sig` is `additionalProperties:false` — a claim
+  // is not a check. `test/action-digest.test.ts` now walks the schema's nested `$defs.sig`
+  // required list as well as the top level, so this cannot regress to a top-level-only closure.
+  const sigKeys = objectGetOwnPropertyNames(sig);
+  for (let i = 0; i < sigKeys.length; i++) {
+    const k = sigKeys[i] as string;
+    if (!arrayIncludes(GRANT_SIG_KEYS, k)) {
+      return fail(`grant.sig: unknown property "${k}" (the sig object is closed; an extra field moves executionGrantHash)`);
+    }
+  }
   if (sig["alg"] !== "ed25519") return fail('grant.sig.alg: must be "ed25519"');
   if (!boundedString(sig["kid"], 128)) return fail("grant.sig.kid: non-empty string ≤128 chars");
   if (!boundedString(sig["value"], 512)) return fail("grant.sig.value: non-empty string ≤512 chars");
@@ -280,12 +398,24 @@ export function buildActionDigest(
   // tenant-splice-via-absent*.json`). A correlation value whose tenant field is sometimes empty is
   // a correlation value that is replayable across tenants exactly when the attacker chooses, so a
   // tenant-less receipt yields no digest rather than a weaker one.
-  const tenant = scope["tenant"];
-  if (!boundedString(tenant, 128)) {
-    return fail("receipt.scope.tenant: absent or empty — an action digest without a tenant is replayable across tenants");
+  const tenantVerdict = scopeIdentifier(scope["tenant"], 128);
+  if (tenantVerdict !== "ok") return fail(scopeReason("receipt.scope.tenant", tenantVerdict, 128));
+  const tenant = scope["tenant"] as string;
+  const chainVerdict = scopeIdentifier(scope["chain"], 128);
+  if (chainVerdict !== "ok") return fail(scopeReason("receipt.scope.chain", chainVerdict, 128));
+  const chain = scope["chain"] as string;
+
+  // ── WHAT THE RECEIPT DECIDED, NOT MERELY WHO SIGNED IT (HIGH-1) ───────────────────────────────
+  // See AUTHORIZING_VERDICT above for the full account. A grant descends from an ALLOWED decision;
+  // correlating one to a BLOCKED, DEFERRED or SIMULATED receipt would let a cryptographically valid
+  // human DENIAL present itself as the authorization for the action it denied.
+  const governance = receipt["governance"] as Record<string, unknown>;
+  if (governance["verdict"] !== AUTHORIZING_VERDICT) {
+    return fail(
+      `receipt.governance.verdict: is ${jsonStringify(governance["verdict"]) as string}, must be "${AUTHORIZING_VERDICT}" — ` +
+        "a grant descends from an ALLOWED decision, and a signature proves who wrote a decision, never which decision they wrote",
+    );
   }
-  const chain = scope["chain"];
-  if (!boundedString(chain, 128)) return fail("receipt.scope.chain: absent or empty");
 
   // ── THE RECEIPT MUST AGREE WITH ITSELF ────────────────────────────────────────────────────────
   // F1 rule-a: the receipt's own `chain.hash` = sha256(JCS(receipt without chain.hash and
@@ -344,8 +474,12 @@ export function buildActionDigest(
  * the kernel uses — no live caller object reaches any comparison below. Never throws: every failure
  * is a returned `{ok:false, reason}`.
  *
+ * UNLIKE `buildActionDigest`, THIS ENTRY POINT AUTHENTICATES ITS OWN INPUTS. It requires a trust
+ * root and refuses anything it cannot authenticate; see steps 1-3 in the body. The residual it does
+ * NOT cover is named precisely in `docs/action-digest-spec.md` §6.
+ *
  * @param claimBytes   `{"spec":"noa.action-digest/0.1","digest":"sha256:<64 hex>"}`
- * @param contextBytes `{"receipt":{…},"grant":{…},"expect":{"tenant":"…","chain":"…"}}`
+ * @param contextBytes `{"chain":[…],"grant":{…},"keyring":{…},"expect":{"tenant":"…","chain":"…"}}`
  */
 export function verifyActionDigest(
   claimBytes: Uint8Array | string,
@@ -375,28 +509,120 @@ export function verifyActionDigest(
 
   const ctx = parsedCtx.value;
   if (!isObject(ctx)) return fail("context: not a JSON object");
-  if (!hasOwn(ctx, "receipt")) return fail("context.receipt: absent");
+  const chainDocs = ctx["chain"];
+  if (!isArray(chainDocs) || chainDocs.length === 0) {
+    return fail("context.chain: absent or empty — supply the receipt chain containing the authorization");
+  }
   if (!hasOwn(ctx, "grant")) return fail("context.grant: absent");
+  if (!hasOwn(ctx, "keyring")) {
+    return fail("context.keyring: absent — this verifier authenticates its own inputs and cannot do so without a trust root");
+  }
   const expect = ctx["expect"];
   if (!isObject(expect)) {
     return fail("context.expect: absent — a verifier that cannot state its own tenant and chain cannot detect a replay");
   }
-  if (!boundedString(expect["tenant"], 128)) return fail("context.expect.tenant: absent or empty");
-  if (!boundedString(expect["chain"], 128)) return fail("context.expect.chain: absent or empty");
+  const expTenant = scopeIdentifier(expect["tenant"], 128);
+  if (expTenant !== "ok") return fail(scopeReason("context.expect.tenant", expTenant, 128));
+  const expChain = scopeIdentifier(expect["chain"], 128);
+  if (expChain !== "ok") return fail(scopeReason("context.expect.chain", expChain, 128));
 
-  // The two documents are re-serialized and re-parsed by `buildActionDigest`'s own byte boundary.
-  // That costs one round trip and buys the property that the builder and the verifier see literally
-  // the same input path — the alternative is a second, subtly different ingest for the same value.
-  const built = buildActionDigest(jsonStringify(ctx["receipt"]) as string, jsonStringify(ctx["grant"]) as string);
+  // ── STEP 1: AUTHENTICATE THE RECEIPT CHAIN, BY DELEGATION ─────────────────────────────────────
+  // Round-2 QA was right that a classification string is not a control: the previous shape verified
+  // no signature and asked callers, in prose, to do it first. Prose does not enforce call ordering
+  // and does not stop document substitution, and the surface carries authorization decisions.
+  //
+  // The fix composes rather than duplicates. `verifyChain` IS this package's receipt verifier, so
+  // calling it creates no second definition of "a valid receipt" — the drift hazard that made
+  // re-implementation the wrong answer never arises. The chain (not a lone receipt) is required
+  // because a mid-chain receipt cannot be verified alone: measured, `verifyChain([r2])` returns
+  // `TAMPERED — seq gap: missing seq 0`, so accepting a single receipt would have forced either a
+  // weaker check or a private re-implementation of the chain walk.
+  const keyringBytes = jsonStringify(ctx["keyring"]) as string;
+  const chainVerdict = verifyChain(jsonStringify(chainDocs) as string, {
+    keyring: keyringBytes,
+    // Optional and strictly strengthening: with it, VALID additionally means THIS agent.id signed,
+    // rather than "some keyring-trusted kid did". Passed through to the one verifier that owns it.
+    ...(hasOwn(ctx, "identityManifest") ? { identityManifest: jsonStringify(ctx["identityManifest"]) as string } : {}),
+  });
+  if (chainVerdict.status !== "VALID" || chainVerdict.signaturesVerified !== true) {
+    return fail(
+      `context.chain: not authentic — verifyChain returned ${chainVerdict.status}` +
+        `${chainVerdict.reason ? ` (${chainVerdict.reason})` : ""}, signaturesVerified=${chainVerdict.signaturesVerified}`,
+    );
+  }
+
+  // ── STEP 2: AUTHENTICATE THE GRANT ────────────────────────────────────────────────────────────
+  // The grant's full §6 semantics belong to `verifyArtifact`, which lives in a package this one has
+  // no dependency edge to. What IS checkable here is the part that decides whether an outsider can
+  // mint a grant at all: the Ed25519 signature under the grant's own domain tag, with the key
+  // resolved by this package's `resolveVerificationKey` — so static maps, lifecycle documents and
+  // RETIRED-key refusal all behave exactly as they do everywhere else in the kernel.
+  //
+  // WHAT THIS DELIBERATELY DOES NOT DO, because claiming it would be worse than not doing it: the
+  // F15 signer TYPE/ROLE matrix, key activation windows, grant expiry and the envelope refHash
+  // chain are NOT evaluated. A caller enforcing an authorization decision must still run
+  // `verifyArtifact`. `docs/action-digest-spec.md` §6 states this as a residual, not as a footnote.
+  const grantDoc = ctx["grant"];
+  if (!isObject(grantDoc)) return fail("context.grant: not a JSON object");
+  const grantSig = grantDoc["sig"];
+  if (!isObject(grantSig) || typeof grantSig["kid"] !== "string" || typeof grantSig["value"] !== "string") {
+    return fail("context.grant.sig: missing kid/value");
+  }
+  const grantKey = resolveVerificationKey(keyringBytes, grantSig["kid"]);
+  if (!grantKey.ok) return fail(`context.grant: ${grantKey.reason}`);
+  const grantWithoutSig = objectCreateNull<Record<string, unknown>>();
+  const grantNames = objectGetOwnPropertyNames(grantDoc);
+  for (let i = 0; i < grantNames.length; i++) {
+    const k = grantNames[i] as string;
+    if (k !== "sig") grantWithoutSig[k] = grantDoc[k];
+  }
+  if (!verifyEd25519(grantKey.publicKey, signingMessage(GRANT_SIG_DOMAIN, canonicalize(grantWithoutSig)), grantSig["value"])) {
+    return fail(`context.grant: invalid signature (kid ${grantSig["kid"]})`);
+  }
+
+  // ── STEP 3: SELECT THE AUTHORIZATION RECEIPT FROM THE VERIFIED CHAIN ──────────────────────────
+  // Not by index and not by a caller-supplied id: by the binding the grant itself carries. The
+  // authorization is the receipt whose F1 rule-a hash equals `grant.approvalReceiptHash`, which
+  // means the caller cannot point this verifier at a different receipt than the grant references.
+  // Exactly one must match — zero is a grant for an authorization not in the supplied chain, and
+  // more than one would make "the" authorization ambiguous, which must never resolve silently.
+  const wanted = grantDoc["approvalReceiptHash"];
+  let authorization: unknown = undefined;
+  let matches = 0;
+  for (let i = 0; i < chainDocs.length; i++) {
+    const candidate = chainDocs[i];
+    if (!isObject(candidate)) continue;
+    const shapeOk = validateReceiptShapeParsed(candidate);
+    if (!shapeOk.ok) continue;
+    if (sha256Prefixed(receiptHashInput(candidate as unknown as Receipt)) === wanted) {
+      matches++;
+      authorization = candidate;
+    }
+  }
+  if (matches === 0) {
+    return fail(
+      `context.chain: contains no receipt matching grant.approvalReceiptHash ${jsonStringify(wanted) as string} — ` +
+        "the grant does not descend from any authorization in the supplied chain",
+    );
+  }
+  if (matches > 1) {
+    return fail(`context.chain: ${matches} receipts match grant.approvalReceiptHash — the authorization is ambiguous`);
+  }
+
+  // ── STEP 4: THE CONSTRUCTION ──────────────────────────────────────────────────────────────────
+  // The selected receipt is re-serialized and re-parsed through `buildActionDigest`'s own byte
+  // boundary, so the builder and the verifier see literally the same input path — the alternative
+  // is a second, subtly different ingest of the same value.
+  const built = buildActionDigest(jsonStringify(authorization) as string, jsonStringify(grantDoc) as string);
   if (!built.ok) return fail(built.reason);
 
-  // ── THE RELYING PARTY'S OWN TENANT/CHAIN ──────────────────────────────────────────────────────
-  // Checked SEPARATELY from the digest even though `tenant` and `chain` are already inside the
-  // projection, and the redundancy is the point: this check answers "are these documents mine?",
-  // the projection answers "is this digest these documents'?". Either one alone refuses the
-  // cross-tenant replay — `conformance/action-digest/vectors.json` carries a vector for each, and
-  // the one that satisfies the expectation and still fails is the proof the projection field is
-  // load-bearing rather than decorative.
+  // ── STEP 5: THE RELYING PARTY'S OWN TENANT/CHAIN ──────────────────────────────────────────────
+  // These two checks are the ONLY place where `tenant` and `chain` do work that the two
+  // whole-document hashes do not already do (see docs/action-digest-spec.md §7): they answer "are
+  // these documents MINE?", which no property of the digest can answer, because the digest knows
+  // nothing about who is asking. `reject-cross-tenant-expectation` and
+  // `reject-cross-chain-expectation` isolate exactly these two, and flip to ACCEPT when they are
+  // removed.
   if (built.projection.tenant !== expect["tenant"]) {
     return fail(
       `tenant mismatch: the documents are for ${jsonStringify(built.projection.tenant) as string}, the verifier expects ${jsonStringify(expect["tenant"]) as string}`,

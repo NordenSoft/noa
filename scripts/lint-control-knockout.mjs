@@ -975,6 +975,92 @@ const KNOCKOUTS = [
     kind: "gate",
     suite: [".", "npm", ["run", "lint:resolver-parity"]],
   },
+  // ── noa.action-digest/0.1 (round-2 QA, 2026-08-12) ────────────────────────────────────────────
+  // Round-2 QA observed that this module had NO entry here at all, so none of its controls were in
+  // the repository's own L4 ratchet — its knockout evidence lived in a scratch script, which is the
+  // "asserted census" shape this whole gate exists to end. These are the controls that can be
+  // ISOLATED: each mutation leaves every other rule intact, so the named vector is the only thing
+  // that can go red.
+  //
+  // Deliberately ABSENT, and this is the corrected half of the same finding: there is no entry for
+  // the projection's `actionId`, `actionCanonical`, `actionParamsHash`, `executionGrantId` or
+  // `executionNonce` members. They cannot be isolated by construction — `authorizationReceiptHash`
+  // and `executionGrantHash` are hashes over the whole receipt and the whole grant, so any source
+  // mutation that moves one of those five moves a whole-document hash too, and the attack is refused
+  // either way. Registering a knockout that "passes" for that reason would be vacuous. See
+  // docs/action-digest-spec.md §7.
+  {
+    id: "ad-verdict-must-be-allowed",
+    control: "HIGH-1 — an action digest may only be built from an ALLOWED receipt. Without this check a cryptographically VALID human DENIAL correlates as the authorization for the action it denied: verifyChain VALID, verifyArtifact ok, digest MATCHED. Same class as the relay's APPROVED-over-a-denial defect, recurring in a new module.",
+    file: "src/action-digest.ts",
+    find: '  if (governance["verdict"] !== AUTHORIZING_VERDICT) {',
+    replace: '  if (false && governance["verdict"] !== AUTHORIZING_VERDICT) {',
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "ad-scope-identifier-not-blank",
+    control: "HIGH-2 — emptiness is a property of the TRIMMED value. `length === 0` refused \"\" and accepted \"   \", so the semantic \"unknown tenant\" passed every verifier, and a padded tenant aliased to a different one anywhere that trims.",
+    file: "src/action-digest.ts",
+    find: '  if (strTrim(v).length === 0) return "blank";\n  if (strTrim(v) !== v) return "padded";',
+    replace: '  if (v.length === 0) return "blank";',
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "ad-chain-must-authenticate",
+    control: "HIGH-3 — verifyActionDigest authenticates its own inputs by delegating to verifyChain. Without it, an attacker's key claiming the victim's kid mints an entire authorization and a matching digest; the previous revision disclosed that in prose instead, and prose does not enforce call ordering.",
+    file: "src/action-digest.ts",
+    find: '  if (chainVerdict.status !== "VALID" || chainVerdict.signaturesVerified !== true) {',
+    replace: '  if (false) {',
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "ad-grant-signature-verified",
+    control: "HIGH-3 (grant half) — the grant's Ed25519 signature is verified under its own §6 domain tag with the key resolved by resolveVerificationKey, so an outsider cannot mint a grant. Role/expiry semantics remain verifyArtifact's and are documented as a residual, not claimed here.",
+    file: "src/action-digest.ts",
+    find: '  if (!verifyEd25519(grantKey.publicKey, signingMessage(GRANT_SIG_DOMAIN, canonicalize(grantWithoutSig)), grantSig["value"])) {',
+    replace: '  if (false) {',
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "ad-grant-sig-object-is-closed",
+    control: "MEDIUM-4 — the grant's nested `sig` object is closed, not just its top level. `sig.extra` does not break the §6 signature (the preimage is JCS(doc without sig)), so only the closed-world rule can refuse it — and verifyArtifact does.",
+    file: "src/action-digest.ts",
+    find: '    if (!arrayIncludes(GRANT_SIG_KEYS, k)) {',
+    replace: '    if (false) {',
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "ad-authorization-selected-by-grant-binding",
+    control: "HIGH-3 (substitution) — the authorization receipt is selected from the verified chain by the grant's OWN approvalReceiptHash, so a caller cannot aim the verifier at a receipt the grant does not reference.",
+    file: "src/action-digest.ts",
+    find: '    if (sha256Prefixed(receiptHashInput(candidate as unknown as Receipt)) === wanted) {',
+    replace: '    if (true) {',
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "ad-expected-scope-enforced",
+    control: "The ONE job `tenant`/`chain` do that the whole-document hashes do not: answering \"are these documents MINE?\". No property of the digest can answer it, because the digest knows nothing about who is asking.",
+    file: "src/action-digest.ts",
+    find: '  if (built.projection.tenant !== expect["tenant"]) {',
+    replace: '  if (false) {',
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "ad-domain-separation-applied",
+    control: "The digest is the projection hashed under NOA-ActionDigest-v0.1-dig. Dropping the tag makes the untagged hash — what an implementation that skipped domain separation would emit — verify.",
+    file: "src/action-digest.ts",
+    find: "sha256Prefixed(signingMessage(ACTION_DIGEST_DOMAIN, canonicalize(projection)))",
+    replace: "sha256Prefixed(canonicalize(projection))",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
   // ── P0-12 / P0-13 (2026-07-31, micro-batch B): HARDENING WHAT BATCH A BUILT ────────────────────
   // Both entries below exist because a control that batch A added did not hold: ROOT activation was
   // carried and never enforced, and the proof-resolution rule was defeated by a second spelling of
