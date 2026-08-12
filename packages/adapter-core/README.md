@@ -57,7 +57,38 @@ line could state that would be true in both places — which is the argument for
   because `noa-mcp-proxy`'s path-based reads were a **reproduced** gate bypass: a symlinked
   `approval-rules.json` pointing at `[]` executed an over-threshold transfer with no human
   approval at all. It closes REDIRECTION, not in-place CONTENT rewriting by a same-uid attacker —
-  see NON-CLAIMS.md NC-6.9 and `src/config-artifact.mjs`'s own docstring.
+  see NON-CLAIMS.md NC-6.9 and `src/config-artifact.mjs`'s own docstring. The WRITE path never
+  truncates before the descriptor has been verified (a refused write leaves its target byte-for-byte
+  unchanged) and refuses a hard-linked target — a second NAME for the same inode is the one
+  redirection `O_NOFOLLOW` cannot see. The READ path bounds the bytes it ACTUALLY read, not the size
+  the `fstat` remembered, and refuses a `maxBytes` that cannot bound anything (`NaN`, `Infinity`, a
+  numeric string). An accepted write goes to a sibling temp file, is `fsync`ed and swapped in with an
+  atomic `rename`, so a failure halfway through cannot leave the artifact empty or partial.
+- `requireValidApprovalRules(approvalRules, label)` / `compileApprovalRules(approvalRules)` /
+  `isCompiledApprovalRules(value)` — the load-time gate for a rule set, and **the snapshot it returns
+  is what you must pass on**. The validator only ever reported, and nothing called it where rule sets
+  are loaded: `{}` in `approval-rules.json` — valid JSON, not an array — made `matchApprovalRule`
+  answer "no rule matched", which a caller reads as "no approval needed", and an over-threshold
+  transfer executed with no human at all (measured 2026-08-12). It refuses a non-array, refuses
+  `null`, and refuses a partially-invalid array IN FULL: a rule set where rule 1 is honoured and rule
+  2 is silently skipped is the same bypass in a costume.
+  Validation also **binds** to what is used, which is the second half of the same defect: the value
+  returned is an inert snapshot compiled from OWN DATA properties (inherited and getter-backed rule
+  fields are refused rather than resolved, a `Proxy` is refused, every level is frozen and
+  null-prototype). Keeping your own object instead keeps the bug — a rule set mutated after
+  validation, a `threshold` inherited from a prototype, and a `match` getter answering differently on
+  its second read each executed the same unapproved transfer through a real proxy before this landed.
+  `isCompiledApprovalRules` reports **provenance, not content** — it says this package built the
+  array, never that the array holds what the compiler intended. A branded snapshot with a HOLE in it
+  was measured (an accessor on `Object.prototype["0"]` swallowing element writes while `push` bumped
+  `length`), so the fail-closed property rests on the compiler's containers being inert from their
+  first write, on the snapshot being frozen, and on compiling anything unbranded on the spot.
+- `matchApprovalRule(rules, actionId, inputs)` reads a snapshot, or compiles one on the spot, and
+  **HOLDS the action** (returning the `approval-rules-unusable` rule) for any rule set it cannot
+  compile — `undefined`/`null` still mean "no approval rules configured" and still match nothing.
+  That single line is why `preCheck`, `preCheckAsync`, `prepareSessionReceipt`,
+  `prepareSessionReceiptAsync` and `preCheckSession` all fail closed on a broken rule set; each of
+  them returned ALLOW for `approvalRules: {}` before it.
 - `createChainSessionStore({ idleTtlMs, maxSessions, sweepIntervalMs, now, onEvict })` — owns
   `Map<tenant, Map<sessionId, { prev, seq, lastAccessedAt, segmentId }>>` (tenant-nested — see
   "MULTI-TENANT ISOLATION" below) plus one store-instance-scoped `instanceToken` (constant across

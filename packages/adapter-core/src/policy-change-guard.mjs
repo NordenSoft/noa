@@ -8,6 +8,14 @@
  * ruleset, and it refuses unless a genuine, signed human approval, cryptographically bound to the
  * EXACT rule-diff, is presented. A user/attacker cannot silently weaken their own guardrails.
  *
+ * ⚠ WHAT "BOUND TO THE EXACT RULE-DIFF" RESTS ON, since the sentence above is the kind a reader stops
+ * testing. It rests on the diff being taken over COMPILED SNAPSHOTS of both sides rather than over
+ * the caller's live objects — and until 2026-08-12 it was not: a `toJSON` on a proposed rule returned
+ * the CURRENT rule's bytes, so a real weakening reported "changed: false", no approval was requested
+ * at all, and the raised threshold was installed. The binding is only as good as the representation
+ * it is computed from, and the exported `buildPolicyChangeRequest`/`canonicalizeApprovalRules` still
+ * accept live arrays for direct callers (see the follow-up note at `buildPolicyChangeRequest`).
+ *
  * SCHEMA-FROZEN (Red Line 5): this is a POLICY layer, not a receipt-schema change. The approval is
  * receipted with the existing v0.1 format — `action.id: "noa.policy.update"`, `action.paramsHash` =
  * hash of the canonical rule-diff — via the existing preCheck() / buildApprovalReceipt() /
@@ -17,7 +25,8 @@
  *   - canonicalParamsHash (pre-check.mjs) so the diff hash here is byte-identical to the paramsHash
  *     preCheck independently computes for a `{ name:"noa.policy.update", args:<diff> }` tool call;
  *   - verifyApprovalReceipt (approval-decision.mjs) for the fail-closed, action-bound authenticity check;
- *   - validateApprovalRules (approval-rules.mjs) to refuse an invalid proposed policy outright.
+ *   - compileApprovalRules (approval-rules.mjs) to refuse an invalid proposed policy outright AND to
+ *     produce the inert snapshot this function hands back as the new active rule set.
  *
  * Deferred (documented follow-ups, NOT in this slice): §19.2 PWA settings surface, §19.4 enterprise
  * floor, §19.5 learning/shadow suggestions. Step-up (D4) is enforced here as a caller-asserted
@@ -26,7 +35,7 @@
  */
 import { canonicalParamsHash } from "./pre-check.mjs";
 import { verifyApprovalReceipt } from "./approval-decision.mjs";
-import { validateApprovalRules } from "./approval-rules.mjs";
+import { compileApprovalRules } from "./approval-rules.mjs";
 import { describeThrown } from "./safe-throw.mjs";
 import { intrinsics } from "noa-receipt";
 
@@ -61,7 +70,7 @@ import { intrinsics } from "noa-receipt";
 //
 // The fix is structural, not another captured name: a null-prototype object has no chain to walk, so
 // `[[Set]]` cannot be intercepted at all. Same reason the kernel gives arrays an inert prototype.
-const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap, arraySort, arrayPush, objectKeys, objectCreateNull, objectSetPrototypeOf, strStartsWith, strEndsWith, mapHas, mapGet } = intrinsics;
+const { jsonStringify, isArray, arrayEvery, arraySome, arrayFilter, arrayMap, arraySort, arrayPush, arrayJoin, objectKeys, objectCreateNull, objectSetPrototypeOf, strStartsWith, strEndsWith, mapHas, mapGet } = intrinsics;
 // ROUND 4 / R4-06, R4-07. The remaining live reads on this file's decision paths: `Set.prototype.has`
 // deciding whether an event name is known (a poisoned `has` admits a line the loader must refuse),
 // `Map.prototype.has/get` deciding which rules were added, removed or modified, and
@@ -108,10 +117,26 @@ function sortKeysDeep(value) {
   if (value && typeof value === "object") {
     const out = objectCreateNull();
     const ks = arraySort(objectKeys(value), undefined);
-    for (let i = 0; i < ks.length; i += 1) out[ks[i]] = sortKeysDeep(value[ks[i]]);
+    for (let i = 0; i < ks.length; i += 1) {
+      const v = sortKeysDeep(value[ks[i]]);
+      // A CALLABLE IS NOT DATA, AND ONE CALLABLE IN PARTICULAR IS A SCRIPT (fourth review,
+      // 2026-08-12). This rebuild used to copy every own enumerable key, `toJSON` included, and
+      // `JSON.stringify` INVOKES `toJSON` (SerializeJSONProperty) — so a rule could hand the
+      // canonicalizer bytes describing a rule it is not, erasing the evidence in the same move,
+      // and the change detector below saw "nothing changed" for a real weakening.
+      //
+      // `applyPolicyChange` no longer canonicalizes live caller objects at all (see its own note),
+      // which is the load-bearing fix. This one covers the EXPORTED canonicalizer for callers that
+      // reach it directly. Dropping matches `JSON.stringify`'s own treatment of a function-valued
+      // property; the difference is that dropping it BEFORE serialization means it cannot script
+      // the serialization first. The output object is null-prototype, so an INHERITED `toJSON`
+      // has no path here either.
+      if (typeof v === "function") continue;
+      out[ks[i]] = v;
+    }
     return out;
   }
-  return value;
+  return typeof value === "function" ? undefined : value;
 }
 
 /**
@@ -224,6 +249,22 @@ export function classifyPolicyChange(currentRules, proposedRules) {
  * DEFERRED receipt's action.paramsHash equals this hash. Pure; returns rather than throwing for every input shape reached in practice (R4-11: a revoked Proxy is the measured exception in `preCheck`; these siblings were not separately probed).
  */
 export function buildPolicyChangeRequest(currentRules, proposedRules) {
+  // ── FOLLOW-UP, NAMED WHERE THE SPLIT LIVES: ONE IMMUTABLE NORMALIZED REPRESENTATION ────────────
+  // Four things derive from the proposed rules along this path, and today each builds its OWN view
+  // of them: the CHANGE COMPARISON (`classifyPolicyChange`), the HUMAN-VISIBLE DIFF and the
+  // APPROVAL-BOUND HASH (`canonicalizeApprovalRules` -> `canonicalParamsHash`, just below), and the
+  // INSTALLED RULE SET (`compileApprovalRules`, in `applyPolicyChange`). Any ONE of those
+  // constructions can be scripted independently and the other three do not notice — which is why
+  // this same class produced a different exploit in each review round: a poisoned container, a
+  // mutated live array, an inherited field, a `toJSON`. Each round hardened one construction.
+  //
+  // The real shape of the fix is that all four consume ONE immutable normalized representation,
+  // produced once, so "what was compared", "what the human read", "what was signed" and "what was
+  // installed" cannot disagree by construction rather than by four separate guards agreeing.
+  // `applyPolicyChange` already takes the first step (it compiles both sides and diffs the
+  // SNAPSHOTS, never the caller's objects); finishing it means this function taking compiled
+  // snapshots as its contract rather than accepting live arrays at all. That is a public-signature
+  // change and is deliberately NOT in this branch.
   const cls = classifyPolicyChange(currentRules, proposedRules);
   const diff = { from: canonicalizeApprovalRules(currentRules), to: canonicalizeApprovalRules(proposedRules) };
   const paramsHash = canonicalParamsHash(diff);
@@ -256,22 +297,61 @@ export function buildPolicyChangeRequest(currentRules, proposedRules) {
  * missing keyring, wrong verdict, tampered content, untrusted signer, or an approval for a DIFFERENT
  * diff all fail closed. No signed-schema field is read or written.
  *
+ * `activeRules` is the COMPILED SNAPSHOT of the proposal, and the diff above is taken over compiled
+ * snapshots of BOTH sides — so what was compared, what the approval is bound to, and what is returned
+ * for installation are one representation rather than three reads of a caller's live object. Both
+ * halves of that sentence were separately false before 2026-08-12, and each was a measured bypass.
+ *
  * @param {{ currentRules?: any[], proposedRules?: any[], approval?: object|null,
  *           approverKeyring?: Record<string,string>, identityManifest?: Record<string,string[]>,
  *           expectedChain?: string, stepUpVerified?: boolean }} args
  */
 export function applyPolicyChange({ currentRules, proposedRules, approval = null, approverKeyring, identityManifest, expectedChain, stepUpVerified = false } = {}) {
   try {
-    const validity = validateApprovalRules(proposedRules);
-    if (!validity.ok) {
-      return { ok: false, code: "invalid-policy", changed: false, reason: `proposed policy is invalid: ${validity.errors.join("; ")}`, errors: validity.errors };
+    // ── `activeRules` IS A SNAPSHOT, NOT THE CALLER'S ARRAY (third review, 2026-08-12) ────────────
+    // This function's own header calls itself "the ONLY function that returns a new active ruleset"
+    // and its enforcement "STRUCTURAL". It then handed back `proposedRules` — the caller's live
+    // object — so a consumer installing the result held something anyone could rewrite afterwards.
+    // MEASURED with a genuine signed approval: `activeRules === proposed` was true, the over-
+    // threshold action was DEFERRED, and mutating that array after approval (no new approval, no
+    // step-up) turned the same action into ALLOW. The compiler was already being run here and its
+    // snapshot thrown away; it is returned now. Same rule as everywhere else in this package: do not
+    // hand out a live object a decision will later be taken from.
+    const compiled = compileApprovalRules(proposedRules === undefined || proposedRules === null ? [] : proposedRules);
+    if (!compiled.ok) {
+      return { ok: false, code: "invalid-policy", changed: false, reason: `proposed policy is invalid: ${arrayJoin(compiled.errors, "; ")}`, errors: compiled.errors };
     }
 
-    const request = buildPolicyChangeRequest(currentRules, proposedRules);
+    // ── AND THE COMPARISON IS TAKEN OVER THE SAME SNAPSHOT (fourth review, 2026-08-12) ────────────
+    // Returning the snapshot as `activeRules` while still DIFFING the caller's live object left the
+    // two halves able to disagree, and `toJSON` is the channel that makes them disagree on purpose:
+    // `sortKeysDeep` kept every own enumerable key, `JSON.stringify` INVOKES `toJSON`, and an
+    // attacker's `toJSON` returns the bytes of the CURRENT rule. MEASURED — a proposal raising a
+    // threshold 5,000 -> 99,999,999 with one added `toJSON`:
+    //
+    //     changed=false · ok=true · no approval requested · installed threshold 99,999,999
+    //     a 7,000-unit transfer then forwarded with NO HUMAN
+    //
+    // A plain getter does NOT do this: the accessor key survives into the canonical form and
+    // `changed` correctly computes true. `toJSON` is the one channel that ERASES ITSELF from the
+    // serialization while scripting its content — a different shape from the prototype-write class,
+    // not a variant of it.
+    //
+    // Both sides are therefore canonicalized from COMPILED SNAPSHOTS, which are built from own DATA
+    // properties only and carry no callables at all. The verdict and the thing installed now derive
+    // from one representation rather than from two independent reads of a live object. `currentRules`
+    // is compiled too: an attacker who can script the CURRENT side can make a weakening look like a
+    // tightening just as easily.
+    const compiledCurrent = compileApprovalRules(currentRules === undefined || currentRules === null ? [] : currentRules);
+    if (!compiledCurrent.ok) {
+      return { ok: false, code: "invalid-policy", changed: false, reason: `current policy is not canonicalizable, so no change can be classified against it (fail-closed): ${arrayJoin(compiledCurrent.errors, "; ")}`, errors: compiledCurrent.errors };
+    }
+
+    const request = buildPolicyChangeRequest(compiledCurrent.rules, compiled.rules);
 
     if (!request.changed) {
       // Re-applying an identical policy is not a mutation; nothing to approve.
-      return { ok: true, changed: false, weakens: false, activeRules: isArray(proposedRules) ? proposedRules : [], request };
+      return { ok: true, changed: false, weakens: false, activeRules: compiled.rules, request };
     }
 
     // FAIL-CLOSED: a real change requires a verified human approval bound to THIS exact diff.
@@ -306,7 +386,7 @@ export function applyPolicyChange({ currentRules, proposedRules, approval = null
       };
     }
 
-    return { ok: true, changed: true, weakens: request.weakens, activeRules: proposedRules, request, approvalReceiptId: approval && typeof approval === "object" ? approval.id ?? null : null };
+    return { ok: true, changed: true, weakens: request.weakens, activeRules: compiled.rules, request, approvalReceiptId: approval && typeof approval === "object" ? approval.id ?? null : null };
   } catch (err) {
     // The applicator must be fail-closed even on an unexpected internal throw — never apply on error.
     return { ok: false, code: "guard-threw", changed: false, reason: `policy-change guard failed closed (${describeThrown(err)})` };

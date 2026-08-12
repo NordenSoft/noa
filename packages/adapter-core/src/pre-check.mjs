@@ -43,7 +43,38 @@ import { intrinsics } from "noa-receipt";
 // policy evaluated inputs that were silently missing a key — an omission bypass with NO builtin
 // replaced at all (R4-02b). A null-prototype object has no chain to walk.
 const { isArray, objectKeys, arraySort, arrayPush, arrayJoin, jsonStringify, isFiniteNumber,
-        isSafeInteger, strIncludes, objectCreateNull, objectAssign } = intrinsics;
+        isSafeInteger, strIncludes, objectCreateNull, objectAssign, objectSetPrototypeOf,
+        INERT_ARRAY_PROTOTYPE } = intrinsics;
+
+/**
+ * An accumulator that is INERT FROM ITS FIRST WRITE.
+ *
+ * The note above closed `[[Set]]` on the flatten OBJECT (R4-02b) and left the ARRAYS on the same
+ * path ordinary. `arrayPush` does not help: capturing `Array.prototype.push` protects the METHOD,
+ * while the element write that method performs is still a `[[Set]]` walking the RECEIVER'S prototype
+ * chain — and an ordinary array's chain ends at the mutable `Object.prototype`.
+ *
+ * MEASURED (2026-08-12) against `stableStringifyFallback`, with a TIMED, self-removing accessor at
+ * `Object.prototype["0"]`: the serialized `amountMinor` component was swallowed, two different
+ * amounts produced ONE params hash, and the approval minted for the small one verified for the large
+ * one —
+ *
+ *     approved 5,000 · retried 99,999,999 · allHashesEqual true · lowApprovalVerifiesForHigh true
+ *
+ * That is not a crash, it is APPROVAL SUBSTITUTION: `create-proxy-server.mjs` compares exactly this
+ * hash when it matches a retry to an outstanding hold, verifies the signed approval against it, and
+ * suppresses the human hold on the strength of it.
+ *
+ * Reachability, stated rather than implied: JSON over stdio/HTTP cannot carry an accessor, so this is
+ * not demonstrated as a REMOTE exploit. It is a real approval-substitution defect for in-process and
+ * plugin callers, and it is distinct from the declared residual about handing `preCheck` a fresh live
+ * rule array on every call.
+ */
+function inertArray() {
+  const a = [];
+  objectSetPrototypeOf(a, INERT_ARRAY_PROTOTYPE);
+  return a;
+}
 
 /**
  * ── THE DOCUMENT ENCODER (bytes-in) ──────────────────────────────────────────────────────────────
@@ -226,7 +257,7 @@ function stableStringifyFallback(value, seen) {
   if (isArray(value)) {
     if (seen.has(value)) throw new Error("noa-mcp-adapter-core: circular structure in tool-call args");
     seen.add(value);
-    const items = [];
+    const items = inertArray();
     for (let i = 0; i < value.length; i += 1) arrayPush(items, stableStringifyFallback(value[i], seen) ?? "null");
     seen.delete(value);
     return `[${arrayJoin(items, ",")}]`;
@@ -234,7 +265,7 @@ function stableStringifyFallback(value, seen) {
   if (t === "object") {
     if (seen.has(value)) throw new Error("noa-mcp-adapter-core: circular structure in tool-call args");
     seen.add(value);
-    const parts = [];
+    const parts = inertArray();
     // INDEX LOOP, not `for…of Object.keys(v).sort()`. This fallback runs when the hardened JCS
     // canonicalizer THROWS — which the surrounding code documents as an expected, legitimate shape
     // (JCS refuses non-integer numbers, and a float `rate` is ordinary tool-call input). A redteam

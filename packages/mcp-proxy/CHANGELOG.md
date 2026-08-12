@@ -2,6 +2,101 @@
 
 ## [Unreleased]
 
+### Security — one approval could authorise a different amount (holed params hash)
+
+`noa-mcp-adapter-core`'s `canonicalParamsHash` fallback could be made to drop the serialized
+`amountMinor` component, so two different amounts produced ONE hash — and this proxy compares exactly
+that hash to match a retry to an outstanding hold (`create-proxy-server.mjs`), verifies the signed
+approval against it, and suppresses the human hold on the strength of it. Measured: 5,000 approved,
+99,999,999 authorised by the same signature. Fixed in adapter-core; not a demonstrated remote exploit
+(JSON over stdio/HTTP cannot carry the accessor it needs), real for in-process and plugin callers.
+
+Three accumulators in THIS package had the same shape and got the same one-line fix — inert from
+their first write, appended through the captured `arrayPush`: the HTTP request-body chunks (a
+swallowed chunk means the request this proxy governs is not the request the host sent), the
+progress-relay list, and `rotatable-signer`'s retired-key list (a retired signing key reported as
+never retired).
+
+### Security — the human-approval gate could be turned off by a rule file that was not a rule set
+
+**Reproduced against the shipped CLI on 2026-08-12, with the symlink guard below already in place.**
+The `--approval-rules` file was a REGULAR file, mode 0600, owned by this process — no symlink, no
+FIFO, no loose permissions, nothing for the descriptor guard to catch. Its content was `{}`:
+
+```
+transfer_funds(amountMinor=7000, to=attacker-account)
+  -> downstream: "transferred 7000 (minor units) to attacker-account"
+  *** FORWARDED AND EXECUTED WITH NO HUMAN APPROVAL ***
+```
+
+The bytes were validated as JSON and never validated as a RULE SET. `matchApprovalRule` returns
+`null` for a non-array, `null` means "no rule matched", and "no rule matched" means forward. Six
+payloads were each measured executing that unapproved transfer: `{}`, `null`, a bare string, a
+number, a rule with a malformed threshold, and a **partially** invalid array whose second rule was
+silently skipped while its first one worked.
+
+**Why it is worse than the symlink swap it sits beside:** it removes the need for the conspicuous
+`[]` payload. Any content-write primitive at all — including the same-uid in-place rewrite and the
+ancestor-directory repoint that NON-CLAIMS.md NC-6.9 names as **accepted residuals** — was a full
+approval bypass. Those residuals were accepted on the assumption that rewriting the content still
+meant writing *plausible* rules.
+
+**Fixed** by calling `noa-mcp-adapter-core`'s new `requireValidApprovalRules` at **every** boundary
+that loads a rule set — `proxy.mjs` (the CLI, which names the flag in its error), `createProxyServer`
+and `startHttpProxy` — so a library consumer cannot skip the check by not using the CLI. Each runs
+before any downstream connection is established: a refused rule set never spawns the downstream
+server and never binds a port. The refusal is all-or-nothing; a partially valid rule set is not
+partially honoured. `--approval-rules` pointing at a file that parses to `null` is now a startup
+error rather than a silently absent gate.
+
+Regression coverage: `test/smoke.mjs` **"Bonus AB"** — 18 assertions, of which **15 run against real
+CLI proxy processes over real stdio** and 3 are in-process at the library/HTTP boundary (two on
+`createProxyServer`, one on `startHttpProxy`). 16 of the 18 fail against the pre-fix code. The two
+that pass pre-fix are stated as such in the test text: the honest-rule-set control, and one payload
+(an invalid threshold operator) that happened to still gate, for which the startup refusal is the
+regression. (An earlier draft of this entry called all 18 "over real proxy processes". Corrected in
+place: an evidence count that overstates its own instrument is the one error this file cannot
+afford.)
+
+### Security — the compiled snapshot could be holed while it was being built
+
+A third review poisoned `Object.prototype["0"]` while the rule set compiled. `push` performs
+`[[Set]]`, which walks the receiver's prototype chain, so the accessor swallowed the rule while
+`push` still bumped `length` — producing a snapshot that was branded, reported `length: 1` and held
+nothing. Served through this proxy, the over-threshold transfer forwarded with no human. The gadget
+is timed: poison during the compile, withdraw, then serve. Fixed in `noa-mcp-adapter-core` (both
+compiler containers are now inert from their first write); pinned here by `test/smoke.mjs` "Bonus AC"
+(ac-d) — two assertions, both failing against the previous commit, the second one end to end through
+a real downstream child process.
+
+### Security — the VALIDATED rule set was not the rule set that got USED
+
+**Reproduced against the fix above, three separate ways, each ending in an executed 7000-unit
+transfer with no human.** `requireValidApprovalRules` returned the CALLER'S OWN ARRAY and the matcher
+later read that array again with ordinary property access, so validation and use were two reads of
+one object that anything could change in between:
+
+1. **Inherited field.** A rule whose own data gates every `transfer_funds`, with `threshold`
+   inherited from its prototype and aimed at a path that is never in the policy inputs. Validation
+   read the inherited value and called the rule well-formed; the matcher then found no such input,
+   skipped the rule, and forwarded. The same trick from `Object.prototype` measured `ALLOW`.
+2. **Mutation after validation.** An honest rule set rewritten after `createProxyServer` accepted it.
+3. **Successive getter.** A `match` getter returning valid data on its first read and a non-matching
+   action on its second.
+
+This is the check-then-use gap `config-artifact.mjs` closed on the filesystem, relocated into the
+object graph — a check that does not bind to the value it checked is not a check. **Fixed** by
+compiling the rule set into an inert snapshot at every load boundary: each field read through its own
+property descriptor (an inherited or accessor-backed critical field is REFUSED, not resolved — the
+getter above is now never invoked at all), each rule frozen and null-prototype, the array frozen and
+re-rooted onto the kernel's inert array prototype, and the result branded in a module-private
+WeakSet. `requireValidApprovalRules` returns that snapshot, all three boundaries pass the snapshot
+down, and `matchApprovalRule` reads nothing else.
+
+Regression coverage: `test/smoke.mjs` **"Bonus AC"** — 8 assertions against a real downstream child
+process behind the real `createProxyServer`. 7 fail against the pre-fix code; the eighth is the
+control (an honest rule set must still hold the transfer — it does, before and after).
+
 ### Security — the human-approval gate could be turned off by a file swap (CWE-59 / CWE-367)
 
 **Reproduced end to end against the shipped CLI on 2026-08-12, twice, before any code changed.**

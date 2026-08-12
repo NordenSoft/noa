@@ -13,6 +13,13 @@
 //       installed an accessor on Object.prototype, and `out[k] = v` performs `[[Set]]`, which walks
 //       the prototype chain. 37 such property-WRITE sites were measured across the published
 //       packages; none appears in any budget, because a call/read grammar cannot express a write.
+//       That blindness has a SECOND shape, measured 2026-08-12: no grammar for a CALLBACK THE
+//       SERIALIZER INVOKES. A `toJSON` on a proposed policy rule replaces no builtin and writes
+//       nothing — `JSON.stringify` calls it by spec (SerializeJSONProperty), and it returned the
+//       CURRENT rule's bytes, so a real weakening reported `changed: false` and applied with no
+//       approval ever requested. A plain getter does NOT do this: the accessor key survives into the
+//       canonical form. `toJSON` is the one channel that erases itself from the serialization while
+//       scripting what appears in its place.
 //
 // (b) is the harder half. A gate that triages its own finding list answers (a) and silently certifies
 // (b) as clean — which is how "the gates already see every line I exploited" became false.
@@ -24,13 +31,16 @@
 // carried it. That is the only property that survives a class the instrument cannot name.
 //
 // For every (poison, oracle, fixture): score clean → install → re-score → count poison invocations →
-// restore → assert restoration. Four outcomes, and the last two exist because collapsing them into
+// restore → assert restoration. The outcomes below the first two exist because collapsing them into
 // "pass" is the failure this whole codebase is about:
 //
-//   EXPLOITABLE  the score moved toward permissive                        BLOCKS
-//   HELD         it did not, AND the poison was measurably consulted      the only real pass
-//   UNMEASURED   the poison was never consulted (0 hits)                  ratcheted, never "clean"
-//   BROKEN       the harness itself failed                                not evidence either way
+//   EXPLOITABLE    the score moved toward permissive                      BLOCKS
+//   HELD           it did not, AND the poison was measurably consulted    the only real pass
+//   UNMEASURED     the poison was never consulted (0 hits)                ratcheted, never "clean"
+//   RETIRED        never consulted, and a written entry says WHICH FIX    excluded from the ratchet,
+//                  removed the construct it used to intercept             printed on every run
+//   RETIRED-STALE  a retired pair WAS consulted after all                 BLOCKS (the claim is false)
+//   BROKEN         the harness itself failed                              not evidence either way
 //
 // ── THE PROPERTY THIS ESTABLISHES, stated so it cannot be overclaimed ────────────────────────────
 //
@@ -153,6 +163,72 @@ const POISONS = [
     })),
 ];
 
+// ── RETIRED PAIRS: a poison a FIX made unreachable, recorded rather than budgeted ────────────────
+//
+// The budget file's own `_known_defect_R5-04` names this gap: `unmeasured` cannot distinguish
+// "coverage was lost" from "the construct this poison intercepted no longer exists". Both look like
+// HELD -> UNMEASURED, and the only workaround was a human raising the number — "a human deciding
+// what the gate was supposed to decide".
+//
+// So the transition is recorded HERE instead, per (oracle, poison) pair, with a reason, and the
+// recording is itself gated:
+//
+//   · a retired pair is excluded from the UNMEASURED ratchet — it is not pretending to be measured;
+//   · EXPLOITABLE and BROKEN are decided BEFORE retirement is consulted, so retiring a pair can
+//     never mask a live exploit;
+//   · if a retired pair is CONSULTED again (hits > 0), the sweep FAILS as RETIRED-STALE. The claim
+//     "this poison can no longer reach this path" is thereby re-tested on every run, and a
+//     retirement that stops being true has to be deleted rather than quietly rotting;
+//   · an entry naming an oracle or poison that no longer exists FAILS reconciliation, so this list
+//     cannot outlive its subjects;
+//   · every entry needs a `why`. An empty one fails.
+//
+// This is deliberately NOT a way to make an inconvenient number go away: retiring a pair requires
+// stating which fix removed the construct, and the run re-checks that statement every time.
+const RETIRED = [
+  {
+    oracle: "applyPolicyChange/weakening",
+    poison: "Set.has->true",
+    since: "2026-08-12",
+    why:
+      "The duplicate-rule-id check ran through a LIVE `seenIds.has(...)` / `MATCH_TYPES.has(...)`. " +
+      "The approval-rule compiler replaced both with the kernel's captured `setHas`, so `Set.prototype.has` " +
+      "is no longer dispatched anywhere this oracle reaches. The CHECK is intact and covered directly " +
+      "(approval-rules.test.mjs: a duplicate id is still refused); only the poisonable dispatch is gone.",
+  },
+  {
+    oracle: "validateApprovalRules/garbage",
+    poison: "Object.prototype.0 accessor swallows writes",
+    since: "2026-08-12",
+    why:
+      "The validator accumulated its refusal messages in an ORDINARY array, so `push`'s `[[Set]]` walked " +
+      "Object.prototype and this accessor swallowed the first message while `length` still advanced. The " +
+      "container is now inert from its first write, so the accessor is never consulted. The property is " +
+      "asserted directly instead (approval-rules.test.mjs: 'the ERRORS container cannot be holed').",
+  },
+  {
+    oracle: "validateApprovalRules/garbage",
+    poison: "Object.prototype.1 accessor swallows writes",
+    since: "2026-08-12",
+    why: "Same container, same fix, second index — see the entry above.",
+  },
+];
+
+const retirementIndex = new Map(RETIRED.map((r) => [`${r.oracle} || ${r.poison}`, r]));
+function retirementFor(oracle, poisonId) {
+  return retirementIndex.get(`${oracle} || ${poisonId}`) ?? null;
+}
+
+// RECONCILIATION — a retirement that names a subject nobody declares is a note about nothing.
+const oracleIds = new Set(ORACLES.map((o) => o.id));
+const poisonIds = new Set(POISONS.map((p) => p.id));
+const retirementErrors = [];
+for (const r of RETIRED) {
+  if (!oracleIds.has(r.oracle)) retirementErrors.push(`retired entry names oracle "${r.oracle}", which is not declared`);
+  if (!poisonIds.has(r.poison)) retirementErrors.push(`retired entry names poison "${r.poison}", which is not in the catalogue`);
+  if (typeof r.why !== "string" || r.why.trim().length < 40) retirementErrors.push(`retired entry ${r.oracle} / ${r.poison} has no usable reason`);
+}
+
 // ── THE SWEEP ────────────────────────────────────────────────────────────────────────────────────
 const results = [];
 for (const oracle of ORACLES) {
@@ -178,13 +254,24 @@ for (const oracle of ORACLES) {
     const restored = armed ? armed.ok() : false;
     const hits = armed ? armed.hits() : 0;
 
+    const retired = retirementFor(oracle.id, p.id);
+
     let verdict;
     let detail = "";
+    // EXPLOITABLE and BROKEN are decided BEFORE retirement is consulted: retiring a pair can never
+    // hide a live exploit, only explain a silence.
     if (!restored) { verdict = "BROKEN"; detail = "poison did not restore — every later result in this run is untrustworthy"; }
     else if (threw !== null) { verdict = "BROKEN"; detail = `oracle threw under the poison: ${threw}`; }
     else if (after > clean) { verdict = "EXPLOITABLE"; detail = `score ${clean} -> ${after} (more permissive), poison consulted ${hits}x`; }
-    else if (hits === 0) { verdict = "UNMEASURED"; detail = "the poison was never consulted on this path"; }
-    else { verdict = "HELD"; detail = `score ${clean} -> ${after}, poison consulted ${hits}x`; }
+    else if (hits === 0) {
+      if (retired) { verdict = "RETIRED"; detail = `unreachable since ${retired.since}: ${retired.why}`; }
+      else { verdict = "UNMEASURED"; detail = "the poison was never consulted on this path"; }
+    } else if (retired) {
+      // The retirement claimed this poison could no longer reach this path, and it just did. The
+      // claim is stale — delete the entry rather than let it certify a silence that has ended.
+      verdict = "RETIRED-STALE";
+      detail = `retired on ${retired.since} as unreachable, but the poison was consulted ${hits}x — the retirement is no longer true and must be removed`;
+    } else { verdict = "HELD"; detail = `score ${clean} -> ${after}, poison consulted ${hits}x`; }
 
     results.push({ oracle: oracle.id, poison: p.id, klass: p.klass, verdict, detail });
   }
@@ -195,6 +282,8 @@ const exploitable = by("EXPLOITABLE");
 const broken = by("BROKEN");
 const unmeasured = by("UNMEASURED");
 const held = by("HELD");
+const retiredPairs = by("RETIRED");
+const retiredStale = by("RETIRED-STALE");
 
 // UNMEASURED has its OWN ratchet. Most poisons never touch most oracles, and a design that called
 // those "clean" would be the site budget again with extra steps.
@@ -207,23 +296,28 @@ function readBudget() {
 }
 
 if (asJson) {
-  console.log(JSON.stringify({ oracles: ORACLES.length, poisons: POISONS.length, runs: results.length, exploitable, broken, unmeasured: unmeasured.length, held: held.length, results }, null, 2));
+  console.log(JSON.stringify({ oracles: ORACLES.length, poisons: POISONS.length, runs: results.length, exploitable, broken, unmeasured: unmeasured.length, held: held.length, retired: retiredPairs.length, retiredStale, retirementErrors, results }, null, 2));
 } else {
   console.log("VERDICT-DIFFERENTIAL POISON SWEEP");
   console.log(`  oracles ${ORACLES.length} · poisons ${POISONS.length} · runs ${results.length}`);
-  console.log(`  EXPLOITABLE ${exploitable.length} · HELD ${held.length} · UNMEASURED ${unmeasured.length} · BROKEN ${broken.length}`);
+  console.log(`  EXPLOITABLE ${exploitable.length} · HELD ${held.length} · UNMEASURED ${unmeasured.length} · RETIRED ${retiredPairs.length} · BROKEN ${broken.length}`);
   console.log("");
   console.log("  The bound: this proves nothing about a poison nobody wrote, a path no fixture reaches,");
   console.log("  or an oracle nobody declared. Those three list sizes ARE the coverage.");
   if (verbose) for (const r of results) console.log(`    ${r.verdict.padEnd(12)} ${r.klass.padEnd(8)} ${r.oracle.padEnd(32)} ${r.poison}`);
+  // RETIRED pairs are always printed, never only under --verbose: a silence that has been explained
+  // is still a silence, and it stays in front of the reader.
+  for (const r of retiredPairs) console.log(`\n  · RETIRED  ${r.oracle} / ${r.poison}\n      ${r.detail}`);
   for (const r of exploitable) console.log(`\n  ✗ EXPLOITABLE  ${r.oracle}\n      poison: ${r.poison} [${r.klass}]\n      ${r.detail}`);
   for (const r of broken) console.log(`\n  ! BROKEN  ${r.oracle} / ${r.poison} — ${r.detail}`);
+  for (const r of retiredStale) console.log(`\n  ✗ RETIRED-STALE  ${r.oracle} / ${r.poison} — ${r.detail}`);
+  for (const e of retirementErrors) console.log(`\n  ✗ RETIREMENT LIST  ${e}`);
   if (UNMEASURED_BUDGET !== null && unmeasured.length > UNMEASURED_BUDGET) {
     console.log(`\n  ✗ UNMEASURED ${unmeasured.length} exceeds its budget of ${UNMEASURED_BUDGET} — coverage went DOWN.`);
   }
 }
 
 const unmeasuredRegressed = UNMEASURED_BUDGET !== null && unmeasured.length > UNMEASURED_BUDGET;
-const fail = exploitable.length > 0 || broken.length > 0 || unmeasuredRegressed;
+const fail = exploitable.length > 0 || broken.length > 0 || unmeasuredRegressed || retiredStale.length > 0 || retirementErrors.length > 0;
 if (!asJson) console.log(fail ? "\nSWEEP FAIL" : "\nSWEEP PASS — no poison in the catalogue moved any declared oracle toward permissive.");
 process.exit(fail ? 1 : 0);
