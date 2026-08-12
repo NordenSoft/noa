@@ -74,8 +74,21 @@
 import { mkdirSync, lstatSync, openSync, writeFileSync, closeSync, unlinkSync, constants as fsConstants } from "node:fs";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { loadOrCreateKeyFile, generateKeyPair, validateApprovalRules, describeThrown, thrownCode } from "noa-mcp-adapter-core";
+import { loadOrCreateKeyFile, generateKeyPair, validateApprovalRules, describeThrown, thrownCode, intrinsics } from "noa-mcp-adapter-core";
 import { APPROVAL_RULES } from "./policy.mjs";
+
+// Builtins taken from the kernel's module-load capture rather than read live, matching every other
+// file in this TCB (see proxy.mjs's own REDTEAM 2026-08-03 note): a decision path — and refusing to
+// write through a symlink onto the gate's own trust anchor IS one — must not resolve `.filter`,
+// `.push`, `JSON.stringify` etc. through a prototype slot an attacker in this realm could replace.
+const { jsonStringify, arrayPush } = intrinsics;
+
+// Captured ONCE at module load — every `process.std*.write` inside a function called later reads
+// this local binding, never the live global. `process` itself has no wrapper in the shared
+// intrinsics bundle (it is a host object, not a JS-spec builtin the kernel wraps), so it is
+// captured locally here, the same way, for the same reason: a value read before this module
+// finishes evaluating can no longer be repointed by anything that runs after.
+const PROCESS = process;
 
 const GENERATED = Object.freeze(["approval-rules.json", "pending-store.jsonl", "approver-key.json", "approver-keyring.json"]);
 
@@ -135,6 +148,18 @@ function createFileExclusive(path, content) {
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * Renders `items` as one indented line per entry — replaces the `.map(...).join("")` shape used
+ * throughout this file's messages. `.map`/`.join` are BOTH prototype dispatches an attacker could
+ * rewrite (L2/L8's own DISPATCH_METHODS list), and an index loop needs no wrapper import at all for
+ * a use this small and local.
+ */
+function joinLines(items) {
+  let out = "";
+  for (let i = 0; i < items.length; i++) out += `  ${items[i]}\n`;
+  return out;
 }
 
 function parseArgs(argv) {
@@ -201,11 +226,11 @@ export function runInitCli(argv) {
   try {
     opts = parseArgs(argv);
   } catch (err) {
-    process.stderr.write(`${describeThrown(err)}\n`);
+    PROCESS.stderr.write(`${describeThrown(err)}\n`);
     return 1;
   }
   if (opts.help) {
-    process.stdout.write(HELP);
+    PROCESS.stdout.write(HELP);
     return 0;
   }
 
@@ -219,7 +244,7 @@ export function runInitCli(argv) {
   try {
     mkdirSync(dir, { recursive: true });
   } catch (err) {
-    process.stderr.write(`noa-mcp-proxy init: could not create "${dir}" (${describeThrown(err)})\n`);
+    PROCESS.stderr.write(`noa-mcp-proxy init: could not create "${dir}" (${describeThrown(err)})\n`);
     return 1;
   }
 
@@ -230,29 +255,34 @@ export function runInitCli(argv) {
   // doc-comment's CWE-367 note; `existsSync` would miss a dangling one. `pathOccupied` can itself
   // throw on a non-ENOENT lstat failure (e.g. EACCES on a parent directory) — caught HERE so that
   // failure reaches the caller as a normal exit-1 report, honoring this function's own "never
-  // throws" contract, rather than escaping uncaught.
-  let preexisting;
+  // throws" contract, rather than escaping uncaught. An index loop (not `.filter`) over a plain
+  // array (not `for…of`) — both are prototype/iterator dispatches on this decision path.
+  const allTargets = [rulesPath, pendingStorePath, approverKeyPath, approverKeyringPath];
+  const preexisting = [];
   try {
-    preexisting = [rulesPath, pendingStorePath, approverKeyPath, approverKeyringPath].filter((p) => pathOccupied(p));
+    for (let i = 0; i < allTargets.length; i++) {
+      if (pathOccupied(allTargets[i])) arrayPush(preexisting, allTargets[i]);
+    }
   } catch (err) {
-    process.stderr.write(`noa-mcp-proxy init: could not check "${dir}" for existing files (${describeThrown(err)})\n`);
+    PROCESS.stderr.write(`noa-mcp-proxy init: could not check "${dir}" for existing files (${describeThrown(err)})\n`);
     return 1;
   }
   if (preexisting.length > 0 && !opts.force) {
-    process.stderr.write(
+    PROCESS.stderr.write(
       `noa-mcp-proxy init: refusing to overwrite ${preexisting.length} existing file(s) in "${dir}":\n` +
-        preexisting.map((p) => `  ${p}\n`).join("") +
+        joinLines(preexisting) +
         `Pass --force to regenerate all four files (this MINTS A NEW approver identity — anything\n` +
         `approved under the old one stops verifying against the new keyring), or move them aside first.\n`,
     );
     return 1;
   }
   if (opts.force) {
-    for (const p of preexisting) {
+    for (let i = 0; i < preexisting.length; i++) {
+      const p = preexisting[i];
       try {
         unlinkSync(p);
       } catch (err) {
-        process.stderr.write(`noa-mcp-proxy init: --force could not remove existing "${p}" (${describeThrown(err)})\n`);
+        PROCESS.stderr.write(`noa-mcp-proxy init: --force could not remove existing "${p}" (${describeThrown(err)})\n`);
         return 1;
       }
     }
@@ -264,8 +294,8 @@ export function runInitCli(argv) {
   // exists to replace.
   const validation = validateApprovalRules(APPROVAL_RULES);
   if (!validation.ok) {
-    process.stderr.write(
-      `noa-mcp-proxy init: internal error — this package's own starter approval rules failed validation:\n${validation.errors.map((e) => `  ${e}\n`).join("")}`,
+    PROCESS.stderr.write(
+      `noa-mcp-proxy init: internal error — this package's own starter approval rules failed validation:\n${joinLines(validation.errors)}`,
     );
     return 1;
   }
@@ -275,23 +305,23 @@ export function runInitCli(argv) {
   // landed before any failure, so a partial-write report never has to guess or overclaim.
   const confirmed = [];
   try {
-    createFileExclusive(rulesPath, JSON.stringify(APPROVAL_RULES, null, 2) + "\n");
-    confirmed.push(rulesPath);
+    createFileExclusive(rulesPath, jsonStringify(APPROVAL_RULES, null, 2) + "\n");
+    arrayPush(confirmed, rulesPath);
     createFileExclusive(pendingStorePath, "");
-    confirmed.push(pendingStorePath);
+    arrayPush(confirmed, pendingStorePath);
     const approverKp = loadOrCreateKeyFile({
       keyFile: approverKeyPath,
       mintKeyPair: () => generateKeyPair(`noa-mcp-proxy-init:approver:${randomUUID()}`),
       callerLabel: "noa-mcp-proxy init",
     });
-    confirmed.push(approverKeyPath);
-    createFileExclusive(approverKeyringPath, JSON.stringify({ [approverKp.kid]: approverKp.publicKey }, null, 2) + "\n");
-    confirmed.push(approverKeyringPath);
+    arrayPush(confirmed, approverKeyPath);
+    createFileExclusive(approverKeyringPath, jsonStringify({ [approverKp.kid]: approverKp.publicKey }, null, 2) + "\n");
+    arrayPush(confirmed, approverKeyringPath);
   } catch (err) {
-    process.stderr.write(
+    PROCESS.stderr.write(
       `noa-mcp-proxy init: could not write generated files (${describeThrown(err)})\n` +
         (confirmed.length > 0
-          ? `${confirmed.length} of 4 file(s) WERE written before this failure (not all-or-nothing once writing starts — see init.mjs's doc-comment):\n${confirmed.map((p) => `  ${p}\n`).join("")}`
+          ? `${confirmed.length} of 4 file(s) WERE written before this failure (not all-or-nothing once writing starts — see init.mjs's doc-comment):\n${joinLines(confirmed)}`
           : "0 of 4 files were written.\n"),
     );
     return 1;
@@ -300,7 +330,7 @@ export function runInitCli(argv) {
   // Only reached once EVERY one of the four literal paths below was freshly created (never
   // followed through a symlink — createFileExclusive would have thrown first) — so this message
   // is never printed for a run that actually wrote somewhere else.
-  process.stdout.write(nextStepsMessage({ dir, ...targets }));
+  PROCESS.stdout.write(nextStepsMessage({ dir, ...targets }));
   return 0;
 }
 
