@@ -58,7 +58,7 @@
     "lint:publish-surface": "node scripts/lint-published-surface.mjs --selftest && node scripts/lint-published-surface.mjs",
     "lint:doc-truth": "node scripts/lint-doc-truth.mjs --selftest && node scripts/lint-doc-truth.mjs",
     "verify": "node dist/src/cli.js verify",
-    "check:matrix": "node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md",
+    "check:matrix": "node scripts/conformance-matrix.mjs --selftest && node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md",
     "prepare": "npm run build && node scripts/install-hooks.mjs",
     "prepublishOnly": "npm test && npm run check:inert-core && npm run test:dogfood && node impl-py/conformance.mjs && npm run lint:publish-surface && npm run check:matrix",
     "lint:thrown": "node scripts/lint-thrown-value-handling.selftest.mjs && node scripts/lint-thrown-value-handling.mjs",
