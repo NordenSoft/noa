@@ -27,7 +27,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { ListToolsRequestSchema, CallToolRequestSchema, ToolListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
-import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalReceipt, recordApproved, signEd25519 } from "noa-mcp-adapter-core";
+import { generateKeyPair, createChainSessionStore, verifyChain, buildApprovalReceipt, recordApproved, signEd25519, requireValidApprovalRules } from "noa-mcp-adapter-core";
 import { b } from "./helpers/bytes.mjs";
 import { createProxyServer } from "../src/create-proxy-server.mjs";
 import { startHttpProxy } from "../src/http-server.mjs";
@@ -1170,6 +1170,287 @@ async function main() {
   ok("(aa-g) a symlinked --keyring-file fails closed instead of publishing through the link", stderrG.refused && /symlink/i.test(stderrG.stderr));
   ok("(aa-g) the symlink target is byte-for-byte unchanged (no clobber)", beforeG.content === afterG.content && beforeG.mode === afterG.mode);
   fs.rmSync(aaG.dir, { recursive: true, force: true });
+
+  // ---------------------------------------------------------------------------------------
+  // BONUS AB: the rule set's CONTENT is a governance input too, and until now NOTHING validated it.
+  //
+  // Bonus AA above closed the REDIRECT class — which BYTES the configured path resolves to. This
+  // closes what those bytes are allowed to SAY. Measured 2026-08-12 against the shipped CLI, with
+  // AA's guard already in place and a perfectly ordinary rule file (regular, mode 0600, owned by
+  // this uid, no symlink anywhere) whose content was `{}`:
+  //
+  //     transfer_funds(amountMinor=7000, to="attacker-account")
+  //     -> "transferred 7000 (minor units) to attacker-account"   *** NO HUMAN APPROVAL ***
+  //
+  // Six of the seven payloads below executed that unapproved transfer against the unfixed code. The
+  // mechanism is one line: `matchApprovalRule` answers `null` for a non-array, `null` means "no rule
+  // matched", and "no rule matched" means FORWARD. `validateApprovalRules` — the structural
+  // validator that catches every one of these — already existed, was already exported, and was
+  // simply never called on the load path.
+  //
+  // WHY THIS IS WORSE THAN THE SYMLINK IT SITS BESIDE: it removes the need for the conspicuous `[]`
+  // payload. Any content-write primitive at all — the same-uid rewrite and the ancestor repoint that
+  // NON-CLAIMS.md NC-6.9 names as ACCEPTED residuals — becomes a full approval bypass. Those
+  // residuals were accepted on the assumption that rewriting content still meant writing PLAUSIBLE
+  // rules. Two bytes disproved that.
+  //
+  // The partially-invalid case is the one to watch: a rule set where rule 1 is honoured and rule 2 is
+  // silently skipped is the same bypass wearing a disguise, so the refusal is all-or-nothing.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus AB — a rule set that is not an ARRAY OF VALID RULES never starts the proxy");
+
+  const approverKpAb = generateKeyPair("smoke:ab:approver");
+  const abKeyring = { [approverKpAb.kid]: approverKpAb.publicKey };
+
+  /** Same shape as aaFixture, but the rule file's CONTENT is the payload under test. Every
+   *  descriptor-level guard AA added is deliberately SATISFIED here (regular file, mode 0600, this
+   *  uid, no symlink) so a refusal can only be about the content. */
+  function abFixture(tag, rulesText) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `noa-mcp-proxy-ab-${tag}-`));
+    const rules = path.join(dir, "approval-rules.json");
+    const keyring = path.join(dir, "approver-keyring.json");
+    const pending = path.join(dir, "pending.jsonl");
+    fs.writeFileSync(rules, rulesText, { mode: 0o600 });
+    fs.chmodSync(rules, 0o600); // an EXISTING file's mode is not changed by writeFileSync's `mode`
+    fs.writeFileSync(keyring, JSON.stringify(abKeyring), { mode: 0o600 });
+    return { dir, rules, keyring, pending, args: ["--approval-rules", rules, "--approver-keyring", keyring, "--pending-store", pending] };
+  }
+
+  // `preFixExecuted` records what the UNFIXED code actually DID with each payload, measured one by
+  // one — not what it was assumed to do. The `badop` row is the honest exception: an unrecognised
+  // operator still gated (the matcher's `op === "ge" ? >= : >` fell through to `>`), so for THAT row
+  // the regression is the startup refusal alone, and saying so beats letting a green tick imply a
+  // bypass was closed that this payload never opened.
+  const AB_PAYLOADS = [
+    { tag: "object", what: "`{}` — valid JSON, not an array", text: "{}", preFixExecuted: true },
+    { tag: "null", what: "`null` — a rule file emptied to a JSON null", text: "null", preFixExecuted: true },
+    { tag: "string", what: "a bare JSON string", text: '"nope"', preFixExecuted: true },
+    { tag: "number", what: "a JSON number", text: "5", preFixExecuted: true },
+    {
+      tag: "badop",
+      what: "an array whose only rule carries an invalid threshold operator",
+      text: JSON.stringify([{ id: "r", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "gte", value: 5000 } }]),
+      preFixExecuted: false,
+    },
+    {
+      tag: "badthreshold",
+      what: "an array whose only rule has a malformed threshold (no path)",
+      text: JSON.stringify([{ id: "r", match: { type: "exact", action: "transfer_funds" }, threshold: { op: "ge", value: 5000 } }]),
+      preFixExecuted: true,
+    },
+    {
+      tag: "partial",
+      what: "a PARTIALLY-invalid array — rule 1 valid, rule 2 malformed",
+      text: JSON.stringify([
+        { id: "r1", match: { type: "exact", action: "payment.refund" }, threshold: { path: "amountMinor", op: "ge", value: 4000 } },
+        { id: "r2", match: { type: "regex", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } },
+      ]),
+      preFixExecuted: true,
+    },
+  ];
+
+  // AB(control) FIRST, for the same reason AA has one: a validator that refused every rule set would
+  // pass every assertion below while destroying the product. The honest rule set must still start
+  // the proxy AND still HOLD the over-threshold call for a human.
+  const abControl = abFixture("control", JSON.stringify(APPROVAL_RULES));
+  const abControlRun = await attemptTransferThroughProxy(abControl.args, { sessionId: "ab-control" });
+  // `held` is asserted explicitly, not inferred from `!executed`: an unrelated startup failure also
+  // produces "started and did not execute", and a control that a broken proxy satisfies is not a
+  // control. The DEFERRED path is the one that must still work.
+  ok(
+    "(ab-control) an honest rule set still starts the proxy and the over-threshold transfer is HELD for a human (not merely un-executed)",
+    abControlRun.started && !abControlRun.executed && /held for human approval/.test(abControlRun.error ?? ""),
+  );
+  fs.rmSync(abControl.dir, { recursive: true, force: true });
+
+  for (const payload of AB_PAYLOADS) {
+    const fx = abFixture(payload.tag, payload.text);
+    const run = await attemptTransferThroughProxy(fx.args, { sessionId: `ab-${payload.tag}` });
+    ok(
+      `(ab-${payload.tag}) ${payload.what}: the over-threshold transfer is NEVER executed${payload.preFixExecuted ? " (the reproduced bypass)" : " (this payload gated pre-fix too — the refusal below is the regression)"}`,
+      !run.executed && !/transferred 7000/.test(run.text),
+    );
+    const stderrAb = await runProxyCapturingStderr(fx.args);
+    ok(
+      `(ab-${payload.tag}) the CLI exits on its own and the refusal names --approval-rules`,
+      stderrAb.refused && /--approval-rules/.test(stderrAb.stderr),
+    );
+    fs.rmSync(fx.dir, { recursive: true, force: true });
+  }
+
+  // AB(lib) — the SAME check on the REUSABLE factory, not only the CLI. A consumer that loads its own
+  // config must not be able to skip the validation by not using proxy.mjs. And it has to refuse
+  // BEFORE the downstream is established: the marker file is written by demo-downstream.mjs at
+  // startup (its zeroed counts baseline), so its ABSENCE proves no downstream process ever ran.
+  const abLibDir = fs.mkdtempSync(path.join(os.tmpdir(), "noa-mcp-proxy-ab-lib-"));
+  const abLibMarker = path.join(abLibDir, "downstream-started.json");
+  const abLibKp = generateKeyPair("smoke:ab:lib");
+  let abLibRefusal = "";
+  let abLibProxy = null;
+  try {
+    abLibProxy = await createProxyServer({
+      sessionId: "ab-lib",
+      downstreamTransport: new StdioClientTransport({
+        command: process.execPath,
+        args: [DEMO_DOWNSTREAM],
+        env: { ...process.env, NOA_DEMO_COUNTS_FILE: abLibMarker },
+      }),
+      signer: { kid: abLibKp.kid, privateKey: abLibKp.privateKey },
+      policy: TRANSFER_GUARD_POLICY,
+      store: createChainSessionStore(),
+      tenant: "ab-tenant",
+      approvalRules: {}, // the exact payload that executed 7000 with no human
+      approverKeyring: abKeyring,
+      pendingStorePath: path.join(abLibDir, "pending.jsonl"),
+    });
+  } catch (err) {
+    abLibRefusal = String(err?.message ?? err);
+  }
+  ok("(ab-lib) createProxyServer itself refuses a non-array `approvalRules`", abLibRefusal !== "" && /approvalRules/.test(abLibRefusal));
+  ok("(ab-lib) it refuses BEFORE the downstream connection — the downstream process never started", !fs.existsSync(abLibMarker));
+  if (abLibProxy) await abLibProxy.downstream.close().catch(() => {});
+
+  // AB(http) — and on the HTTP entry point, which must refuse to BIND rather than bind and then 502
+  // every session. Same fail-closed direction as the CLI, one layer earlier.
+  let abHttpRefusal = "";
+  let abHttp = null;
+  try {
+    abHttp = await startHttpProxy({
+      host: "127.0.0.1",
+      port: 0,
+      makeDownstreamTransport: () => new StdioClientTransport({ command: process.execPath, args: [DEMO_DOWNSTREAM] }),
+      signer: { kid: abLibKp.kid, privateKey: abLibKp.privateKey },
+      policy: TRANSFER_GUARD_POLICY,
+      store: createChainSessionStore(),
+      approvalRules: {},
+      approverKeyring: abKeyring,
+      pendingStorePath: path.join(abLibDir, "pending-http.jsonl"),
+    });
+  } catch (err) {
+    abHttpRefusal = String(err?.message ?? err);
+  }
+  ok("(ab-http) startHttpProxy refuses to bind at all with a non-array `approvalRules`", abHttpRefusal !== "" && /approvalRules/.test(abHttpRefusal));
+  if (abHttp) await abHttp.close();
+  fs.rmSync(abLibDir, { recursive: true, force: true });
+
+  // ---------------------------------------------------------------------------------------
+  // BONUS AC — THE VALIDATED RULE SET MUST BE THE RULE SET THAT IS USED.
+  //
+  // Bonus AB made every load path CALL the validator. An adversarial review then walked past the
+  // validated gate three times on that patched code, each ending in an executed 7000-unit transfer
+  // with no human, because `requireValidApprovalRules` returned the CALLER'S OWN ARRAY and the
+  // matcher read it again later with ordinary property access:
+  //
+  //   (ac-a) a rule whose own data gates every transfer_funds, with `threshold` INHERITED from its
+  //          prototype and aimed at a path that is never in `inputs` — validation read the inherited
+  //          value and called it well-formed, the matcher then skipped the rule and forwarded;
+  //   (ac-b) an honest rule set MUTATED after createProxyServer had validated it;
+  //   (ac-c) a `match` GETTER returning valid data on its first read and a different action on its
+  //          second (`getterReads: 2`).
+  //
+  // All three are one defect — nothing bound the object that was checked to the object that was
+  // used, which is the check-then-use gap config-artifact.mjs closed on the filesystem, relocated
+  // into the object graph. The gate now holds a compiled, frozen, own-data-only SNAPSHOT.
+  //
+  // These run against a REAL downstream child process behind the REAL createProxyServer factory; the
+  // host hop is the SDK's own InMemoryTransport (as in scenarios A/D/E). Execution is counted by
+  // demo-downstream.mjs itself, on the far side of the gate.
+  // ---------------------------------------------------------------------------------------
+  section("Bonus AC — the rule set that was validated is the rule set that is used (binding)");
+
+  const acKeyring = (() => { const kp = generateKeyPair("smoke:ac:approver"); return { [kp.kid]: kp.publicKey }; })();
+  const acDir = fs.mkdtempSync(path.join(os.tmpdir(), "noa-mcp-proxy-ac-"));
+
+  /** Starts a real session with `rules`, optionally mutates them after the factory returned, then
+   *  attempts the over-threshold transfer. Never throws: a refused factory is `{ started:false }`. */
+  async function acAttempt(tag, rules, mutateAfterValidation) {
+    const countsFile = path.join(acDir, `${tag}-counts.json`);
+    let session = null;
+    try {
+      session = await makeSession({
+        sessionId: `ac-${tag}`,
+        store: createChainSessionStore(),
+        countsFile,
+        approvalRules: rules,
+        approverKeyring: acKeyring,
+        pendingStorePath: path.join(acDir, `${tag}-pending.jsonl`),
+      });
+    } catch (err) {
+      return { started: false, refusal: String(err?.message ?? err), executed: 0, downstreamStarted: fs.existsSync(countsFile) };
+    }
+    if (mutateAfterValidation) mutateAfterValidation();
+    let held = false;
+    try {
+      await session.client.callTool({ name: "transfer_funds", arguments: { amountMinor: 7000, to: "attacker-account" } });
+    } catch (err) {
+      held = /held for human approval/.test(String(err?.message ?? err));
+    }
+    await session.close();
+    return { started: true, refusal: "", held, executed: readCounts(countsFile).transfer_funds, downstreamStarted: true };
+  }
+
+  // (ac-a) INHERITED THRESHOLD.
+  const acInherited = Object.create({ threshold: { path: "never-in-inputs", op: "ge", value: 0 } });
+  acInherited.id = "transfer-needs-human";
+  acInherited.match = { type: "exact", action: "transfer_funds" };
+  const acA = await acAttempt("a-inherited", [acInherited]);
+  ok("(ac-a) an INHERITED threshold is refused at the factory — the proxy never starts", !acA.started && /OWN DATA property/.test(acA.refusal));
+  ok("(ac-a) the transfer never executed and the downstream was never even spawned", acA.executed === 0 && !acA.downstreamStarted);
+
+  // (ac-b) MUTATED AFTER VALIDATION — the factory accepts an honest rule set, the caller then
+  // rewrites it. The snapshot is frozen and was taken at validation time, so the gate does not move.
+  const acLive = [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }];
+  const acB = await acAttempt("b-mutated", acLive, () => {
+    acLive[0].match.action = "something-else";
+    acLive[0].threshold.value = 999_999_999;
+    acLive.length = 0;
+  });
+  ok("(ac-b) an honest rule set MUTATED after validation still HOLDS the over-threshold transfer", acB.started && acB.held);
+  ok("(ac-b) and the downstream executed nothing (the reproduced bypass)", acB.executed === 0);
+
+  // (ac-c) SUCCESSIVE GETTER.
+  let acGetterReads = 0;
+  const acGetterRule = {
+    id: "transfer-needs-human",
+    get match() {
+      acGetterReads += 1;
+      return acGetterReads <= 1 ? { type: "exact", action: "transfer_funds" } : { type: "exact", action: "not-this-tool" };
+    },
+  };
+  const acC = await acAttempt("c-getter", [acGetterRule]);
+  ok("(ac-c) a GETTER-backed rule field is refused at the factory — the proxy never starts", !acC.started && /OWN DATA property/.test(acC.refusal));
+  ok("(ac-c) the getter was never invoked at all, so it never got a second answer", acGetterReads === 0);
+  ok("(ac-c) the transfer never executed", acC.executed === 0 && !acC.downstreamStarted);
+
+  // (ac-d) THE BRANDED HOLE, end to end. `push` performs [[Set]], which walks the RECEIVER'S
+  // prototype chain; the compiler used to fill an ORDINARY array and re-root it onto the inert
+  // prototype only afterwards, so an accessor at `Object.prototype["0"]` swallowed the rule while
+  // `push` still bumped `length` — producing a snapshot that was branded, said `length: 1` and held
+  // nothing. The gadget is TIMED (poison while the rules compile, withdraw, then serve), which is
+  // also what makes it safe here: the poison is never installed while a child process is spawned.
+  const acHonestRules = [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }];
+  Object.defineProperty(Object.prototype, "0", { configurable: true, set() {}, get() { return undefined; } });
+  let acHoled;
+  let acCompileError = "";
+  try {
+    acHoled = requireValidApprovalRules(acHonestRules, "smoke:ac-d");
+  } catch (err) {
+    acCompileError = String(err?.message ?? err);
+  } finally {
+    delete Object.prototype[0];
+  }
+  ok(
+    '(ac-d) a rule set compiled while Object.prototype["0"] is poisoned is not holed (branded + length 1 + index 0 PRESENT)',
+    acCompileError === "" && acHoled !== undefined && acHoled.length === 1 && Object.prototype.hasOwnProperty.call(acHoled, 0),
+  );
+  const acD = acHoled === undefined ? { started: false, held: false, executed: 0 } : await acAttempt("d-holed", acHoled);
+  ok("(ac-d) and serving that snapshot through a real proxy still HOLDS the over-threshold transfer", acD.started && acD.held && acD.executed === 0);
+
+  // (ac-control) The same real session with an honest, untouched rule set must still HOLD — the
+  // refusals above are worth nothing if the gate has simply stopped working.
+  const acControl = await acAttempt("control", [{ id: "transfer-needs-human", match: { type: "exact", action: "transfer_funds" }, threshold: { path: "amountMinor", op: "ge", value: 5000 } }]);
+  ok("(ac-control) an honest rule set still starts the proxy and still holds the transfer for a human", acControl.started && acControl.held && acControl.executed === 0);
+  fs.rmSync(acDir, { recursive: true, force: true });
 
   // ---------------------------------------------------------------------------------------
   // BONUS G: downstream connection failure at proxy STARTUP must fail closed (non-zero exit,
