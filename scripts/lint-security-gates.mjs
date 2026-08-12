@@ -697,6 +697,15 @@ const ADAPTER_CORE_OUT_OF_TCB = {
 const MCP_PROXY_TCB = [
   "packages/mcp-proxy/src/create-proxy-server.mjs", // authorization, approval adoption and forwarding verdicts
   "packages/mcp-proxy/src/http-server.mjs",        // caller session ID selects the isolated proxy/session authority
+  // PROVISIONS THE APPROVER IDENTITY AND THE TRUSTED KEYRING (added when `init` shipped). `init.mjs`
+  // mints the private key the human-approval seat signs with and writes the PUBLIC keyring
+  // --approver-keyring feeds the proxy — the file the gate's README calls its trust anchor, and
+  // refuses to start without ("a gate that could adopt unverifiable approvals would be fail-open").
+  // A symlink-follow defect in exactly this file once let that keyring be written to an
+  // attacker-chosen path outside --dir; OUT_OF_TCB would have exempted the very file whose
+  // vulnerability was just repaired from the L2/L3/L8 lints that exist to catch this class — that is
+  // using a classification to dodge a gate, not a legitimate exemption.
+  "packages/mcp-proxy/src/init.mjs",
   "packages/mcp-proxy/src/outcome-receipt.mjs",     // signed outcome construction and verification
   "packages/mcp-proxy/src/policy.mjs",              // shipped proxy governance and approval policy
   "packages/mcp-proxy/src/proxy.mjs",               // key handling and fail-closed authorization configuration
@@ -1054,8 +1063,12 @@ const LINTS = [
   // Each package/layer therefore gets its OWN exact measured budget: no package can spend another
   // package's cleanup and no layer can trade against another. Reconciliation above stays BLOCKING
   // and unbudgeted; every new/moved file must be classified before any residue number can matter.
+  // RATCHETED 21 -> 18 on 2026-08-12 (measured). The approval-rule COMPILER replaced the old
+  // reporting validator, and its `Set` membership tests go through the kernel's captured `setHas`
+  // rather than `MATCH_TYPES.has(...)` / `seenIds.has(...)` on the live prototype. Budgets move
+  // DOWNWARD only; writing the reduction back the same day is what stops a later change spending it.
   { id: "L2-adapter-core", name: "L2 primitive allowlist on adapter-core decision paths",
-    run: () => publishedL2("L2-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 21 },
+    run: () => publishedL2("L2-adapter-core", "adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 18 },
   { id: "L2-mcp-proxy", name: "L2 primitive allowlist on mcp-proxy decision paths",
     run: () => publishedL2("L2-mcp-proxy", "mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 3 },
   // MEASURED ON FIRST COVERAGE, 2026-08-12: L2 22, L3 2, L8 212 across the eight tsa-anchor
@@ -1109,10 +1122,22 @@ const LINTS = [
   // Runs BEFORE L8 in the table so a defanged rule is reported before its count of 0 is printed.
   { id: "L8-selftest", name: "evasion matrix — every construct bites its positive sample, none fires on the captured form", run: L8SelfTest, mode: "block" },
   { id: "L8", name: "dispatch-surface AST gate (compiler-API walk: node kinds + resolved symbols)", run: L8, mode: "block" },
+  // RATCHETED 153 -> 146 on 2026-08-12 (measured), same commit and same cause as L2-adapter-core
+  // above: the approval-rule compiler reads every field through captured wrappers
+  // (`getOwnPropertyDescriptor`, `setHas`, `arrayLength`, `objectFreeze`) instead of dispatching on
+  // the caller's object, and the hand-rolled validator it replaced is gone.
+  // RATCHETED 146 -> 145 later the same day: `policy-change-guard.mjs`'s refusal message stopped
+  // calling `.join` on a live array and now goes through the captured `arrayJoin`.
+  // RATCHETED 145 -> 144: `file-session-store.mjs`'s recovery accumulator is inert from its first
+  // write and appended with the captured `arrayPush` instead of `seedSessions.push(...)`.
   { id: "L8-adapter-core", name: "L8 dispatch-surface AST gate on adapter-core decision paths",
-    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 153 },
+    run: () => publishedL8("L8-adapter-core", ADAPTER_CORE_TCB), mode: "warn", budget: 144 },
+  // RATCHETED 49 -> 47 on 2026-08-12 (measured): the request-body and progress-relay accumulators in
+  // `http-server.mjs` and `create-proxy-server.mjs` are inert from their first write, so their
+  // `chunks.push(...)` / `pendingProgressRelays.push(...)` became captured `arrayPush` calls. An
+  // inert prototype omits the mutators, so the container fix and the dispatch fix are one change.
   { id: "L8-mcp-proxy", name: "L8 dispatch-surface AST gate on mcp-proxy decision paths",
-    run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 49 },
+    run: () => publishedL8("L8-mcp-proxy", MCP_PROXY_TCB), mode: "warn", budget: 47 },
   // 212 -> 97 when the package was enrolled, then 97 -> 95 in the round-2 fix commit. The
   // reduction is not spread evenly and the split is the point:
   //   equivocation.mjs  93 -> 0   the NEW decision path — the file this whole enrolment exists for.

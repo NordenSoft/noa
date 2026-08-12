@@ -10,6 +10,11 @@
  * host would have spawned it itself. The downstream file is never edited, never re-imported,
  * never made aware a proxy exists — the host's config line is the only thing that changes.
  *
+ * `proxy.mjs init [--dir <path>] [--force]` is a SEPARATE subcommand (see src/init.mjs) that
+ * scaffolds the human-approval gate's inputs (approval-rules.json, pending-store.jsonl, an
+ * approver keypair) into a target directory. It is scaffolding, not activation — read init.mjs's
+ * own doc comment before assuming a clean exit means anything is protected yet.
+ *
  * Flags (all optional):
  *   --session-id <id>          receipt-chain session id (default: a fresh randomUUID())
  *   --tenant <name>            receipt scope.tenant (default: "default-tenant")
@@ -98,9 +103,10 @@ import { randomUUID } from "node:crypto";
 import { promises as fsp } from "node:fs";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile, readConfigJson, writeConfigArtifact, describeThrown, describeThrownDetailed } from "noa-mcp-adapter-core";
+import { generateKeyPair, createChainSessionStore, createFileSessionStore, loadOrCreateKeyFile, readConfigJson, writeConfigArtifact, requireValidApprovalRules, describeThrown, describeThrownDetailed } from "noa-mcp-adapter-core";
 import { createProxyServer } from "./create-proxy-server.mjs";
 import { TRANSFER_GUARD_POLICY } from "./policy.mjs";
+import { runInitCli } from "./init.mjs";
 
 import { intrinsics } from "noa-mcp-adapter-core";
 
@@ -109,10 +115,22 @@ import { intrinsics } from "noa-mcp-adapter-core";
 // module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
 // who adds one, so the builtins come from the kernel's module-load capture whether or not each site
 // is reachable today. Reachability is a property of the surrounding code, and that changes.
-const { isFiniteNumber, jsonStringify } = intrinsics;
+// `objectSetPrototypeOf` closes the WRITE half of the same argument (L11): `opts.keyFile = value`
+// is a [[Set]] that walks the receiver's prototype chain, so an accessor on Object.prototype can
+// swallow a parsed flag and answer the read with a path of its own choosing — with no builtin
+// replaced at all. See scripts/lint-inert-containers.mjs.
+const { isFiniteNumber, jsonParse, jsonStringify, arrayIndexOf, arraySlice, toNumber, strIncludes,
+        objectSetPrototypeOf } = intrinsics;
+
+// Captured ONCE at module load, same reasoning as the intrinsics destructure just above: `process`
+// and `Promise` have no wrapper in the shared intrinsics bundle (host object / language builtin the
+// kernel doesn't wrap), so they are captured locally here instead of read live from inside `main()`
+// and its callbacks, which all run at CALL time, not load time.
+const PROCESS = process;
+const PROMISE = Promise;
 
 function parseArgs(argv) {
-  const sepIndex = argv.indexOf("--");
+  const sepIndex = arrayIndexOf(argv, "--");
   if (sepIndex === -1) {
     throw new Error(
       "usage: proxy.mjs [--session-id <id>] [--tenant <name>] [--agent-id <id>] " +
@@ -120,11 +138,12 @@ function parseArgs(argv) {
         "[--session-idle-ttl-ms <n>] [--max-sessions <n>] [--session-dir <path>] " +
         "[--approval-rules <path>] [--pending-store <path>] [--approver-keyring <path>] [--approver-identity <path>] " +
         "[--http-port <n>] [--http-host <host>] " +
-        "-- <downstream-command> [downstream-args...]",
+        "-- <downstream-command> [downstream-args...]\n" +
+        "       proxy.mjs init [--dir <path>] [--force]   (scaffolds the approval-gate inputs above — see init.mjs)",
     );
   }
-  const own = argv.slice(0, sepIndex);
-  const downstream = argv.slice(sepIndex + 1);
+  const own = arraySlice(argv, 0, sepIndex);
+  const downstream = arraySlice(argv, sepIndex + 1);
   if (downstream.length === 0) throw new Error("proxy.mjs: no downstream command given after `--`");
 
   const opts = {
@@ -146,6 +165,13 @@ function parseArgs(argv) {
     httpPort: null,
     httpHost: "127.0.0.1",
   };
+  // NULL-ROOTED BEFORE THE FIRST FLAG IS APPLIED (L11). Four of the fields below name the files that
+  // decide who may approve (`--approver-keyring`, `--approver-identity`, `--approval-rules`) and
+  // which key this proxy signs with (`--key-file`). Each assignment is a [[Set]] that walks the
+  // prototype chain, so an accessor at e.g. `Object.prototype.approverKeyringFile` swallows the
+  // operator's flag and answers every later read with a keyring the attacker chose — the flag looks
+  // parsed, `--help` looks right, and no builtin was replaced. A null-prototype object has no chain.
+  objectSetPrototypeOf(opts, null);
   for (let i = 0; i < own.length; i++) {
     const flag = own[i];
     const value = own[++i];
@@ -154,13 +180,13 @@ function parseArgs(argv) {
     else if (flag === "--agent-id") opts.agentId = value;
     else if (flag === "--receipt-log") opts.receiptLog = value;
     else if (flag === "--outcome-log") opts.outcomeLog = value;
-    else if (flag === "--http-port") opts.httpPort = Number(value);
+    else if (flag === "--http-port") opts.httpPort = toNumber(value);
     else if (flag === "--http-host") opts.httpHost = value;
     else if (flag === "--keyring-file") opts.keyringFile = value;
     else if (flag === "--key-file") opts.keyFile = value;
     else if (flag === "--signer-socket") opts.signerSocket = value;
-    else if (flag === "--session-idle-ttl-ms") opts.sessionIdleTtlMs = Number(value);
-    else if (flag === "--max-sessions") opts.maxSessions = Number(value);
+    else if (flag === "--session-idle-ttl-ms") opts.sessionIdleTtlMs = toNumber(value);
+    else if (flag === "--max-sessions") opts.maxSessions = toNumber(value);
     else if (flag === "--session-dir") opts.sessionDir = value;
     else if (flag === "--approval-rules") opts.approvalRulesFile = value;
     else if (flag === "--pending-store") opts.pendingStore = value;
@@ -168,7 +194,7 @@ function parseArgs(argv) {
     else if (flag === "--approver-identity") opts.approverIdentityFile = value;
     else throw new Error(`proxy.mjs: unknown flag "${flag}"`);
   }
-  return { opts, downstreamCommand: downstream[0], downstreamArgs: downstream.slice(1) };
+  return { opts, downstreamCommand: downstream[0], downstreamArgs: arraySlice(downstream, 1) };
 }
 
 /**
@@ -198,7 +224,7 @@ function loadOrCreateSigner({ keyFile, sessionId }) {
  * every other in-flight session while the disk write completes).
  */
 function createSequentialFileAppender(path) {
-  let tail = Promise.resolve();
+  let tail = PROMISE.resolve();
   return function append(line) {
     const next = tail.then(() => fsp.appendFile(path, line, "utf8"));
     // Decoupled always-settling continuation: one failed write must reject THIS call's own
@@ -210,9 +236,22 @@ function createSequentialFileAppender(path) {
 }
 
 async function main() {
-  const { opts, downstreamCommand, downstreamArgs } = parseArgs(process.argv.slice(2));
+  // `noa-mcp-proxy init [--dir <path>] [--force]` — a distinct subcommand, dispatched BEFORE
+  // parseArgs (which requires the `--` downstream-command separator and would reject "init" as an
+  // unknown flag). Scaffolds the human-approval gate's inputs; see src/init.mjs's own doc comment
+  // for exactly what it does and does not do — it is NOT "one command and you're done". Statically
+  // imported above (not a lazy `await import(...)`): init.mjs's only real dependencies
+  // (noa-mcp-adapter-core's loadOrCreateKeyFile/generateKeyPair, ./policy.mjs) are ALREADY loaded
+  // unconditionally by this file for the normal proxy path, so there is no lazy-load benefit to
+  // defer for — unlike the genuinely optional noa-signer-sidecar/http-server.mjs imports below.
+  if (PROCESS.argv[2] === "init") {
+    PROCESS.exitCode = runInitCli(arraySlice(PROCESS.argv, 3));
+    return;
+  }
+
+  const { opts, downstreamCommand, downstreamArgs } = parseArgs(arraySlice(PROCESS.argv, 2));
   const sessionId = opts.sessionId ?? randomUUID();
-  const keyFile = opts.keyFile ?? process.env.NOA_MCP_PROXY_KEY_FILE ?? null;
+  const keyFile = opts.keyFile ?? PROCESS.env.NOA_MCP_PROXY_KEY_FILE ?? null;
 
   if (opts.signerSocket && keyFile) {
     throw new Error(
@@ -239,7 +278,7 @@ async function main() {
       // `code`/`message` getter here did not garble a message — it escaped the handler and skipped
       // the "the sidecar package is not installed" guidance entirely.
       const d = describeThrownDetailed(err);
-      if (d.code === "ERR_MODULE_NOT_FOUND" && d.message.includes("noa-signer-sidecar")) {
+      if (d.code === "ERR_MODULE_NOT_FOUND" && strIncludes(d.message, "noa-signer-sidecar")) {
         throw new Error(
           "proxy.mjs: --signer-socket requires the optional 'noa-signer-sidecar' package, which is not installed — " +
             "install it with: npm install noa-signer-sidecar",
@@ -298,8 +337,32 @@ async function main() {
   // config-artifact.mjs) opens with O_NOFOLLOW, fstats the DESCRIPTOR (regular file, owned by this
   // process or root, not group/other-writable) and reads from that same descriptor — the pathname
   // never gets a second chance to decide which bytes this process trusts.
+  //
+  // ── AND THE BYTES ARE THEN STRUCTURALLY VALIDATED, BEFORE ANY DOWNSTREAM IS SPAWNED ───────────
+  // MEASURED 2026-08-12 against the shipped CLI, with the symlink guard above already in place: a
+  // REGULAR, mode-0600, correctly-owned `approval-rules.json` containing `{}` — valid JSON, not an
+  // array — was accepted, and the same 7000 transfer was FORWARDED AND EXECUTED with no human
+  // approval. `readConfigJson` decides WHICH BYTES are read; it has nothing to say about whether
+  // those bytes are a rule set. `matchApprovalRule` answers `null` for a non-array, `null` means
+  // "no rule matched", and "no rule matched" means forward — so a two-byte file switched the gate
+  // off. This removes the need for the conspicuous `[]` payload the symlink attack needed: ANY
+  // content-write primitive, including the same-uid rewrite NON-CLAIMS.md NC-6.9 names as an
+  // accepted residual, was a full bypass. `requireValidApprovalRules` refuses a non-array AND every
+  // malformed rule — in FULL, never partially — so the process exits non-zero here rather than
+  // serving the host with the gate silently absent. createProxyServer/startHttpProxy apply the
+  // identical check on their own inputs (a library consumer must not be able to skip it by not
+  // using this CLI); this call is what gives the OPERATOR the flag-named error.
+  // THE RETURN VALUE is what travels on: a frozen, inert snapshot compiled from own data properties
+  // only. Keeping the parsed object instead would keep the bug — a rule set whose fields are
+  // inherited or computed, or one mutated after this line, was measured executing the same
+  // unapproved 7000-unit transfer (see `requireValidApprovalRules`' own note).
   let approvalRules;
-  if (opts.approvalRulesFile) approvalRules = readConfigJson(opts.approvalRulesFile, { label: "--approval-rules" });
+  if (opts.approvalRulesFile) {
+    approvalRules = requireValidApprovalRules(
+      readConfigJson(opts.approvalRulesFile, { label: "--approval-rules" }),
+      `--approval-rules "${opts.approvalRulesFile}"`,
+    );
+  }
 
   // FAIL-CLOSED at startup: the human-approval gate (--approval-rules and/or --pending-store) can
   // adopt an approver's ALLOWED receipt onto the live chain and forward the held action. Adopting
@@ -360,7 +423,7 @@ async function main() {
   } catch (err) {
     // Fail-closed at startup: never expose a half-connected proxy to the host.
     console.error(`noa-mcp-proxy: fatal — could not establish the downstream MCP connection: ${describeThrown(err)}`);
-    process.exit(1);
+    PROCESS.exit(1);
     return;
   }
 
@@ -370,5 +433,5 @@ async function main() {
 
 main().catch((err) => {
   console.error(`noa-mcp-proxy: fatal — ${describeThrown(err)}`);
-  process.exit(1);
+  PROCESS.exit(1);
 });

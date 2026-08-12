@@ -84,7 +84,7 @@ including genuine pre-retirement history.
 | `--session-idle-ttl-ms <n>` | 1 hour | override the session store's idle-TTL sweep |
 | `--max-sessions <n>` | 10,000 | override the session store's max-sessions cap |
 | `--session-dir <path>` | (none — in-memory only) | opt-in file-backed session store (see "Honest limits" above): persists each session's chain position across a restart so the chain stays ONE continuous segment instead of starting fresh every time. Only one live process may point at a given `--session-dir` at once. |
-| `--approval-rules <path>` | (none — gate off) | JSON array of human-approval rules (adapter-core's `approvalRules`). A tool call matching a rule is HELD (`DEFERRED`) — never forwarded — until a human approves it out-of-band with `noa-approve`. Read through an `O_NOFOLLOW` descriptor: a symlink, a non-regular file, a foreign-owned file or a group/other-writable one is refused at startup, because a swapped rule set is a gate that is simply OFF (see **Config-artifact integrity** below). |
+| `--approval-rules <path>` | (none — gate off) | JSON array of human-approval rules (adapter-core's `approvalRules`). A tool call matching a rule is HELD (`DEFERRED`) — never forwarded — until a human approves it out-of-band with `noa-approve`. Read through an `O_NOFOLLOW` descriptor: a symlink, a non-regular file, a foreign-owned file or a group/other-writable one is refused at startup, because a swapped rule set is a gate that is simply OFF (see **Config-artifact integrity** below). The CONTENT is then structurally validated before any downstream is spawned: anything that is not an array of valid rules — `{}`, `null`, a bare string, a malformed threshold, or an array where only SOME rules are valid — refuses to start, because a rule set that matches nothing is indistinguishable from no gate at all. |
 | `--pending-store <path>` | (none) | JSONL operational index the `DEFERRED` holds are recorded into and `noa-approve` resolves against. Read AND appended through an `O_NOFOLLOW` descriptor on **every** call, not once at startup — a check that is not repeated at the moment of use is a TOCTOU. |
 | `--approver-keyring <path>` | (none — **required** when the gate is on) | `{ [kid]: publicKey }` JSON of TRUSTED approver keys. An approval's Ed25519 signature is verified against this **before** the held action is adopted onto the live chain and forwarded. The proxy **refuses to start** if `--approval-rules`/`--pending-store` is given without it — a gate that could adopt unverifiable approvals would be fail-open — and equally refuses to start if this path is a symlink, since "trusted keys" the attacker chose are not trusted keys (see **Config-artifact integrity** below). |
 | `--approver-identity <path>` | (none) | optional `{ [agentId]: kid[] }` identity manifest pinning which kid may sign for the approval seat, so a co-trusted key cannot impersonate the human approver. Same `O_NOFOLLOW` descriptor guard as the keyring — a redirected manifest would let an attacker pin their OWN kid to the approval seat. |
@@ -105,6 +105,26 @@ Enable the gate by giving `--approval-rules`, `--pending-store`, and (required) 
    live chain, and forwards the call. The final `DEFERRED -> ALLOWED -> EXECUTED` chain verifies
    `VALID` offline. A forged or untrusted-signed approval is refused and never executes.
 
+### Getting started: `proxy.mjs init`
+
+`node src/proxy.mjs init [--dir <path>] [--force]` scaffolds the four inputs the gate above needs
+to START — `approval-rules.json` (a starter rule matching the bundled demo's `transfer_funds`
+tool), `pending-store.jsonl` (empty), and a fresh `approver-key.json` / `approver-keyring.json`
+identity pair (private key mode `0600`, written through the same hardened key-file loader
+`packages/signer-sidecar` uses). Refuses to touch a directory that already has any of the four
+files unless `--force` is given, in which case it regenerates all four, including a brand-new
+approver identity.
+
+**This is scaffolding, not activation — read this before running it.** `init` does not wire an MCP
+host's config, does not adapt the starter rule to your own tools' action ids, and does not perform
+any approval. Turning the gate on for real still needs, in order: (1) an MCP host actually launched
+with this proxy wrapping your downstream, pointed at the generated files; (2) your OWN
+`approval-rules.json` matching your OWN tools (the generated rule matches nothing you own until you
+edit it); (3) a real human running `noa-approve` out-of-band, holding `approver-key.json`, for every
+held call; (4) the agent retrying the *identical* call once approved. Skipping any of the four means
+nothing is protected. `init`'s own `--help` output repeats this exact sequence with the literal
+paths it just generated.
+
 ## Layout
 
 - `src/demo-downstream.mjs` — a small ordinary MCP server (3 tools: `echo`, `read_data`,
@@ -114,7 +134,11 @@ Enable the gate by giving `--approval-rules`, `--pending-store`, and (required) 
   connected downstream `Client`. Both `proxy.mjs` and the smoke test use this exact module. Emits
   the decision receipt AND (R2) the post-execution outcome receipt, and forwards
   `tools/list_changed` + streaming progress.
-- `src/proxy.mjs` — the CLI entrypoint (`command: node`, `args: [proxy.mjs, --, ...]`).
+- `src/proxy.mjs` — the CLI entrypoint (`command: node`, `args: [proxy.mjs, --, ...]`); also
+  dispatches the `init` subcommand below.
+- `src/init.mjs` — `proxy.mjs init`: scaffolds the human-approval gate's four inputs (see "Getting
+  started" above). Scaffolding, not activation — its own doc comment states exactly what still has
+  to happen for real.
 - `src/http-server.mjs` — (R2) the HTTP+SSE (Streamable HTTP) front transport; a pure transport
   adapter that fronts the SAME `createProxyServer` gate as stdio (the gate is not forked per
   transport).
@@ -167,11 +191,37 @@ re-applies the guard on **every** call, because it is re-read per gated tool cal
 is not repeated at use is a TOCTOU. Pinned by `test/smoke.mjs` "Bonus AA" (16 assertions), which
 fails against the pre-fix code.
 
+**What the descriptor guard could not see: the content itself (measured 2026-08-12, fixed).** With
+every check above satisfied — regular file, mode 0600, owned by this process, no symlink anywhere —
+a rule file containing `{}` forwarded and executed the same 7000 transfer with no human approval.
+The bytes were validated as JSON and never validated as a RULE SET: `matchApprovalRule` answers
+`null` for a non-array, `null` means "no rule matched", and "no rule matched" means forward. `{}`,
+`null`, a bare string, a number, a malformed threshold and a partially-invalid array were each
+measured executing it. Every boundary that loads a rule set — this CLI, `createProxyServer` and
+`startHttpProxy` — now refuses anything that is not an array of valid rules, in full and before any
+downstream is spawned. Pinned by `test/smoke.mjs` "Bonus AB" (18 assertions — 15 over real CLI proxy
+processes, 3 in-process at the library/HTTP boundary — 16 of which fail against the pre-fix code).
+
+**And the rule set that was VALIDATED is now the rule set that is USED.** A follow-up review walked
+past the fix above three times: a `threshold` INHERITED from a rule's prototype (validation resolved
+it and called the rule well-formed, the matcher then skipped the rule and forwarded), an honest rule
+set MUTATED after the proxy had validated it, and a `match` GETTER answering one way while checked
+and another while used. Each executed the same 7000-unit transfer with no human. All three are one
+defect: validation returned the caller's own object and the matcher read that object again later —
+the check-then-use gap above, relocated from the filesystem into the object graph. The gate now
+compiles an inert SNAPSHOT — own data properties only, inherited and getter-backed rule fields
+refused rather than resolved, frozen and null-prototype at every level — and the snapshot, never
+your object, is what each session reads. Pinned by `test/smoke.mjs` "Bonus AC" (8 assertions against
+a real downstream child process; 7 fail against the pre-fix code, the eighth being the control).
+
 **What is NOT fixed — measured against the FIXED code, not reasoned about.** Two things still
 execute the same unapproved 7000 transfer:
 
 - **In-place content rewrite as the same uid.** `printf '[]' > approval-rules.json`. No symlink, no
   unlink, no mode change — nothing for `O_NOFOLLOW`, the owner check or the mode check to catch.
+  The content validation above raises the bar only from "any bytes at all" to "a well-formed rule
+  set", and `[]` is a well-formed rule set that gates nothing — so this residual is narrowed in
+  cost, not closed.
 - **Ancestor-directory repoint.** `O_NOFOLLOW` guards only the FINAL path component. If your
   configured path is `<dir>/config/approval-rules.json` and an attacker can swap the `config`
   **directory** entry for a symlink to their own directory, the open follows it. Node exposes no

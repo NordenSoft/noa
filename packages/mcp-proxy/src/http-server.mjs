@@ -29,7 +29,7 @@ import { randomUUID } from "node:crypto";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { createProxyServer } from "./create-proxy-server.mjs";
-import { describeThrown } from "noa-mcp-adapter-core";
+import { describeThrown, requireValidApprovalRules } from "noa-mcp-adapter-core";
 
 import { intrinsics } from "noa-mcp-adapter-core";
 
@@ -38,13 +38,19 @@ import { intrinsics } from "noa-mcp-adapter-core";
 // module load. Auditing ~300 remaining flagged reads one at a time is a race against the next person
 // who adds one, so the builtins come from the kernel's module-load capture whether or not each site
 // is reachable today. Reachability is a property of the surrounding code, and that changes.
-const { jsonParse, jsonStringify } = intrinsics;
+const { jsonParse, jsonStringify, arrayPush, objectSetPrototypeOf, INERT_ARRAY_PROTOTYPE } = intrinsics;
 
 const MAX_BODY_BYTES = 4 * 1024 * 1024; // 4 MiB — fail closed on anything larger, never buffer unbounded
 
 function readJsonBody(req) {
   return new Promise((resolve, reject) => {
+    // INERT FROM ITS FIRST WRITE, and appended through the captured `arrayPush`. `push` performs
+    // `[[Set]]`, which walks the receiver's prototype chain: an accessor on `Object.prototype`
+    // swallows a body chunk while `length` still advances, so the request this proxy governs would
+    // not be the request the host sent. (An inert prototype deliberately omits the mutators, which
+    // is why the append below is `arrayPush` rather than `chunks.push`.)
     const chunks = [];
+    objectSetPrototypeOf(chunks, INERT_ARRAY_PROTOTYPE);
     let size = 0;
     req.on("data", (c) => {
       size += c.length;
@@ -53,7 +59,7 @@ function readJsonBody(req) {
         req.destroy();
         return;
       }
-      chunks.push(c);
+      arrayPush(chunks, c);
     });
     req.on("end", () => {
       const raw = Buffer.concat(chunks).toString("utf8");
@@ -104,6 +110,17 @@ export async function startHttpProxy(config) {
   } = config;
   if (typeof makeDownstreamTransport !== "function") {
     throw new Error("startHttpProxy: `makeDownstreamTransport` (a fresh-transport factory) is required");
+  }
+  // A malformed rule set is refused BEFORE the listener binds, not per session. createProxyServer
+  // below would refuse every individual session anyway (it applies the identical check), but a
+  // process that binds a port and then fails every call is an operator staring at 502s; a process
+  // that never starts is an operator reading the actual reason. Same fail-closed direction, earlier.
+  // Compiled ONCE, here, and the SNAPSHOT is stored back: `proxyConfig` is this function's own
+  // rest-destructured object, so every session receives the frozen snapshot rather than the caller's
+  // live rule array — including a session opened long after the caller mutated that array.
+  // createProxyServer re-checks per session and finds an already-compiled snapshot (idempotent).
+  if (proxyConfig.approvalRules !== undefined) {
+    proxyConfig.approvalRules = requireValidApprovalRules(proxyConfig.approvalRules, "startHttpProxy: `approvalRules`");
   }
 
   // mcpSessionId -> { transport, proxy }

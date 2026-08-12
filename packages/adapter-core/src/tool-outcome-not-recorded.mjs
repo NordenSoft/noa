@@ -37,6 +37,12 @@
  * identical across copies AND across realms, and cannot throw for any input.
  */
 import { describeThrown } from "./safe-throw.mjs";
+import { intrinsics } from "noa-receipt";
+
+// Taken from the kernel's module-load capture rather than read live, for the same reason every other
+// file in this TCB does it: `Object.defineProperty` read at call time is a slot an attacker in this
+// realm can replace after this module is evaluated.
+const { objectDefineProperty } = intrinsics;
 
 /** Realm- and copy-independent brand. `Symbol.for` is keyed in the global registry on purpose. */
 const BRAND = Symbol.for("noa.tool-outcome-not-recorded/1");
@@ -58,23 +64,38 @@ export class ToolOutcomeNotRecorded extends Error {
       // `cause` is passed by IDENTITY (no read), so a caller that knows what it threw still gets it.
       { cause },
     );
+    // ── L11: EVERY CARRIED FIELD IS DEFINED, NOT ASSIGNED ────────────────────────────────────────
+    // `this.executionHappened = true` is a [[Set]] on an ordinary instance, and [[Set]] WALKS the
+    // prototype chain: `ToolOutcomeNotRecorded.prototype` -> `Error.prototype` -> the mutable
+    // `Object.prototype`. An accessor planted at `Object.prototype.executionHappened` swallows the
+    // write and answers every later read with its own value — and `executionHappened` is THE
+    // anti-retry discriminator this whole class exists to carry. A caller that reads `false` retries
+    // an action that already ran, which is the exact failure the docstring above calls the reason
+    // this is a type at all. `[[DefineOwnProperty]]` consults no prototype, which is why the BRAND
+    // below was already written this way; the six fields above it were not.
+    //
+    // `this.name` keeps its plain assignment deliberately: `Error.prototype.name` is a writable DATA
+    // property, so the [[Set]] walk finds it there and creates the own property — it terminates
+    // before `Object.prototype`, so this one key is not in the class.
     this.name = "ToolOutcomeNotRecorded";
+    const own = (key, value) =>
+      objectDefineProperty(this, key, { value, writable: true, enumerable: true, configurable: true });
     /** ALWAYS true. The discriminator: the tool was invoked and settled. */
-    this.executionHappened = true;
+    own("executionHappened", true);
     /** `"EXECUTED"` or `"FAILED"` — what the terminal receipt WOULD have said. */
-    this.outcome = outcome;
+    own("outcome", outcome);
     /** The wrapped tool's return value when it succeeded (else undefined). */
-    this.result = result;
+    own("result", result);
     /** The value the tool threw when `outcome` is `"FAILED"` — carried by identity, never read. */
-    this.toolFailure = toolFailure;
+    own("toolFailure", toolFailure);
     /** The terminal receipt if it was built but not recorded (else null). */
-    this.receipt = receipt ?? null;
+    own("receipt", receipt ?? null);
     /**
      * A SAFE description of `cause`. Read this instead of `cause.message`: `cause` is whatever the
      * signer/persistence layer threw, and reading it directly is the hole this class was losing.
      */
-    this.causeDescription = causeDescription;
-    Object.defineProperty(this, BRAND, { value: true, enumerable: false });
+    own("causeDescription", causeDescription);
+    objectDefineProperty(this, BRAND, { value: true, enumerable: false });
   }
 
   /**
