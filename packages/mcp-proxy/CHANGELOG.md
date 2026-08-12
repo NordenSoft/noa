@@ -1,6 +1,18 @@
 # Changelog — `noa-mcp-proxy`
 
-## [Unreleased]
+## [0.4.0] - 2026-08-12
+
+> **Cut in this repository; not on npm at the time of writing** — `npm view noa-mcp-proxy version`
+> returns `0.3.2`. Publishing is a separate, owner-authorised step, so this heading records what
+> the tree IS, never what the registry serves. `0.3.2` and this version are therefore NOT the same
+> contents, which is why the number had to move at all.
+>
+> Minor, not patch: the fix REFUSES config artifacts that used to load — a symlinked path, a
+> foreign-owned file, a group/other-writable mode, a FIFO, or anything over the size cap now fails
+> at startup instead of being read. An operator relying on any of those must change their
+> deployment, so this is a break, and [VERSIONING.md](../../VERSIONING.md) §1 puts a pre-`1.0.0`
+> break in a minor. Released in lockstep with `noa-mcp-adapter-core`, which the publish workflow
+> requires.
 
 ### Security — the human-approval gate could be turned off by a file swap (CWE-59 / CWE-367)
 

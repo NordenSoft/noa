@@ -4,7 +4,13 @@ The root `CHANGELOG.md` scopes itself to `noa-receipt` in its first line, so sec
 package had nowhere to be written. `0.2.0` is live on npm and exploitable; without this file a
 consumer upgrading to `0.3.0` would see a silent version bump and no reason to hurry.
 
-## [Unreleased]
+## [0.4.0] - 2026-08-12
+
+> **Cut in this repository; not on npm at the time of writing** — `npm view
+> noa-mcp-adapter-core version` returns `0.3.2`. Publishing is a separate, owner-authorised step,
+> so a version heading here records what the tree IS, never what the registry serves. The number
+> moved because the two changes below add exports AND refuse inputs that previously loaded; under
+> [VERSIONING.md](../../VERSIONING.md) §1 a pre-`1.0.0` minor is where a break belongs.
 
 ### Security — `--pending-store` followed symlinks on both read and append (CWE-59 / CWE-367)
 
