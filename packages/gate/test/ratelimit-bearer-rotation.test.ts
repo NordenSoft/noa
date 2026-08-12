@@ -51,7 +51,7 @@ async function rotatingBearers(port: number, path: string, n: number): Promise<R
 }
 
 test("R8-13 (gate): rotating the bearer must NOT buy a fresh rate-limit allowance", async () => {
-  const gate = bootGate({ rateLimitBurst: 5, rateLimitRefillPerMin: 1 });
+  const gate = bootGate({ rateLimitBurst: 5, rateLimitRefillPerMin: 1, peerRateLimitBurst: 5, peerRateLimitRefillPerMin: 1 });
   const { port } = await gate.listen();
   try {
     const codes = await rotatingBearers(port, "/v1/holds/some-hold-id", 40);
@@ -71,7 +71,7 @@ test("R8-13 (gate): the SIGNING route is throttled for an anonymous rotating cal
   // `POST /v1/holds` is the expensive one: it is where the gate seals the display (HPKE) and signs
   // the Hold Envelope. A caller who never authenticates must not be able to queue that work 400
   // times by changing a header 400 times.
-  const gate = bootGate({ rateLimitBurst: 5, rateLimitRefillPerMin: 1 });
+  const gate = bootGate({ rateLimitBurst: 5, rateLimitRefillPerMin: 1, peerRateLimitBurst: 5, peerRateLimitRefillPerMin: 1 });
   const { port } = await gate.listen();
   try {
     const codes: Record<string, number> = {};
@@ -119,6 +119,36 @@ test("ANTI-VACUITY: an honest AUTHENTICATED caller is NOT throttled inside its b
     // 404 UNKNOWN_HOLD: authenticated, authorized to ask, no such hold. The point is that it is not
     // 429 and not 401 — the honest caller got all the way to the engine, eight times running.
     assert.equal(codes["404"], 8, `an honest caller inside its burst was throttled: ${JSON.stringify(codes)}`);
+    assert.equal(codes["429"], undefined);
+  } finally {
+    await gate.close();
+  }
+});
+
+test("R8-13 follow-up: TWO honest agents at DEFAULT config are NOT throttled by the shared loopback peer bucket", async () => {
+  // Measured before the split (PR #47 §4): two agents, 6 requests each, default burst 10 ->
+  // {"404":10,"429":2} — the shared ip:127.0.0.1 bucket was TIGHTER than what F29 promises each
+  // key individually. The peer meter now budgets the host fleet (default 100/600) while each key
+  // keeps its own 10/60, so the same traffic must see ZERO 429.
+  const store = new InMemoryStore();
+  const keys = ["noa_gateagent_fleet-agent-one-secret", "noa_gateagent_fleet-agent-two-secret"];
+  keys.forEach((apiKey, i) => {
+    store.putAgent({ id: `agent-fleet-${i}`, name: `fleet-${i}`, apiKeyHash: hashSecret(apiKey), createdAt: Date.now() });
+  });
+  const gate = bootGate({}, store); // DEFAULT config on purpose: the defaults ARE the subject here
+  const { port } = await gate.listen();
+  try {
+    const codes: Record<string, number> = {};
+    for (let round = 0; round < 6; round++) {
+      for (const apiKey of keys) {
+        const res = await fetch(`http://127.0.0.1:${port}/v1/holds/no-such-hold`, {
+          headers: { authorization: `Bearer ${apiKey}` },
+        });
+        const k = String(res.status);
+        codes[k] = (codes[k] ?? 0) + 1;
+      }
+    }
+    assert.equal(codes["404"], 12, `two honest agents inside their own per-key burst were throttled by the shared peer bucket: ${JSON.stringify(codes)}`);
     assert.equal(codes["429"], undefined);
   } finally {
     await gate.close();

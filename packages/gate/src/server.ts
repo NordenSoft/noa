@@ -48,11 +48,14 @@ export function createGate(opts: CreateGateOptions): Gate {
     ...(opts.log ? { log: opts.log } : {}),
   });
   const limiter = new RateLimiter({ burst: config.rateLimitBurst, refillPerMin: config.rateLimitRefillPerMin, now: config.now });
+  // The pre-auth peer meter is a SEPARATE limiter so raising the host-fleet budget cannot loosen
+  // the per-key F29 numbers (see peerRateLimitBurst in config.ts for the measured rationale).
+  const peerLimiter = new RateLimiter({ burst: config.peerRateLimitBurst, refillPerMin: config.peerRateLimitRefillPerMin, now: config.now });
 
   let sweepTimer: NodeJS.Timeout | null = null;
 
   const httpServer = createServer((req, res) => {
-    handle(req, res, engine, config, limiter).catch(() => {
+    handle(req, res, engine, config, limiter, peerLimiter).catch(() => {
       if (!res.headersSent) sendJson(res, 500, { error: "INTERNAL" });
       else res.end();
     });
@@ -110,7 +113,7 @@ export function createGate(opts: CreateGateOptions): Gate {
  */
 type Body = { ok: true; bytes: Uint8Array } | { ok: false };
 
-async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEngine, config: GateConfig, limiter: RateLimiter): Promise<void> {
+async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEngine, config: GateConfig, limiter: RateLimiter, peerLimiter: RateLimiter): Promise<void> {
   const url = new URL(req.url ?? "/", "http://localhost");
   const path = url.pathname;
   const method = req.method ?? "GET";
@@ -133,7 +136,7 @@ async function handle(req: IncomingMessage, res: ServerResponse, engine: GateEng
   // allowance. The per-credential bucket below is retained on top — it is the tighter of the two for
   // an honest caller, and it now costs a SECOND token rather than replacing the first.
   const peerKey = `ip:${req.socket.remoteAddress ?? "unknown"}`;
-  const peerRl = limiter.take(peerKey);
+  const peerRl = peerLimiter.take(peerKey);
   if (!peerRl.ok) {
     res.setHeader("Retry-After", String(peerRl.retryAfterSec));
     return sendJson(res, 429, { error: "RATE_LIMITED", retryAfterSec: peerRl.retryAfterSec });
