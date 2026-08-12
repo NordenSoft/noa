@@ -14,7 +14,7 @@
  * (kept only in the local pending-store index). No raw PII rests in the signed, hash-chained bytes.
  * Deterministic exit codes: 0 success, 1 usage/runtime error (never a raw uncaught throw).
  */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { generateKeyPair } from "noa-receipt";
 import { loadPendingIndex, recordApproved, recordDenied, PendingStoreError } from "./pending-store.mjs";
@@ -67,11 +67,69 @@ function parseArgs(argv) {
   if (!opts.by) throw new Error("noa-approve: --by is required");
   if (!opts.pendingStorePath) throw new Error("noa-approve: --pending-store is required");
   if (!opts.keyFile) throw new Error("noa-approve: --key-file is required");
+  refuseAliasedPaths(opts);
   return { command, opts };
 }
 
+/**
+ * Refuses `--receipt-log` and `--pending-store` naming the SAME file. Appending signed receipts
+ * into the pending store makes the store unloadable — `loadPendingIndex` refuses every line that
+ * is not a known event, so the whole approval gate fails closed and every later call is refused
+ * until an operator repairs the file. That is the safe direction, but it is a self-inflicted
+ * outage the CLI can simply decline: the check costs two stats and runs before any durable act.
+ *
+ * String equality is not enough — a symlink, a hardlink, `./` prefixes or a trailing slash all
+ * name one file under two spellings — so identical (dev, ino) is refused too. A stat that fails
+ * means at least one path does not exist yet, which is the ordinary first-run case and no alias.
+ */
+function refuseAliasedPaths(opts) {
+  if (!opts.receiptLogPath) return;
+  const sameFile = `noa-approve: --receipt-log and --pending-store name the same file ("${opts.receiptLogPath}") — appending signed receipts into the pending store makes the store unloadable and refuses every later approval. Point them at two different files.`;
+  if (opts.receiptLogPath === opts.pendingStorePath) throw new Error(sameFile);
+  let store;
+  let log;
+  try {
+    store = statSync(opts.pendingStorePath);
+    log = statSync(opts.receiptLogPath);
+  } catch {
+    return; // one of them does not exist yet — the ordinary first-run case, not an alias
+  }
+  if (store.dev === log.dev && store.ino === log.ino) throw new Error(sameFile);
+}
+
+/**
+ * `mode: 0o600` applies ONLY when this call CREATES the file, so it changes nothing for an
+ * existing log and cannot break a log shared with another writer. It matters because the receipt
+ * log holds validly-signed ALLOWED receipts, which are bearer material (see the ORDERING note
+ * below), and the umask default would otherwise create that file world-readable.
+ *
+ * HONEST LIMIT, unchanged by this: unlike the pending store (config-artifact.mjs) this write is
+ * NOT descriptor-hardened — no `O_NOFOLLOW`, no owner/mode check on an existing file. Routing it
+ * through `appendConfigArtifact` would add all three, and is the obvious next step; it is not
+ * taken here because that loader's owner test would newly refuse a receipt log legitimately shared
+ * with a proxy running as a different uid (proxy.mjs documents that shared-log case), and that
+ * compatibility question deserves its own change rather than riding along with this one.
+ */
 function appendReceiptLog(path, receipt) {
-  if (path) appendFileSync(path, jsonStringify(receipt) + "\n", "utf8");
+  if (path) appendFileSync(path, jsonStringify(receipt) + "\n", { encoding: "utf8", mode: 0o600 });
+}
+
+/**
+ * The stderr line for the one failure this ordering deliberately leaves possible: the receipt log
+ * write SUCCEEDED and the pending-store write then failed, so a signed decision receipt is sitting
+ * in the log for a decision the store never recorded. Returns "" when there is nothing to say, so
+ * the caller keeps exactly one stderr write.
+ */
+function orphanedLogWarning(receiptLogPath, kind) {
+  if (kind === null) return "";
+  return (
+    `noa-approve: WARNING — the signed ${kind} receipt was ALREADY appended to "${receiptLogPath}" ` +
+    `before this failure, and nothing was recorded in the pending store. No decision path in this ` +
+    `repo reads a receipt log, so that line authorizes nothing on its own — but it is valid signed ` +
+    `bearer material with no expiry of its own (the ticket TTL lives only in the store event), so ` +
+    `anyone who can WRITE the pending store could replay it there later. Treat the log line as live ` +
+    `until the decision is resolved.\n`
+  );
 }
 
 /**
@@ -135,31 +193,57 @@ export function runApproveCli(argv) {
   // shape: a denial durably recorded while its own log write fails is reported to the operator as a
   // denial that did not happen.
   //
-  // Fixed by making the pending-store write the LAST durable act in BOTH branches. The residual
-  // failure direction is the safe one: a receipt appended to the log for a decision that was never
-  // recorded leaves the action STILL HELD for a human, which is this product's whole default.
+  // Fixed by making the pending-store write the LAST FALLIBLE step in BOTH branches.
+  //
+  // WHAT THE RESIDUAL ACTUALLY IS — stated precisely, because an earlier version of this comment
+  // said the leftover log line "leaves the action STILL HELD", and a review reproduced that that is
+  // only half true. The literal half holds and was verified: NO decision path in this repo reads a
+  // receipt log (the pending store's only consumers are pending-store.mjs, this file, index.mjs and
+  // mcp-proxy's create-proxy-server.mjs; proxy.mjs's appender is write-only), so an orphaned line
+  // authorizes nothing by itself. The absolute half is FALSE: the orphan is a validly-signed
+  // ALLOWED receipt and it carries NO expiry of its own — the TTL and the ticket live only in the
+  // store EVENT, and `buildApprovalReceipt` mints the ticket outside the signed bytes. A same-uid
+  // writer of the pending store can therefore append a crafted "approved" event carrying that
+  // orphan and a self-minted ticket, and pending-store.mjs:118-129 deliberately folds "approved"
+  // onto a DENIED record — so a request the human actively denied becomes consumable. Severity is
+  // LOW (it is an action the human genuinely signed once, and it needs the same-uid pending-store
+  // writer that pending-store.mjs's own docstring already declares out of scope for content
+  // defence), but the artifact is NOT inert and no comment here should say it is. The failing path
+  // now says so on stderr — see orphanedLogWarning above.
+  //
+  // "LAST FALLIBLE", not "last durable": `appendConfigArtifact` (config-artifact.mjs) does
+  // open -> writeFileSync -> close with NO fsync, while the sibling file-session-store.mjs:280-297
+  // does fsync and documents why. So a power loss can still lose a returned "approved". The safe
+  // direction holds (a lost approval leaves the action held), but the two stores in this perimeter
+  // sit at different durability bars, and closing that means adding the fsync in
+  // config-artifact.mjs — a shared loader this change does not own.
   let successLine = "";
+  let orphanKind = null; // set once the LOG write has succeeded, cleared once the STORE write has
   try {
     if (command === "approve") {
       const { receipt, ticket, ticketExpiresAt } = buildApprovalReceipt({ deferredReceipt: record.deferredReceipt, by, ts, signer, ticketTtlMs: opts.ttlMs });
       appendReceiptLog(opts.receiptLogPath, receipt);
+      if (opts.receiptLogPath) orphanKind = "approval";
       successLine = `APPROVED ${opts.id} -> ${receipt.id} (ticket expires ${ticketExpiresAt})\n`;
-      // LAST durable act. `tenant`/`sessionId: record.{tenant,sessionId}` — read back off the
+      // LAST fallible step. `tenant`/`sessionId: record.{tenant,sessionId}` — read back off the
       // DEFERRED hold so this "approved" event folds onto the SAME (tenant, sessionId, id) record it
       // approves (see pending-store's recordKeyOf). The ticket is live from this line onward.
       recordApproved(opts.pendingStorePath, { id: opts.id, by, ticket, ticketExpiresAt, allowedReceipt: receipt, tenant: record.tenant, sessionId: record.sessionId, ts });
+      orphanKind = null;
     } else {
       // D8: the free-text `--reason` is NOT passed into the signed receipt (buildDenialReceipt fixes
       // ruleId to "human-denied"). It is kept only in the LOCAL, non-signed pending-store index below
       // (recordDenied), for operator audit — never in the signed, hash-chained bytes.
       const { receipt } = buildDenialReceipt({ deferredReceipt: record.deferredReceipt, by, ts, signer });
       appendReceiptLog(opts.receiptLogPath, receipt);
+      if (opts.receiptLogPath) orphanKind = "denial";
       successLine = `DENIED ${opts.id} -> ${receipt.id}\n`;
-      // LAST durable act — same ordering rule as the approve branch above.
+      // LAST fallible step — same ordering rule as the approve branch above.
       recordDenied(opts.pendingStorePath, { id: opts.id, by, reason: opts.reason, deniedReceipt: receipt, tenant: record.tenant, sessionId: record.sessionId, ts });
+      orphanKind = null;
     }
   } catch (err) {
-    process.stderr.write(`noa-approve: ${describeThrown(err)}\n`);
+    process.stderr.write(`noa-approve: ${describeThrown(err)}\n${orphanedLogWarning(opts.receiptLogPath, orphanKind)}`);
     return 1;
   }
 
