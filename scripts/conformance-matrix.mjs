@@ -28,14 +28,18 @@
  *              exit-0 fixture, GREEN on a real one) — no subprocess, no toolchain required. Run this
  *              before trusting a real run, same convention as scripts/lint-trusted-roots.mjs.
  *
- * Threshold for "conformant" (the bar a third-party TS/Python/Rust/Go/C#/etc. re-implementation is
- * held to): an implementation is conformant for a vector class iff EVERY vector run against it in
- * that class produces the SAME verdict as the TS reference implementation (VALID/UNVERIFIED/
- * UNTRUSTED/TAMPERED/MALFORMED, or the equivalent CLI exit code 0/1/5/2/3). One mismatch in one
- * vector fails that whole class for that implementation — there is no partial credit, because a
- * single silently-accepted attack vector is a full security failure regardless of how many adjacent
- * vectors still pass. This threshold is IDENTICAL for all five columns; only the corpus each
- * column's PASS(n) count is drawn from differs (see the header note this script writes into
+ * Threshold for "conformant": an implementation is conformant for a vector class iff EVERY vector
+ * run against it in that class produces the SAME verdict as its OWN comparison target. That target
+ * is NOT "the TS reference" for all five columns — QA round 2 finding F3 caught this file's own
+ * prose overclaiming it was. Python is compared DIRECTLY to TS (impl-py/conformance.mjs). Go, Rust
+ * and C# are each compared DIRECTLY to PYTHON (their own conformance.sh/conformance_test.sh scripts,
+ * ground truth = impl-py/noa_verify.py) — NOT directly to TS. The five-way agreement claim is real,
+ * but it is a CHAIN of two direct comparisons (TS<->Python, Python<->{Go,Rust,C#}), not five
+ * independent direct comparisons to TS. One mismatch anywhere in that chain fails the whole class for
+ * the mismatching implementation — there is no partial credit, because a single silently-accepted
+ * attack vector is a full security failure regardless of how many adjacent vectors still pass. This
+ * threshold is identical in KIND for all five columns; only the comparison TARGET and the corpus each
+ * column's PASS(n) count is drawn from differ (see the header note this script writes into
  * conformance/MATRIX.md).
  */
 import { execFileSync } from "node:child_process";
@@ -117,16 +121,35 @@ function implOf(label) {
   return "Python"; // untagged lines are pyVerify(...)-only checks (the file's original convention)
 }
 
-/** True when execFileSync's catch reflects a killed/timed-out child (e.g. our own `timeout` option
- * fired) rather than a normal nonzero exit — `e.status` is null and `e.signal` is set in that case. */
-function wasKilledOrTimedOut(e) {
-  return e.signal != null || e.killed === true;
+/**
+ * QA round 2 finding F7: the round-1 version of this check (`e.signal != null || e.killed`) reported
+ * EVERY signal-based child death as "TIMED OUT after Ns" — including an OOM-kill four seconds in,
+ * which has nothing to do with our timeout. Empirically verified (Node child_process, this runtime):
+ * a real `timeout` expiry sets `e.code === "ETIMEDOUT"` (with `e.signal` = the kill signal, default
+ * SIGTERM); an EXTERNALLY signal-killed child (simulated with a direct `SIGKILL` from another
+ * process, no timeout option involved) sets `e.signal` but `e.code` is `undefined` — `e.signal` alone
+ * does not distinguish the two. `e.killed` was never actually set by `execFileSync` in either case
+ * (verified, not assumed) and is not used. Returns `null` for a normal nonzero exit (not a kill at all).
+ */
+function describeKillReason(e, timeoutMs) {
+  if (e.code === "ETIMEDOUT") {
+    return { killed: true, reason: `TIMED OUT after ${timeoutMs / 1000}s and was killed (signal ${e.signal})` };
+  }
+  if (e.signal != null) {
+    return {
+      killed: true,
+      reason: `was KILLED by signal ${e.signal} before completing — NOT necessarily our ${timeoutMs / 1000}s ` +
+        `timeout (e.code was not ETIMEDOUT; could be an OOM-kill or an external kill) — do not assume a hang`,
+    };
+  }
+  return { killed: false, reason: null };
 }
 
 function runPyConformance() {
   let stdout = "";
   let exitCode = 0;
   let timedOut = false;
+  let killReason = null;
   try {
     stdout = execFileSync("node", [CONFORMANCE_SCRIPT], {
       encoding: "utf8",
@@ -135,11 +158,21 @@ function runPyConformance() {
       stdio: ["ignore", "pipe", "pipe"], // capture child stderr too (Python's argparse usage-text) — don't leak it to our terminal
     });
   } catch (e) {
-    stdout = (e.stdout ?? "") + (e.stderr ?? "");
-    exitCode = typeof e.status === "number" ? e.status : 1;
-    timedOut = wasKilledOrTimedOut(e);
+    const kill = describeKillReason(e, SUBPROCESS_TIMEOUT_MS);
+    if (kill.killed) {
+      // QA round 2 finding F6a: discard any partial stdout on a kill — a table built from an
+      // INCOMPLETE run must never be trusted, mirroring runBashScript's kill path below. The
+      // entry point sentinels BOTH TS and Python columns when timedOut is true (see there).
+      timedOut = true;
+      killReason = kill.reason;
+      stdout = "";
+      exitCode = 1;
+    } else {
+      stdout = (e.stdout ?? "") + (e.stderr ?? "");
+      exitCode = typeof e.status === "number" ? e.status : 1;
+    }
   }
-  return { stdout, exitCode, timedOut };
+  return { stdout, exitCode, timedOut, killReason };
 }
 
 function parseTsPyLines(stdout) {
@@ -149,19 +182,23 @@ function parseTsPyLines(stdout) {
     // bug here (present before this file grew 3 more columns; confirmed via `git show
     // ee6aef2:scripts/conformance-matrix.mjs`, same regex). A label CAN legitimately contain an
     // internal colon (e.g. "MALFORMED (bad enum: action.riskClass) [TS verifyChain]"), and a lazy
-    // `(.+?)` stops at the FIRST colon in the line — here, the one INSIDE the label — because the
-    // unrestricted `(.+)$` after it can absorb literally anything, so the lazy engine never needs to
-    // try a later split point. That silently truncated the label to "MALFORMED (bad enum" and pushed
-    // "action.riskClass) [TS verifyChain]: MALFORMED (want MALFORMED)" into `detail` — losing the
-    // "[TS verifyChain]" tag from the label entirely. `implOf()` reads that tag to attribute a check
-    // to the TS column; without it, this ONE check silently fell through to the "untagged -> Python"
-    // default and was mis-credited to the Python column instead of TS. It also meant the TS-tagged
-    // and PY-tagged lines for THIS vector printed the identical truncated label — a spurious
-    // duplicate `findDuplicateLabels()` now catches. GREEDY `(.+)` prefers the LAST colon in the
-    // line (backtracks only as far as needed to leave `\s*(.+)$` a match), which is exactly the real
-    // label/detail separator here — verified against the live corpus: 99/99 labels parse with zero
-    // duplicates and the "bad enum" check now attributes to TS, not Python.
-    const m = /^([✓✗])\s(.+):\s*(.+)$/.exec(line);
+    // `(.+?)` stops at the FIRST colon in the line — here, the one INSIDE the label — silently
+    // truncating the label and losing the "[TS verifyChain]" tag, which mis-credited that TS check to
+    // Python (implOf() defaults an untagged line to Python).
+    //
+    // QA round 2 finding F5: the round-1 fix (bare greedy `(.+):\s*(.+)$`) only worked because it
+    // ASSUMED the detail half is colon-free — true today, enforced by nothing. A greedy `(.+)` prefers
+    // the LAST colon in the whole line, so a hypothetical colon inside a future detail string would
+    // silently re-break the same class of bug in the opposite direction. Anchored instead on the ONE
+    // structural invariant EVERY line in this corpus actually has (verified: 99/99 lines): the detail
+    // ALWAYS ends in the literal `(want …)` clause every `expect()`/inline check in
+    // impl-py/conformance.mjs prints. Requiring the captured detail to match `.*\(want [^)]*\)$`
+    // forces the greedy label-backtrack to stop at the colon whose FOLLOWING text actually has that
+    // shape — the true separator — even if an earlier OR later colon exists elsewhere in the line,
+    // as long as only one span ends in `(want …)` (true for the entire live corpus; residual risk is
+    // an authored detail string that itself contains a second literal `(want …)`-shaped clause, which
+    // no current call site does).
+    const m = /^([✓✗])\s(.+):\s*(.*\(want [^)]*\))$/.exec(line);
     if (!m) continue; // not a check-result line (blank lines, the final PASS banner, python usage text)
     const [, mark, label, detail] = m;
     results.push({ ok: mark === "✓", label, detail, class: classify(label), impl: implOf(label) });
@@ -179,6 +216,13 @@ function parseTsPyLines(stdout) {
 // or second-guesses the comparison itself, only classifies the lines each script already produced.
 // ══════════════════════════════════════════════════════════════════════════════════════════════
 
+// QA round 2 finding F3 (part 1): every lineRe below used to match `py=` and `<lang>=` with a bare
+// `\S+` — the two VALUES that would let this generator INDEPENDENTLY confirm the runner's own
+// PASS/FAIL mark are matched, then discarded. They are now captured groups, and `extract()` exposes
+// them by name (each script prints py=/lang= in a different position, so the group ORDER differs
+// per language — `extract` normalizes that). `deriveOkFromValues()` below re-derives PASS/FAIL from
+// the two verdict strings themselves and flags any line where the runner's own mark disagrees with
+// its own printed values — a defense the generator previously had the raw material for and threw away.
 const FILE_LANGS = [
   {
     key: "Go",
@@ -187,8 +231,10 @@ const FILE_LANGS = [
     // on every invocation — no staleness risk, nothing to pre-build here.
     preSteps: [],
     run: () => runBashScript(IMPL_GO_SCRIPT, ROOT),
-    // "PASS  py=0 go=0  golden/genesis + keyring" / "FAIL  py=2 go=0  ..."
-    lineRe: /^(PASS|FAIL)\s+py=\S+\s+go=\S+\s+(.+?)\s*$/,
+    // "PASS  py=0 go=0  golden/genesis + keyring" / "FAIL  py=2 go=0  ..." — py=/go= are raw exit
+    // codes (0-5); exact string equality is the same comparison the shell's own `-eq` performs here.
+    lineRe: /^(PASS|FAIL)\s+py=(\S+)\s+go=(\S+)\s+(.+?)\s*$/,
+    extract: (m) => ({ mark: m[1], pyVal: m[2], langVal: m[3], label: m[4] }),
   },
   {
     key: "Rust",
@@ -204,7 +250,9 @@ const FILE_LANGS = [
     // padding, and the SWEEP section's differently-shaped lines ("  sweep: 40/40 ...", "  SWEEP-FAIL
     // ...") never match this pattern (no "py=...(n) rust=...(n)" suffix on those) — deliberately
     // excluded from this table; see the "additional checks" note this script writes below the table.
-    lineRe: /^\s*(PASS|FAIL)\s+\[[^\]]*\]\s*(.+?)\s*py=\S+\(\d+\)\s+rust=\S+\(\d+\)\s*$/,
+    // py=/rust= are "STATUSNAME(exitcode)" strings (e.g. "VALID(0)") — captured whole.
+    lineRe: /^\s*(PASS|FAIL)\s+\[[^\]]*\]\s*(.+?)\s*py=(\S+\(\d+\))\s+rust=(\S+\(\d+\))\s*$/,
+    extract: (m) => ({ mark: m[1], label: m[2], pyVal: m[3], langVal: m[4] }),
   },
   {
     key: "CSharp",
@@ -214,10 +262,20 @@ const FILE_LANGS = [
     // (CI never has a pre-existing $EXE). Force the same "always fresh" ground truth CI has.
     preSteps: [{ cmd: "rm", args: ["-rf", "bin", "obj"], cwd: IMPL_CSHARP_DIR }],
     run: () => runBashScript(IMPL_CSHARP_SCRIPT, ROOT),
-    // "  PASS  py=0 cs=0  golden genesis + keyring (VALID)"
-    lineRe: /^\s*(PASS|FAIL)\s+py=\S+\s+cs=\S+\s+(.+?)\s*$/,
+    // "  PASS  py=0 cs=0  golden genesis + keyring (VALID)" — py=/cs= are raw exit codes.
+    lineRe: /^\s*(PASS|FAIL)\s+py=(\S+)\s+cs=(\S+)\s+(.+?)\s*$/,
+    extract: (m) => ({ mark: m[1], pyVal: m[2], langVal: m[3], label: m[4] }),
   },
 ];
+
+/** QA round 2 finding F3 (part 1): re-derive PASS/FAIL from the runner's own printed py=/lang=
+ * verdict strings, independent of the PASS/FAIL word it also printed. Exact string equality mirrors
+ * what each shell script's own comparison (`-eq` for raw exit codes, `==` for Rust's "NAME(code)"
+ * strings) already does on the SAME two values — this does not re-verify the receipts themselves,
+ * only that the runner's stated conclusion is internally consistent with the evidence it also printed. */
+function deriveOkFromValues(pyVal, langVal) {
+  return pyVal === langVal;
+}
 
 /**
  * Ordered, first-match-wins classifier for the FILE-BASED corpus's own case labels (filenames under
@@ -269,6 +327,17 @@ const FILE_VECTOR_CLASS_RULES = [
   // gen-vectors.ts 7: corrupted signature bytes over an otherwise well-formed, correctly-hashed
   // receipt — a pure signature-verification failure.
   [/wrong-signature/i, "sig"],
+  // QA round 2 finding F4: NO rule targeted "malleability" at all — meaning even if a vector
+  // exercising Ed25519 S-malleability or low-order-pubkey rejection were added to this corpus
+  // tomorrow, this classifier would never route it here; the ‡ footnote's "not asserted here" claim
+  // for this class would stay permanently, silently wrong even after the gap it describes closed.
+  // Vocabulary matches CLASS_RULES's OWN malleability regex (`malleability|low-order pubkey|
+  // non-canonical y.q|non-canonical keyring spki`) so the two classifiers agree on what this class
+  // means; broadened slightly for filename-shaped labels (hyphenated, no spaces). Currently matches
+  // ZERO real labels (verified: no vector in conformance/vectors/ or conformance/golden/ uses any of
+  // these words) — this rule exists so a FUTURE malleability vector is picked up automatically, not
+  // because one exists today.
+  [/malleab|low-order|non-canonical.*(pubkey|spki|point)/i, "malleability"],
   // gen-vectors.ts "duplicate object key" — the parser-level rule. NOT `dup-seq`; see the trap
   // note above.
   [/duplicate-key/i, "dup-key"],
@@ -315,12 +384,9 @@ function runBashScript(scriptPath, cwd) {
     if (e.code === "ENOENT") {
       return { stdout: "", exitCode: null, spawnError: `bash (or ${scriptPath}) not found: ${e.message}` };
     }
-    if (wasKilledOrTimedOut(e)) {
-      return {
-        stdout: "",
-        exitCode: null,
-        spawnError: `${scriptPath} TIMED OUT after ${SUBPROCESS_TIMEOUT_MS / 1000}s and was killed (signal ${e.signal}) — a hang must never block the whole run indefinitely`,
-      };
+    const kill = describeKillReason(e, SUBPROCESS_TIMEOUT_MS);
+    if (kill.killed) {
+      return { stdout: "", exitCode: null, spawnError: `${scriptPath} ${kill.reason}` };
     }
     const stdout = (e.stdout ?? "") + (e.stderr ?? "");
     const exitCode = typeof e.status === "number" ? e.status : 1;
@@ -334,12 +400,9 @@ function runFileLang(lang) {
     try {
       execFileSync(step.cmd, step.args, { cwd: step.cwd, timeout: SUBPROCESS_TIMEOUT_MS, stdio: ["ignore", "pipe", "pipe"] });
     } catch (e) {
-      if (wasKilledOrTimedOut(e)) {
-        return {
-          stdout: "",
-          exitCode: null,
-          spawnError: `pre-step '${step.cmd} ${step.args.join(" ")}' TIMED OUT after ${SUBPROCESS_TIMEOUT_MS / 1000}s and was killed (signal ${e.signal})`,
-        };
+      const kill = describeKillReason(e, SUBPROCESS_TIMEOUT_MS);
+      if (kill.killed) {
+        return { stdout: "", exitCode: null, spawnError: `pre-step '${step.cmd} ${step.args.join(" ")}' ${kill.reason}` };
       }
       const reason = e.code === "ENOENT" ? `${step.cmd} not found on PATH` : (e.stderr ?? e.message ?? "").toString().slice(0, 2000);
       return { stdout: "", exitCode: null, spawnError: `pre-step '${step.cmd} ${step.args.join(" ")}' failed: ${reason}` };
@@ -353,9 +416,18 @@ function parseFileLangLines(lang, stdout) {
   for (const line of stdout.split("\n")) {
     const m = lang.lineRe.exec(line);
     if (!m) continue;
-    const [, mark, rawLabel] = m;
+    const { mark, label: rawLabel, pyVal, langVal } = lang.extract(m);
     const label = rawLabel.trim();
-    results.push({ ok: mark === "PASS", label, class: classifyFileVector(label) });
+    const markOk = mark === "PASS";
+    const derivedOk = deriveOkFromValues(pyVal, langVal);
+    results.push({
+      ok: markOk,
+      label,
+      class: classifyFileVector(label),
+      // markMismatch: the runner printed "PASS"/"FAIL" that DISAGREES with its own printed py=/lang=
+      // values — internally inconsistent output, trusted nowhere, always surfaced (see the entry point).
+      markMismatch: markOk !== derivedOk ? { pyVal, langVal } : null,
+    });
   }
   return results;
 }
@@ -513,6 +585,103 @@ function tableHasAnyFail(table) {
   return null;
 }
 
+/**
+ * QA round 2 finding F2 (HIGH, prioritized): `verifyColumnHasCoverage` only checks `total === 0` —
+ * ONE surviving check in ONE class passes the guard while the other NINE silently go to "not
+ * asserted"/BROKEN, reading as a healthy column. Inflation (round 1's guards) is covered; shrinkage
+ * — a class that USED TO have real data quietly losing it — was not. This closes that direction using
+ * the one baseline this generator can always reach without inventing new persisted state: the
+ * ALREADY-COMMITTED conformance/MATRIX.md (`git show HEAD:…`), the exact same "regenerate + diff"
+ * source of truth `check:matrix`'s own drift gate already treats as ground truth. Scope is
+ * deliberately narrow — a class transitioning from HAD DATA to HAS NONE, not any reduction in count
+ * (a vector being legitimately retired would otherwise fight a strict monotonic-count rule) — because
+ * that transition is exactly what "silently stopped being emitted" looks like from the outside.
+ */
+
+/** Reads the LAST COMMITTED conformance/MATRIX.md (not the working-tree copy, which --write is about
+ * to overwrite) via `git show`. Returns null (not a hard-fail) when there is no commit to read yet —
+ * a fresh repo before the file's first commit is not a regression, it is nothing to compare against. */
+function readCommittedMatrix() {
+  try {
+    return execFileSync("git", ["show", "HEAD:conformance/MATRIX.md"], {
+      cwd: ROOT,
+      encoding: "utf8",
+      timeout: 30_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parses THIS GENERATOR'S OWN markdown table row shape (`| \`class\` | cell | cell | cell | cell |
+ * cell | `, in COLUMNS order) back into a per-class, per-column "had real data" boolean (true for a
+ * PASS/FAIL cell, false for "not asserted"/BROKEN). Tolerant of an old file with fewer/renamed
+ * classes or columns (a genuine schema change) — those cells are simply absent from the result and
+ * findCoverageShrinkage() below treats "absent" as "nothing to compare", not as a regression.
+ */
+function parseCommittedCoverage(markdownText) {
+  if (!markdownText) return null;
+  const coverage = {};
+  for (const line of markdownText.split("\n")) {
+    const m = /^\|\s*`([a-z-]+)`\s*\|(.+)\|\s*$/.exec(line);
+    if (!m || !VECTOR_CLASSES.includes(m[1])) continue;
+    const cells = m[2].split("|").map((c) => c.trim());
+    coverage[m[1]] = {};
+    for (let i = 0; i < COLUMNS.length && i < cells.length; i++) {
+      coverage[m[1]][COLUMNS[i].key] = /^PASS \(\d+\)$/.test(cells[i]) || /^FAIL \(/.test(cells[i]);
+    }
+  }
+  return coverage;
+}
+
+/** Pure comparison: which (class, column) pairs HAD real data in the committed baseline and have
+ * NONE now (empty "not asserted"/BROKEN). `oldCoverage` from parseCommittedCoverage(); `table` the
+ * freshly-built, fully-sentineled table. Returns [] when there is nothing to compare (no baseline, or
+ * the class/column didn't exist in it). */
+function findCoverageShrinkage(oldCoverage, table) {
+  if (!oldCoverage) return [];
+  const regressions = [];
+  for (const cls of VECTOR_CLASSES) {
+    const oldRow = oldCoverage[cls];
+    if (!oldRow) continue;
+    for (const col of COLUMNS) {
+      if (oldRow[col.key] !== true) continue; // was already empty (or unknown) before — not a regression
+      const cell = table.get(cls)[col.key];
+      const sentineled = cell.pass === -1 && cell.fail === -1;
+      const hasDataNow = !sentineled && (cell.pass > 0 || cell.fail > 0);
+      if (!hasDataNow) regressions.push({ cls, col: col.key });
+    }
+  }
+  return regressions;
+}
+
+/**
+ * QA round 2 finding F1: the footnote used to hardcode "Only `hash` and `dup-key` currently carry
+ * this caveat for the TS column" as hand-written prose — and the table it sits three rows below
+ * ALREADY shows `impersonation` as a third `†` cell, a self-contradiction nothing checked. Derives
+ * the SAME sentence from the table itself instead: which classes actually show "not asserted here"
+ * for a given column right now. A sentinel (BROKEN) cell is excluded — that is a different fact
+ * (checks ran but were not attributed here), not "no vector exists" — see F8's cellVerdictOrBroken.
+ */
+function classesNotAssertedFor(colKey, table) {
+  return VECTOR_CLASSES.filter((cls) => {
+    const cell = table.get(cls)[colKey];
+    const sentineled = cell.pass === -1 && cell.fail === -1;
+    return !sentineled && cell.pass === 0 && cell.fail === 0;
+  });
+}
+
+/** Natural-language join with correct grammar for 0/1/2/3+ items ("X" / "X and Y" / "X, Y and Z"). */
+function formatClassList(names) {
+  const quoted = names.map((n) => `\`${n}\``);
+  if (quoted.length === 0) return "none";
+  if (quoted.length === 1) return quoted[0];
+  if (quoted.length === 2) return `${quoted[0]} and ${quoted[1]}`;
+  return `${quoted.slice(0, -1).join(", ")} and ${quoted[quoted.length - 1]}`;
+}
+
 /** '‡' cells (Go/Rust/C#) mean "not covered by the file-based corpus"; '†' cells (TS) mean "not
  * explicitly [TS ...]-tagged in impl-py/conformance.mjs" — two DIFFERENT reasons, kept as two
  * distinct marks so neither is misread as the other. */
@@ -522,12 +691,30 @@ function cellVerdict(cell, mark) {
   return `not asserted here${mark}`;
 }
 
-/** A cell for a language whose script ran but produced NOTHING (verifyLangExecuted's guard fired)
- * is marked with the {pass:-1, fail:-1} sentinel BEFORE rendering — rendered here as an unmissable
- * BROKEN state, distinct from both PASS and "not asserted here" (see the EVIDENCE GATE requirement
- * in this file's header comment: a runner that did not execute must never look like one that did). */
+// QA round 2 finding F8: every sentinel used to render the identical "0 checks executed" text
+// regardless of WHY the column was marked broken — but round 1's own column-coverage guard
+// (verifyColumnHasCoverage) creates a sentinel for a DIFFERENT fact: checks WERE executed, they were
+// simply never attributed to this class/column (e.g. every check silently defaulted to Python). A
+// reader told "0 checks executed" for THAT cause is being sent to debug the wrong thing (a runner
+// that didn't run) instead of the right one (a classifier/attribution bug in a runner that did run).
+// The sentinel now carries WHICH of the two happened, and this renders each honestly.
+const BROKEN_RUNNER = "runner"; // the underlying process produced 0 parseable lines, or never spawned
+const BROKEN_COVERAGE = "coverage"; // the process ran and produced output, but none of it landed here
+
+function sentinelCell(kind) {
+  return { pass: -1, fail: -1, brokenKind: kind };
+}
+
+/** A cell for a BROKEN column (see BROKEN_RUNNER / BROKEN_COVERAGE) is rendered as an unmissable
+ * BROKEN state, distinct from both PASS and "not asserted here" (the EVIDENCE GATE requirement in
+ * this file's header comment: a runner that did not execute must never look like one that did) — and
+ * now distinct FROM EACH OTHER too, so the two different underlying facts are never conflated. */
 function cellVerdictOrBroken(cell, mark) {
-  if (cell.pass === -1 && cell.fail === -1) return "**BROKEN — 0 checks executed, see CI log**";
+  if (cell.pass === -1 && cell.fail === -1) {
+    return cell.brokenKind === BROKEN_COVERAGE
+      ? "**BROKEN — checks ran but NONE attributed here, see CI log**"
+      : "**BROKEN — 0 checks executed, see CI log**";
+  }
   return cellVerdict(cell, mark);
 }
 
@@ -545,11 +732,15 @@ function renderMarkdown({ table, totalTsPyResults, tsPyExitCode, fileLangRuns, o
   lines.push("");
   lines.push(
     "**Conformance threshold:** an implementation is conformant for a vector class iff it " +
-      "produces the identical verdict to the TS reference on EVERY vector run against it in that " +
-      "class — one mismatch fails the whole class (no partial credit; a single silently-accepted " +
-      "attack is a complete security failure regardless of how many adjacent checks still pass). " +
-      "This is the bar a third-party re-implementation should be held to before calling itself " +
-      "conformant with `noa.receipt/0.1`.",
+      "produces the identical verdict to its OWN comparison target on EVERY vector run against it " +
+      "in that class — one mismatch fails the whole class (no partial credit; a single " +
+      "silently-accepted attack is a complete security failure regardless of how many adjacent " +
+      "checks still pass). **The comparison target is not \"TS\" for every column** (a prior " +
+      "version of this sentence said so, incorrectly): Python is compared DIRECTLY to TS; Go, Rust " +
+      "and C# are each compared DIRECTLY to PYTHON (their own conformance.sh scripts, ground truth " +
+      "= `impl-py/noa_verify.py`), not directly to TS. Five-way agreement is real, but it is a CHAIN " +
+      "of two direct comparisons, not five independent ones. This is the bar a third-party " +
+      "re-implementation should be held to before calling itself conformant with `noa.receipt/0.1`.",
   );
   lines.push("");
   lines.push(
@@ -574,20 +765,29 @@ function renderMarkdown({ table, totalTsPyResults, tsPyExitCode, fileLangRuns, o
     lines.push(`| \`${cls}\` | ${cells.join(" | ")} |`);
   }
   lines.push("");
+  // QA round 2 finding F1: DERIVED from the table just rendered, not hand-typed — the previous
+  // hardcoded "Only `hash` and `dup-key`" sentence had silently gone stale against its own table
+  // three rows above (which already showed `impersonation` as a third † cell) and nothing noticed.
+  const tsNotAsserted = classesNotAssertedFor("TS", table);
   lines.push(
     "† \"not asserted here\" (TS/Python columns) means `impl-py/conformance.mjs` does not run an " +
       "explicitly-tagged check for that implementation in that class (usually because the vector " +
       "predates the `[TS ...]`/`[PY verifier]` tagging convention and only exercises the Python CLI " +
       "directly). It does NOT mean untested: TS's own behavior for that vector class is unit-tested " +
       "elsewhere (`test/verify.test.ts`, `test/safe-json.test.ts`, `test/identity-binding.test.ts`) " +
-      "and gated by `npm test`. Only `hash` and `dup-key` currently carry this caveat for the TS column.",
+      `and gated by \`npm test\`. Currently ${formatClassList(tsNotAsserted)} carr${tsNotAsserted.length === 1 ? "ies" : "y"} this caveat for the TS column.`,
   );
   lines.push("");
+  // Same derivation, for the file-based corpus: which classes are "not asserted" for ALL THREE of
+  // Go/Rust/C# at once (the interesting case — a class asserted for even one of the three has real
+  // coverage, just not from every language).
+  const fileLangsAllEmpty = VECTOR_CLASSES.filter((cls) => ["Go", "Rust", "CSharp"].every((k) => classesNotAssertedFor(k, table).includes(cls)));
   lines.push(
     "‡ \"not asserted here\" (Go/Rust/C# columns) means the shared file-based corpus " +
       "(`conformance/vectors/`, `conformance/golden/`) does not currently include a vector that " +
       "`FILE_VECTOR_CLASS_RULES` maps to this class for that implementation. It does NOT mean the " +
-      "implementation lacks the defense in its own source: `malleability` is the one real gap this " +
+      `implementation lacks the defense in its own source: ${formatClassList(fileLangsAllEmpty)} ` +
+      `${fileLangsAllEmpty.length === 1 ? "is the one" : "are the"} real gap${fileLangsAllEmpty.length === 1 ? "" : "s"} this ` +
       "run found — Go (`impl-go/keys.go`), Rust (`impl-rust/src/keys.rs`) and C# " +
       "(`impl-csharp/src/Crypto.cs`) all implement Ed25519 `S < L` scalar rejection and low-order/" +
       "non-canonical public-key rejection in code, but no vector in this corpus currently exercises " +
@@ -782,6 +982,127 @@ function selftest() {
   check('"golden/genesis + keyring" (real corpus) still classifies structural', classifyFileVector("golden/genesis + keyring") === "structural");
   check('"multi, no keyring (UNVERIFIED)" (rust real corpus) still classifies structural', classifyFileVector("multi, no keyring (UNVERIFIED)") === "structural");
 
+  console.log("\nQA round 2 finding F1 — footnote sentence DERIVED from the table, not hand-typed:");
+  {
+    const t = new Map();
+    for (const cls of VECTOR_CLASSES) t.set(cls, { TS: { pass: 1, fail: 0 }, Python: { pass: 1, fail: 0 }, Go: { pass: 1, fail: 0 }, Rust: { pass: 1, fail: 0 }, CSharp: { pass: 1, fail: 0 } });
+    t.get("hash").TS = { pass: 0, fail: 0 };
+    t.get("dup-key").TS = { pass: 0, fail: 0 };
+    t.get("impersonation").TS = { pass: 0, fail: 0 }; // the exact case the round-1 hardcoded sentence silently omitted
+    const notAsserted = classesNotAssertedFor("TS", t);
+    check("derives all THREE currently-empty TS classes, not just the two the old hardcoded sentence named", notAsserted.length === 3 && notAsserted.includes("impersonation"));
+    check('formatClassList grammar: 1 item -> no "and"', formatClassList(["hash"]) === "`hash`");
+    check('formatClassList grammar: 2 items -> "X and Y"', formatClassList(["hash", "dup-key"]) === "`hash` and `dup-key`");
+    check('formatClassList grammar: 3 items -> "X, Y and Z"', formatClassList(["hash", "dup-key", "impersonation"]) === "`hash`, `dup-key` and `impersonation`");
+    check('formatClassList grammar: 0 items -> "none"', formatClassList([]) === "none");
+    // A sentinel (BROKEN) cell is a DIFFERENT fact than "not asserted" and must not be counted as one.
+    const t2 = new Map();
+    for (const cls of VECTOR_CLASSES) t2.set(cls, { TS: { pass: -1, fail: -1 }, Python: { pass: 1, fail: 0 }, Go: { pass: 1, fail: 0 }, Rust: { pass: 1, fail: 0 }, CSharp: { pass: 1, fail: 0 } });
+    check("a fully-BROKEN column reports ZERO 'not asserted' classes (it is a different fact)", classesNotAssertedFor("TS", t2).length === 0);
+  }
+
+  console.log("\nQA round 2 finding F2 (HIGH, prioritized) — coverage-SHRINKAGE detection against the committed baseline:");
+  {
+    // A committed baseline where `sig` had real TS data.
+    const oldMd =
+      "| Vector class | TS (reference) | Python (`impl-py/noa_verify.py`) | Go (`impl-go/`) | Rust (`impl-rust/`) | C# (`impl-csharp/`) |\n" +
+      "|---|---|---|---|---|---|\n" +
+      "| `structural` | PASS (13) | PASS (21) | PASS (16) | PASS (12) | PASS (11) |\n" +
+      "| `sig` | PASS (2) | PASS (3) | PASS (2) | PASS (1) | PASS (1) |\n";
+    const oldCoverage = parseCommittedCoverage(oldMd);
+    check("parseCommittedCoverage reads structural.TS as having data", oldCoverage.structural.TS === true);
+    check("parseCommittedCoverage reads sig.TS as having data", oldCoverage.sig.TS === true);
+
+    // RED: a NEW table where `sig` for TS silently went to "not asserted" (structural is untouched,
+    // and 9-of-10 other classes could ALSO have real data — round-1's total!==0 guard would stay
+    // GREEN here, which is exactly the "one check in one class passes the guard" gap F2 named).
+    const newTableShrunk = new Map();
+    for (const cls of VECTOR_CLASSES) newTableShrunk.set(cls, { TS: { pass: 1, fail: 0 }, Python: { pass: 1, fail: 0 }, Go: { pass: 1, fail: 0 }, Rust: { pass: 1, fail: 0 }, CSharp: { pass: 1, fail: 0 } });
+    newTableShrunk.get("sig").TS = { pass: 0, fail: 0 }; // shrank to "not asserted" — the OTHER 9 classes still have data
+    check("round-1's verifyColumnHasCoverage would NOT catch this (total!==0, still green) — confirms the gap is real", verifyColumnHasCoverage("TS", newTableShrunk).broken === false);
+    const shrinkage = findCoverageShrinkage(oldCoverage, newTableShrunk);
+    check("findCoverageShrinkage DOES catch the single-class regression (red)", shrinkage.length === 1 && shrinkage[0].cls === "sig" && shrinkage[0].col === "TS");
+
+    // GREEN: the same class staying non-empty (even with a different count) is not a regression.
+    const newTableHealthy = new Map();
+    for (const cls of VECTOR_CLASSES) newTableHealthy.set(cls, { TS: { pass: 1, fail: 0 }, Python: { pass: 1, fail: 0 }, Go: { pass: 1, fail: 0 }, Rust: { pass: 1, fail: 0 }, CSharp: { pass: 1, fail: 0 } });
+    newTableHealthy.get("sig").TS = { pass: 9, fail: 0 }; // count changed, but still has data
+    check("a count CHANGE (not a transition to empty) is NOT flagged as shrinkage", findCoverageShrinkage(oldCoverage, newTableHealthy).length === 0);
+
+    // A class becoming BROKEN (sentineled) after having real data is ALSO a regression — the runner
+    // guard and the shrinkage guard should agree it is bad, from two different angles.
+    const newTableBroken = new Map();
+    for (const cls of VECTOR_CLASSES) newTableBroken.set(cls, { TS: { pass: -1, fail: -1 }, Python: { pass: 1, fail: 0 }, Go: { pass: 1, fail: 0 }, Rust: { pass: 1, fail: 0 }, CSharp: { pass: 1, fail: 0 } });
+    check("a class that had data and is now BROKEN (sentineled) IS flagged as shrinkage", findCoverageShrinkage(oldCoverage, newTableBroken).some((r) => r.col === "TS"));
+
+    // No baseline (fresh repo, or git unavailable) -> nothing to compare, never a false hard-fail.
+    check("no baseline (null) -> zero regressions, never blocks a first run", findCoverageShrinkage(null, newTableShrunk).length === 0);
+    check("readCommittedMatrix degrades to null rather than throwing when git/file is unavailable", (() => {
+      try {
+        const r = execFileSync("git", ["show", "HEAD:this-path-does-not-exist-anywhere.md"], { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+        return r === undefined; // unreachable in practice — execFileSync throws for a missing path
+      } catch {
+        return true; // confirms the code path readCommittedMatrix's try/catch relies on actually throws
+      }
+    })());
+  }
+
+  console.log("\nQA round 2 finding F3 (part 1) — the runner's own PASS/FAIL mark cross-checked against its own printed py=/lang= values:");
+  {
+    const goLang = FILE_LANGS.find((l) => l.key === "Go");
+    // A line where mark says PASS but the printed values actually disagree — internally inconsistent
+    // output from a script this generator does not own; must be flagged, never silently trusted.
+    const inconsistent = parseFileLangLines(goLang, "PASS  py=0 go=2  golden/genesis + keyring\n");
+    check("mark=PASS but py=0/go=2 disagree -> markMismatch set (red)", inconsistent[0].markMismatch !== null);
+    const consistent = parseFileLangLines(goLang, "PASS  py=0 go=0  golden/genesis + keyring\n");
+    check("mark=PASS and py=0/go=0 agree -> markMismatch null (green)", consistent[0].markMismatch === null);
+    const consistentFail = parseFileLangLines(goLang, "FAIL  py=0 go=2  attack/tampered-content + keyring\n");
+    check("mark=FAIL and py/go genuinely differ -> markMismatch null (a real, correctly-reported FAIL, not an inconsistency)", consistentFail[0].markMismatch === null);
+    check("deriveOkFromValues: equal values -> true", deriveOkFromValues("0", "0") === true);
+    check("deriveOkFromValues: unequal values -> false", deriveOkFromValues("0", "2") === false);
+    check("Rust's STATUSNAME(code) values compare correctly too", deriveOkFromValues("VALID(0)", "VALID(0)") === true && deriveOkFromValues("VALID(0)", "TAMPERED(2)") === false);
+  }
+
+  console.log("\nQA round 2 finding F4 — malleability now has a live classifier rule (was entirely absent):");
+  check('a plausible future "attack/malleability-s-scalar.json" label now classifies malleability', classifyFileVector("attack/malleability-s-scalar.json") === "malleability");
+  check('a plausible future "attack/low-order-pubkey.json" label now classifies malleability', classifyFileVector("attack/low-order-pubkey.json") === "malleability");
+  check("the new malleability rule does not swallow any REAL current corpus label", ["golden/genesis + keyring", "attack/tampered-content + keyring", "attack/key-swap + keyring", "malformed/duplicate-key"].every((l) => classifyFileVector(l) !== "malleability"));
+
+  console.log("\nQA round 2 finding F5 — parser robustness (colon-in-detail) + the tenant re-attribution now mechanically pinned:");
+  {
+    // The tenant fix (requireTenantConsistency:false, an internal colon) — verified by eye in round 1,
+    // now pinned as a fixture so a future regex change can't silently re-break it unnoticed.
+    const tenantLine = "✓ VALID (same bytes, requireTenantConsistency:false — the migration path) [TS verifyChain]: VALID (want VALID)\n";
+    const tenantParsed = parseTsPyLines(tenantLine);
+    check("the requireTenantConsistency:false label keeps its internal colon AND its [TS verifyChain] tag", tenantParsed[0]?.label === "VALID (same bytes, requireTenantConsistency:false — the migration path) [TS verifyChain]");
+    check("...and is therefore correctly attributed to TS (was silently Python before the fix)", tenantParsed[0]?.impl === "TS");
+    check("...and classifies as tenant (matches CLASS_RULES' requireTenantConsistency pattern)", tenantParsed[0]?.class === "tenant");
+
+    // A lowercase-starting detail (the "lone surrogate ... rejected" real-corpus shape) still parses.
+    const rejectedLine = "✓ MALFORMED (lone surrogate in keyring kid) [TS safeParse]: rejected (want rejected)\n";
+    check('a lowercase "rejected (want rejected)" detail still parses (not just uppercase STATUS words)', parseTsPyLines(rejectedLine)[0]?.label === "MALFORMED (lone surrogate in keyring kid) [TS safeParse]");
+  }
+
+  console.log("\nQA round 2 finding F7 — OOM/external-kill is NOT reported as our own timeout:");
+  {
+    const realTimeout = describeKillReason({ code: "ETIMEDOUT", signal: "SIGTERM" }, 300_000);
+    check("a genuine ETIMEDOUT -> reason says TIMED OUT", realTimeout.killed === true && /TIMED OUT/.test(realTimeout.reason));
+    const externalKill = describeKillReason({ code: undefined, signal: "SIGKILL" }, 300_000);
+    check("an external SIGKILL with NO ETIMEDOUT code -> killed:true but reason does NOT fabricate a timeout diagnosis", externalKill.killed === true && !/TIMED OUT/.test(externalKill.reason));
+    check("...and explicitly says it is NOT necessarily the timeout", /NOT necessarily/.test(externalKill.reason));
+    const normalExit = describeKillReason({ code: undefined, signal: null, status: 1 }, 300_000);
+    check("a normal nonzero exit (no signal at all) -> killed:false", normalExit.killed === false);
+  }
+
+  console.log("\nQA round 2 finding F8 — BROKEN cells now name WHICH fact happened (0-checks vs checks-ran-but-unattributed):");
+  {
+    const runnerCell = cellVerdictOrBroken(sentinelCell(BROKEN_RUNNER), "†");
+    check('BROKEN_RUNNER renders "0 checks executed"', /0 checks executed/.test(runnerCell));
+    const coverageCell = cellVerdictOrBroken(sentinelCell(BROKEN_COVERAGE), "†");
+    check('BROKEN_COVERAGE renders a DIFFERENT message ("checks ran but NONE attributed")', /checks ran but NONE attributed/.test(coverageCell));
+    check("the two BROKEN messages are not the same string (the whole point of the fix)", runnerCell !== coverageCell);
+  }
+
   console.log(failed === 0 ? "\nSELFTEST PASS" : `\nSELFTEST FAILED: ${failed} check(s)`);
   process.exit(failed === 0 ? 0 : 1);
 }
@@ -797,7 +1118,7 @@ if (argv.includes("--selftest")) {
 
 let hardFail = false;
 
-const { stdout: tsPyStdout, exitCode: tsPyExitCode, timedOut: tsPyTimedOut } = runPyConformance();
+const { stdout: tsPyStdout, exitCode: tsPyExitCode, timedOut: tsPyTimedOut, killReason: tsPyKillReason } = runPyConformance();
 const tsPyResults = parseTsPyLines(tsPyStdout);
 
 const tsPyDuplicates = findDuplicateLabels(tsPyResults);
@@ -807,7 +1128,7 @@ if (tsPyDuplicates.length > 0) {
   hardFail = true;
 }
 if (tsPyTimedOut) {
-  console.error(`\nimpl-py/conformance.mjs TIMED OUT after ${SUBPROCESS_TIMEOUT_MS / 1000}s — matrix reflects a FAILING run.`);
+  console.error(`\nimpl-py/conformance.mjs ${tsPyKillReason} — matrix reflects a FAILING run.`);
   hardFail = true;
 }
 
@@ -828,25 +1149,49 @@ for (const lang of FILE_LANGS) {
     for (const d of langDuplicates) console.error(`  - "${d.label}" appeared ${d.count} times`);
     hardFail = true;
   }
+  // QA round 2 finding F3 (part 1): the runner's own printed PASS/FAIL mark must agree with the
+  // py=/lang= verdict VALUES it also printed on the same line — internally inconsistent output from
+  // a runner we do not own is never trusted silently.
+  const markMismatches = parsed.filter((r) => r.markMismatch);
+  if (markMismatches.length > 0) {
+    console.error(`\n${markMismatches.length} ${lang.key} line(s) where the printed PASS/FAIL mark disagrees with its own printed py=/lang= values:`);
+    for (const r of markMismatches) console.error(`  - "${r.label}": marked ${r.ok ? "PASS" : "FAIL"} but py=${r.markMismatch.pyVal} lang=${r.markMismatch.langVal}`);
+    hardFail = true;
+  }
 }
 
 const { table, unclassified, otherChecks } = buildMatrix(tsPyResults, fileLangResults);
+
+// QA round 2 finding F6a: a Go/Rust/C# TIMEOUT already sentinels (verifyLangExecuted sees 0 parsed
+// lines, since the kill path discards stdout). A TS/Python TIMEOUT previously did NOT — it only set
+// hardFail, so a partial-but-plausible-looking table (whatever ran before the kill) still got
+// rendered as ordinary PASS/"not asserted" cells. runPyConformance() now discards stdout on a kill
+// too (mirrors runBashScript), so tsPyResults is already empty here — but sentinel explicitly anyway,
+// the same way the file-lang loop below does, so BOTH families fail the SAME visible way.
+if (tsPyTimedOut) {
+  for (const cls of VECTOR_CLASSES) {
+    table.get(cls).TS = sentinelCell(BROKEN_RUNNER);
+    table.get(cls).Python = sentinelCell(BROKEN_RUNNER);
+  }
+}
 
 // A BROKEN language must never contribute a cell that looks like it was measured — override every
 // cell for that column to say so explicitly, on top of (not instead of) the hardFail below.
 for (const lang of FILE_LANGS) {
   if (!fileLangRuns[lang.key].broken) continue;
-  for (const cls of VECTOR_CLASSES) table.get(cls)[lang.key] = { pass: -1, fail: -1 }; // sentinel, rendered specially below
+  for (const cls of VECTOR_CLASSES) table.get(cls)[lang.key] = sentinelCell(BROKEN_RUNNER);
 }
 
 // QA round 1 finding A: the per-RUNNER guard above (verifyLangExecuted / fileLangRuns[*].broken)
 // cannot see a COLUMN silently emptying inside a runner that still executes fine — checked here,
 // uniformly, for ALL FIVE columns (not just the 3 file-langs) against the now-fully-built table.
+// QA round 2 finding F8: this is the BROKEN_COVERAGE case (checks ran, none landed here) — a
+// DIFFERENT fact from BROKEN_RUNNER above, and now rendered differently (see cellVerdictOrBroken).
 const tsPyColumnStatus = { TS: verifyColumnHasCoverage("TS", table), Python: verifyColumnHasCoverage("Python", table) };
 for (const [colKey, status] of Object.entries(tsPyColumnStatus)) {
   if (!status.broken) continue;
   console.error(`\n${colKey} column: ${status.reason}`);
-  for (const cls of VECTOR_CLASSES) table.get(cls)[colKey] = { pass: -1, fail: -1 };
+  for (const cls of VECTOR_CLASSES) table.get(cls)[colKey] = sentinelCell(BROKEN_COVERAGE);
   hardFail = true;
 }
 for (const lang of FILE_LANGS) {
@@ -854,22 +1199,31 @@ for (const lang of FILE_LANGS) {
   const status = verifyColumnHasCoverage(lang.key, table);
   if (!status.broken) continue;
   console.error(`\n${lang.key} column: ${status.reason}`);
-  for (const cls of VECTOR_CLASSES) table.get(cls)[lang.key] = { pass: -1, fail: -1 };
+  for (const cls of VECTOR_CLASSES) table.get(cls)[lang.key] = sentinelCell(BROKEN_COVERAGE);
   fileLangRuns[lang.key] = { ...fileLangRuns[lang.key], broken: true, brokenReason: status.reason };
   hardFail = true;
 }
 
-const md = renderMarkdown({
-  table,
-  totalTsPyResults: tsPyResults.length,
-  tsPyExitCode,
-  fileLangRuns,
-  otherChecks,
-  tsPyColumnStatus,
-});
+// QA round 2 finding F2 (HIGH, prioritized): shrinkage detection against the last COMMITTED table —
+// runs on the FINAL, fully-sentineled table so it sees exactly what is about to be published.
+const committedMatrixText = readCommittedMatrix();
+if (committedMatrixText === null) {
+  console.error("\n(no committed conformance/MATRIX.md found via `git show HEAD:…` — skipping the coverage-shrinkage check; nothing to compare against yet)");
+} else {
+  const shrinkage = findCoverageShrinkage(parseCommittedCoverage(committedMatrixText), table);
+  if (shrinkage.length > 0) {
+    console.error(`\n${shrinkage.length} class/column pair(s) had real data in the LAST COMMITTED conformance/MATRIX.md and have NONE now — coverage regression:`);
+    for (const r of shrinkage) console.error(`  - \`${r.cls}\` / ${r.col}`);
+    hardFail = true;
+  }
+}
 
-process.stdout.write(md + "\n");
-
+// QA round 2 finding F6 (part 2): moved every remaining hardFail check to BEFORE rendering, not
+// after — previously several of these ran between the stdout print and the --write gate, so `hardFail`
+// was not yet FINAL at print time and a plain `node scripts/conformance-matrix.mjs > MATRIX.md` shell
+// redirect (bypassing --write's own refusal entirely) could still capture a failing run with no
+// in-band signal beyond the process exit code, which a bare `>` redirect discards. hardFail is now
+// fully resolved before `md` is built, so the banner below can be baked into the file content itself.
 if (tsPyExitCode !== 0) {
   console.error(`\nimpl-py/conformance.mjs itself failed (exit ${tsPyExitCode}) — matrix reflects a FAILING run.`);
   hardFail = true;
@@ -907,6 +1261,32 @@ if (anyFail) {
   console.error(`\nFAIL cell found in the built table (\`${anyFail.cls}\` / ${anyFail.col}, ${anyFail.fail} failing) independent of any exit code — matrix reflects a FAILING run.`);
   hardFail = true;
 }
+
+let md = renderMarkdown({
+  table,
+  totalTsPyResults: tsPyResults.length,
+  tsPyExitCode,
+  fileLangRuns,
+  otherChecks,
+  tsPyColumnStatus,
+});
+
+// QA round 2 finding F6 (part 2): the --write gate (finding C, round 1) only protects the tool's OWN
+// write path — nothing stops `node scripts/conformance-matrix.mjs > conformance/MATRIX.md`, a bare
+// shell redirect, from capturing a failing run's output directly into the artifact. The generator
+// cannot forbid a human from choosing that invocation instead of the documented `--write` flag, so
+// this bakes an unmissable warning INTO the content itself — a redirect would carry the banner
+// straight into the file, where the NEXT `check:matrix` run (or a human skimming the diff) sees it
+// immediately, rather than depending on whoever ran the bare command to also have checked $?.
+if (hardFail) {
+  md =
+    "> ⚠️ **THIS OUTPUT REFLECTS A FAILING RUN — DO NOT COMMIT THIS FILE.** " +
+    "Run with `--write` (never a bare shell redirect) so the failure gate can refuse to persist it, " +
+    "or fix the underlying failures and regenerate. See the errors printed to stderr above.\n\n" +
+    md;
+}
+
+process.stdout.write(md + "\n");
 
 // QA round 1 finding C: --write must never persist a public trust artifact from a FAILING run. The
 // write now happens LAST, gated on the FULLY-computed hardFail — previously it ran before any of the
