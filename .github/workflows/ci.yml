@@ -342,6 +342,21 @@ jobs:
         run: bash impl-rust/conformance.sh
       - name: C# verifier == Python reference
         run: bash impl-csharp/conformance.sh
+      - name: Conformance matrix generator selftest (guards against a silent empty-runner PASS)
+        # Hermetic — no subprocess, no toolchain. Proves scripts/conformance-matrix.mjs's own
+        # empty-runner guard is RED on a synthetic 0-line/exit-0 fixture and GREEN on a real one
+        # BEFORE trusting the real run below (same convention as lint-trusted-roots.mjs --selftest).
+        run: node scripts/conformance-matrix.mjs --selftest
+      - name: Conformance matrix is up to date (all five columns, no drift)
+        # Regenerates conformance/MATRIX.md from FOUR live runs — impl-py/conformance.mjs (TS +
+        # Python) plus this job's own impl-go/impl-rust/impl-csharp scripts (Go/Rust/C#, just
+        # exercised above) — and fails if the committed file differs, OR if any run could not be
+        # classified, OR if a language script produced zero parseable result lines (see
+        # verifyLangExecuted() in the generator: a runner that proves nothing must never render as
+        # passing or as "not asserted"). MOVED HERE from the `test` job (2026-08-12): the generator
+        # now needs go/cargo/dotnet on PATH, which only this job installs; `test`'s matrix strategy
+        # would otherwise run this twice for nothing while lacking the toolchains it needs.
+        run: node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md
 
   test:
     runs-on: ubuntu-latest
@@ -548,13 +563,12 @@ jobs:
         # Slow by construction: each control is removed and its suite re-run. It runs here rather
         # than in a fast lane precisely because "what would have caught this?" is worth the minutes.
         run: npm run lint:knockout
-      - name: Conformance matrix is up to date (no drift)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        # Regenerates conformance/MATRIX.md from conformance.mjs's own output and fails if it differs
-        # from the committed copy (or if any vector could not be classified into a security class).
-        # Same "regenerate + git-diff" discipline as the vector-drift check above, applied to the
-        # derived TS↔Python pass/fail matrix so it can never silently go stale against the harness.
-        run: node scripts/conformance-matrix.mjs --write && git diff --exit-code conformance/MATRIX.md
+      # "Conformance matrix is up to date" MOVED to the `five-verifier-conformance` job (2026-08-12):
+      # the generator now regenerates all FIVE columns (TS, Python, Go, Rust, C#), which needs
+      # go/cargo/dotnet on PATH — only that job installs them, and this job is a 2-way `node` matrix
+      # (20/22) that would otherwise pay for three toolchain installs twice for a check that only
+      # needs to run once. See that job's "Conformance matrix is up to date (all five columns, no
+      # drift)" step.
       - name: Self-check the CLI exit-code contract
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |

@@ -44,6 +44,24 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: npm
 
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      # go/rust/dotnet are needed by `prepublishOnly`'s `check:matrix` step below, which now
+      # regenerates conformance/MATRIX.md's Go/Rust/C# columns (in addition to TS/Python) and diffs
+      # it against the committed copy — same toolchains as .github/workflows/ci.yml's
+      # `five-verifier-conformance` job, pinned to the same versions so the two never silently
+      # diverge on what "conformant" measures at publish time vs. on every push.
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: impl-go/go.mod
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # stable
+        with:
+          toolchain: stable
+      - uses: actions/setup-dotnet@a98b56852c35b8e3190ac28c8c2271da59106c68 # v6.0.0
+        with:
+          dotnet-version: "10.0.x"
+
       # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node still ships npm 10.x.
       # Pin to the 11.x line: `npm@latest` is now npm@12, which requires node >= 22 (EBADENGINE on
       # this node-20 runner). npm 11.x is >= 11.5.1 (OIDC-capable) AND node-20-compatible.
@@ -56,4 +74,8 @@ jobs:
         run: npm test
 
       - name: Publish to npm via OIDC (no token, with provenance)
+        # prepublishOnly (package.json) runs here: npm test, inert-core check, dogfood suite, the
+        # TS<->Python cross-impl proof, the publish-surface lint, and check:matrix — which now
+        # regenerates AND diffs all five conformance columns, so a stale or overstated matrix blocks
+        # publish exactly like a failing test would.
         run: npm publish --provenance --access public

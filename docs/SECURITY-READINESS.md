@@ -195,9 +195,9 @@ living in `noa-mobile`/`noa-trust`, not here.
   without an anchor, cross-agent impersonation, no key revocation — rather than hiding them).
 - **A machine-checked cross-implementation conformance suite.** `conformance/vectors/` (structural,
   hash, sig, key-swap, impersonation, truncation, dup-key, malleability, unicode, tenant classes)
-  is diffed between the TypeScript reference and an independent Python re-implementation on every
-  CI run (`conformance/MATRIX.md`, regenerated and drift-checked in `ci.yml`). An auditor can
-  extend this vector set directly rather than building a harness first.
+  is diffed across all FIVE independent verifiers — the TypeScript reference, Python, Go, Rust and
+  C# — on every CI run (`conformance/MATRIX.md`, regenerated and drift-checked in `ci.yml`). An
+  auditor can extend this vector set directly rather than building a harness first.
 - **Reproducible, byte-pinned test fixtures.** `conformance/vectors/attack/*.json` and
   `conformance/vectors/malformed/*.json` are concrete attack payloads an auditor can read,
   extend, and diff against — not abstract descriptions.
