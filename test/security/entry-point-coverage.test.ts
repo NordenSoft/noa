@@ -89,6 +89,11 @@ const CALLS: Record<string, (arg: unknown) => unknown> = {
   validateReceiptShape: (a) => noaReceipt.validateReceiptShape(a as never),
   receiptFromCose: (a) => noaReceipt.receiptFromCose(Buffer.from("x"), a as never),
   coseSign1Verify: (a) => noaReceipt.coseSign1Verify(Buffer.from("x"), a as never),
+  // `noa.action-digest/0.1`. The hostile value goes at index 0 in both cases and the sibling
+  // argument is valid BYTES, so the probe reaches the boundary instead of dying on a type failure
+  // next door — the same reason every other row here passes a real second argument.
+  buildActionDigest: (a) => noaReceipt.buildActionDigest(a as never, EMPTY_OBJECT),
+  verifyActionDigest: (a) => noaReceipt.verifyActionDigest(a as never, EMPTY_OBJECT),
   evaluate: (a) => noaReceipt.evaluate(a as never, EMPTY_OBJECT),
   validatePolicy: (a) => noaReceipt.validatePolicy(a as never),
   assertValidPolicy: (a) => { try { return noaReceipt.assertValidPolicy(a as never); } catch { return null; } },

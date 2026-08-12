@@ -119,6 +119,11 @@ const TCB = [
   "src/federation/anchor.ts",
   "src/federation/acceptance.ts",
   "src/federation/verify-witnessed.ts",
+  // `noa.action-digest/0.1`. A decision path by construction, listed here in the SAME commit that
+  // creates it rather than after someone notices — the note on `src/verification-keyring.ts` above
+  // records what happens otherwise, twice. `verifyActionDigest` returns a verdict a relying party
+  // correlates an authorization on, and both of its parameters are attacker-reachable bytes.
+  "src/action-digest.ts",
 ];
 
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
