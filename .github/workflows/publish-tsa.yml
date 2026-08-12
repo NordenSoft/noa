@@ -1,0 +1,153 @@
+name: publish-tsa
+
+# Trusted Publishing (OIDC) — NO NPM_TOKEN, no expiring secret to rotate. Same mechanism as
+# publish.yml / publish-mcp.yml, for the single package packages/tsa-anchor (npm name:
+# noa-tsa-anchor). Because this is its OWN npm package name, it needs its OWN one-time registry-side
+# setup on npmjs.com before the first tag push will work:
+#   noa-tsa-anchor → Settings → Publishing access / Trusted Publisher → GitHub Actions
+#     Organization or user: NordenSoft
+#     Repository:           noa
+#     Workflow filename:    publish-tsa.yml
+#     (Environment:         leave blank)
+# After that, ship a release with NO token, ever:
+#   git tag tsa-v0.1.0 && git push origin tsa-v0.1.0
+#
+# WHY A SEPARATE WORKFLOW rather than a third package inside publish-mcp.yml: that workflow releases
+# adapter-core and mcp-proxy IN LOCKSTEP under one version, because mcp-proxy depends on
+# adapter-core. tsa-anchor depends on neither and versions independently, so folding it in would
+# either force a fake lockstep or add a conditional to a sequence whose ordering is load-bearing.
+
+on:
+  push:
+    tags:
+      - 'tsa-v*'
+  workflow_dispatch: {}   # also allow a manual run from the Actions tab
+
+concurrency:
+  group: npm-publish-tsa-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # REQUIRED: lets the job mint the OIDC token npm exchanges for
+                    # short-lived publish credentials (also what enables --provenance)
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # REQUIRED by the kernel-parity gate below: it compares HEAD against the kernel's release
+          # TAG, and the default shallow checkout carries no tags. The gate fails closed rather than
+          # skipping when it cannot see them, so a shallow clone breaks the release loudly instead
+          # of silently publishing against an unverified kernel.
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            packages/tsa-anchor/package-lock.json
+
+      # Trusted publishing (OIDC) needs npm >= 11.5.1; setup-node still ships npm 10.x.
+      # Pin to the 11.x line: `npm@latest` is now npm@12, which requires node >= 22 (EBADENGINE on
+      # this node-20 runner). npm 11.x is >= 11.5.1 (OIDC-capable) AND node-20-compatible.
+      - name: Upgrade npm (OIDC trusted publishing needs >= 11.5.1; pin 11.x — npm 12 needs node 22+)
+        run: npm install -g npm@11.18.0
+
+      - name: Build the root kernel (tsa-anchor links it via file:../..)
+        # tsa-anchor resolves `noa-receipt` from THIS repository tree, not from the registry, so its
+        # suite measures the kernel being released rather than a previously published copy of it.
+        # `npm ci` in the package only creates the symlink — `import "noa-receipt"` then resolves
+        # through the root's `main: dist/src/index.js`, which exists only after this build.
+        # Keep it BEFORE the test gate below; do not move it later.
+        run: |
+          npm ci
+          npm run build
+
+      - name: Gate — on a tag run, the tag matches the package version
+        # A mistagged push (tag says 0.2.0, package.json still 0.1.0) would otherwise publish a
+        # stale or duplicate version. Fail fast instead.
+        run: |
+          V="$(node -p "require('./packages/tsa-anchor/package.json').version")"
+          case "$GITHUB_REF" in
+            refs/tags/*)
+              TAG="${GITHUB_REF_NAME#tsa-v}"
+              if [ "$TAG" != "$V" ]; then
+                echo "::error::tag tsa-v$TAG does not match package version $V"
+                exit 1
+              fi
+              ;;
+          esac
+
+      - name: Gate — the kernel on the registry is the kernel this package was tested against
+        # tsa-anchor is TESTED against the kernel in this tree (`file:../..`) and SHIPPED depending
+        # on the kernel on the registry. Those are only the same artifact if the kernel version was
+        # bumped and released whenever its published surface changed.
+        #
+        # The dependency-rewrite step below already asks whether `noa-receipt@$KV` EXISTS on the
+        # registry, which catches "bumped but not published". It cannot catch the opposite and more
+        # likely mistake, "changed but NOT bumped", because then the old version string still
+        # resolves and the check goes green while the two kernels differ. This gate asks the
+        # question in the form that can fail, and fails closed when it cannot measure. Its SELFTEST
+        # runs first: a gate that had quietly stopped measuring would otherwise publish.
+        run: npm run lint:release-parity
+
+      - name: tsa-anchor test gate (never publish broken)
+        working-directory: packages/tsa-anchor
+        run: |
+          npm ci
+          npm test
+
+      - name: Lint the published surface (K4 internal-process jargon + K5 security-marketing claims)
+        run: node scripts/lint-published-surface.mjs --dir packages/tsa-anchor
+
+      - name: Prove the tarball gate can actually FAIL (selftest against the un-rewritten tree)
+        # Run BEFORE the rewrite, where a local-path dependency is present and correct. A gate that
+        # has never been observed to fail is not known to be a gate: this asserts it detects the
+        # `file:../..` that the next step removes, so the post-rewrite green means "the rewrite
+        # worked" rather than "the check passes everything".
+        run: node scripts/lint-publish-tarball-deps.mjs --dir packages/tsa-anchor --expect-local
+
+      - name: Point tsa-anchor at the published noa-receipt registry version
+        # tsa-anchor declares `noa-receipt: file:../..` so its tests measure THIS repository's
+        # kernel. The published tarball must depend on the registry package instead — a consumer who
+        # installed `file:../..` would resolve it against their own tree and get garbage or an
+        # install failure. The version is read from the root package.json, NOT hardcoded.
+        #
+        # FAIL-CLOSED ON AN UNPUBLISHED KERNEL: if the root version is not on the registry, this
+        # would ship a dependency nobody can install. The correct action is to release the kernel
+        # first, never to publish pointing at a version that does not exist.
+        working-directory: packages/tsa-anchor
+        run: |
+          KV="$(node -p "require('../../package.json').version")"
+          if [ -z "$(npm view "noa-receipt@$KV" version 2>/dev/null || true)" ]; then
+            echo "::error::noa-receipt@$KV is not on the registry. Publishing tsa-anchor with a"
+            echo "::error::dependency on ^$KV would ship an uninstallable package. Release the"
+            echo "::error::kernel first, then re-run this workflow."
+            exit 1
+          fi
+          npm pkg set "dependencies.noa-receipt=^$KV"
+
+      - name: Prove the TARBALL carries no local-path dependency
+        # The rewrite above is a write-only operation; nothing until now confirms it took effect,
+        # covered every dependency, or survived a newly added local dep. This packs the exact bytes
+        # npm would upload and reads the manifest out of the tarball.
+        run: node scripts/lint-publish-tarball-deps.mjs --dir packages/tsa-anchor
+
+      - name: Publish tsa-anchor to npm via OIDC (no token, with provenance)
+        # Skip-if-published makes a rerun after a partial failure safe rather than dying with E409.
+        working-directory: packages/tsa-anchor
+        run: |
+          V="$(node -p "require('./package.json').version")"
+          if [ -n "$(npm view "noa-tsa-anchor@$V" version 2>/dev/null || true)" ]; then
+            echo "noa-tsa-anchor@$V is already on the registry — skipping publish (rerun path)"
+          else
+            npm publish --provenance --access public
+          fi

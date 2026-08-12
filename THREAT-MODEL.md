@@ -152,6 +152,18 @@ truth or safety.
   (`--anchors`/`--trust-set`); a chain with no anchor has no TSA coverage. Full cryptographic
   verification of a TSA token's own certificate chain is `openssl ts -verify` (documented in
   `packages/tsa-anchor/README.md`), not reimplemented in-package.
+- **Equivocation — one signer, two histories (opt-in detection, not prevention):** an issuer can
+  build two internally-perfect chains under the same key and show each to a different witness. Every
+  signature verifies on both, and a verifier holding one branch sees nothing wrong
+  (`docs/federation-spec.md` §7). `packages/tsa-anchor`'s `scanForEquivocation` is the monitor for
+  the case where the two views MEET: given a pool of published anchors and a pinned trust-set it
+  finds the contradiction and emits a proof a third party re-checks offline. What that buys,
+  precisely: it raises the cost of a rewrite — every party who saw the old head must stay silent, or
+  the views must never be compared — and it does not make history immutable. It shows two signed
+  statements conflict; it does not adjudicate which is the true history; it sees only what was
+  published (omission, again); and from anchors alone a rewrite that also EXTENDS the chain is
+  indistinguishable from ordinary growth, so catching that additionally needs the presented chain.
+  Nothing in this repository collects the pool — the verifier does (NON-CLAIMS NC-4.3).
 - **Keyring is the root of trust:** every property above stops holding if the verifier's keyring
   is wrong. Distributing/securing/updating the keyring is out of band and out of scope for v0.1.
 - **Unknown `kid` is reported `TAMPERED` (fail-closed tradeoff):** when a keyring is supplied, a

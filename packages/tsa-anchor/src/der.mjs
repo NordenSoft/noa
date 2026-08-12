@@ -85,10 +85,19 @@ export function encOid(dotted) {
     return n;
   });
   if (arcs.length < 2) throw new DerError("encOid: an OID needs at least 2 arcs");
-  const [a0, a1, ...rest] = arcs;
+  // Index walk + explicit copy: `for…of` and array spread both dispatch through
+  // %ArrayIteratorPrototype%.next, which is rewritable, and this file is on a verdict path
+  // (the OIDs it encodes and compares are what decide whether a TSA token covers an anchor).
+  const a0 = arcs[0];
+  const a1 = arcs[1];
   if (a0 > 2 || (a0 < 2 && a1 >= 40)) throw new DerError(`encOid: invalid first two arcs "${a0}.${a1}"`);
-  const out = [...encOidArc(a0 * 40 + a1)]; // combined first sub-identifier — multi-byte when >= 128
-  for (const arc of rest) out.push(...encOidArc(arc));
+  const out = [];
+  const first = encOidArc(a0 * 40 + a1); // combined first sub-identifier — multi-byte when >= 128
+  for (let i = 0; i < first.length; i++) out.push(first[i]);
+  for (let k = 2; k < arcs.length; k++) {
+    const enc = encOidArc(arcs[k]);
+    for (let i = 0; i < enc.length; i++) out.push(enc[i]);
+  }
   return tlv(0x06, Buffer.from(out));
 }
 
@@ -198,7 +207,8 @@ export function readIntegerBig(node) {
     throw new DerError("readIntegerBig: negative INTEGER not supported (unexpected for RFC 3161 fields)");
   }
   let v = 0n;
-  for (const byte of node.content) v = (v << 8n) | BigInt(byte);
+  const bytes = node.content; // index walk, not `for…of` — see the encOid note above
+  for (let i = 0; i < bytes.length; i++) v = (v << 8n) | BigInt(bytes[i]);
   return v;
 }
 
@@ -246,8 +256,31 @@ export function readOid(node) {
 export function readGeneralizedTime(node) {
   if (!node || node.tagClass !== 0 || node.constructed || node.tagNumber !== 0x18) throw new DerError("not a GeneralizedTime");
   const s = node.content.toString("ascii");
-  const m = /^(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})(\.\d+)?Z$/.exec(s);
-  if (!m) throw new DerError(`malformed GeneralizedTime: ${JSON.stringify(s)}`);
-  const [, Y, Mo, D, H, Mi, S, frac] = m;
-  return `${Y}-${Mo}-${D}T${H}:${Mi}:${S}${frac ?? ""}Z`;
+  // HAND-SCANNED, NOT A REGEX. `RegExp.prototype.test/exec` performs a dynamic Get of `exec`
+  // on the receiver, so even a captured matcher dispatches through a writable prototype slot
+  // (C-02(f), reproduced by the kernel's c02_regexp_witness). The shape accepted is exactly
+  // what the old literal accepted: YYYYMMDDHHMMSS, an optional "." + >=1 digits, then "Z".
+  const bad = () => {
+    throw new DerError(`malformed GeneralizedTime: ${JSON.stringify(s)}`);
+  };
+  if (s.length < 15) bad();
+  for (let i = 0; i < 14; i++) {
+    const c = s.charCodeAt(i);
+    if (c < 0x30 || c > 0x39) bad();
+  }
+  let i = 14;
+  let frac = "";
+  if (s.slice(i, i + 1) === ".") {
+    const start = i;
+    i++;
+    while (i < s.length) {
+      const c = s.charCodeAt(i);
+      if (c < 0x30 || c > 0x39) break;
+      i++;
+    }
+    if (i === start + 1) bad(); // a bare "." with no digits after it
+    frac = s.slice(start, i);
+  }
+  if (i !== s.length - 1 || s.slice(i) !== "Z") bad();
+  return `${s.slice(0, 4)}-${s.slice(4, 6)}-${s.slice(6, 8)}T${s.slice(8, 10)}:${s.slice(10, 12)}:${s.slice(12, 14)}${frac}Z`;
 }

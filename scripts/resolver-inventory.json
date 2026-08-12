@@ -1366,6 +1366,7 @@
     "packages/mcp-proxy/test/key-lifecycle.test.mjs": "lifecycle verifier regression tests; constructs no KeyEntry",
     "packages/mcp-proxy/test/smoke.mjs": "downstream consumer: passes a string keyring to verify APIs; constructs no KeyEntry",
     "packages/mcp-proxy/test/thrown-corpus.test.mjs": "downstream consumer: passes a string keyring to verify APIs; constructs no KeyEntry",
+    "packages/tsa-anchor/test/equivocation.test.mjs": "equivocation-detection tests: build two conflicting receipt chains under ONE author key and pass a plain string keyring to verifyChain, to establish that each branch verifies perfectly on its own before the monitor is asked to find the contradiction. A downstream string-keyring CONSUMER that constructs no KeyEntry and resolves nothing — the trust input the module under test actually reads is the WITNESS trust-set (kid -> base64 SPKI, federation-spec section 2.2), a different trust class with no lifecycle and no resolver.",
     "packages/relay/src/server.ts": "relay HTTP surface: reads DeviceRecord.revokedAt for the 403 guard; constructs no entries",
     "packages/relay/src/types.ts": "relay device-credential types (publicKeyHex/revokedAt on DeviceRecord) — a different trust class, no KeyEntry (see EX-RELAY-DEVICE)",
     "packages/relay/test/engine-nosign.test.ts": "relay device-credential surface/tests (publicKeyHex class, see EX-RELAY-DEVICE)",

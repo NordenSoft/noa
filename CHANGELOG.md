@@ -6,7 +6,41 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [Unreleased]
 
-_Nothing yet._
+**No behaviour change in `noa-receipt`.** Not one file under `src/`, `schema/` or `conformance/`
+moved: the work below lives in the opt-in, disjoint `packages/tsa-anchor` (its own npm package, its
+own version) and in two documents the kernel tarball ships. It is listed here because those two
+documents are part of what a stranger installing `noa-receipt` receives, and a shipped document that
+has gone stale is the failure this changelog exists to prevent.
+
+### Documented
+
+- **`NON-CLAIMS.md` NC-4.3** — revised in place. The claim ("there is no transparency log in this
+  repository") is unchanged and nothing is retracted. Added: what the new offline witness-quorum
+  monitor in `packages/tsa-anchor` does and, in four bullets, what still separates it from a
+  transparency log (no Merkle log, no fetching, nothing published or deployed, and a
+  height-extending rewrite is invisible from anchors alone). Also **one correction**: "nothing here
+  contacts a witness or a network" was exact about the verification path and imprecise about the
+  producer side — `noa-tsa stamp` has always used `fetch`, reaching a **TSA, never a witness**.
+- **`NON-CLAIMS.md` NC-4.5** — revised in place. The non-claim survives, because the published
+  format did not move: no field was added to `noa.checkpoint/0.1` and none to the frozen
+  `noa.receipt/0.1`. Added: a checkpoint's endorsed head can now be *checked against* independent
+  observation offline (`checkpointCorroboration`), together with the four reasons that is a check a
+  verifier runs and not a property of the format.
+- **`THREAT-MODEL.md`** — a new residual-risk bullet on **equivocation** (one signer, two histories),
+  stating the opt-in detection that now exists and, in the same breath, that detection is not
+  prevention: it does not adjudicate which branch is true, it sees only what was published, and a
+  rewrite that also extends the chain needs the presented chain to catch.
+
+### Gated
+
+- **`packages/tsa-anchor/src` is now inside the security-gate inventory** (`scripts/lint-security-gates.mjs`).
+  It was covered by NOTHING — the third instance of the gap this repository already recorded for
+  `packages/relay/src` and then for adapter-core/mcp-proxy, and it arrives the same way every time: a
+  package is added, no inventory names it, and every layer above keeps printing green about the files
+  it does walk. Measured on first coverage: **L2 22, L3 2, L8 212**. Of those, L2 and L3 were driven
+  to **0** and enter BLOCKING with no budget; L8 stands at **97** as a ratcheted warn budget covering
+  modules that predate the coverage. The new decision path itself (`equivocation.mjs`) is at **0/0/0**.
+  Nothing in `src/`, `schema/` or `conformance/` was touched to achieve that.
 
 ## [0.6.2] - 2026-08-04
 

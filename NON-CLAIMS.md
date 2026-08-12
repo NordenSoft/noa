@@ -193,6 +193,36 @@ that change is **not yet implemented**. Until it is, supply a `FreshnessPolicy` 
 The SCITT draft and the RFC 3161 sidecar exist; neither is deployed. Nothing here contacts a witness
 or a network.
 
+**Revised 2026-08-12 (S6, independent anchoring). The claim above is unchanged. What follows is added
+precision plus one correction — not a retraction.**
+
+*Correction to the sentence above.* "Nothing here contacts a witness or a network" is exact about the
+verification path: no verifier in this repository, old or new, performs any I/O. It was imprecise
+about the producer side — `noa-tsa stamp` has always used `fetch` to ask a Time-Stamping Authority
+for a token. That call is opt-in, sits on no verification path, and reaches a **TSA, never a
+witness**. So no witness is contacted, by anything, at any time; a network is, by one opt-in producer
+command.
+
+*What now exists.* `packages/tsa-anchor` gained an offline witness-quorum MONITOR
+(`scanForEquivocation`, `checkpointCorroboration`). Given a pool of anchors the verifier already
+holds, it reports signed contradictions — one identity, two histories — and emits a proof object that
+a third party re-checks offline against its own pinned keys. That is the *detection* half of what a
+transparency log's gossip layer provides, and it is measured by an attack test rather than described
+(`packages/tsa-anchor/test/equivocation.test.mjs`).
+
+It is still **not** a transparency log, and the difference is not cosmetic:
+
+- **No log.** No Merkle tree, no inclusion proof, no consistency proof. The witness wire layer stays
+  dormant (`docs/federation-spec.md` §10).
+- **Nothing fetches anything.** The monitor is a pure function over a caller-supplied pool. Whoever
+  runs it must obtain the anchors themselves, and a pool holding only one party's view finds nothing
+  — which is exactly the position a lone verifier is in (federation-spec §7).
+- **Nothing is deployed and nothing is published.** `noa-tsa-anchor` is release-gated
+  (`.github/workflows/publish-tsa.yml`) and has never been published to npm.
+- **A rewrite that also extends the chain is invisible from anchors alone**, because anchors at two
+  different heights are indistinguishable from a chain that grew. Catching that additionally needs
+  the presented chain, or the dormant §10 consistency proofs.
+
 ### NC-4.4 — An evidence bundle does not let a third party re-check the display binding (F2)
 MEASURED (2026-07-31): `EvidenceBundle` (`packages/evidence/src/types.ts:79-99`) carries the
 `holdEnvelope` — and therefore the gate-signed `displayCiphertextHash` — but it does **not** carry
@@ -220,10 +250,35 @@ states — nothing in this repository contacts one.
 **v1.0 does not claim external anchoring.** Closing the gap changes the published format across
 all five verifier implementations plus vector regeneration; claiming it without that machinery
 would be the exact false-claim class this document exists to prevent. External anchoring
-(`packages/tsa-anchor` exists, unpublished) is a roadmap epic, re-examined at launch planning —
-while there are zero deployed consumers a format change is at its cheapest, and if the anchor
-lands before launch this entry is removed under [§7](#7-changing-this-document)'s reviewed-event
-rule.
+(`packages/tsa-anchor` exists, release-gated, still unpublished) is a roadmap epic, re-examined at
+launch planning — while there are zero deployed consumers a format change is at its cheapest, and if
+the anchor lands before launch this entry is removed under [§7](#7-changing-this-document)'s
+reviewed-event rule.
+
+**Revised 2026-08-12 (S6, independent anchoring). The non-claim above is unchanged — the format did
+not move, so the entry stands. What follows is added precision.**
+
+An endorsement can now be *checked against* independent observation, offline, by
+`checkpointCorroboration` (`packages/tsa-anchor/src/equivocation.mjs`). It counts how many DISTINCT
+pinned witness keys published an anchor over exactly the endorsed `(chain, highestSeq, headHash)`,
+and reports a signed contradiction when the witnesses recorded a different head at that seq. Measured
+(`packages/tsa-anchor/test/equivocation.test.mjs`): a checkpoint minted by a keyring-trusted key over
+a head no witness ever saw returns `corroborated:false, corroborations:0`, and — because the
+witnesses' own anchors disagree with it at the same seq — `equivocationFound:true`. That is the
+first mechanism in this repository that can catch the exact behaviour this entry describes.
+
+Four reasons the entry survives that, each of which is the difference between a check and a claim:
+
+- **It is a check the verifier runs, not a property of the format.** No field was added to
+  `noa.checkpoint/0.1`, and none to the frozen `noa.receipt/0.1`. A checkpoint on its own still
+  carries no external anchor, and a verifier that never runs the check learns nothing.
+- **The verifier supplies the anchors and pins the witnesses.** Nothing here fetches a witness
+  answer (NC-4.3). With no pool the verdict is `NOT_CORROBORATED` — fail-closed, and no better
+  informed than before.
+- **Corroboration is not observation.** It establishes that N pinned KEYS signed the same head.
+  Whether those keys belong to independent parties is operational, not cryptographic (NC-4.1).
+- **Without a freshness policy an old corroboration replays**, and the result says so
+  (`freshnessEnforced:false`) — the same shape, and the same caveat, as NC-4.2.
 
 ---
 
