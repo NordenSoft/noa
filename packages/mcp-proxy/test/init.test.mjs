@@ -73,9 +73,20 @@ test("init writes all four generated files with the shape proxy.mjs/noa-approve 
 
   // approver-key.json — mode 0600 (private key material), and the { kid, privateKey, publicKey }
   // shape loadOrCreateKeyFile's own loader requires.
-  const keyStat = fs.statSync(approverKeyPath);
-  assert.equal(keyStat.mode & 0o777, 0o600, `expected approver-key.json mode 0600, got 0${(keyStat.mode & 0o777).toString(8)}`);
-  const key = JSON.parse(fs.readFileSync(approverKeyPath, "utf8"));
+  //
+  // Read through ONE descriptor: `fstat` the handle and read from that same handle, never
+  // `stat(path)` then `read(path)`. The mode and the bytes then provably describe the same file.
+  // This test's whole subject is that `init` refuses check-then-use, so asserting it through a
+  // check-then-use of its own would measure the property with an instrument that lacks it.
+  const keyFd = fs.openSync(approverKeyPath, "r");
+  let key;
+  try {
+    const keyStat = fs.fstatSync(keyFd);
+    assert.equal(keyStat.mode & 0o777, 0o600, `expected approver-key.json mode 0600, got 0${(keyStat.mode & 0o777).toString(8)}`);
+    key = JSON.parse(fs.readFileSync(keyFd, "utf8"));
+  } finally {
+    fs.closeSync(keyFd);
+  }
   assert.equal(typeof key.kid, "string");
   assert.equal(typeof key.privateKey, "string");
   assert.equal(typeof key.publicKey, "string");
@@ -93,16 +104,29 @@ test("init refuses to overwrite an existing scaffold without --force, and touche
 
   const rulesPath = path.join(dir, "approval-rules.json");
   const approverKeyPath = path.join(dir, "approver-key.json");
+  // Snapshot and re-read the key through ONE descriptor each time, so "same bytes" and "same mtime"
+  // are read off the same open file rather than off a path that could name a different file between
+  // the two calls. Same reasoning as the mode assertion above: this test measures anti-TOCTOU
+  // behaviour, so it must not itself be check-then-use.
+  const readKeyOnce = () => {
+    const fd = fs.openSync(approverKeyPath, "r");
+    try {
+      return { bytes: fs.readFileSync(fd, "utf8"), mtimeMs: fs.fstatSync(fd).mtimeMs };
+    } finally {
+      fs.closeSync(fd);
+    }
+  };
+
   const beforeRules = fs.readFileSync(rulesPath, "utf8");
-  const beforeKey = fs.readFileSync(approverKeyPath, "utf8");
-  const beforeKeyMtime = fs.statSync(approverKeyPath).mtimeMs;
+  const before = readKeyOnce();
 
   const secondExitCode = runInitCli(["--dir", dir]);
   assert.equal(secondExitCode, 1, "a second init in the same directory must refuse (non-zero exit), not silently overwrite");
 
+  const after = readKeyOnce();
   assert.equal(fs.readFileSync(rulesPath, "utf8"), beforeRules, "approval-rules.json must be byte-identical after a refused re-run");
-  assert.equal(fs.readFileSync(approverKeyPath, "utf8"), beforeKey, "approver-key.json (private key material) must be untouched after a refused re-run");
-  assert.equal(fs.statSync(approverKeyPath).mtimeMs, beforeKeyMtime, "the private key file must not even be re-written with identical content");
+  assert.equal(after.bytes, before.bytes, "approver-key.json (private key material) must be untouched after a refused re-run");
+  assert.equal(after.mtimeMs, before.mtimeMs, "the private key file must not even be re-written with identical content");
 });
 
 test("init --force regenerates all four files, including a genuinely NEW approver identity", () => {
