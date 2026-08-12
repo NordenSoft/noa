@@ -13,7 +13,12 @@ import { intrinsics } from "noa-receipt";
 // So the builtins are taken from the kernel's module-load capture here too, whether or not each
 // individual site is reachable today. Reachability is a property of the surrounding code, and the
 // surrounding code changes.
-const { isInteger } = intrinsics;
+// `objectSetPrototypeOf` closes the WRITE half of the same argument (L11): every per-session state
+// object below is mutated with `state.prev = …` / `state.seq += 1`, which are [[Set]] operations
+// that walk the receiver's prototype chain. An accessor at `Object.prototype.seq` swallows the
+// sequence increment while the commit still reports success — a receipt chain that stops advancing
+// with no builtin replaced at all. The two state literals are null-rooted at construction.
+const { isInteger, objectSetPrototypeOf } = intrinsics;
 
 
 /** 1 hour: a session that has issued no call in this long is considered abandoned. */
@@ -314,12 +319,17 @@ export function createChainSessionStore({
   for (const seed of seedsToLoad) {
     const seedTenant = seed.tenant ?? DEFAULT_TENANT;
     const seedBucket = bucketFor(seedTenant);
-    seedBucket.set(seed.sessionId, {
+    // Null-rooted BEFORE it is ever written to (L11) — this object is mutated by `advance()` and
+    // `stateFor()` later, and the literal itself is built with CreateDataProperty (safe); it is the
+    // LATER `state.seq += 1` that would walk a live prototype chain.
+    const seedState = {
       prev: seed.prev ?? null,
       seq: isInteger(seed.seq) ? seed.seq : 0,
       lastAccessedAt: now(),
       segmentId: seed.segmentId,
-    });
+    };
+    objectSetPrototypeOf(seedState, null);
+    seedBucket.set(seed.sessionId, seedState);
     totalSessions += 1;
   }
 
@@ -362,6 +372,7 @@ export function createChainSessionStore({
     if (maxSessions > 0 && totalSessions >= maxSessions) evictOldestIdle("cap-exceeded");
     segmentCounter += 1;
     state = { prev: null, seq: 0, lastAccessedAt: now(), segmentId: segmentCounter };
+    objectSetPrototypeOf(state, null); // null-rooted before the first `state.seq += 1` — see the L11 note at the intrinsics destructure
     // RE-RESOLVE the bucket AFTER the cap eviction, never reuse the `bucket` captured above:
     // `evictOldestIdle` drops the single oldest session GLOBALLY, and if that session was the
     // LAST one in THIS tenant's bucket (e.g. maxSessions is small and this new session's own

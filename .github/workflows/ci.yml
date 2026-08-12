@@ -473,6 +473,18 @@ jobs:
         # against a violation BUDGET that fails on regression — the count may only fall, and each
         # flips to blocking when it reaches zero. The rule is never weakened to fit the code.
         run: npm run lint:security-gates
+      - name: L11 inert-before-write on trusted decision paths
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # BLOCKING, and it runs its own selftest first. L2 and L8 model dispatch as a CALL or a READ
+        # and, in their own source comment, "have no grammar for a write" — so an ordinary `[]` or
+        # `{}` filled on a decision path appears in NONE of their budgeted findings. `[[Set]]` walks
+        # the receiver's prototype chain, and an accessor at `Object.prototype["0"]` swallows the
+        # element while `length` still moves: two different tool calls were measured collapsing onto
+        # ONE paramsHash through the public `canonicalParamsHash`, with no builtin replaced. This
+        # layer asks the one question the others cannot express — is every container that receives a
+        # write inert BEFORE it receives it — and FAILS a subject it cannot analyse rather than
+        # passing it.
+        run: npm run lint:inert-containers
       - name: L9 trusted-root inventory + forbidden trust-input patterns
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # BLOCKING. L1-L7 above walk `src/` ONLY and contain zero `packages/` paths, so they were

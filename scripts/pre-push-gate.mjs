@@ -234,6 +234,11 @@ for (const [name, cmd, args, cwd] of [
   ["thrown-value boundary", "npm", ["run", "lint:thrown"], ROOT],
   ["trusted roots L9", "node", ["scripts/lint-trusted-roots.mjs"], ROOT],
   ["trusted roots L9 selftest", "node", ["scripts/lint-trusted-roots.mjs", "--selftest"], ROOT],
+  // L11. The `lint:inert-containers` script is selftest-then-gate, for the reason the L8 evasion
+  // matrix is ordered the same way: a defanged analyser's count of 0 must never be printed before
+  // the proof that it still bites. Sub-second, and in CI's `test` job — the two properties this
+  // list's own note above says an entry here needs.
+  ["inert containers L11", "npm", ["run", "lint:inert-containers"], ROOT],
   ["gate build", "npm", ["run", "build"], join(ROOT, "packages", "gate")],
 ]) {
   const r = run(cmd, args, cwd);
