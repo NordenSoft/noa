@@ -98,16 +98,32 @@ if (!has("--selftest")) {
   }
 }
 
+/**
+ * Refs that are branches by mechanism but not by intent, so "why has this no pull request?" has a
+ * standing answer and flagging them is noise. Kept SHORT and exact-matched where possible: a broad
+ * pattern here is how a gate stops seeing the thing it was built for.
+ *
+ * - `gh-pages` and `_site`: publishing targets, written by tooling, never merged into main by design.
+ * - bot-managed prefixes: the bot opens its own PR; before it does, the branch is the bot's business.
+ * - `gh-readonly-queue/`: GitHub's own merge-queue staging refs, deleted automatically.
+ *
+ * Measured 2026-08-13: the first real run of this gate flagged `gh-pages` on the console repo. That
+ * was the gate working and the list being incomplete, not the branch being wrong.
+ */
+const NOT_WORK_BRANCHES = new Set(["gh-pages", "_site"]);
+const NOT_WORK_PREFIXES = ["dependabot/", "renovate/", "gh-readonly-queue/"];
+const isNotWork = (b) => NOT_WORK_BRANCHES.has(b) || NOT_WORK_PREFIXES.some((p) => b.startsWith(p));
+
 /** Branch names from BOTH the local repo and the remote, deduped. main/HEAD excluded. */
 function allBranches() {
   const out = new Set();
   for (const line of (git("for-each-ref", "--format=%(refname:short)", "refs/heads/") ?? "").split("\n")) {
     const b = line.trim();
-    if (b && b !== "main") out.add(b);
+    if (b && b !== "main" && !isNotWork(b)) out.add(b);
   }
   for (const line of (git("for-each-ref", "--format=%(refname:short)", "refs/remotes/origin/") ?? "").split("\n")) {
     const b = line.trim().replace(/^origin\//, "");
-    if (b && b !== "main" && b !== "HEAD") out.add(b);
+    if (b && b !== "main" && b !== "HEAD" && !isNotWork(b)) out.add(b);
   }
   return [...out].sort();
 }
