@@ -694,6 +694,20 @@ const ADAPTER_CORE_OUT_OF_TCB = {
     "type declarations only; the runtime security discriminator is classified in tool-outcome-not-recorded.mjs",
 };
 
+// S3 — the third published package with a decision path. `provesSettlement` decides whether a
+// payment SETTLED and `reconcileConsumedNonce` decides whether a nonce somebody else burnt was ours;
+// both verdicts reach a human and can be carried by a receipt. Classifying it here is what stops the
+// same move the comment above describes — putting an exploitable decision in a package the layers
+// stop short of.
+const RAIL_X402_TCB = [
+  "packages/rail-x402/src/settlement-proof.mjs",    // the settlement verdict and the consumed-nonce reconciliation
+  "packages/rail-x402/src/correlation-nonce.mjs",   // derives the value the whole correlation rests on
+];
+const RAIL_X402_OUT_OF_TCB = {
+  "packages/rail-x402/src/index.mjs":
+    "re-export surface only; declares no rule and makes no runtime decision",
+};
+
 const MCP_PROXY_TCB = [
   "packages/mcp-proxy/src/create-proxy-server.mjs", // authorization, approval adoption and forwarding verdicts
   "packages/mcp-proxy/src/http-server.mjs",        // caller session ID selects the isolated proxy/session authority
@@ -1047,6 +1061,8 @@ const LINTS = [
     run: () => reconcilePublishedPackage({ lint: "adapter-core-reconcile", label: "adapter-core", dir: "packages/adapter-core/src", tcb: ADAPTER_CORE_TCB, outOfTcb: ADAPTER_CORE_OUT_OF_TCB }), mode: "block" },
   { id: "mcp-proxy-reconcile", name: "mcp-proxy TCB coverage (every published src .mjs/.ts file is classified)",
     run: () => reconcilePublishedPackage({ lint: "mcp-proxy-reconcile", label: "mcp-proxy", dir: "packages/mcp-proxy/src", tcb: MCP_PROXY_TCB, outOfTcb: MCP_PROXY_OUT_OF_TCB }), mode: "block" },
+  { id: "rail-x402-reconcile", what: "every rail-x402 source file is classified in exactly one of TCB / OUT_OF_TCB",
+    run: () => reconcilePublishedPackage({ lint: "rail-x402-reconcile", label: "rail-x402", dir: "packages/rail-x402/src", tcb: RAIL_X402_TCB, outOfTcb: RAIL_X402_OUT_OF_TCB }), mode: "block" },
   { id: "tsa-anchor-reconcile", name: "tsa-anchor TCB coverage (every published src .mjs/.ts file is classified)",
     run: () => reconcilePublishedPackage({ lint: "tsa-anchor-reconcile", label: "tsa-anchor", dir: "packages/tsa-anchor/src", tcb: TSA_ANCHOR_TCB, outOfTcb: TSA_ANCHOR_OUT_OF_TCB }), mode: "block" },
   // MEASURED on first coverage, 2026-08-02: these two published packages contain 355 existing

@@ -1,0 +1,26 @@
+{
+  "name": "noa-rail-x402",
+  "version": "0.1.0",
+  "description": "Correlate a NOA mandate with an x402 (EIP-3009) settlement on an allowlisted asset, and reconcile a nonce someone else burnt.",
+  "type": "module",
+  "main": "src/index.mjs",
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE",
+    "NOTICE"
+  ],
+  "scripts": {
+    "test": "node --test",
+    "check:tarball": "node ../../scripts/lint-publish-tarball-deps.mjs --dir . --manifest",
+    "prepublishOnly": "npm test && npm run check:tarball"
+  },
+  "license": "Apache-2.0",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "dependencies": {
+    "noa-receipt": "file:../.."
+  }
+}

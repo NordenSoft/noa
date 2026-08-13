@@ -464,6 +464,40 @@ const KNOCKOUTS = [
     suite: ["packages/gate", "npm", ["test"]],
   },
   {
+    id: "s3-correlation-nonce-binds-seed",
+    control: "S3(a) — the correlation nonce binds a high-entropy seed, so it is not a bare digest of the deal",
+    file: "packages/rail-x402/src/correlation-nonce.mjs",
+    find: '  field("seed", Buffer.from(seed));',
+    // Drop the seed from the preimage and the nonce becomes a deterministic function of five PUBLIC
+    // fields — exactly the refuted design: equality leaks, and an observer who can guess the deal can
+    // confirm it against the chain. The dictionary-recovery test is what turns red.
+    replace: '  void seed;',
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s3-settlement-needs-transfer",
+    control: "S3(c) — settlement proof requires a matching ERC-20 Transfer, not just a consumed authorization",
+    file: "packages/rail-x402/src/settlement-proof.mjs",
+    find: '  if (!o.transfer) reasons.push("no matching ERC-20 Transfer observed");',
+    // Without this part, a CANCELLED authorization reads as a settled payment: Circle sets the same
+    // state bit for cancellation as for use, so "the nonce was consumed" is not "the money moved".
+    replace: '  if (false) reasons.push("no matching ERC-20 Transfer observed");',
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s3-consumed-nonce-reconciles",
+    control: "S3(b) — a front-run (consumed) nonce is reconciled against chain state, never reported as failure",
+    file: "packages/rail-x402/src/settlement-proof.mjs",
+    find: "  if (verdict.proven) return { outcome: \"SETTLED\", reasons: [] };",
+    // Never return SETTLED and the false negative returns: a payment that actually happened is
+    // reported as failed, and a human may pay twice.
+    replace: "  if (false) return { outcome: \"SETTLED\", reasons: [] };",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
     id: "grant-terminal-report-cas",
     control: "F8c — the one-shot TERMINAL report lock is a compare-and-swap, not the pre-check 120 lines above it",
     file: "packages/gate/src/engine.ts",

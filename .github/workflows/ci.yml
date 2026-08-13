@@ -153,6 +153,13 @@ jobs:
         run: cd packages/tsa-anchor && npm ci && npm test
       - name: framework-adapters tests
         run: cd packages/framework-adapters && npm ci && npm test
+      - name: rail-x402 tests
+        # S3. Pure logic, no chain and no dependencies, so it runs anywhere — which is exactly why it
+        # must run HERE rather than on a maintainer's laptop. Everything this package decides (the
+        # nonce derivation, the four-part settlement proof, the consumed-nonce reconciliation) is
+        # offline by construction; the chain-facing half sits behind an injected reader and has no
+        # test in this repository at all, which its README states rather than implies.
+        run: cd packages/rail-x402 && npm test
 
   e2e-demo-contract:
     # THE HALF THAT IS ALWAYS OURS TO GATE — and it is now its OWN job, for a measured reason.

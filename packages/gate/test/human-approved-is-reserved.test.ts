@@ -792,6 +792,10 @@ test("COVERAGE — what this control reads is stated exactly, not claimed univer
     "ANALYSED     packages/framework-adapters/src",
     "ANALYSED     packages/gate/src",
     "ANALYSED     packages/mcp-proxy/src",
+    // Joined 2026-08-13 (S3). The message below names two possibilities and asks which happened;
+    // checked before touching the list: this root is NEW and holds `.mjs`, so it is ANALYSED. It did
+    // not lose its last parseable file and go quiet, which is the reading that would have mattered.
+    "ANALYSED     packages/rail-x402/src",
     "ANALYSED     packages/relay/src",
     "ANALYSED     packages/signer-core/src",
     "ANALYSED     packages/signer-sidecar/src",

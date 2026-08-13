@@ -104,6 +104,15 @@ const ROOT_INVENTORY = {
       "is forwarded, adopts approvals, and mints outcome receipts; it fills containers from " +
       "caller-owned JSON on that path.",
   },
+  "packages/rail-x402/src": {
+    gated: true,
+    note: "S3. `provesSettlement` decides whether a payment SETTLED, and `reconcileConsumedNonce` " +
+      "decides whether a nonce somebody else burnt was ours — verdicts a human is shown and a " +
+      "receipt can carry. The `reasons` array is filled on exactly that path, from caller-supplied " +
+      "chain observations, which is the write shape this layer exists for: a swallowed reason turns " +
+      "a refusal into an empty list, and an empty reason list is precisely what `proven` is " +
+      "computed from.",
+  },
 
   // ── INVENTORIED, NOT GATED. Each reason is a claim about THIS class, not a general clearance. ──
   "src": {
@@ -150,6 +159,15 @@ const ROOT_INVENTORY = {
  * L2/L8's blindness: these sites are visible and unproven, not covered.
  */
 const UNPROVEN_RATCHET = {
+  "packages/rail-x402/src/settlement-proof.mjs": { n: 14, why:
+    "S3's settlement verdict. All 14 are `arrayPush(reasons, …)` where `reasons` is created by " +
+    "`inertReasons()` — `objectSetPrototypeOf([], INERT_ARRAY_PROTOTYPE)` — IN THIS FILE, on the line " +
+    "the function opens, before any write. They are inert IN FACT; this layer classifies a receiver " +
+    "from its declaration initialiser and a call ARGUMENT is not one, the same basis as " +
+    "adapter-core's `errors` below. The kernel's inert prototype deliberately carries every READ " +
+    "method and NO mutator, so a write MUST go through the captured `arrayPush`: the shape this " +
+    "layer cannot see through is the shape the hardening requires. Pinned rather than absorbed — a " +
+    "15th write is a NEW unprovable write and must be seen." },
   "packages/adapter-core/src/approval-rules.mjs": { n: 16, why:
     "the rule-set compiler (#56/#58). All 16 are provably inert IN FACT; the single-file layer cannot " +
     "connect the receiver to its construction. Eleven are `arrayPush(errors, …)` inside compileRule / " +
@@ -323,11 +341,15 @@ function readSecurityGateTcbs() {
   const visit = (n) => {
     if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
       const name = n.name.text;
-      if ((name === "ADAPTER_CORE_TCB" || name === "MCP_PROXY_TCB") &&
+      // RAIL_X402 joined on 2026-08-13 (S3). The names are listed rather than pattern-matched on
+      // purpose: a `*_TCB` wildcard would silently adopt any future array someone happens to name
+      // that way, and this reconciliation is only worth what its membership is.
+      if ((name === "ADAPTER_CORE_TCB" || name === "MCP_PROXY_TCB" || name === "RAIL_X402_TCB") &&
           ts.isArrayLiteralExpression(n.initializer)) {
         out.set(name, n.initializer.elements.filter((e) => ts.isStringLiteral(e)).map((e) => e.text));
       }
-      if ((name === "ADAPTER_CORE_OUT_OF_TCB" || name === "MCP_PROXY_OUT_OF_TCB") &&
+      if ((name === "ADAPTER_CORE_OUT_OF_TCB" || name === "MCP_PROXY_OUT_OF_TCB" ||
+           name === "RAIL_X402_OUT_OF_TCB") &&
           ts.isObjectLiteralExpression(n.initializer)) {
         for (const p of n.initializer.properties) {
           if (!ts.isPropertyAssignment(p)) continue;
