@@ -48,5 +48,28 @@
       "execution-signer"
     ],
     "revokedAt": "2020-01-01T00:00:00.000Z"
+  },
+  "gate-observer-2": {
+    "publicKey": "MCowBQYDK2VwAyEA7DuTd+HYKoDDdhqZ/sWPFxOCg+zYnIqDq49+9n9mVuM=",
+    "type": "GATE",
+    "roles": [
+      "settlement-observer"
+    ]
+  },
+  "gate-dual-7": {
+    "publicKey": "MCowBQYDK2VwAyEAg+hHsMpx4PXzqgNIz0zBVdiqu/0fL4zgLugMia8o15U=",
+    "type": "GATE",
+    "roles": [
+      "execution-signer",
+      "settlement-observer"
+    ]
+  },
+  "revoked-observer-3": {
+    "publicKey": "MCowBQYDK2VwAyEAHSxACar+lVpW0wQpIwF0Ubl0C8VrwxlNVSi+p2eW5hc=",
+    "type": "GATE",
+    "roles": [
+      "settlement-observer"
+    ],
+    "revokedAt": "2026-07-01T00:00:00.000Z"
   }
 }

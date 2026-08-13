@@ -243,16 +243,16 @@
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "maxUses": 1,
-      "nonce": "grant-nonce-01",
+      "nonce": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "4WfEJvDcH78ZAiOWxSiTYQ1kj62BroRVGRok2SWdNXje5pCHkOleuikNAwI7wDQWTbRH7xcrROnp2Dq+GRBPCw=="
+        "value": "OfJXORk/63DqLvaOWcoZRCQYrZVoqK0el/3zXXEW3cEdu/i2CTAs2XfIlTtwBPyWWtKH7fqoWTMxhwC7ITscDw=="
       }
     },
     "executionUncertainty": {
       "spec": "noa.execution-uncertainty/0.1",
-      "grantHash": "sha256:c048e1090041721deff3c54ed5a06925f4d1ee6a4ee4f96097717f4848475f05",
+      "grantHash": "sha256:c607705fc9d2326faeb834cdd7f363b7c062ffd4f62282461d593fe64b0d00e9",
       "lastKnownState": "DISPATCH_STARTED",
       "detectedAt": "2026-07-14T11:58:30.000Z",
       "reason": "PROCESS_CRASH_BEFORE_RECEIPT_COMMIT",
@@ -261,7 +261,7 @@
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "zk+untnz+cNYJ5L1pIbt2cK2EJ8m9RM2v3kHMQ3w8wYbBeJ8oQVSp2x5hm4J6hCFLUTgapAuUa25wWa+HTCwCw=="
+        "value": "INfSEMmzne8pH+SgBC4mBpwbfksn1Fb7evRSMbrDnEg1vq8OMe/riKUQPg5G1Wh3kXlj5j226kwjXDVpRV+sCQ=="
       }
     },
     "checkpoint": {

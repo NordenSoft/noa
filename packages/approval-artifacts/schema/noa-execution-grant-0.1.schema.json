@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://noatrust.com/schema/noa-execution-grant-0.1.schema.json",
   "title": "NOA Execution Grant (pre-execution)",
-  "description": "The gate's pre-execution single-use authorization that one exact param-hash may execute once (D13/D18, §8). NOT a human approval — the gate attests, the phone never mints it. Domain NOA-ExecGrant-v0.1-sig. Signer TYPE+ROLE = GATE + execution-signer (F15).",
+  "description": "The gate's pre-execution single-use authorization that one exact param-hash may execute once (D13/D18, §8). NOT a human approval — the gate attests, the phone never mints it. Domain NOA-ExecGrant-v0.1-sig. Signer TYPE+ROLE = GATE + execution-signer (F15). Nonce narrowed 2026-08-13 (S4 revision 3, R-AD-3(i)): exactly 32 bytes lowercase hex — pre-narrowing UUID nonces no longer validate.",
   "type": "object",
   "additionalProperties": false,
   "required": ["spec", "grantId", "holdId", "paramsHash", "holdEnvelopeHash", "approvalReceiptHash", "issuedAt", "expiresAt", "maxUses", "nonce", "sig"],
@@ -16,7 +16,7 @@
     "issuedAt": { "$ref": "#/$defs/rfc3339" },
     "expiresAt": { "$ref": "#/$defs/rfc3339" },
     "maxUses": { "const": 1 },
-    "nonce": { "type": "string", "pattern": "^.{1,256}$" },
+    "nonce": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "sig": { "$ref": "#/$defs/sig" }
   },
   "$defs": {

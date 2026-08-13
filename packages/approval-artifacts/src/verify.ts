@@ -232,6 +232,7 @@ function parseTime(v: unknown, timeSchema: Record<string, unknown> | null): bigi
 function signerIdentityPath(spec: string, doc: Record<string, unknown>): string | null {
   if (spec === "noa.hold/0.1" || spec === "noa.pairing-confirmation/0.1") return "gateKid";
   if (spec === "noa.decision/0.1") return "approverKid";
+  if (spec === "noa.settlement-evidence/0.1") return "observerKid";
   if (spec === "noa.pairing/0.1") {
     if (doc.type === "CHALLENGE") return "gateKid";
     if (doc.type === "CONFIRMATION") return "approverKid";
@@ -354,7 +355,8 @@ export function verifyArtifact(artifactBytes: Uint8Array | string, ctxBytes: Uin
       (doc.consumedAt as string | undefined) ??
       (doc.detectedAt as string | undefined) ??
       (doc.confirmedAt as string | undefined) ??
-      (doc.acceptedAt as string | undefined);
+      (doc.acceptedAt as string | undefined) ??
+      (doc.observedAt as string | undefined);
     if (ctx.authorizationTime !== undefined && parseTime(ctx.authorizationTime, timeSchema) === null) {
       return { ok: false, reason: "invalid verifier-controlled authorizationTime" };
     }

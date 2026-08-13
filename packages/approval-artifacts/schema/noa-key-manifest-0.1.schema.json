@@ -38,7 +38,7 @@
             "roles": {
               "type": "array",
               "minItems": 1,
-              "items": { "enum": ["hold-signer", "execution-signer"] }
+              "items": { "enum": ["hold-signer", "execution-signer", "settlement-observer"] }
             },
             "publicKey": { "$ref": "#/$defs/ed25519Key" },
             "validFrom": { "$ref": "#/$defs/rfc3339" },

@@ -4,7 +4,7 @@
   "expect": "ACCEPT",
   "artifact": {
     "spec": "noa.execution-uncertainty/0.1",
-    "grantHash": "sha256:e70785b3250fc207b6f5fa43dea2dd5c096b9c57673355f56a90baba4c13fb86",
+    "grantHash": "sha256:226bc0786f79b27ddcf95fabfd7ec25083eb4ad42c6b78f766f36c6a3e64744c",
     "lastKnownState": "DISPATCH_STARTED",
     "detectedAt": "2026-07-14T11:58:00.000Z",
     "reason": "PROCESS_CRASH_BEFORE_RECEIPT_COMMIT",
@@ -13,7 +13,7 @@
     "sig": {
       "alg": "ed25519",
       "kid": "gate-prod-1",
-      "value": "nUZ45VBAJxkOqB4oYVOmHw6UyZa4yyHEGzvhc7abLiSvHG5LVWLRy4VxjGGSyzruYJA98ZPf7aFWRDGSX7tRDQ=="
+      "value": "/KXAj1qE80YlqG7rTRgazKkTAWeiHQuaRyWXiN+jKNjpT7MoUhk+B1uEfAb9tQTIpE0m/7eiZwTJfE+qQ2YXDQ=="
     }
   },
   "context": {
@@ -42,11 +42,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "KwyTfvrCfvyfyL2nq4oiyAMTqQ9ArX3Sv2tzne8Z1xYPb3vaTM7vr33RsGnm5RgGXIp6n9pOJZD4O+y1CfLGCA=="
+            "value": "VmteR01cyCejrkO/3t16U8QABl9PlxDoSP9eTSEjeBGVjuv0h5KC0Szlh9EkC2PF7eEPz2h7bxtbo5DaiJkHAg=="
           }
         }
       }

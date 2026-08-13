@@ -5,14 +5,14 @@
   "rejectionClass": "wrong-tenant",
   "artifact": {
     "spec": "noa.execution-consumption/0.1",
-    "grantHash": "sha256:e70785b3250fc207b6f5fa43dea2dd5c096b9c57673355f56a90baba4c13fb86",
+    "grantHash": "sha256:226bc0786f79b27ddcf95fabfd7ec25083eb4ad42c6b78f766f36c6a3e64744c",
     "consumedAt": "2026-07-14T11:57:00.000Z",
     "attemptReceiptHash": "sha256:e331eb7b72de2bd10de343671bdd94d0cd3c544f1d85cd2f80d9bed167833c15",
     "result": "DISPATCHED",
     "sig": {
       "alg": "ed25519",
       "kid": "gate-prod-1",
-      "value": "HQiUr8jdzCpp/dcLFS1vEDL4XmRQGC3pS1ne0T89QlhGt0rkTzXln+Q0H8kvobdIQ309Kz1SEdFbI7yMxeHsBA=="
+      "value": "ggqSKmSJjDPBUL8sUAL2L8zzGH3pBs0jkihdG/m+hom+bYnxPBbvi0fjF8QILwmjs8ECfNqkIlcyVX+rcSR+BA=="
     }
   },
   "context": {
@@ -31,11 +31,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "KwyTfvrCfvyfyL2nq4oiyAMTqQ9ArX3Sv2tzne8Z1xYPb3vaTM7vr33RsGnm5RgGXIp6n9pOJZD4O+y1CfLGCA=="
+            "value": "VmteR01cyCejrkO/3t16U8QABl9PlxDoSP9eTSEjeBGVjuv0h5KC0Szlh9EkC2PF7eEPz2h7bxtbo5DaiJkHAg=="
           }
         }
       },

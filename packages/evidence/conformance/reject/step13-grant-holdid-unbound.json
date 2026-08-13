@@ -243,11 +243,11 @@
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T11:59:00.000Z",
       "maxUses": 1,
-      "nonce": "grant-nonce-01",
+      "nonce": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "slpPaFEWRIWL8glP/rR3rfuryyL6pRYpvjN7/OB/e2NovtywSdMCD3N3ZTGsdINneDDfgSEteZu0Hxfi34ovCQ=="
+        "value": "jcyMWaWqi8UsWknATvnfXHz3OIOGpINAcmZ1H+1vrXrNI8W/sNRCnv3pHIBUsyCxnHr02v4jnHqAVqWyAIvPCw=="
       }
     },
     "checkpoint": {

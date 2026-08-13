@@ -243,23 +243,23 @@
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "maxUses": 1,
-      "nonce": "grant-nonce-01",
+      "nonce": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "fYjxOjhpOFvWjZpIBne4h+6Yx8GtNlwI9H2b7IyUtG3/2RCmf8E9ZX1od0ETX3m9+doe98i9NiK8MxoOlTFrBQ=="
+        "value": "Qu7pOf53TlxE+5qdpnP6bsLc9oeqxjX917FI439kyfW7EaVwbwmCpoPJXXM0z5pxJQKwByMasXdWopGoS3E2Cw=="
       }
     },
     "executionConsumption": {
       "spec": "noa.execution-consumption/0.1",
-      "grantHash": "sha256:3727d2b38ac36204e075fb062c11035421d1d884c17836d07a94508c1709d8cb",
+      "grantHash": "sha256:6160531476db0d3611fef6eda576a6ccfc126e2f4ab61a8b4a8055b14d2ba228",
       "consumedAt": "2026-07-14T11:58:00.000Z",
       "attemptReceiptHash": "sha256:c1eedfbe6e5526e3925ba1195d6d63a44e7cb9bbde66cb400fc1fe33c8d217ba",
       "result": "DISPATCHED",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "mbuT1OKz4sXMUnsby0+XX/anmwDQUwcIVqU6lxFmm6FXK9d+DtaZAMPw0f/BTKBGqumO+tNn5h3cX4Mnv/B1BA=="
+        "value": "taTql2/2V0H7sYfbURkyagApyQZ+sCZUQ7JoBMzUavPT3KF/zl0st6riE08KZSVOzyOfm4CA0+9O5jXv3DsCAA=="
       }
     },
     "checkpoint": {

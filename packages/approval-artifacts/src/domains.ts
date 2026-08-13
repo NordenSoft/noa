@@ -14,6 +14,7 @@ export type SignerType = "GATE" | "APPROVER" | "AUDIT" | "ROOT";
 export type ManifestRole =
   | "hold-signer"
   | "execution-signer"
+  | "settlement-observer"
   | "approve-high"
   | "approve-critical"
   | "audit-decrypt"
@@ -126,9 +127,16 @@ export const ARTIFACTS: Record<string, ArtifactMeta> = frozenTable({
     signerType: null,
     signerRole: null,
   },
+  "noa.settlement-evidence/0.1": {
+    spec: "noa.settlement-evidence/0.1",
+    domain: "NOA-SettlementEvidence-v0.1-sig",
+    schemaId: "noa-settlement-evidence-0.1.schema.json",
+    signerType: "GATE",
+    signerRole: "settlement-observer",
+  },
 });
 
-/** The eight signed artifact `spec`s whose domain tags MUST all be distinct (anti-replay). */
+/** The signed artifact `spec`s whose domain tags MUST all be distinct (anti-replay). */
 export const SIGNED_SPECS: readonly string[] = frozenTable(
   Object.values(ARTIFACTS)
     .filter((m) => m.domain !== null)

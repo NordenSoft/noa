@@ -37,6 +37,9 @@ const KEYS: Record<string, { publicKey: string; privateKey: string }> = {
   "approver-crit-5": { publicKey: "MCowBQYDK2VwAyEAtN4H1lCn75RSP7yjvFOXA8mX3RNhjmPvMcGqRBjIlhY=", privateKey: "MC4CAQAwBQYDK2VwBCIEIJ9XRUuytMv70Jo+YacYjwgE0lOdGs9SEf0ksJEn1c9z" },
   "attacker-x": { publicKey: "MCowBQYDK2VwAyEA+2z7Zx8KpuTyW27xFwQtY1aGaTDeE2OgzbIZ9V34vuk=", privateKey: "MC4CAQAwBQYDK2VwBCIEIEfqSkeDuyVSPSkSNET1BVASpbBtMH4tKjzUghHlxVvC" },
   "revoked-old-1": { publicKey: "MCowBQYDK2VwAyEA0IAN4oqVjRce8Fi9FNvG3qTdTMuvazzB65DCi6LN634=", privateKey: "MC4CAQAwBQYDK2VwBCIEIFEr6Bx1XIsyQpCm6qAyvF22tkAQsxsD9ajkUqgDG4cc" },
+  "gate-observer-2": { publicKey: "MCowBQYDK2VwAyEA7DuTd+HYKoDDdhqZ/sWPFxOCg+zYnIqDq49+9n9mVuM=", privateKey: "MC4CAQAwBQYDK2VwBCIEIDYyPhz4XZJOp7jNcIkUcfAEadA/nApBZ8hjn0iLSXl6" },
+  "gate-dual-7": { publicKey: "MCowBQYDK2VwAyEAg+hHsMpx4PXzqgNIz0zBVdiqu/0fL4zgLugMia8o15U=", privateKey: "MC4CAQAwBQYDK2VwBCIEIIKm4Dm024JaGFkK6s0BN5BwQ04eh+D43WPR7aOvriRe" },
+  "revoked-observer-3": { publicKey: "MCowBQYDK2VwAyEAHSxACar+lVpW0wQpIwF0Ubl0C8VrwxlNVSi+p2eW5hc=", privateKey: "MC4CAQAwBQYDK2VwBCIEIM/EWvimWg024unhuCfn4NHC9k3fhEtqZeNi9htMeIJa" },
 };
 const HPKE: Record<string, string> = {
   "approver-1-device-2": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28",
@@ -54,6 +57,13 @@ const keyring: Record<string, KeyEntry> = {
   "approver-1-device-2": { publicKey: KEYS["approver-1-device-2"]!.publicKey, type: "APPROVER", roles: ["approve-high"] },
   "approver-crit-5": { publicKey: KEYS["approver-crit-5"]!.publicKey, type: "APPROVER", roles: ["approve-critical"] },
   "revoked-old-1": { publicKey: KEYS["revoked-old-1"]!.publicKey, type: "GATE", roles: ["hold-signer", "execution-signer"], revokedAt: "2020-01-01T00:00:00.000Z" },
+  // S4 (R-INT-4): the settlement-observer keys. gate-observer-2 signs the valid settlement evidence;
+  // gate-dual-7 exists for the R-16 relationship-cap vector (rail-x402, S5); revoked-observer-3
+  // HOLDS settlement-observer so the revoked vector measures revocation, not check-ordering luck
+  // (§12.1 ordering note — revoked-old-1 lacks the role and would trip F15 under a reordering).
+  "gate-observer-2": { publicKey: KEYS["gate-observer-2"]!.publicKey, type: "GATE", roles: ["settlement-observer"] },
+  "gate-dual-7": { publicKey: KEYS["gate-dual-7"]!.publicKey, type: "GATE", roles: ["execution-signer", "settlement-observer"] },
+  "revoked-observer-3": { publicKey: KEYS["revoked-observer-3"]!.publicKey, type: "GATE", roles: ["settlement-observer"], revokedAt: "2026-07-01T00:00:00.000Z" },
   // attacker-x is deliberately ABSENT → an "unknown signing key" rejection.
 };
 
@@ -68,6 +78,11 @@ const WIN_MAX = "2026-07-14T12:05:00.000Z";
 const T_FUTURE = "2026-07-14T20:00:00.000Z"; // outside window
 const DELEG_FROM = "2026-07-14T10:00:00.000Z";
 const DELEG_EXPIRES = "2026-07-20T10:00:00.000Z";
+
+// S4 revision 3 (R-AD-3(i)): a grant nonce is exactly 32 bytes lowercase hex — it is the D7
+// correlation seed. Deterministic fixed constants keep the generator byte-reproducible.
+const GRANT_NONCE = "5eed".repeat(16);
+const ATTACKER_GRANT_NONCE = "bad0".repeat(16);
 
 const D = ARTIFACTS; // domain lookup
 
@@ -153,7 +168,7 @@ const DECISION_HASH = refHash(decision);
 const grantCore: J = {
   spec: "noa.execution-grant/0.1", grantId: "grant-001", holdId: "hold-001",
   paramsHash: "sha256:" + "a".repeat(64), holdEnvelopeHash: ENVELOPE_HASH, approvalReceiptHash: (allowedReceipt.chain as J).hash,
-  issuedAt: T_ISSUE, expiresAt: T_EXPIRES, maxUses: 1, nonce: "grant-nonce-01",
+  issuedAt: T_ISSUE, expiresAt: T_EXPIRES, maxUses: 1, nonce: GRANT_NONCE,
 };
 const grant = signArtifact(b(grantCore), D["noa.execution-grant/0.1"]!.domain!, signer("gate-prod-1"));
 const GRANT_HASH = refHash(grant);
@@ -362,7 +377,7 @@ function addUnknownProp(signedOrCore: J): J {
   const foreignEnvelope = reSign({ ...clone(envelopeCore), tenant: "tenant-EVIL" }, "noa.hold/0.1", "gate-prod-1");
   const baseCtx: Vector["context"] = {
     now: NOW,
-    equals: [{ path: "nonce", value: "grant-nonce-01" }, { path: "maxUses", value: 1 }],
+    equals: [{ path: "nonce", value: GRANT_NONCE }, { path: "maxUses", value: 1 }],
     refHashChecks: [
       { path: "holdEnvelopeHash", rule: "side", artifact: envelope, refEquals: [{ path: "tenant", value: TENANT }] },
       { path: "approvalReceiptHash", rule: "receipt", artifact: allowedReceipt },
@@ -373,7 +388,7 @@ function addUnknownProp(signedOrCore: J): J {
   emit("execution-grant", "reject-tampered-content.json", { description: "grantId altered after signing (stale signature)", spec, expect: "REJECT", rejectionClass: "tampered-content", artifact: tamper(grant as J, "grantId", "grant-TAMPERED"), context: baseCtx });
   emit("execution-grant", "reject-cross-artifact-hash-substitution.json", { description: "holdEnvelopeHash re-pointed to a different artifact (re-signed) — F1 mismatch", spec, expect: "REJECT", rejectionClass: "cross-artifact-hash-substitution", artifact: reSign({ ...clone(grantCore), holdEnvelopeHash: refHash(manifest) }, spec, "gate-prod-1"), context: baseCtx });
   emit("execution-grant", "reject-wrong-tenant.json", { description: "transitive tenant: the bound Hold Envelope is for a foreign tenant", spec, expect: "REJECT", rejectionClass: "wrong-tenant", artifact: reSign({ ...clone(grantCore), holdEnvelopeHash: refHash(foreignEnvelope) }, spec, "gate-prod-1"), context: { ...baseCtx, refHashChecks: [{ path: "holdEnvelopeHash", rule: "side", artifact: foreignEnvelope, refEquals: [{ path: "tenant", value: TENANT }] }, { path: "approvalReceiptHash", rule: "receipt", artifact: allowedReceipt }] } });
-  emit("execution-grant", "reject-wrong-nonce.json", { description: "nonce changed (re-signed) — replay/nonce-equality fails", spec, expect: "REJECT", rejectionClass: "wrong-nonce", artifact: reSign({ ...clone(grantCore), nonce: "attacker-nonce" }, spec, "gate-prod-1"), context: baseCtx });
+  emit("execution-grant", "reject-wrong-nonce.json", { description: "nonce changed (re-signed) — replay/nonce-equality fails (still schema-valid 64-hex, so the EQUALITY layer is what trips)", spec, expect: "REJECT", rejectionClass: "wrong-nonce", artifact: reSign({ ...clone(grantCore), nonce: ATTACKER_GRANT_NONCE }, spec, "gate-prod-1"), context: baseCtx });
   emit("execution-grant", "reject-expired.json", { description: "expiresAt in the past (re-signed) — expired grant", spec, expect: "REJECT", rejectionClass: "expired", artifact: reSign({ ...clone(grantCore), expiresAt: T_PAST }, spec, "gate-prod-1"), context: baseCtx });
   emit("execution-grant", "reject-wrong-key.json", { description: "F15 role: a hold-signer-only gate key (gate-holdonly-9) may NOT sign an Execution Grant (needs execution-signer)", spec, expect: "REJECT", rejectionClass: "wrong-key", artifact: reSign(clone(grantCore), spec, "gate-holdonly-9"), context: baseCtx });
   emit("execution-grant", "reject-unknown-property.json", { description: "smuggled extra field — additionalProperties:false", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: addUnknownProp(grant as J), context: baseCtx });
@@ -550,6 +565,75 @@ function addUnknownProp(signedOrCore: J): J {
   emit("encrypted-reason", "reject-empty-ciphertext.json", { description: "empty ciphertext — pattern minimum length", spec, expect: "REJECT", rejectionClass: "structural", artifact: { ...clone(encReason), ciphertext: "" }, context: baseCtx });
   emit("encrypted-reason", "reject-bad-spec.json", { description: "wrong spec const", spec, expect: "REJECT", rejectionClass: "structural", artifact: { ...clone(encReason), spec: "noa.encrypted-display/0.1" }, context: baseCtx });
   emit("encrypted-reason", "reject-unknown-property.json", { description: "smuggled extra field — additionalProperties:false", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: addUnknownProp(encReason), context: baseCtx });
+}
+
+// ============================ SETTLEMENT EVIDENCE (S4 §12.1: 1 valid + 12 rejections) =============
+{
+  const spec = "noa.settlement-evidence/0.1";
+  // REVISION 3 / D7: `correlation` is the on-chain nonce form 0x<64hex>. The D7 seeded derivation
+  // (deriveCorrelationNonce over the action digest, seeded by grant.nonce) is rail-x402's layer-6
+  // job; layers 1-5 here treat the value as an opaque schema-shaped coordinate, so a deterministic
+  // test constant derived from the grant nonce is sufficient AND honest about what is verified.
+  const CORRELATION = "0x" + sha256Prefixed("test-correlation|" + GRANT_NONCE).slice("sha256:".length);
+  const RAIL_RECEIPT_BYTES = Buffer.from(JSON.stringify({ x402: "test-only opaque rail receipt", tx: "0x" + "f00d".repeat(16) }), "utf8").toString("base64");
+  const settlementCore: J = {
+    spec,
+    tenant: TENANT,
+    chain: "chain-acme-1",
+    authorizationReceiptHash: (allowedReceipt.chain as J).hash,
+    executionGrantHash: GRANT_HASH,
+    correlation: CORRELATION,
+    railFamily: "x402/exact/eip3009",
+    chainWitness: {
+      status: "SETTLED",
+      network: "eip155:8453",
+      asset: "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      payer: "0x" + "1".repeat(40),
+      payee: "0x" + "2".repeat(40),
+      amount: "1000000",
+      txHash: "0x" + "f00d".repeat(16),
+      blockNumber: 123456,
+      settledAt: "2026-07-14T11:57:30.000Z",
+    },
+    railReceipt: { disclosure: "FULL", format: "x402-offer-receipt/eip712", encoding: "base64", bytes: RAIL_RECEIPT_BYTES },
+    observerKid: "gate-observer-2",
+    observedAt: "2026-07-14T11:58:00.000Z",
+  };
+  const settlement = signArtifact(b(settlementCore), D[spec]!.domain!, signer("gate-observer-2"));
+  const baseCtx: Vector["context"] = {
+    now: NOW,
+    equals: [
+      { path: "tenant", value: TENANT },
+      { path: "chain", value: "chain-acme-1" },
+      { path: "chainWitness.network", value: "eip155:8453" },
+      { path: "chainWitness.asset", value: "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913" },
+      { path: "chainWitness.payer", value: "0x" + "1".repeat(40) },
+    ],
+    refHashChecks: [
+      { path: "executionGrantHash", rule: "side", artifact: grant },
+      { path: "authorizationReceiptHash", rule: "receipt", artifact: allowedReceipt },
+    ],
+    mustBeWithin: [{ path: "observedAt", min: WIN_MIN, max: WIN_MAX }],
+  };
+  emit("settlement-evidence", "valid.json", { description: "valid observer-signed Settlement Evidence (SETTLED, FULL rail receipt, 0x-form correlation)", spec, expect: "ACCEPT", artifact: settlement, context: baseCtx });
+  emit("settlement-evidence", "reject-unknown-property.json", { description: "smuggled extra ROOT field — additionalProperties:false (layer 1)", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: addUnknownProp(settlement as J), context: baseCtx });
+  const nestedSmuggle = clone(settlement) as J;
+  (nestedSmuggle.chainWitness as J)["_smuggled"] = "x";
+  emit("settlement-evidence", "reject-unknown-property-nested.json", { description: "smuggled extra field INSIDE chainWitness — the nested additionalProperties:false is a distinct control", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: nestedSmuggle, context: baseCtx });
+  const tamperedAmount = clone(settlement) as J;
+  (tamperedAmount.chainWitness as J).amount = "999999999";
+  emit("settlement-evidence", "reject-tampered-content.json", { description: "chainWitness.amount altered after signing (stale signature) — layer 2", spec, expect: "REJECT", rejectionClass: "tampered-content", artifact: tamperedAmount, context: baseCtx });
+  emit("settlement-evidence", "reject-wrong-key.json", { description: "F15 signerType: an APPROVER key (approver-1-device-2) may NOT sign settlement evidence (needs GATE)", spec, expect: "REJECT", rejectionClass: "wrong-key", artifact: reSign({ ...clone(settlementCore), observerKid: "approver-1-device-2" }, spec, "approver-1-device-2"), context: baseCtx });
+  emit("settlement-evidence", "reject-wrong-role.json", { description: "F15 role: a hold-signer-only GATE key (gate-holdonly-9) may NOT sign settlement evidence (needs settlement-observer)", spec, expect: "REJECT", rejectionClass: "wrong-role", artifact: reSign({ ...clone(settlementCore), observerKid: "gate-holdonly-9" }, spec, "gate-holdonly-9"), context: baseCtx });
+  emit("settlement-evidence", "reject-revoked-observer.json", { description: "signed by a revoked key that DOES hold settlement-observer (revoked-observer-3) — measures revocation, not role-check ordering luck (§12.1 ordering note)", spec, expect: "REJECT", rejectionClass: "revoked-key", artifact: reSign({ ...clone(settlementCore), observerKid: "revoked-observer-3" }, spec, "revoked-observer-3"), context: baseCtx });
+  emit("settlement-evidence", "reject-observer-identity-split.json", { description: "observerKid (gate-dual-7) != sig.kid (gate-observer-2) — R-2 self-declared-signer split", spec, expect: "REJECT", rejectionClass: "signer-identity-split", artifact: reSign({ ...clone(settlementCore), observerKid: "gate-dual-7" }, spec, "gate-observer-2"), context: baseCtx });
+  emit("settlement-evidence", "reject-cross-artifact-hash-substitution.json", { description: "executionGrantHash re-pointed at the hold envelope AND re-signed under the observer key — F1 rule-b mismatch at layer 3 (re-signing is what makes layer 3 reachable)", spec, expect: "REJECT", rejectionClass: "cross-artifact-hash-substitution", artifact: reSign({ ...clone(settlementCore), executionGrantHash: refHash(envelope) }, spec, "gate-observer-2"), context: baseCtx });
+  emit("settlement-evidence", "reject-receipt-rule-confusion.json", { description: "authorizationReceiptHash computed by F1 rule b (refHash incl. sig) instead of rule a (receiptRefHash) — the exact forgery channel refhash.ts:1-6 names; RE-SIGNED under the observer key so layer 3, not layer 2, is what refuses", spec, expect: "REJECT", rejectionClass: "cross-artifact-hash-substitution", artifact: reSign({ ...clone(settlementCore), authorizationReceiptHash: refHash(allowedReceipt) }, spec, "gate-observer-2"), context: baseCtx });
+  emit("settlement-evidence", "reject-wrong-tenant.json", { description: "tenant changed to a foreign tenant (re-signed) — the explicit tenant field is this artifact's ONLY offline tenant lock (§3.1)", spec, expect: "REJECT", rejectionClass: "wrong-tenant", artifact: reSign({ ...clone(settlementCore), tenant: "tenant-EVIL" }, spec, "gate-observer-2"), context: baseCtx });
+  emit("settlement-evidence", "reject-expired.json", { description: "observedAt outside the mustBeWithin freshness window (stale observation, NC-1.2)", spec, expect: "REJECT", rejectionClass: "expired", artifact: reSign({ ...clone(settlementCore), observedAt: T_FUTURE }, spec, "gate-observer-2"), context: baseCtx });
+  // 12th rejection: pins the REVISION 3 / D7 correlation FORM change — the superseded revision-2
+  // sha256: digest form must be structurally refused now that the schema requires the 0x nonce form.
+  emit("settlement-evidence", "reject-correlation-digest-form.json", { description: "correlation carried in the SUPERSEDED revision-2 sha256:<64hex> digest form instead of the D7 0x<64hex> on-chain nonce form (re-signed; layer 1 refuses)", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(settlementCore), correlation: sha256Prefixed("test-correlation|" + GRANT_NONCE) }, spec, "gate-observer-2"), context: baseCtx });
 }
 
 // ─── Write everything ────────────────────────────────────────────────────────────────────────────
