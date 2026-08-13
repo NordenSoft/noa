@@ -20,7 +20,7 @@ test("localhost HTTP: full ENFORCED round-trip returns a verifyChain-VALID chain
   const store = new InMemoryStore();
   const apiKey = "noa_gateagent_http-secret";
   store.putAgent({ id: "agent-http", name: "http-agent", apiKeyHash: hashSecret(apiKey), createdAt: Date.now() });
-  const gate = createGate({ trust, store, sealDisplay: testSealer, config: { bindAddress: "127.0.0.1", port: 0 } });
+  const gate = createGate({ trust, store, sealDisplay: testSealer, config: { bindAddress: "127.0.0.1", port: 0 }, unsafeInProcessGrantKey: true });
   const { port } = await gate.listen();
   const base = `http://127.0.0.1:${port}`;
   const auth = { authorization: `Bearer ${apiKey}`, "content-type": "application/json" };
@@ -88,7 +88,7 @@ test("HttpGateClient + guard(): the exact-execution wrapper runs a command end-t
   const store = new InMemoryStore();
   const apiKey = "noa_gateagent_wrap-http";
   store.putAgent({ id: "agent-wh", name: "wrap-agent", apiKeyHash: hashSecret(apiKey), createdAt: Date.now() });
-  const gate = createGate({ trust, store, sealDisplay: testSealer, config: { bindAddress: "127.0.0.1", port: 0 } });
+  const gate = createGate({ trust, store, sealDisplay: testSealer, config: { bindAddress: "127.0.0.1", port: 0 }, unsafeInProcessGrantKey: true });
   const { port } = await gate.listen();
   const client = new HttpGateClient(`http://127.0.0.1:${port}`, apiKey);
   let executions = 0;

@@ -8,10 +8,9 @@
  * `execution-signer` under `NOA-HoldResolution-v0.1-sig`.
  */
 
-import { signArtifact, refHash, receiptRefHash } from "noa-approval-artifacts";
-import type { GateKeyPair } from "./trust.js";
+import { refHash, receiptRefHash } from "noa-approval-artifacts";
+import type { ExecutionSigner } from "./exec-signer.js";
 import type { HoldEnvelope, HoldResolution, Receipt } from "./types.js";
-import { encodeDocument } from "./bytes.js";
 
 export function buildHoldResolution(args: {
   holdId: string;
@@ -23,7 +22,7 @@ export function buildHoldResolution(args: {
   receivedAt: string;
   keyManifestVersion: number;
   keyManifestHash: string;
-  gate: GateKeyPair;
+  signer: ExecutionSigner;
 }): HoldResolution {
   const doc = {
     spec: "noa.hold-resolution/0.1" as const,
@@ -39,5 +38,5 @@ export function buildHoldResolution(args: {
     keyManifestVersion: args.keyManifestVersion,
     keyManifestHash: args.keyManifestHash,
   };
-  return signArtifact<typeof doc>(encodeDocument(doc), "NOA-HoldResolution-v0.1-sig", { kid: args.gate.kid, privateKey: args.gate.privateKey }) as HoldResolution;
+  return args.signer.signAttestation(doc) as HoldResolution;
 }

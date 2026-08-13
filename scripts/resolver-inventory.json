@@ -1056,6 +1056,25 @@
       "proofs": []
     },
     {
+      "id": "gate-createalphatrust-keymanifest-keys-3",
+      "package": "gate",
+      "file": "packages/gate/src/trust.ts",
+      "scope": "createAlphaTrust>keyManifest>keys",
+      "ordinal": 3,
+      "line": 195,
+      "kind": "declare",
+      "class": "production",
+      "input": "clock-derived bootstrap window (iso(t0-60s)); present only when an EXTERNAL execution-signer is configured, which also strips execution-signer from the gate's own entry",
+      "output": "signed noa.key-manifest/0.1 key entry",
+      "validFrom": "explicit",
+      "revokedAt": "explicit",
+      "missingValue": "not expressible: generator always sets validFrom + revokedAt",
+      "malformedValue": "not expressible: clock-derived canonical toISOString",
+      "timestampParser": "new Date(ms).toISOString() at generation",
+      "consumer": "manifest verification: this is the entry that makes the OUT-OF-PROCESS grant signer the tenant's only execution-signer (S0 authority-root split)",
+      "proofs": []
+    },
+    {
       "id": "gate-createalphatrust-keyring-0",
       "package": "gate",
       "file": "packages/gate/src/trust.ts",
@@ -1144,6 +1163,28 @@
       ]
     },
     {
+      "id": "gate-createalphatrust-keyring-4",
+      "package": "gate",
+      "file": "packages/gate/src/trust.ts",
+      "scope": "createAlphaTrust>keyring",
+      "ordinal": 4,
+      "line": 258,
+      "kind": "construct",
+      "class": "production",
+      "input": "the same bootstrap window the manifest above declares; present only when an EXTERNAL execution-signer is configured",
+      "output": "KeyEntry (GATE/APPROVER/DELEGATED/ROOT)",
+      "validFrom": "explicit",
+      "revokedAt": "explicit",
+      "missingValue": "not expressible: constructor always sets both fields (P0-5 fix)",
+      "malformedValue": "not expressible: clock-derived canonical toISOString",
+      "timestampParser": "new Date(ms).toISOString() at generation",
+      "consumer": "verifyArtifact — the keyring half of the S0 authority-root split; proven by packages/gate/test/grant-authority-root.test.ts",
+      "proofs": [
+        "RES-PAR-GATE-KEYRING",
+        "RES-PAR-XRES-EQUIV"
+      ]
+    },
+    {
       "id": "gate-module-0",
       "package": "gate",
       "file": "packages/gate/test/revocation-time.test.ts",
@@ -1220,6 +1261,26 @@
       "malformedValue": "tests pin malformed states on purpose",
       "timestampParser": "test-local constants",
       "consumer": "the test's own verifier calls",
+      "proofs": [],
+      "exception": "EX-TEST-FIXTURES"
+    },
+    {
+      "id": "gate-grant-authority-root-f1-fixture-0",
+      "package": "gate",
+      "file": "packages/gate/test/grant-authority-root.test.ts",
+      "scope": "perRequest>trust>keyring",
+      "ordinal": 0,
+      "line": 589,
+      "kind": "construct",
+      "class": "test-fixture",
+      "input": "two deliberately DISAGREEING keyrings, hand-built to reproduce the cross-keyring kid confusion",
+      "output": "KeyEntry (attack fixture)",
+      "validFrom": "absent",
+      "revokedAt": "absent",
+      "missingValue": "deliberate: this fixture exists to be REFUSED before any activation check is reached, so declaring a window would test a different rejection than the one it pins",
+      "malformedValue": "not applicable: the fixture asserts a refusal, never an acceptance",
+      "timestampParser": "none — no timestamp is declared",
+      "consumer": "validateGrantRequest, as the negative control for the cross-keyring agreement check",
       "proofs": [],
       "exception": "EX-TEST-FIXTURES"
     }
@@ -1431,7 +1492,8 @@
     "test/verify.test.ts": "root kernel tests: string-keyring consumers",
     "test/signatures-verified-contract.test.ts": "P1-13 contract tests: the keyring is a plain {kid: publicKey} map handed to verifyChain, never resolved or constructed here — this file only consumes, and exists to pin that signaturesVerified/tailChecked are completed-run success-qualifiers rather than progress reports",
     "packages/relay/test/device-pairing-enrolment.test.ts": "ADR-0007 enrolment tests: publicKeyHex is the raw key a phone PRESENTS at redemption; this file builds no KeyEntry and resolves no keyring — it only consumes the redemption API and asserts its refusals",
-    "packages/relay/test/adr0007-e2e-http.test.ts": "ADR-0007 end-to-end HTTP test: publicKeyHex is the raw key a phone PRESENTS over the wire; this file builds no KeyEntry and resolves no keyring — it drives the real routes and asserts their refusals"
+    "packages/relay/test/adr0007-e2e-http.test.ts": "ADR-0007 end-to-end HTTP test: publicKeyHex is the raw key a phone PRESENTS over the wire; this file builds no KeyEntry and resolves no keyring — it drives the real routes and asserts their refusals",
+    "packages/gate/src/grant-sidecar.ts": "out-of-process grant signer: CONSUMES an operator-provisioned keyring and receiptKeyring wholesale (loadGrantSignerTrust passes the parsed object straight to verifyArtifact/verifyChain, selects no fields and synthesises none), so the P0-1/P0-5/P0-8 dropped-validFrom class is not expressible here — there is no per-entry construction to drop it in"
   },
   "proofs": {
     "RES-PAR-GATE-KEYRING": {

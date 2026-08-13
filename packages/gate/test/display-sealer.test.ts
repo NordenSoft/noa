@@ -29,7 +29,7 @@ test("fail-closed: NO sealer wired → freezing a hold is DISPLAY_SEALER_UNCONFI
   const trust = createAlphaTrust({ tenant: "fc-tenant", now });
   const { store, agent } = makeAgent(now);
   // Deliberately construct the engine WITHOUT sealDisplay (the production fail-closed default).
-  const engine = new GateEngine({ store, config: resolveGateConfig({ now }), trust, schemas: loadSchemas() });
+  const engine = new GateEngine({ store, config: resolveGateConfig({ now }), trust, schemas: loadSchemas(), unsafeInProcessGrantKey: true });
 
   const res = engine.createHold(agent, "idem-fc-1", body({
     mode: "ENFORCED",
@@ -64,7 +64,7 @@ test("an unmatched action is refused before display handling, and the caller's d
   const now = () => clock.t;
   const trust = createAlphaTrust({ tenant: "fc-tenant", now });
   const { store, agent } = makeAgent(now);
-  const engine = new GateEngine({ store, config: resolveGateConfig({ now }), trust, schemas: loadSchemas() });
+  const engine = new GateEngine({ store, config: resolveGateConfig({ now }), trust, schemas: loadSchemas(), unsafeInProcessGrantKey: true });
 
   const secret = "top-secret-wire-instruction";
   const res = engine.createHold(agent, "idem-fc-raw", body({
@@ -87,7 +87,7 @@ test("sealer PRESENT → the same hold succeeds and the envelope binds the seale
   const now = () => clock.t;
   const trust = createAlphaTrust({ tenant: "fc-tenant", now });
   const { store, agent } = makeAgent(now);
-  const engine = new GateEngine({ store, config: resolveGateConfig({ now }), trust, schemas: loadSchemas(), sealDisplay: testSealer });
+  const engine = new GateEngine({ store, config: resolveGateConfig({ now }), trust, schemas: loadSchemas(), sealDisplay: testSealer, unsafeInProcessGrantKey: true });
 
   const res = engine.createHold(agent, "idem-ok", body({
     mode: "ENFORCED",

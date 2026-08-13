@@ -587,19 +587,132 @@ saw an accurate description of the action. In RAW mode it proves only that a key
 `"displayProjection":null`, so a relying party *can* detect this case mechanically — but until now no
 document told them what it means.
 
-**Corollary non-claim — the authority root itself.** We do not claim that the grant-signing key is
-protected against the adversary the grants are meant to stop. The gate's grant-signing key is held as
-a plain base64 string in the gate's Node process (`packages/gate/src/trust.ts:23-29`,
-`privateKey: string`), on a loopback-by-default host. **The same ambient attacker who motivates this
-entire architecture can read that key from process memory and mint grants that are cryptographically
-indistinguishable from genuine ones** — correct signature, correct `paramsHash` for the attacker's
-params, fresh `grantId`s no replay store has seen.
+**Corollary non-claim — the authority root itself.**
 
-The signer-sidecar holds the *receipt* signing key out of process
-(`packages/signer-sidecar/src/sidecar.mjs:4-5`); nothing holds the *grant* signing key that way,
-and grant custody is the single most important key in the capability architecture. **An enforcement
-boundary whose own authority root sits in the process it is defending against is not yet a
-boundary.** Found by an independent adversarial review; no fix attempted here, because the fix is architectural.
+> **SUPERSEDED IN PLACE, 2026-08-12.** The text below replaces the original corollary, which read, in
+> full: *"We do not claim that the grant-signing key is protected against the adversary the grants are
+> meant to stop. The gate's grant-signing key is held as a plain base64 string in the gate's Node
+> process (`packages/gate/src/trust.ts:23-29`, `privateKey: string`), on a loopback-by-default host.
+> **The same ambient attacker who motivates this entire architecture can read that key from process
+> memory and mint grants that are cryptographically indistinguishable from genuine ones** — correct
+> signature, correct `paramsHash` for the attacker's params, fresh `grantId`s no replay store has
+> seen. The signer-sidecar holds the *receipt* signing key out of process
+> (`packages/signer-sidecar/src/sidecar.mjs:4-5`); nothing holds the *grant* signing key that way, and
+> grant custody is the single most important key in the capability architecture. **An enforcement
+> boundary whose own authority root sits in the process it is defending against is not yet a
+> boundary.** Found by an independent adversarial review; no fix attempted here, because the fix is
+> architectural."*
+>
+> That text is quoted rather than deleted because it remains exactly true of a gate that keeps its
+> grant key in process. What changed is that the SHIPPED entry points — the CLI, and any construction
+> that supplies no execution signer — refuse to start unless an operator writes the unsafe posture
+> down, and that a protected alternative exists and is measured.
+>
+> **Narrowed 2026-08-13**, after an independent review measured the earlier wording ("such a gate now
+> REFUSES TO START unless…") to be broader than the code. `localExecutionSigner` is a public export,
+> so `new GateEngine({ executionSigner: localExecutionSigner(trust.gate) })` satisfies the
+> acknowledgement check by SUPPLYING a signer rather than by DECLARING the posture: an in-process
+> grant key, undeclared, reachable through the library API. "No longer a silent default" is the claim
+> that survives; "refuses to start" was never true of every construction path, and a sentence true of
+> the CLI is not true of the package.
+>
+> **A first attempt at this replacement was itself withdrawn**, on 2026-08-12, after an independent
+> adversarial review reproduced three CRITICAL bypasses of the boundary it described — including one
+> in which the only shipped wiring left the approver's private key inside the process the sidecar was
+> defending against. The claims below are the ones that survived that review, and the paragraph
+> immediately above is the reason the wording here is narrower than the engineering effort might
+> suggest.
+
+**What is now true, and how it is measured.** A gate can be run with its `execution-signer` key held
+by a separate process behind a **policy gate** (`packages/gate/src/grant-sidecar.ts`), reached over a
+Unix domain socket (`packages/gate/src/exec-signer.ts`). In that configuration the key manifest names
+the sidecar's kid as the tenant's **only** `execution-signer` and drops the gate key to
+`hold-signer`, so a grant signed by any key the gate process holds is refused by the shipped verifier
+for lack of the role.
+
+A signing oracle alone would not have closed anything — an attacker who can *ask* an HSM to sign has
+the key in effect, which `packages/signer-sidecar`'s own README states about itself. So the sidecar
+independently verifies, per request and against trust material it holds itself, that the grant is
+backed by an approver-signed decision and an approver-signed ALLOWED receipt, and that the grant's
+`paramsHash` is **the one that receipt carries**. It also enforces one grant per approval (durably,
+across restarts), an approval-freshness window, the hold's own deadline **with no tolerance past it**,
+a ceiling on the grant's lifetime, and — since 2026-08-13 — that the grant **may not end after the
+hold does**. The time bounds are all measured on its own clock, because every timestamp in the request
+is the caller's to choose.
+
+**Two corrections landed here on 2026-08-13**, both found by an independent review probing the
+running validator rather than reading it. The deadline check spent a 60-second clock-skew allowance
+on the wrong side of the boundary and accepted a genuine approval 30 seconds AFTER its hold expired;
+skew now applies only to a future-dated `issuedAt`, where it protects an honest gate, and never to an
+expiry, where it protects an attacker. Separately, bounding the grant's DURATION was being described
+as bounding its END: with a five-minute ceiling, a grant taken against a hold expiring in 30 seconds
+stayed valid 270 seconds past that hold, while the source comment beside the check already claimed
+"no grant may outlive it". Both are now enforced and both have regression tests measured failing
+against the pre-fix source, with a control test proving they are not vacuous.
+
+Three things make that more than an assertion, and each is a control that has been observed to fail:
+
+- The signer's identity is **operator-pinned**, not learned from the socket. A gate that asked the
+  socket who it was and then minted a manifest naming the answer would publish an attacker as its own
+  authority root.
+- The gate **cryptographically verifies** every signature it receives back before treating it as its
+  own authority.
+- `createAlphaTrust` **refuses** to combine an external execution signer with a gate-generated
+  approver key, because the sidecar authorizes on exactly one thing an attacker inside the gate
+  cannot forge: the approver's signature.
+
+`packages/gate/test/grant-authority-root.test.ts` runs a real sidecar process against an attacker
+holding everything the gate process holds. **Three** of these controls are registered in the knockout
+registry and are therefore proven to turn the suite red when removed
+(`s0-grant-authority-out-of-gate-process`, `s0-cross-keyring-kid-agreement`,
+`s0-grant-params-bound-to-approval`); the rest have regression tests but no knockout binding.
+
+**Corrected 2026-08-13.** This paragraph previously said *every* control above was so registered. An
+independent review checked the registry against the claim and found the coverage partial, and found
+two tests that would stay green if production wiring were removed rather than the control itself —
+the durable-journal test supplies its own journal path instead of asserting the shipped default, and
+the socket-directory test calls the checker directly instead of asserting that startup calls it. Both
+verify their class and neither verifies the wiring. They are listed here rather than quietly
+strengthened, because the distance between "a control exists" and "the shipped path uses it" is
+exactly the distance this register is for.
+
+**What is still not claimed.**
+
+- **"Everything the gate process holds" is a claim about the trust root this repository constructs,
+  not about a compromised V8 heap.** What is asserted, and asserted by enumeration over the
+  constructed object, is that `GateTrust` carries exactly one private key — the gate's own. The root
+  and delegated manifest-signing keys are locals inside `createAlphaTrust` and are never returned, so
+  a runtime compromise cannot re-sign the key manifest; they do exist transiently during boot.
+  Nothing here proves an absence of key material anywhere in a process's memory, and no test can.
+- **The approver's key must not be co-resident with the gate.** The shipped constructor now refuses
+  that combination outright rather than documenting it, but a deployment that enrols the phone's
+  public key and then keeps the private half beside the gate for its own reasons has no approval
+  boundary for this sidecar to defend, and the code cannot detect it.
+- **This is process isolation, not an HSM** — the same limit `packages/signer-sidecar/README.md`
+  states under "Honest limits". Root, or the same OS user the sidecar runs as, can read its
+  `--key-file` or attach a debugger. "The gate process cannot reach this key" is only true when the
+  sidecar runs as a *different* OS user (or on different hardware); the socket and trust-file
+  permission rules are written to permit exactly that deployment, and the code cannot verify that an
+  operator chose it.
+- **The three execution ATTESTATIONS are signed, not authorized.** The Consumption, the Execution
+  Uncertainty and the Hold Resolution require the same `execution-signer` role as the grant, so they
+  moved to the sidecar with it — but they are signed on an ungated op after spec and domain
+  validation. A compromised gate can still obtain a signed attestation asserting something false (for
+  instance a Hold Resolution claiming `APPROVED`), exactly as it could before this change. It cannot
+  turn one into a grant: the op refuses the grant spec, and the domain tags differ.
+- **One grant per approval is at-most-once, and the failure direction is deliberate.** The claim is
+  durable and is taken immediately before the response is written, but the claim and the delivery
+  live in two processes and no ordering makes them one transaction. A response lost in flight burns
+  the approval and costs the human another tap. That is the direction chosen: a spent approval with
+  no grant delivered is recoverable, a grant delivered without the approval spent is a second
+  authorization for one human decision.
+- **The gate's own record-keeping is not transactional.** `decide()` writes the grant record and the
+  hold separately, and the `Store` interface exposes no compare-and-swap (`store.ts` says so about
+  itself). This is safe for the shipped single-process in-memory driver and is a precondition on any
+  durable driver that replaces it, not a property of the interface.
+- **None of this makes an approval load-bearing at the target.** A grant nobody validates authorizes
+  nothing. NC-6.x and `docs/ADR-0003-enforcement-boundary.md` are unchanged by this work: this closes
+  the custody of the authority root, not the question of who enforces it.
 
 Architecture options and their surviving claims: `docs/ADR-0003-enforcement-boundary.md`.
 
