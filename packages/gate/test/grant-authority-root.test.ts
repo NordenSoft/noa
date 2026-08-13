@@ -694,6 +694,85 @@ test("F5 (HIGH): a hold that has already expired can never carry a grant", () =>
   assert.match(verdict.ok ? "" : verdict.reason, /hold expired/);
 });
 
+test("F5a (HIGH): the deadline has NO skew allowance — one second past expiry is already refused", () => {
+  // WHY THIS EXISTS. F5 above probes 120s past the deadline, and the check it was written against
+  // read `nowMs > expiry + CLOCK_SKEW_MS` — so it passed while the whole first MINUTE after expiry
+  // was still accepted. An independent review measured it live: a genuine approval granted 30s past
+  // the deadline returned ok:true. A test that only samples far outside the hole cannot see the hole.
+  // This one samples one second in.
+  const E = freshHold("chain-expiry-1s");
+  const approval = signPhoneDecision({ trust: H.trust, signer: H.phone, deferredReceipt: E.deferred, holdEnvelope: E.holdEnvelope, decision: "APPROVE" });
+  const expiry = Date.parse(E.holdEnvelope.expiresAt);
+  const justAfter = expiry + 1_000;
+  const verdict = validateGrantRequest({
+    grant: grantDoc({
+      grantId: "expired-1s", holdId: E.holdId, paramsHash: E.paramsHash, holdEnvelope: E.holdEnvelope,
+      approvalReceipt: approval.receipt,
+      issuedAt: new Date(justAfter).toISOString(),
+      expiresAt: new Date(justAfter + 30_000).toISOString(),
+    }),
+    proof: { holdEnvelope: E.holdEnvelope, decisionArtifact: approval.decisionArtifact, deferredReceipt: E.deferred, approvalReceipt: approval.receipt },
+    trust: loadGrantSignerTrust(H.trustFile),
+    schemas,
+    nowMs: justAfter,
+    maxApprovalAgeMs: 24 * 60 * 60 * 1000,
+    maxGrantTtlMs: 300_000,
+  });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.ok ? "" : verdict.reason, /hold expired/);
+});
+
+test("F5b (HIGH): a grant may not OUTLIVE its hold — bounding duration is not bounding the end", () => {
+  // The deadline check's own comment claimed "no grant may outlive it" while nothing enforced it:
+  // only `expiresAt - issuedAt <= maxGrantTtlMs` was checked, so with a five-minute TTL a grant taken
+  // against a hold expiring in 30s stayed valid 270s past that hold. A property asserted in prose and
+  // enforced nowhere is the worse kind of gap — every later reader believes it.
+  const E = freshHold("chain-outlive");
+  const approval = signPhoneDecision({ trust: H.trust, signer: H.phone, deferredReceipt: E.deferred, holdEnvelope: E.holdEnvelope, decision: "APPROVE" });
+  const expiry = Date.parse(E.holdEnvelope.expiresAt);
+  const now = expiry - 30_000;                             // comfortably INSIDE the hold: only the END is wrong
+  const verdict = validateGrantRequest({
+    grant: grantDoc({
+      grantId: "outlive-1", holdId: E.holdId, paramsHash: E.paramsHash, holdEnvelope: E.holdEnvelope,
+      approvalReceipt: approval.receipt,
+      issuedAt: new Date(now).toISOString(),
+      expiresAt: new Date(expiry + 60_000).toISOString(),   // past the hold, still inside maxGrantTtlMs
+    }),
+    proof: { holdEnvelope: E.holdEnvelope, decisionArtifact: approval.decisionArtifact, deferredReceipt: E.deferred, approvalReceipt: approval.receipt },
+    trust: loadGrantSignerTrust(H.trustFile),
+    schemas,
+    nowMs: now,
+    maxApprovalAgeMs: 24 * 60 * 60 * 1000,
+    maxGrantTtlMs: 300_000,                                // generous ON PURPOSE: isolate the hold bound
+  });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.ok ? "" : verdict.reason, /may not outlive its hold/);
+});
+
+test("F5c CONTROL: a grant ending exactly WITH its hold is still accepted", () => {
+  // Without this, F5a/F5b would also pass against a validator that refused everything — the failure
+  // mode this repository has already caught once inside its own security tests.
+  const E = freshHold("chain-outlive-ok");
+  const approval = signPhoneDecision({ trust: H.trust, signer: H.phone, deferredReceipt: E.deferred, holdEnvelope: E.holdEnvelope, decision: "APPROVE" });
+  const expiry = Date.parse(E.holdEnvelope.expiresAt);
+  const now = expiry - 30_000;
+  const verdict = validateGrantRequest({
+    grant: grantDoc({
+      grantId: "outlive-ok", holdId: E.holdId, paramsHash: E.paramsHash, holdEnvelope: E.holdEnvelope,
+      approvalReceipt: approval.receipt,
+      issuedAt: new Date(now).toISOString(),
+      expiresAt: new Date(expiry).toISOString(),            // ends exactly with the hold
+    }),
+    proof: { holdEnvelope: E.holdEnvelope, decisionArtifact: approval.decisionArtifact, deferredReceipt: E.deferred, approvalReceipt: approval.receipt },
+    trust: loadGrantSignerTrust(H.trustFile),
+    schemas,
+    nowMs: now,
+    maxApprovalAgeMs: 24 * 60 * 60 * 1000,
+    maxGrantTtlMs: 300_000,
+  });
+  assert.equal(verdict.ok, true, verdict.ok ? "" : verdict.reason);
+});
+
 test("F6 (HIGH): a spent approval stays spent across a restart", () => {
   // An in-memory-only anti-replay set records this process's uptime, not what has been authorized.
   const journal = path.join(H.dir, "f6-replay.jsonl");

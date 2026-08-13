@@ -462,8 +462,17 @@ document told them what it means.
 > architectural."*
 >
 > That text is quoted rather than deleted because it remains exactly true of a gate that keeps its
-> grant key in process. What changed is that such a gate now REFUSES TO START unless an operator
-> writes the unsafe posture down, and that a protected alternative exists and is measured.
+> grant key in process. What changed is that the SHIPPED entry points — the CLI, and any construction
+> that supplies no execution signer — refuse to start unless an operator writes the unsafe posture
+> down, and that a protected alternative exists and is measured.
+>
+> **Narrowed 2026-08-13**, after an independent review measured the earlier wording ("such a gate now
+> REFUSES TO START unless…") to be broader than the code. `localExecutionSigner` is a public export,
+> so `new GateEngine({ executionSigner: localExecutionSigner(trust.gate) })` satisfies the
+> acknowledgement check by SUPPLYING a signer rather than by DECLARING the posture: an in-process
+> grant key, undeclared, reachable through the library API. "No longer a silent default" is the claim
+> that survives; "refuses to start" was never true of every construction path, and a sentence true of
+> the CLI is not true of the package.
 >
 > **A first attempt at this replacement was itself withdrawn**, on 2026-08-12, after an independent
 > adversarial review reproduced three CRITICAL bypasses of the boundary it described — including one
@@ -484,9 +493,20 @@ the key in effect, which `packages/signer-sidecar`'s own README states about its
 independently verifies, per request and against trust material it holds itself, that the grant is
 backed by an approver-signed decision and an approver-signed ALLOWED receipt, and that the grant's
 `paramsHash` is **the one that receipt carries**. It also enforces one grant per approval (durably,
-across restarts), an approval-freshness window, the hold's own deadline, and a ceiling on the grant's
-lifetime — the time bounds all measured on its own clock, because every timestamp in the request is
-the caller's to choose.
+across restarts), an approval-freshness window, the hold's own deadline **with no tolerance past it**,
+a ceiling on the grant's lifetime, and — since 2026-08-13 — that the grant **may not end after the
+hold does**. The time bounds are all measured on its own clock, because every timestamp in the request
+is the caller's to choose.
+
+**Two corrections landed here on 2026-08-13**, both found by an independent review probing the
+running validator rather than reading it. The deadline check spent a 60-second clock-skew allowance
+on the wrong side of the boundary and accepted a genuine approval 30 seconds AFTER its hold expired;
+skew now applies only to a future-dated `issuedAt`, where it protects an honest gate, and never to an
+expiry, where it protects an attacker. Separately, bounding the grant's DURATION was being described
+as bounding its END: with a five-minute ceiling, a grant taken against a hold expiring in 30 seconds
+stayed valid 270 seconds past that hold, while the source comment beside the check already claimed
+"no grant may outlive it". Both are now enforced and both have regression tests measured failing
+against the pre-fix source, with a control test proving they are not vacuous.
 
 Three things make that more than an assertion, and each is a control that has been observed to fail:
 
@@ -500,8 +520,19 @@ Three things make that more than an assertion, and each is a control that has be
   cannot forge: the approver's signature.
 
 `packages/gate/test/grant-authority-root.test.ts` runs a real sidecar process against an attacker
-holding everything the gate process holds, and every control above is registered as a knockout that
-turns the suite red when removed.
+holding everything the gate process holds. **Three** of these controls are registered in the knockout
+registry and are therefore proven to turn the suite red when removed
+(`s0-grant-authority-out-of-gate-process`, `s0-cross-keyring-kid-agreement`,
+`s0-grant-params-bound-to-approval`); the rest have regression tests but no knockout binding.
+
+**Corrected 2026-08-13.** This paragraph previously said *every* control above was so registered. An
+independent review checked the registry against the claim and found the coverage partial, and found
+two tests that would stay green if production wiring were removed rather than the control itself —
+the durable-journal test supplies its own journal path instead of asserting the shipped default, and
+the socket-directory test calls the checker directly instead of asserting that startup calls it. Both
+verify their class and neither verifies the wiring. They are listed here rather than quietly
+strengthened, because the distance between "a control exists" and "the shipped path uses it" is
+exactly the distance this register is for.
 
 **What is still not claimed.**
 

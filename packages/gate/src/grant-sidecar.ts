@@ -369,7 +369,15 @@ export function validateGrantRequest(input: ValidateGrantInput): ValidateGrantRe
   // never an approval (Red Line 6), and no grant may outlive it.
   const envelopeExpiryMs = sidecarDateParse(asString(holdEnvelope["expiresAt"]) ?? "");
   if (!Number.isFinite(envelopeExpiryMs)) return refuse("hold envelope carries no parseable expiresAt");
-  if (nowMs > envelopeExpiryMs + CLOCK_SKEW_MS) {
+  // NO SKEW ALLOWANCE IN THE UNSAFE DIRECTION (independent review 2026-08-13, round 3). This read
+  // `nowMs > envelopeExpiryMs + CLOCK_SKEW_MS` and therefore ACCEPTED an approval for the whole first
+  // minute after the hold had run out — measured live by the reviewer: a genuine approval granted 30s
+  // past the deadline returned `ok: true`. The skew allowance exists so a gate whose clock runs
+  // slightly AHEAD is not punished for a future-dated `issuedAt`; spent on an expiry it does the
+  // opposite and hands the tolerance to the attacker's side of the boundary. The two directions are
+  // not symmetric and must not share a constant: refusing one second late costs a human another tap,
+  // accepting one second late is an authorization no human gave inside the window they were shown.
+  if (nowMs > envelopeExpiryMs) {
     return refuse(`the hold expired ${Math.round((nowMs - envelopeExpiryMs) / 1000)}s ago — an expired hold is not an approval and may never carry a grant`);
   }
   if (asString(grant["holdEnvelopeHash"]) !== refHash(holdEnvelope)) return refuse("grant.holdEnvelopeHash does not hash this envelope");
@@ -421,6 +429,17 @@ export function validateGrantRequest(input: ValidateGrantInput): ValidateGrantRe
   }
   if (expiresMs - issuedMs > input.maxGrantTtlMs) {
     return refuse(`grant lifetime ${Math.round((expiresMs - issuedMs) / 1000)}s exceeds the ${Math.round(input.maxGrantTtlMs / 1000)}s this signer will authorize`);
+  }
+  // THE GRANT MAY NOT OUTLIVE THE HOLD IT CAME FROM (independent review 2026-08-13, round 3).
+  // Bounding the grant's DURATION is not the same statement as bounding its END, and only the first
+  // was enforced: with a `maxGrantTtlMs` of five minutes, a grant issued against a hold expiring in
+  // thirty seconds was accepted and stayed valid 270s past that hold — measured by the reviewer. The
+  // comment above the deadline check already claimed "no grant may outlive it", which made this the
+  // worse kind of gap: a property asserted in prose, believed by every later reader, enforced
+  // nowhere. The human answered a question that was open until `holdEnvelope.expiresAt`; authority
+  // derived from that answer ends where the question ended.
+  if (expiresMs > envelopeExpiryMs) {
+    return refuse(`grant expires ${Math.round((expiresMs - envelopeExpiryMs) / 1000)}s after the hold it derives from — a grant may not outlive its hold`);
   }
 
   return { ok: true, approvalRef, approvalMs };
