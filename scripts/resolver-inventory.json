@@ -304,6 +304,26 @@
       "exception": "EX-TEST-FIXTURES"
     },
     {
+      "id": "approval-artifacts-keyring-approver-observer-8-0",
+      "package": "approval-artifacts",
+      "file": "packages/approval-artifacts/scripts/gen-vectors.ts",
+      "scope": "keyring>approver-observer-8",
+      "ordinal": 0,
+      "line": 71,
+      "kind": "construct",
+      "class": "vector-gen",
+      "input": "hardcoded vector key material",
+      "output": "KeyEntry (vector fixture)",
+      "validFrom": "absent",
+      "revokedAt": "absent",
+      "missingValue": "verifier-keyring vector entries deliberately pin the legacy always-active behaviour",
+      "malformedValue": "rejection vectors declare malformed values on purpose",
+      "timestampParser": "hardcoded canonical constants",
+      "consumer": "conformance vector runner (§6) — S4 round-1 F6: APPROVER-type key holding settlement-observer, so the F15 signerType check is measured on its own",
+      "proofs": [],
+      "exception": "EX-TEST-FIXTURES"
+    },
+    {
       "id": "approval-artifacts-manifestkeys-0",
       "package": "approval-artifacts",
       "file": "packages/approval-artifacts/scripts/gen-vectors.ts",

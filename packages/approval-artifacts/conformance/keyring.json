@@ -71,5 +71,12 @@
       "settlement-observer"
     ],
     "revokedAt": "2026-07-01T00:00:00.000Z"
+  },
+  "approver-observer-8": {
+    "publicKey": "MCowBQYDK2VwAyEAyWyKrlqUjXHNne/+QyauGtbuM9OgyNUy0PaKeAI6U+k=",
+    "type": "APPROVER",
+    "roles": [
+      "settlement-observer"
+    ]
   }
 }

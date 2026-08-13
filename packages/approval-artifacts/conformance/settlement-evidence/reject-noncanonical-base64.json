@@ -1,8 +1,8 @@
 {
-  "description": "smuggled extra field INSIDE chainWitness, RE-SIGNED — the nested additionalProperties:false is a distinct control and the only refuser",
+  "description": "railReceipt.bytes 'AB==' — lexically base64-shaped, non-canonical final quantum (re-signed; the narrowed layer-1 grammar refuses, matching the reconciler's strict round-trip)",
   "spec": "noa.settlement-evidence/0.1",
   "expect": "REJECT",
-  "rejectionClass": "unknown-property",
+  "rejectionClass": "structural",
   "artifact": {
     "spec": "noa.settlement-evidence/0.1",
     "tenant": "tenant-acme",
@@ -20,21 +20,20 @@
       "amount": "1000000",
       "txHash": "0xf00df00df00df00df00df00df00df00df00df00df00df00df00df00df00df00d",
       "blockNumber": 123456,
-      "settledAt": "2026-07-14T11:57:30.000Z",
-      "_smuggled": "x"
+      "settledAt": "2026-07-14T11:57:30.000Z"
     },
     "railReceipt": {
       "disclosure": "FULL",
       "format": "x402-offer-receipt/eip712",
       "encoding": "base64",
-      "bytes": "eyJ4NDAyIjoidGVzdC1vbmx5IG9wYXF1ZSByYWlsIHJlY2VpcHQiLCJ0eCI6IjB4ZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZCJ9"
+      "bytes": "AB=="
     },
     "observerKid": "gate-observer-2",
     "observedAt": "2026-07-14T11:58:00.000Z",
     "sig": {
       "alg": "ed25519",
       "kid": "gate-observer-2",
-      "value": "Baz3KZTgBkPCxdbWdTtmsqJ1OvYq3YYHQ8recW5zQSRvVCvbmqV8NZPIe8VUBSl29DhCzhcLEcwC4Ilq5F6EDg=="
+      "value": "Eh0A7AgkQtrPv6x5dMPLf0Bh+U8b00MZZs+nES1+QgctjtvcI4+5HaGlnKO38bCt5czmBH7wfBxnMjM1kpBhCg=="
     }
   },
   "context": {

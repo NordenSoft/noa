@@ -110,9 +110,12 @@ export interface CreateTrustInput {
    * S4 correlation design (D7) it is ALSO the confidentiality-critical seed of the on-chain
    * correlation nonce: nine of the ten projection members are low-entropy or enumerable for a given
    * tenant, so the nonce is the ONLY thing standing between a public ledger and a confirmation
-   * oracle over customers' private approvals. `randomUUID()` is 122 random bits — below the 128-bit
-   * floor the digest spec asserts — and the grant schema now pins `nonce` to `^[0-9a-f]{64}$`
-   * (exactly 32 bytes, lowercase hex). Grant IDs and every other `newId()` use are identifiers,
+   * oracle over customers' private approvals. The real rule (corrected 2026-08-13, round-1 F5 —
+   * an earlier revision here cited a "128-bit floor the digest spec asserts", which does not
+   * exist anywhere): the settlement-evidence spec's §3 seed rule requires `grant.nonce` to be
+   * EXACTLY 32 bytes as lowercase hex so it serves as a full-entropy D7 seed, and the grant
+   * schema pins `nonce` to `^[0-9a-f]{64}$`. `randomUUID()` satisfies neither the format nor the
+   * 32-byte full-entropy requirement. Grant IDs and every other `newId()` use are identifiers,
    * not secrets, and stay on `randomUUID()`.
    */
   nonces?: () => string;
@@ -185,7 +188,22 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
   const now = input.now ?? (() => Date.now());
   const newId = input.ids ?? (() => randomUUID());
   // 32 CSPRNG bytes, hex — injectable for deterministic tests exactly the way `ids` is.
-  const newNonce = input.nonces ?? (() => randomBytes(32).toString("hex"));
+  const nonceSource = input.nonces ?? (() => randomBytes(32).toString("hex"));
+  // S4 round-1 F14 — EVERY draw is format-validated at the trust boundary, so an injected bad
+  // nonce source fails HERE, loudly, instead of minting schema-invalid (or worse, schema-valid
+  // but degenerate) grants that fail silently downstream. Per-call rather than a one-off probe
+  // draw at construction: a probe draw would silently shift injected deterministic sequences.
+  // Entropy is unenforceable at this boundary; format is what CAN be checked, and is.
+  const newNonce = () => {
+    const nonce = nonceSource();
+    if (typeof nonce !== "string" || !/^[0-9a-f]{64}$/.test(nonce)) {
+      throw new Error(
+        "createAlphaTrust: newNonce() produced a value that is not 64 lowercase hex characters — " +
+          "grant nonces are the D7 correlation seed and must satisfy the grant schema's ^[0-9a-f]{64}$",
+      );
+    }
+    return nonce;
+  };
   const tenant = input.tenant;
   const approverRole = input.approverRole ?? "approve-critical";
 

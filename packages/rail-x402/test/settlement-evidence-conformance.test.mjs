@@ -132,3 +132,84 @@ test("R-1: the reconciler never throws — hostile top-level inputs return the e
     assert.equal(r.purposeStatus, "INSUFFICIENT");
   }
 });
+
+test("R-1 per-field hammer (round-1 F11): every input field, hostile in isolation, returns the FULL envelope", () => {
+  // The reproduced hole: `paramsPreimage: Symbol()` escaped as an uncaught TypeError from
+  // Buffer.from AFTER the documents were otherwise valid. Each field is now fuzzed on top of the
+  // committed ACCEPT vector, so the hostile value is reached, not shadowed by an earlier refusal.
+  const valid = committed.vectors.find((v) => v.name === "valid-reconfirmed");
+  const base = () => {
+    const i = valid.input;
+    return {
+      artifact: asBytes(i.artifact),
+      receiptChain: asBytes(i.receiptChain),
+      grant: asBytes(i.grant),
+      keyring: asBytes(i.keyring),
+      holdEnvelope: asBytes(i.holdEnvelope),
+      holdResolution: asBytes(i.holdResolution),
+      chainFacts: asBytes(i.chainFacts),
+      chainFactsOrigin: i.chainFactsOrigin,
+      paramsPreimage: i.paramsPreimage,
+      expect: i.expect,
+      minConfirmations: i.minConfirmations,
+      now: i.now,
+      freshnessWindowMs: i.freshnessWindowMs,
+    };
+  };
+  const hostiles = [Symbol("hostile"), () => "hostile", 123n, { toString: null }, [Symbol()], NaN, -Infinity];
+  const fields = ["artifact", "receiptChain", "grant", "keyring", "holdEnvelope", "holdResolution",
+    "chainFacts", "chainFactsOrigin", "paramsPreimage", "expect", "minConfirmations", "now",
+    "freshnessWindowMs", "expectedAmountMinorUnits"];
+  const ENVELOPE_KEYS = ["purpose", "artifactStatus", "linkageStatus", "correlationStatus", "boundsStatus",
+    "chainStatus", "railReceiptStatus", "witnessTrustStatus", "purposeStatus", "observerRelationship",
+    "observerRelationshipSource", "trustPolicyHash", "registrySnapshotHash", "reconciled", "code", "reason", "warnings"];
+  for (const field of fields) {
+    for (const hostile of hostiles) {
+      const input = base();
+      input[field] = hostile;
+      let r;
+      assert.doesNotThrow(() => { r = reconcileSettlementEvidence(input); },
+        `${field} = ${String(typeof hostile)} threw — R-1 forbids any escape`);
+      for (const k of ENVELOPE_KEYS) {
+        assert.ok(Object.hasOwn(r, k), `${field} hostile: envelope field ${k} absent`);
+      }
+      assert.ok(typeof r.code === "string");
+    }
+  }
+});
+
+test("round-1 Codex #4: a malformed-UTF-8 params preimage cannot match a receipt that committed to the cleaned text", () => {
+  // The reproduced hole: verifyParamsPreimage decoded Uint8Array bytes with a lossy
+  // Buffer.from(bytes).toString("utf8") (invalid bytes -> U+FFFD) and hashed the RE-ENCODING, so raw
+  // bytes carrying 0x80 matched a receipt that committed to the U+FFFD-cleaned form, and the bounds
+  // were then read from attacker bytes. JSON corpora cannot carry invalid UTF-8, so this is a direct
+  // byte probe. With the fix, hashing the RAW bytes makes the two differ -> no bounds -> no positive.
+  const valid = committed.vectors.find((v) => v.name === "valid-reconfirmed");
+  const cleanedText = valid.input.paramsPreimage;               // the exact text the receipt committed to
+  assert.equal(typeof cleanedText, "string");
+  const cleanedBytes = Buffer.from(cleanedText, "utf8");
+  // Craft raw bytes that DECODE (lossily) to the same text but are NOT byte-identical: append a lone
+  // 0x80 continuation byte, which lossy decode collapses to U+FFFD and a strict decode rejects.
+  const malformed = Buffer.concat([cleanedBytes, Buffer.from([0x80])]);
+  assert.notEqual(malformed.toString("hex"), cleanedBytes.toString("hex"));
+  const i = valid.input;
+  const r = reconcileSettlementEvidence({
+    artifact: asBytes(i.artifact),
+    receiptChain: asBytes(i.receiptChain),
+    grant: asBytes(i.grant),
+    keyring: asBytes(i.keyring),
+    holdEnvelope: asBytes(i.holdEnvelope),
+    holdResolution: asBytes(i.holdResolution),
+    chainFacts: asBytes(i.chainFacts),
+    chainFactsOrigin: i.chainFactsOrigin,
+    paramsPreimage: new Uint8Array(malformed),                  // raw bytes, not the corpus string
+    expect: i.expect,
+    minConfirmations: i.minConfirmations,
+    now: i.now,
+    freshnessWindowMs: i.freshnessWindowMs,
+  });
+  assert.notEqual(r.code, "SETTLEMENT_CORRELATED_AND_RECONFIRMED",
+    "malformed-UTF-8 preimage earned the positive — the hash bound the cleaned re-encode, not the raw bytes");
+  assert.equal(r.boundsStatus, "UNCHECKED",
+    "bounds must be UNCHECKED when the supplied preimage bytes do not hash to action.paramsHash");
+});

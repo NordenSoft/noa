@@ -40,6 +40,7 @@ const KEYS: Record<string, { publicKey: string; privateKey: string }> = {
   "gate-observer-2": { publicKey: "MCowBQYDK2VwAyEA7DuTd+HYKoDDdhqZ/sWPFxOCg+zYnIqDq49+9n9mVuM=", privateKey: "MC4CAQAwBQYDK2VwBCIEIDYyPhz4XZJOp7jNcIkUcfAEadA/nApBZ8hjn0iLSXl6" },
   "gate-dual-7": { publicKey: "MCowBQYDK2VwAyEAg+hHsMpx4PXzqgNIz0zBVdiqu/0fL4zgLugMia8o15U=", privateKey: "MC4CAQAwBQYDK2VwBCIEIIKm4Dm024JaGFkK6s0BN5BwQ04eh+D43WPR7aOvriRe" },
   "revoked-observer-3": { publicKey: "MCowBQYDK2VwAyEAHSxACar+lVpW0wQpIwF0Ubl0C8VrwxlNVSi+p2eW5hc=", privateKey: "MC4CAQAwBQYDK2VwBCIEIM/EWvimWg024unhuCfn4NHC9k3fhEtqZeNi9htMeIJa" },
+  "approver-observer-8": { publicKey: "MCowBQYDK2VwAyEAyWyKrlqUjXHNne/+QyauGtbuM9OgyNUy0PaKeAI6U+k=", privateKey: "MC4CAQAwBQYDK2VwBCIEIKmpqampqampqampqampqampqampqampqampqampqalY" },
 };
 const HPKE: Record<string, string> = {
   "approver-1-device-2": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28",
@@ -64,6 +65,10 @@ const keyring: Record<string, KeyEntry> = {
   "gate-observer-2": { publicKey: KEYS["gate-observer-2"]!.publicKey, type: "GATE", roles: ["settlement-observer"] },
   "gate-dual-7": { publicKey: KEYS["gate-dual-7"]!.publicKey, type: "GATE", roles: ["execution-signer", "settlement-observer"] },
   "revoked-observer-3": { publicKey: KEYS["revoked-observer-3"]!.publicKey, type: "GATE", roles: ["settlement-observer"], revokedAt: "2026-07-01T00:00:00.000Z" },
+  // S4 round-1 F6: an APPROVER-TYPE key that HOLDS settlement-observer, so the F15 signerType
+  // check is measured on its own — every other wrong-key fixture also lacks the role, letting the
+  // role check mask a deleted type check (measured: type-check deletion left 13/13 green).
+  "approver-observer-8": { publicKey: KEYS["approver-observer-8"]!.publicKey, type: "APPROVER", roles: ["settlement-observer"] },
   // attacker-x is deliberately ABSENT → an "unknown signing key" rejection.
 };
 
@@ -318,7 +323,13 @@ function addUnknownProp(signedOrCore: J): J {
   emit("decision", "reject-wrong-tenant.json", { description: "transitive tenant (F7b/G7): the bound Hold Envelope is for a foreign tenant", spec, expect: "REJECT", rejectionClass: "wrong-tenant", artifact: reSign({ ...clone(decisionCore), holdEnvelopeHash: refHash(foreignEnvelope) }, spec, "approver-1-device-2"), context: { ...baseCtx, refHashChecks: [{ path: "holdEnvelopeHash", rule: "side", artifact: foreignEnvelope, refEquals: [{ path: "tenant", value: TENANT }] }] } });
   emit("decision", "reject-wrong-nonce.json", { description: "reason encrypted to the WRONG audit key (D23: a wrong audit kid is rejected)", spec, expect: "REJECT", rejectionClass: "wrong-nonce", artifact: reSign({ ...clone(decisionCore), reasonEncryption: { ...clone(encReason), recipientKid: "attacker-audit" } }, spec, "approver-1-device-2"), context: baseCtx });
   emit("decision", "reject-expired.json", { description: "decidedAt far outside the plausible freshness window (backdate/forward-date)", spec, expect: "REJECT", rejectionClass: "expired", artifact: reSign({ ...clone(decisionCore), decidedAt: T_FUTURE }, spec, "approver-1-device-2"), context: baseCtx });
-  emit("decision", "reject-wrong-key.json", { description: "F15 tier: a CRITICAL-only approver key (approve-critical) may NOT sign a HIGH decision (non-overlapping tiers)", spec, expect: "REJECT", rejectionClass: "wrong-key", artifact: reSign({ ...clone(decisionCore), approverKid: "approver-crit-5" }, spec, "approver-crit-5"), context: baseCtx });
+  // S4 round-1 F6: this vector used to claim the F15 tier check while ACTUALLY rejecting on the
+  // caller's approverKid equality pin (measured by the new rejectionClass assertion) — and its old
+  // description ("non-overlapping tiers") predated the lattice unification that made
+  // approve-critical dominate approve-high. It now measures the F15 ROLE branch for real: an
+  // APPROVER-type key holding NO approve-* tier signs, with the equality pins dropped so the role
+  // check is the only refuser.
+  emit("decision", "reject-wrong-key.json", { description: "F15 role: an APPROVER key holding no approve-* tier (approver-observer-8, settlement-observer only) may NOT sign a HIGH decision — equality pins dropped so the F15 role check is the refuser", spec, expect: "REJECT", rejectionClass: "wrong-key", artifact: reSign({ ...clone(decisionCore), approverKid: "approver-observer-8" }, spec, "approver-observer-8"), context: { ...baseCtx, equals: [{ path: "reasonEncryption.recipientKid", value: "audit-1" }] } });
   emit("decision", "reject-signer-identity-split.json", {
     description: "Decision claims approver-crit-5 while a different active HIGH approver signs it — approverKid must equal sig.kid even without caller-supplied equality checks",
     spec,
@@ -549,7 +560,9 @@ function addUnknownProp(signedOrCore: J): J {
   emit("encrypted-display", "reject-bad-suite.json", { description: "unknown AEAD id (99) — RFC 9180 suite enum", spec, expect: "REJECT", rejectionClass: "structural", artifact: { ...clone(encDisplay), suite: { kem: 32, kdf: 1, aead: 99 } }, context: baseCtx });
   emit("encrypted-display", "reject-bad-aadhash.json", { description: "aadHash not a sha256:<64hex>", spec, expect: "REJECT", rejectionClass: "structural", artifact: { ...clone(encDisplay), aadHash: "sha256:short" }, context: baseCtx });
   emit("encrypted-display", "reject-recipient-missing-wrappedcek.json", { description: "recipient entry missing wrappedCek", spec, expect: "REJECT", rejectionClass: "structural", artifact: { ...clone(encDisplay), recipients: [{ kid: "approver-1-device-2", enc: "ZW5j" }] }, context: baseCtx });
-  emit("encrypted-display", "reject-wrong-tenant.json", { description: "tenant does not match the expected tenant", spec, expect: "REJECT", rejectionClass: "wrong-tenant", artifact: { ...clone(encDisplay), tenant: "tenant-EVIL" }, context: baseCtx });
+  // S4 round-1 F6: expectVirtualHash is dropped for THIS vector — with it, the whole-object hash
+  // fired before the tenant equality and the vector measured F2 twice instead of the tenant lock.
+  emit("encrypted-display", "reject-wrong-tenant.json", { description: "tenant does not match the expected tenant (virtual-hash pin dropped so the tenant equality is the refuser)", spec, expect: "REJECT", rejectionClass: "wrong-tenant", artifact: { ...clone(encDisplay), tenant: "tenant-EVIL" }, context: { now: NOW, equals: [{ path: "tenant", value: TENANT }] } });
   emit("encrypted-display", "reject-unknown-property.json", { description: "smuggled extra field — additionalProperties:false", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: addUnknownProp(encDisplay), context: baseCtx });
 }
 
@@ -616,10 +629,13 @@ function addUnknownProp(signedOrCore: J): J {
     mustBeWithin: [{ path: "observedAt", min: WIN_MIN, max: WIN_MAX }],
   };
   emit("settlement-evidence", "valid.json", { description: "valid observer-signed Settlement Evidence (SETTLED, FULL rail receipt, 0x-form correlation)", spec, expect: "ACCEPT", artifact: settlement, context: baseCtx });
-  emit("settlement-evidence", "reject-unknown-property.json", { description: "smuggled extra ROOT field — additionalProperties:false (layer 1)", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: addUnknownProp(settlement as J), context: baseCtx });
-  const nestedSmuggle = clone(settlement) as J;
-  (nestedSmuggle.chainWitness as J)["_smuggled"] = "x";
-  emit("settlement-evidence", "reject-unknown-property-nested.json", { description: "smuggled extra field INSIDE chainWitness — the nested additionalProperties:false is a distinct control", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: nestedSmuggle, context: baseCtx });
+  // S4 round-1 F6: both unknown-property vectors are RE-SIGNED WITH the smuggled member, so the
+  // schema's additionalProperties:false is the ONLY refuser. Un-re-signed, the broken signature
+  // backstopped a deleted schema control and the vectors certified nothing (measured).
+  emit("settlement-evidence", "reject-unknown-property.json", { description: "smuggled extra ROOT field, RE-SIGNED so layer 1 (additionalProperties:false) is the only refuser", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: reSign(addUnknownProp(clone(settlementCore)), spec, "gate-observer-2"), context: baseCtx });
+  const nestedSmuggleCore = clone(settlementCore) as J;
+  ((nestedSmuggleCore.chainWitness) as J)["_smuggled"] = "x";
+  emit("settlement-evidence", "reject-unknown-property-nested.json", { description: "smuggled extra field INSIDE chainWitness, RE-SIGNED — the nested additionalProperties:false is a distinct control and the only refuser", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: reSign(nestedSmuggleCore, spec, "gate-observer-2"), context: baseCtx });
   const tamperedAmount = clone(settlement) as J;
   (tamperedAmount.chainWitness as J).amount = "999999999";
   emit("settlement-evidence", "reject-tampered-content.json", { description: "chainWitness.amount altered after signing (stale signature) — layer 2", spec, expect: "REJECT", rejectionClass: "tampered-content", artifact: tamperedAmount, context: baseCtx });
@@ -634,6 +650,13 @@ function addUnknownProp(signedOrCore: J): J {
   // 12th rejection: pins the REVISION 3 / D7 correlation FORM change — the superseded revision-2
   // sha256: digest form must be structurally refused now that the schema requires the 0x nonce form.
   emit("settlement-evidence", "reject-correlation-digest-form.json", { description: "correlation carried in the SUPERSEDED revision-2 sha256:<64hex> digest form instead of the D7 0x<64hex> on-chain nonce form (re-signed; layer 1 refuses)", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(settlementCore), correlation: sha256Prefixed("test-correlation|" + GRANT_NONCE) }, spec, "gate-observer-2"), context: baseCtx });
+  // S4 round-1 F6: the F15 signerType check, measured on its own — this key HOLDS the
+  // settlement-observer role, so with the GATE-type check deleted the vector ACCEPTS and goes red.
+  emit("settlement-evidence", "reject-approver-type-observer.json", { description: "F15 signerType: an APPROVER-type key that DOES hold settlement-observer (approver-observer-8) may still NOT sign settlement evidence — the TYPE check is a distinct control from the role check", spec, expect: "REJECT", rejectionClass: "wrong-key", artifact: reSign({ ...clone(settlementCore), observerKid: "approver-observer-8" }, spec, "approver-observer-8"), context: baseCtx });
+  // S4 round-1 F8: base64 whose SHAPE the old schema admitted but whose final quantum is
+  // non-canonical ("AB==" — nonzero padding bits). The narrowed schema grammar refuses it at
+  // layer 1, keeping the published schema and the reconciler's strict round-trip in agreement.
+  emit("settlement-evidence", "reject-noncanonical-base64.json", { description: "railReceipt.bytes 'AB==' — lexically base64-shaped, non-canonical final quantum (re-signed; the narrowed layer-1 grammar refuses, matching the reconciler's strict round-trip)", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(settlementCore), railReceipt: { disclosure: "FULL", format: "x402-offer-receipt/eip712", encoding: "base64", bytes: "AB==" } }, spec, "gate-observer-2"), context: baseCtx });
 }
 
 // ─── Write everything ────────────────────────────────────────────────────────────────────────────

@@ -88,11 +88,50 @@ test("every valid vector ACCEPTS and every rejection vector REJECTS", () => {
   assert.deepEqual(failures, [], `\n${failures.join("\n")}`);
 });
 
+/**
+ * S4 round-1 F6 — `rejectionClass` is ASSERTED, not decorative. Each class names the layer that
+ * must refuse, as a set of stable reason prefixes; a vector drifting to a different refuser (most
+ * dangerously the signature backstop swallowing a deleted schema or F15 control) fails here even
+ * though the boolean verdict is unchanged. Measured before this test existed: the F15 GATE-type
+ * check could be deleted and both smuggled-unknown-property vectors kept passing on "invalid
+ * signature". The map is a CLOSED registry: an unknown class or an unmatched reason each fail.
+ */
+const REASON_BY_CLASS: Record<string, RegExp[]> = {
+  "tampered-content": [/^invalid signature/],
+  // The key-delegation folder's substitution vector: the delegation IS the trust anchor — nothing
+  // hash-binds it, so a substituted delegatedKid/publicKey surfaces as the caller's equality pin.
+  "cross-artifact-hash-substitution": [/^refHash mismatch at /, /^equality failed at delegated(Kid|PublicKey)/],
+  "wrong-tenant": [/^equality failed at /, /^referenced artifact \([^)]+\) field (scope\.)?tenant/, /^refHash mismatch at keyDelegationHash/],
+  "wrong-nonce": [/^equality failed at /, /^refHash mismatch at /, /^signer identity mismatch/, /^time check failed/],
+  "expired": [/^time check failed/],
+  // `equality failed at sig.kid` — pairing-accepted's wrong-key vector measures the caller's
+  // sig.kid binding by its own description; `equality failed at recipientKid` — the unsigned
+  // encrypted-reason blob's wrong-audit-kid refusal is the equality check.
+  "wrong-key": [/^unknown signing key/, /^signer type /, /^signer roles /, /^signer identity mismatch/, /was revoked/, /^equality failed at recipientKid/, /^equality failed at sig\.kid/],
+  "wrong-role": [/^signer roles /],
+  "revoked-key": [/was revoked/],
+  "signer-identity-split": [/^signer identity mismatch/],
+  // The pairing schema is a oneOf over its three message types; an unknown property makes the
+  // document match ZERO branches, which is that schema's honest unknown-property error shape.
+  "unknown-property": [/^schema: .*unknown property/, /^schema: \$: matched 0 oneOf branches/],
+  "structural": [/^schema: /],
+  "recipients-swap": [/^virtualHash mismatch/],
+};
+
 // Per-vector named subtests give a readable pass/fail line per fixture.
 for (const { slug, file, vec } of vectors) {
   test(`${slug}/${file.replace(/\.json$/, "")} → ${vec.expect}`, () => {
     const res = verifyArtifact(b(vec.artifact), b({ ...vec.context, schemas, keyring }));
     assert.equal(res.ok, vec.expect === "ACCEPT", res.reason ?? "");
+    if (vec.expect === "REJECT") {
+      assert.ok(vec.rejectionClass, `${slug}/${file}: REJECT vector declares no rejectionClass`);
+      const patterns = REASON_BY_CLASS[vec.rejectionClass!];
+      assert.ok(patterns, `${slug}/${file}: rejectionClass "${vec.rejectionClass}" is not in the registry — register its reason prefixes`);
+      assert.ok(
+        patterns.some((p) => p.test(res.reason ?? "")),
+        `${slug}/${file}: rejected for the WRONG reason — class "${vec.rejectionClass}" admits ${patterns.map(String).join(" | ")}, got: ${res.reason}`,
+      );
+    }
   });
 }
 

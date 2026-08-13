@@ -26,7 +26,8 @@ const VALID = {
   asset: "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
   authorizationState: true,
   authorizationUsedLogs: [
-    { txHash: "0x" + "3f".repeat(32), blockNumber: 1, logIndex: 0, blockTimestamp: "2026-08-13T10:05:04.000Z", txStatus: "SUCCESS" },
+    { txHash: "0x" + "3f".repeat(32), blockNumber: 1, logIndex: 0, blockTimestamp: "2026-08-13T10:05:04.000Z", txStatus: "SUCCESS",
+      nonce: "0x" + "9c".repeat(32), authorizer: "0x1111111111111111111111111111111111111111" },
   ],
   authorizationCanceledLogs: [
     { txHash: "0x" + "4a".repeat(32), blockNumber: 2, logIndex: 1, blockTimestamp: "2026-08-13T10:05:04Z", txStatus: "SUCCESS" },
@@ -38,6 +39,8 @@ const VALID = {
     from: "0x1111111111111111111111111111111111111111",
     to: "0x2222222222222222222222222222222222222222",
     value: "1000000",
+    txHash: "0x" + "3f".repeat(32),
+    blockNumber: 1,
   },
   headBlockNumber: 100,
   queriedAt: "2026-08-13T10:06:30.000Z",

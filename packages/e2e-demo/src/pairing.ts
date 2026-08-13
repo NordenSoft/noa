@@ -14,7 +14,7 @@
  * by the operator, NEVER transmitted; manifest issuance does not proceed without the gate-signed
  * local SAS confirmation (F12).
  */
-import { createHash } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from 'noa-approval-artifacts';
 import type { GateTrust, GateKeyPair } from 'noa-gate';
 import { SIGNING_KEY_LIFECYCLE_SPEC, type SigningKeyLifecycle } from 'noa-receipt';
@@ -319,10 +319,13 @@ export function assembleGateTrust(
     tenant: auth.tenant,
     now: () => clock.now(),
     newId,
-    // Demo grant-nonce source: 64 lowercase hex as the schema requires, deterministic exactly when
-    // the injected `newId` is — this demo replays byte-stable flows, and a CSPRNG here would only
-    // randomize a fixture. The production default lives in packages/gate/src/trust.ts.
-    newNonce: () => createHash('sha256').update(`nonce:${newId()}`).digest('hex'),
+    // S4 round-1 F10 — CSPRNG, same as the production default in packages/gate/src/trust.ts. The
+    // previous wiring hashed the deterministic id counter, which made every grant nonce PREDICTABLE
+    // and voided D7's leak-resistance in the wiring most likely to be copied ("the nonce is the
+    // ONLY thing standing between a public ledger and a confirmation oracle"). No test here relies
+    // on byte-stable nonces (measured); a replay test that ever needs determinism must inject its
+    // own source under an explicitly unsafe name, never change this default.
+    newNonce: () => randomBytes(32).toString('hex'),
     gate,
     approver,
     approverHpkePublicKey: phone.approverHpkePublicKey,

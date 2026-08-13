@@ -1,8 +1,8 @@
 {
-  "description": "smuggled extra field INSIDE chainWitness, RE-SIGNED — the nested additionalProperties:false is a distinct control and the only refuser",
+  "description": "F15 signerType: an APPROVER-type key that DOES hold settlement-observer (approver-observer-8) may still NOT sign settlement evidence — the TYPE check is a distinct control from the role check",
   "spec": "noa.settlement-evidence/0.1",
   "expect": "REJECT",
-  "rejectionClass": "unknown-property",
+  "rejectionClass": "wrong-key",
   "artifact": {
     "spec": "noa.settlement-evidence/0.1",
     "tenant": "tenant-acme",
@@ -20,8 +20,7 @@
       "amount": "1000000",
       "txHash": "0xf00df00df00df00df00df00df00df00df00df00df00df00df00df00df00df00d",
       "blockNumber": 123456,
-      "settledAt": "2026-07-14T11:57:30.000Z",
-      "_smuggled": "x"
+      "settledAt": "2026-07-14T11:57:30.000Z"
     },
     "railReceipt": {
       "disclosure": "FULL",
@@ -29,12 +28,12 @@
       "encoding": "base64",
       "bytes": "eyJ4NDAyIjoidGVzdC1vbmx5IG9wYXF1ZSByYWlsIHJlY2VpcHQiLCJ0eCI6IjB4ZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZCJ9"
     },
-    "observerKid": "gate-observer-2",
+    "observerKid": "approver-observer-8",
     "observedAt": "2026-07-14T11:58:00.000Z",
     "sig": {
       "alg": "ed25519",
-      "kid": "gate-observer-2",
-      "value": "Baz3KZTgBkPCxdbWdTtmsqJ1OvYq3YYHQ8recW5zQSRvVCvbmqV8NZPIe8VUBSl29DhCzhcLEcwC4Ilq5F6EDg=="
+      "kid": "approver-observer-8",
+      "value": "9EHmOfjCeMkWrzs6TPyCvCRZ4gZ+VNVaytaphL/9dIBzfNvOz0rs+b2RJNh95yWZImiXJ5p9K4F67aEzUg/5Cw=="
     }
   },
   "context": {

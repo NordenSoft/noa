@@ -183,6 +183,13 @@ function assertRawParity(receipt: Receipt, grant: Grant): void {
   if (a !== b) throw new Error(`generator: rawDigest has drifted from buildActionDigest (${b} != ${a})`);
 }
 
+// S4 round-1 F5: grant nonces are hex64 (the D7 correlation seed) — the kernel now enforces the
+// same `^[0-9a-f]{64}$` rule the shipped grant schema pins, so every fixture grant carries one.
+// Fixed constants keep the corpus byte-reproducible; TEST-ONLY, never real seeds.
+const NONCE_01 = "a1".repeat(32);
+const NONCE_02 = "a2".repeat(32);
+const NONCE_77 = "d7".repeat(32);
+
 // ── THE AUTHORIZATIONS ──────────────────────────────────────────────────────────────────────────
 // A: tenant-acme / chain-acme-1, attempt 1.
 const receiptA = authorizationReceipt({
@@ -193,12 +200,12 @@ const receiptA = authorizationReceipt({
   actionCanonical: "deploy.apply:prod/api",
   paramsHash: PARAMS_A,
 });
-const grantA = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptA });
+const grantA = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptA });
 const digestA = digestOf(receiptA, grantA);
 
 // A′: the SAME tenant, chain, action AND paramsHash — a RETRY. Only the grant differs (new id, new
 // single-use nonce), which is precisely the case `carlos.md` §3 says `paramsHash` cannot separate.
-const grantARetry = issueGrant({ grantId: "grant-002", holdId: "hold-001", nonce: "grant-nonce-02", receipt: receiptA });
+const grantARetry = issueGrant({ grantId: "grant-002", holdId: "hold-001", nonce: NONCE_02, receipt: receiptA });
 const digestARetry = digestOf(receiptA, grantARetry);
 
 // B: a DIFFERENT tenant, everything else identical — the cross-tenant replay subject.
@@ -210,7 +217,7 @@ const receiptB = authorizationReceipt({
   actionCanonical: "deploy.apply:prod/api",
   paramsHash: PARAMS_A,
 });
-const grantB = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptB });
+const grantB = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptB });
 
 // C: same tenant, DIFFERENT chain — chain is a separate commitment from tenant.
 const receiptC = authorizationReceipt({
@@ -221,7 +228,7 @@ const receiptC = authorizationReceipt({
   actionCanonical: "deploy.apply:prod/api",
   paramsHash: PARAMS_A,
 });
-const grantC = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptC });
+const grantC = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptC });
 
 // D: an unrelated, itself-perfectly-valid authorization — the source of the "swapped digest" value.
 const receiptD = authorizationReceipt({
@@ -232,7 +239,7 @@ const receiptD = authorizationReceipt({
   actionCanonical: "wire.transfer:acct-99",
   paramsHash: PARAMS_B,
 });
-const grantD = issueGrant({ grantId: "grant-777", holdId: "hold-777", nonce: "grant-nonce-77", receipt: receiptD });
+const grantD = issueGrant({ grantId: "grant-777", holdId: "hold-777", nonce: NONCE_77, receipt: receiptD });
 const digestD = digestOf(receiptD, grantD);
 
 // E: `action.id` and `action.canonical` TRANSPOSED. Both are strings, both are schema-legal, and the
@@ -248,7 +255,7 @@ const receiptTransposed = authorizationReceipt({
 const grantTransposed = issueGrant({
   grantId: "grant-001",
   holdId: "hold-001",
-  nonce: "grant-nonce-01",
+  nonce: NONCE_01,
   receipt: receiptTransposed,
 });
 
@@ -263,7 +270,7 @@ const receiptNoTenant = authorizationReceipt({
 const grantNoTenant = issueGrant({
   grantId: "grant-001",
   holdId: "hold-001",
-  nonce: "grant-nonce-01",
+  nonce: NONCE_01,
   receipt: receiptNoTenant,
 });
 
@@ -277,31 +284,31 @@ const receiptBlocked = authorizationReceipt({
   id: "rcpt_denied", tenant: "tenant-acme", chain: "chain-acme-1",
   actionId: "deploy.apply", actionCanonical: "deploy.apply:prod/api", paramsHash: PARAMS_A, verdict: "BLOCKED",
 });
-const grantBlocked = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptBlocked });
+const grantBlocked = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptBlocked });
 
 const receiptDeferred = authorizationReceipt({
   id: "rcpt_deferred", tenant: "tenant-acme", chain: "chain-acme-1",
   actionId: "deploy.apply", actionCanonical: "deploy.apply:prod/api", paramsHash: PARAMS_A, verdict: "DEFERRED",
 });
-const grantDeferred = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptDeferred });
+const grantDeferred = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptDeferred });
 
 const receiptBlankTenant = authorizationReceipt({
   id: "rcpt_allowed_a", tenant: "   ", chain: "chain-acme-1",
   actionId: "deploy.apply", actionCanonical: "deploy.apply:prod/api", paramsHash: PARAMS_A,
 });
-const grantBlankTenant = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptBlankTenant });
+const grantBlankTenant = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptBlankTenant });
 
 const receiptPaddedTenant = authorizationReceipt({
   id: "rcpt_allowed_a", tenant: " tenant-acme ", chain: "chain-acme-1",
   actionId: "deploy.apply", actionCanonical: "deploy.apply:prod/api", paramsHash: PARAMS_A,
 });
-const grantPaddedTenant = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptPaddedTenant });
+const grantPaddedTenant = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptPaddedTenant });
 
 const receiptLongTenant = authorizationReceipt({
   id: "rcpt_allowed_a", tenant: "t".repeat(129), chain: "chain-acme-1",
   actionId: "deploy.apply", actionCanonical: "deploy.apply:prod/api", paramsHash: PARAMS_A,
 });
-const grantLongTenant = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptLongTenant });
+const grantLongTenant = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptLongTenant });
 
 // The forged authorization: a key the keyring does not vouch for, claiming the gate's kid.
 const FORGER = keyFromSeed("gate-prod-1", "00".repeat(31) + "99");
@@ -311,25 +318,32 @@ const receiptForged = authorizationReceipt({
   signer: { kid: FORGER.kid, privateKey: FORGER.privateKey },
 });
 const grantForged = issueGrant({
-  grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptForged,
+  grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptForged,
   signer: { kid: FORGER.kid, privateKey: FORGER.privateKey },
 });
 const digestForged = digestOf(receiptForged, grantForged);
 
 // An authentic grant signed by an honest key that is simply NOT the gate.
 const grantWrongSigner = issueGrant({
-  grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptA,
+  grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptA,
   signer: { kid: GATE.kid, privateKey: OTHER.privateKey },
 });
 
 // Signed WITH the offending field, so the closed-world / single-use rules are what refuse them.
 const grantExtraProperty = issueGrant({
-  grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptA,
+  grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptA,
   mutate: (d) => { d["priority"] = "high"; },
 });
 const grantMultiUse = issueGrant({
-  grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptA,
+  grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptA,
   mutate: (d) => { d["maxUses"] = 2; },
+});
+
+// F5 regression: a grant carrying the CORPUS'S OWN pre-round-1 nonce form — schema-legal under
+// the old 1-256-char rule, signed, and refused by the hex64 rule alone. This is the vector that
+// would have caught the kernel/schema split both reviewers reproduced.
+const grantLegacyNonce = issueGrant({
+  grantId: "grant-001", holdId: "hold-001", nonce: "grant-nonce-01", receipt: receiptA,
 });
 
 // A grant whose `sig` object carries an extra member. The §6 preimage is JCS(doc WITHOUT sig), so
@@ -608,7 +622,7 @@ const vectors: Vector[] = [
       grant: issueGrant({
         grantId: "grant-001",
         holdId: "hold-001",
-        nonce: "grant-nonce-01",
+        nonce: NONCE_01,
         receipt: receiptA,
         paramsHash: PARAMS_B,
       }),
@@ -642,6 +656,16 @@ const vectors: Vector[] = [
     claim: claimOf(digestA),
     context: { chain: [receiptA], grant: grantExtraProperty, keyring: KEYRING, expect: ACME },
     expect: { ok: false, reasonContains: "unknown property" },
+  },
+  {
+    name: "reject-grant-nonce-not-hex64",
+    note:
+      "F5 (round-1): a grant whose nonce is a legacy identifier string, not 64 lowercase hex. The nonce " +
+      "is the D7 correlation seed; the kernel must refuse what the shipped grant schema refuses, or a " +
+      "UUID-nonce grant verifies here and fails every settlement layer — a verdict split on the money path.",
+    claim: claimOf(digestA),
+    context: { chain: [receiptA], grant: grantLegacyNonce, keyring: KEYRING, expect: ACME },
+    expect: { ok: false, reasonContains: "grant.nonce" },
   },
   {
     name: "reject-grant-multi-use",

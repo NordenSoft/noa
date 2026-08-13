@@ -252,12 +252,17 @@ function mintChainFacts(o = {}) {
     network: o.network ?? NETWORK,
     asset: o.asset ?? ASSET,
     authorizationState: o.authorizationState ?? true,
+    // F1: used logs carry the (nonce, authorizer) they were emitted for; the default is the base
+    // mandate's correlation + payer, overridable per vector.
     authorizationUsedLogs: o.usedLogs ?? [
-      { txHash: TX, blockNumber: BLOCK, logIndex: 7, blockTimestamp: o.blockTimestamp ?? T_SETTLED, txStatus: o.txStatus ?? "SUCCESS" },
+      { txHash: TX, blockNumber: BLOCK, logIndex: 7, blockTimestamp: o.blockTimestamp ?? T_SETTLED, txStatus: o.txStatus ?? "SUCCESS",
+        nonce: o.nonce ?? correlation, authorizer: o.authorizer ?? PAYER },
     ],
     authorizationCanceledLogs: o.canceledLogs ?? [],
+    // F1: the transfer names the transaction it was recovered from (default: the used log's).
     transfer: o.transfer === undefined
-      ? { source: "CALLDATA", address: o.transferAddress ?? TOKEN, logIndex: 8, from: PAYER, to: PAYEE, value: o.value ?? "1000000" }
+      ? { source: "CALLDATA", address: o.transferAddress ?? TOKEN, logIndex: 8, from: PAYER, to: PAYEE, value: o.value ?? "1000000",
+          txHash: o.transferTxHash ?? TX, blockNumber: o.transferBlockNumber ?? BLOCK }
       : o.transfer,
     headBlockNumber: o.headBlockNumber ?? BLOCK + 30,
     queriedAt: o.queriedAt ?? T_QUERIED,
@@ -284,7 +289,7 @@ const baseInput = (over = {}) => ({
   }),
   receiptChain: over.receiptChain ?? [receipt],
   grant: over.grant ?? grant,
-  keyring: KEYRING,
+  keyring: over.keyring ?? KEYRING,
   holdEnvelope: over.holdEnvelope ?? envelope,
   holdResolution: over.holdResolution === undefined ? resolution : over.holdResolution,
   chainFacts: over.chainFacts === undefined ? mintChainFacts() : over.chainFacts,
@@ -338,6 +343,22 @@ const grantMulti = mintGrant({ receipt, envelope, paramsHash, grantId: "grant-mu
 // UNIFORMLY testnet — exactly what an implementation lifting derivation inputs from the artifact
 // would accept — while the VERIFIED preimage says mainnet.
 const correlationTestnet = d7Nonce(digest, GRANT_NONCE, NETWORK_TESTNET, TOKEN_TESTNET);
+// F3 (round-1): the grant signer's PUBLIC KEY registered under a SECOND kid — the alias evasion of
+// a kid-string R-16 cap, and simultaneously the legitimate dual-role configuration (one key, both
+// roles, which under a kid-keyed manifest means two kids). The byte-level cap must catch both.
+const OBSERVER_ALIAS = { kid: "gate-observer-alias", publicKey: GATE.publicKey, privateKey: GATE.privateKey };
+const KEYRING_WITH_ALIAS = { ...KEYRING, [OBSERVER_ALIAS.kid]: GATE.publicKey };
+// F13 (round-1): a chainId inside the schema grammar (≤19 digits) but ABOVE 2^53-1 — the
+// derivation refuses non-safe integers, so this coordinate set is fail-closed by arithmetic.
+const NETWORK_UNSAFE = "eip155:9007199254740993";
+const ASSET_UNSAFE = `${NETWORK_UNSAFE}/erc20:${TOKEN}`;
+const preimageUnsafe = { ...PREIMAGE, networkCaip2: NETWORK_UNSAFE, assetCaip19: ASSET_UNSAFE };
+const preimageUnsafeText = canonicalize(preimageUnsafe);
+const paramsHashUnsafe = "sha256:" + sha256Hex(preimageUnsafeText);
+const receiptUnsafe = mintReceipt({ id: "rcpt_payment_u", paramsHash: paramsHashUnsafe });
+const grantUnsafe = mintGrant({ receipt: receiptUnsafe, envelope, paramsHash: paramsHashUnsafe, grantId: "grant-u", nonce: "5e".repeat(32) });
+// F9 (round-1): a fabricated in-window settledAt that contradicts the real block time as INSTANTS.
+const T_SETTLED_PLUS_1S = "2026-08-13T10:05:05.000Z";
 
 function vec(name, description, expect, expectCode, input, extra = {}) {
   return { name, description, expect, expectCode, input, ...extra };
@@ -511,7 +532,22 @@ export function buildCorpus() {
           correlation: correlationTestnet,
           witness: { network: NETWORK_TESTNET, asset: ASSET_TESTNET },
         },
-        chainFacts: mintChainFacts({ network: NETWORK_TESTNET, asset: ASSET_TESTNET, transferAddress: TOKEN_TESTNET }),
+        chainFacts: mintChainFacts({ network: NETWORK_TESTNET, asset: ASSET_TESTNET, transferAddress: TOKEN_TESTNET, nonce: correlationTestnet }),
+      })),
+    vec("reject-unsafe-chainid",
+      "F13 (round-1) — a chainId the schema grammar admits (19 digits max) but the derivation refuses (> 2^53-1, non-safe integer): fail-closed by arithmetic, and this vector is what makes that documented claim measured. No silent misderivation band exists — any inexact Number() rounding lands on a non-safe integer.",
+      "REJECT", "SETTLEMENT_CORRELATION_MISMATCH",
+      baseInput({
+        receiptChain: [receiptUnsafe],
+        grant: grantUnsafe,
+        paramsPreimage: preimageUnsafeText,
+        chainFacts: null,
+        artifactOver: {
+          authorizationReceiptHash: receiptUnsafe.chain.hash,
+          executionGrantHash: sha256Prefixed(canonicalize(grantUnsafe)),
+          correlation,
+          witness: { network: NETWORK_UNSAFE, asset: ASSET_UNSAFE },
+        },
       })),
     vec("reject-testnet-as-mainnet",
       "B1 — testnet coordinates presented for a mainnet mandate.",
@@ -571,6 +607,10 @@ export function buildCorpus() {
       "R-RAIL-2(i) — OUR OWN artifact malformed: bytes that fail the strict base64 round-trip. Buffer.from(s, 'base64') never throws, so the round-trip is the check.",
       "REJECT", "ARTIFACT_TAMPERED",
       baseInput({ artifactOver: { railReceipt: { ...RAIL_RECEIPT_FULL, bytes: "AB" } } })),
+    vec("reject-impossible-settledAt",
+      "F4 (round-1) — settledAt names a day that does not exist (2026-07-44). Date.UTC used to NORMALIZE it to Aug 13 — the base fixture's real block time — and the artifact earned the positive; the strict calendar parser refuses the string outright.",
+      "REJECT", "ARTIFACT_TAMPERED",
+      baseInput({ artifactOver: { witness: { settledAt: "2026-07-44T10:05:04.000Z" } } })),
 
     // ── layer 6 ─────────────────────────────────────────────────────────────────────────────────
     vec("reject-substituted-payment",
@@ -581,14 +621,34 @@ export function buildCorpus() {
       "§9.1(2) / R-20 — the coordinates resolve tx X; the artifact reports tx Y. A facilitator can settle a different payment and return its txHash; a reported value can only contradict, never establish.",
       "REJECT", "SETTLEMENT_CHAIN_CONTRADICTED",
       baseInput({ artifactOver: { witness: { txHash: TX_OTHER } } })),
+    vec("reject-state-false-with-log",
+      "F2 (round-1) — ONE SUCCESS AuthorizationUsed log with authorizationState false: EIP-3009 sets the state bit when it emits the log, so this record describes an impossible chain state and fails CLOSED. Knockout: skip the conjunction -> this vector earns the positive.",
+      "REJECT", "SETTLEMENT_CHAIN_CONTRADICTED",
+      baseInput({ chainFacts: mintChainFacts({ authorizationState: false }) })),
+    vec("reject-log-wrong-nonce",
+      "F1 (round-1) — the used log carries a DIFFERENT on-chain nonce than the recomputed correlation: a log lifted from an unrelated transaction is a different payment, and without the binding field the record could not even express the difference.",
+      "REJECT", "SETTLEMENT_CHAIN_CONTRADICTED",
+      baseInput({ chainFacts: mintChainFacts({ nonce: "0x" + "77".repeat(32) }) })),
+    vec("reject-log-wrong-authorizer",
+      "F1 (round-1) — the used log's authorizer is not the approved payer: EIP-3009 uniqueness is per (authorizer, nonce), so a third party's log for an equal nonce is a different fact.",
+      "REJECT", "SETTLEMENT_CHAIN_CONTRADICTED",
+      baseInput({ chainFacts: mintChainFacts({ authorizer: MALLORY }) })),
+    vec("reject-transfer-foreign-tx",
+      "F1 (round-1) — the recovered transfer names a DIFFERENT transaction than the AuthorizationUsed log: the same-block decoy in another tx satisfies every value bound while the settling transaction paid someone else. Knockout: drop the txHash binding -> GREEN.",
+      "REJECT", "SETTLEMENT_CHAIN_CONTRADICTED",
+      baseInput({ chainFacts: mintChainFacts({ transferTxHash: TX_OTHER }) })),
+    vec("reject-settledAt-contradicts-blocktime",
+      "F9 (round-1) / R-20's settledAt arm — a fabricated in-window settledAt contradicting the real blockTimestamp as INSTANTS; nothing else catches this fabrication, and before this vector no test executed the arm.",
+      "REJECT", "SETTLEMENT_CHAIN_CONTRADICTED",
+      baseInput({ chainFacts: mintChainFacts({ blockTimestamp: T_SETTLED_PLUS_1S }) })),
     vec("reject-two-logs",
       "R-18 — two AuthorizationUsed entries for one single-use (payer, nonce): the caller's record is wrong, or the coordinates are.",
       "REJECT", "SETTLEMENT_CHAIN_CONTRADICTED",
       baseInput({
         chainFacts: mintChainFacts({
           usedLogs: [
-            { txHash: TX, blockNumber: BLOCK, logIndex: 7, blockTimestamp: T_SETTLED, txStatus: "SUCCESS" },
-            { txHash: TX_OTHER, blockNumber: BLOCK + 1, logIndex: 2, blockTimestamp: T_SETTLED, txStatus: "SUCCESS" },
+            { txHash: TX, blockNumber: BLOCK, logIndex: 7, blockTimestamp: T_SETTLED, txStatus: "SUCCESS", nonce: correlation, authorizer: PAYER },
+            { txHash: TX_OTHER, blockNumber: BLOCK + 1, logIndex: 2, blockTimestamp: T_SETTLED, txStatus: "SUCCESS", nonce: correlation, authorizer: PAYER },
           ],
         }),
       })),
@@ -600,7 +660,7 @@ export function buildCorpus() {
       "R-19(b) — a batched transaction carrying a worthless-token Transfer payer->approved-payee for a compliant amount; log.address == asset refuses it. Knockout: drop the address constraint -> GREEN and the money went to mallory.",
       "REJECT", "SETTLEMENT_ASSET_UNEXPECTED",
       baseInput({
-        chainFacts: mintChainFacts({ transfer: { source: "TRANSFER_LOG", address: FAKE_TOKEN, logIndex: 9, from: PAYER, to: PAYEE, value: "1000000" } }),
+        chainFacts: mintChainFacts({ transfer: { source: "TRANSFER_LOG", address: FAKE_TOKEN, logIndex: 9, from: PAYER, to: PAYEE, value: "1000000", txHash: TX, blockNumber: BLOCK } }),
       })),
     vec("reject-two-transfer-logs",
       "R-19(b) uniqueness — two qualifying transfers, presented the only way the record can carry them; the record is refused, the verifier never picks (see the generator header).",
@@ -608,8 +668,8 @@ export function buildCorpus() {
       baseInput({
         chainFacts: mintChainFacts({
           transfer: [
-            { source: "TRANSFER_LOG", address: TOKEN, logIndex: 8, from: PAYER, to: PAYEE, value: "1000000" },
-            { source: "TRANSFER_LOG", address: TOKEN, logIndex: 9, from: PAYER, to: MALLORY, value: "1000000" },
+            { source: "TRANSFER_LOG", address: TOKEN, logIndex: 8, from: PAYER, to: PAYEE, value: "1000000", txHash: TX, blockNumber: BLOCK },
+            { source: "TRANSFER_LOG", address: TOKEN, logIndex: 9, from: PAYER, to: MALLORY, value: "1000000", txHash: TX, blockNumber: BLOCK },
           ],
         }),
       })),
@@ -639,6 +699,7 @@ export function buildCorpus() {
         grant: grantRaw,
         holdEnvelope: envelopeRaw,
         holdResolution: null,
+        chainFacts: mintChainFacts({ nonce: correlationRaw }),
         artifactOver: {
           executionGrantHash: sha256Prefixed(canonicalize(grantRaw)),
           correlation: correlationRaw,
@@ -655,7 +716,7 @@ export function buildCorpus() {
     vec("control-transfer-log-route",
       "R-19 route (b) with all three constraints met: address == asset, from == payer, exactly one.",
       "CONTROL", "SETTLEMENT_CORRELATED_AND_RECONFIRMED",
-      baseInput({ chainFacts: mintChainFacts({ transfer: { source: "TRANSFER_LOG", address: TOKEN, logIndex: 9, from: PAYER, to: PAYEE, value: "1000000" } }) }),
+      baseInput({ chainFacts: mintChainFacts({ transfer: { source: "TRANSFER_LOG", address: TOKEN, logIndex: 9, from: PAYER, to: PAYEE, value: "1000000", txHash: TX, blockNumber: BLOCK } }) }),
       { expectChainStatus: "RECONFIRMED" }),
     vec("control-rail-receipt-absent",
       "R-RAIL-1 — absence must not block the positive.",
@@ -687,10 +748,10 @@ export function buildCorpus() {
       "CONTROL", "SETTLEMENT_CORRELATED_UNRECONFIRMED",
       baseInput({ artifactOver: { observerKid: GATE.kid, signerKey: GATE } }),
       { expectChainStatus: "UNRECONFIRMED", expectObserverRelationship: "SAME_SIGNING_KEY", expectWarning: "SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER" }),
-    vec("control-dual-role-observer",
-      "R-16's rewrite pin — a key that LEGITIMATELY holds both roles: the cap keys on the relationship, not on how the role was obtained. Knockout: condition the cap on anything else -> RED.",
+    vec("control-alias-kid-observer",
+      "F3 (round-1) — the grant signer's PUBLIC KEY registered under a SECOND kid holding the observer role; the artifact is signed with that key under the alias. This is BOTH the alias evasion of a kid-string R-16 cap AND the legitimate dual-role configuration (one key, both roles, two kids): the byte-level cap catches both. Knockout: revert the cap to kid-string equality -> this vector earns the positive.",
       "CONTROL", "SETTLEMENT_CORRELATED_UNRECONFIRMED",
-      baseInput({ artifactOver: { observerKid: GATE.kid, signerKey: GATE } }),
+      baseInput({ keyring: KEYRING_WITH_ALIAS, artifactOver: { observerKid: OBSERVER_ALIAS.kid, signerKey: OBSERVER_ALIAS } }),
       { expectChainStatus: "UNRECONFIRMED", expectObserverRelationship: "SAME_SIGNING_KEY", expectWarning: "SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER" }),
     vec("control-not-observed",
       "§3.2's three-value status: 'we did not look' is NOT 'it did not happen' — and no code containing DID_NOT or FAILED exists to return.",
@@ -712,6 +773,15 @@ export function buildCorpus() {
         }),
       }),
       { expectChainStatus: "CANCELLED" }),
+    vec("control-reverted-cancel-ignored",
+      "F7 (round-1) — a REVERTED cancelAuthorization entry alongside the genuine settlement: a reverted transaction changed no state, so it neither contradicts the settlement nor counts toward a burn. A post-settlement cancel reverting with 'authorization already used' is a real, observable chain event; flipping an honest settlement on it manufactures a rejection from an honest state.",
+      "CONTROL", "SETTLEMENT_CORRELATED_AND_RECONFIRMED",
+      baseInput({
+        chainFacts: mintChainFacts({
+          canceledLogs: [{ txHash: TX_OTHER, blockNumber: BLOCK + 2, logIndex: 1, blockTimestamp: T_SETTLED, txStatus: "REVERTED" }],
+        }),
+      }),
+      { expectChainStatus: "RECONFIRMED" }),
     vec("control-settled-after-grant-expiry",
       "R-13 SHOULD — facilitator delay pushed settlement past the grant window; the single-use burn already happened at dispatch. A warning, not a rejection — named so nobody tightens it into a false negative.",
       "CONTROL", "SETTLEMENT_CORRELATED_AND_RECONFIRMED",

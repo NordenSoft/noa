@@ -13,7 +13,7 @@
       "note": "A well-formed digest over a real authorization receipt and its real single-use execution grant.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -70,11 +70,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -88,7 +88,7 @@
       },
       "expect": {
         "ok": true,
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       }
     },
     {
@@ -96,7 +96,7 @@
       "note": "HIGH-1 REGRESSION (round-2 QA). A correctly SIGNED human DENIAL, wrapped in a correctly gate-signed grant that references it. verifyChain returns VALID and verifyArtifact returns ok, so both of the spec's preconditions are satisfied — and the receipt still denied the action. Authenticity and authorization are different questions; `packages/relay/src/engine.ts` records this same class being caught once before, in a different plane.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:8fe1de9903efa203c45207933d680d0afe46f15ea9182ba6f833ba4a131da782"
+        "digest": "sha256:23078c0825a9ad24bf316f207cb34b8e3814eb9aa0f03ead5265ec47595f2414"
       },
       "context": {
         "chain": [
@@ -153,11 +153,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "KeH5ur0GgpKmoCPbImtv5wE9UyavlHcNbObbbV7sRZxnjKjir/HHBMpjL4fXbFy9PLX5VEoaRoed3zW4eMYPAA=="
+            "value": "ltcL9g2tu0EYIpojsM4HoA5Zp16yfKrT/1/4AWMtQayE2FMsmDuisV9WXdtnW1jn89A05zov+mX0jy6WCVcBAA=="
           }
         },
         "keyring": {
@@ -179,7 +179,7 @@
       "note": "The same rule from the other side: a DEFERRED decision is a decision not yet made.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:5eb87f90f0ae135d3def8302752d8d62ca2a0d77442c92d49f51e01d911cbffc"
+        "digest": "sha256:fc3b993927dd3060fdab3aa1f963a26e0213ca5dafc52d73eb60eaf7ae22c903"
       },
       "context": {
         "chain": [
@@ -236,11 +236,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "zxXhE//hLTh5WM4fKgfzGjGbH9hTCr3SHwtEmnrH8grJikzRlDZNIcuBmiHnJBMVsbLJeAPKtOoeq9hFYi+3CA=="
+            "value": "HZMp4A3wGOYERQvXV11hHiVVsqwHMkW+60Kyj09Saw8FHd6350QtwJNxDrlnJWJf6Syt5xbYvHGk8bgE7eTNAg=="
           }
         },
         "keyring": {
@@ -262,7 +262,7 @@
       "note": "HIGH-2 REGRESSION (round-2 QA). A whitespace-only tenant. The old emptiness test was `length === 0`, which refused \"\" and accepted \"   \" — the semantic \"unknown tenant\", spelled so a length check cannot see it.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:4220921966980b9b05d3df4cadc19b74d22e4c97a5c7f400d79a79bcfdf0928f"
+        "digest": "sha256:f3bad51102b37499b427b3158551df325a5624ae4949ee161c3623c770532ea2"
       },
       "context": {
         "chain": [
@@ -319,11 +319,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "u+tKiwP5FJmtZrydqBHg9dqr6jIsL99QfLZ63bbcrfrHtPq44+y3+hHeGLm0R3V7TtjMZsjy6i70PbkprGolAA=="
+            "value": "rXvNJQTyGyWixwOlDew+3L5EYFK6/8PcnaMII1cDdyX2BV8UchaKJAL/+5rL90cHOhglSPLBABOb8TYoU4/KCw=="
           }
         },
         "keyring": {
@@ -345,7 +345,7 @@
       "note": "HIGH-2, the aliasing half. \" tenant-acme \" is a DIFFERENT string here and the SAME tenant to anything downstream that trims — an isolation break between two tenants. Refused rather than normalised: normalising would make this digest disagree with a producer that did not.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:e8d4a9ce9e5f4e02e6b95064d7893de94fb1b369b8a30e53e38055663043016a"
+        "digest": "sha256:e67c9ac11de09deacd9be8089d014e08d88945f3d3721a5934df1d41abd2815c"
       },
       "context": {
         "chain": [
@@ -402,11 +402,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "pLLszlasMVdSyJjjlXrK1AsGGasQ4qlRGE0CfTXIiDX8VJhIbkCZHrjagdAFmSVem9Ey8AG1fNel4os30+7VDg=="
+            "value": "VQUDYJKfyEaMameoNFtA7QDeAqUCXs2Dzdn9KQu2M7BlrBFJh21f+Dty8sGNuYFCBg4+n5rOnuLFImW2eEicAA=="
           }
         },
         "keyring": {
@@ -428,7 +428,7 @@
       "note": "MEDIUM-5 REGRESSION. A 129-code-point tenant used to be refused as \"absent or empty\", which is a false statement about a present, non-empty value. Each refusal now names its own cause.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:80a2610163621a0283158ba94fccab8e1cc1278d72707f655d81244adc0a3384"
+        "digest": "sha256:30fb13e03d0a1562a04178096b1ff92d6b55544c7a6178740e43db5a379a9919"
       },
       "context": {
         "chain": [
@@ -485,11 +485,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "fOw/jWjTp50+uchE8RGH0/cEMXQ3QjDg4aQ4mMU9G2wP00CSGFUfiFky6VxKREOpJK4n6EYeHItJm9J2lbOUAw=="
+            "value": "smBNOJv7T/aXmKa6fFzMGzPQvPjrPV0dD0y45+HqljCvj0q7NMCbB5Ol+2ei8z8as7ORUnmmv31a9FJeHAF8Ag=="
           }
         },
         "keyring": {
@@ -511,7 +511,7 @@
       "note": "MEDIUM-4 REGRESSION. Only the grant's TOP level was closed, so `sig.extra` matched here while verifyArtifact refused `$.sig: unknown property`. The nested object is closed too now.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:42ced714eb11fc620d2be97a93700f83792e2cf98aaebd67e8b6ec9483c651a1"
+        "digest": "sha256:e3cfc317ecc1ca20d8acf5c960859e0ed34262078e2ca1cf2e36b8091d31d1e6"
       },
       "context": {
         "chain": [
@@ -568,11 +568,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw==",
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw==",
             "extra": "x"
           }
         },
@@ -595,7 +595,7 @@
       "note": "HIGH-3 REGRESSION. The forged authorization from the old HONEST LIMIT test: an attacker key claiming the gate's kid. It used to be ACCEPTED with only a prose warning that callers should have verified first. The verifier now authenticates the chain itself and refuses.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:1774c8942cd803e25ea60e75402b3f0d1d706880ba82253f2aeccb49687fe1db"
+        "digest": "sha256:23b95fdfc97a7735b063bf1c8b22402c2dfd6b62220559d68fa4b7092237eef3"
       },
       "context": {
         "chain": [
@@ -652,11 +652,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "qenZpHvlJjJhEM2vvhlphoEcOL/mHHe3HFm4pJ7s/GTu9zMmSt75CtmKfDny67uytmWjIWD3xwxV+BgNSI+QAA=="
+            "value": "oPBzCbQy6BJTb8C6+SzRKgjtgVGVwaCZ6iJCw9Q/aiTF5xYhdawvqfRJ8XSfs2sZAO57j5msr3e4YT11EYbPBQ=="
           }
         },
         "keyring": {
@@ -678,7 +678,7 @@
       "note": "HIGH-3, the grant half. An authentic ALLOWED receipt with a grant signed by a key that is in the keyring but is NOT the gate — the signature does not verify under the grant's own kid.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:e913cc81f248721d1e449c7db2fdcefeb7f6b7ca31efadb051625f1db70dd119"
+        "digest": "sha256:4869235c6b9e6a798a602eb75531a032285fb833571f866be20783c26a7164f9"
       },
       "context": {
         "chain": [
@@ -735,11 +735,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "dLv9vBDJCqcwlE6yOJJ3AFbuPXwHxbi0d0BWvGDh9CKDmWUO0fhN8qpvB8UNB5m4e+WTBK3WZKYrpwxWfwhzBw=="
+            "value": "yMvTB7ekPbPb7XaVnO0DRdIevDJKN2qDAZLhpolx8s8PhCKH0/Xyy39gmGVJSZPKk0IQAj7gfdgY8HE8FEPmCQ=="
           }
         },
         "keyring": {
@@ -761,7 +761,7 @@
       "note": "HIGH-3. No trust root supplied. A verifier that cannot authenticate must refuse, not assume.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -818,11 +818,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "expect": {
@@ -840,7 +840,7 @@
       "note": "The digest of a DIFFERENT, itself-valid authorization (wire.transfer) presented against this one. Substituting one valid correlation value for another must not survive recomputation.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:e8dc8dfb60bdba0b99fb0c8eb29826713456e2bc28f4783bd365cb567b7286a1"
+        "digest": "sha256:5802173b6133dbc632ed02b8650804b9ee70e5b3c50365ab9f929daaf0bab76f"
       },
       "context": {
         "chain": [
@@ -897,11 +897,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -923,7 +923,7 @@
       "note": "THE KNOCKOUT VECTOR for the projection's tenant field. tenant-acme's digest is replayed against tenant-globex's documents AND the verifier is told to expect tenant-globex — so the explicit tenant check PASSES and only the tenant inside the projection can refuse it.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -980,11 +980,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "jS9ORdNJINxpUcAk6wUKnS35u3ffvNM27IbGNrXaihnGH4S2ZvpCkIczzcyhN1pH7b/fuJrZTVZ38t07RswhDg=="
+            "value": "SzbRY+rbEjXTgcOF9PswRY+jm9ZPYrHiazOMVFI/U8sAnY6cKMPgB8HzCDO2/jcWnbLTIFvUJGamGReBb8unDg=="
           }
         },
         "keyring": {
@@ -1006,7 +1006,7 @@
       "note": "The mirror control: honest tenant-acme documents presented to a verifier that believes it is tenant-globex. Refused before the digest is even compared.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -1063,11 +1063,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -1089,7 +1089,7 @@
       "note": "Same tenant, different hash-chain. `chain` is a separate commitment and must separate.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -1146,11 +1146,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "wv9m5vNpsjJ0YEmGuSyKmasnYbHgV0bQLOsCIYmQiEuLn0oLl1mJm08b5UmTo4Gvv1Km3YJ955eJQdkDMHhxCg=="
+            "value": "1DKJJTGChZsfZXrn/qsS9AjeRUDcfBBkJp/ooCHU67lypCMbfDh4VzUHlmKNTHqfWT+GSh6YGc1vgs24D0ZlAQ=="
           }
         },
         "keyring": {
@@ -1172,7 +1172,7 @@
       "note": "THE `carlos.md` §3 VECTOR. Attempt 2 of the same action: identical tenant, chain, action.id, action.canonical AND action.paramsHash — only the grant (id + single-use nonce) differs. `paramsHash` cannot tell these apart; the action digest must.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -1229,11 +1229,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-02",
+          "nonce": "a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "vBIOTXNXCz8PN9PpsSQ/S7YkGctEAjpCwBzJUAt+wHAZoa/6jR0+615v6G+DibIj/dVtvigfCfYpPl57Yy3LAw=="
+            "value": "1HN9kew8bFyqqjzUTmGFMy/CCb0NbR1hmGnMIZQVeKYXD7F5LXd7sCYKqG+anhQpK4/ZryFka0B6CCTWPPGUBg=="
           }
         },
         "keyring": {
@@ -1255,7 +1255,7 @@
       "note": "The positive half of the same property, asserted as a refusal in the other direction: the RETRY's own digest does not verify against attempt 1's grant. Two attempts, two values.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:84760e42c3d60a6d05e2541cc1836e5eb2a600deae125cbb98ef79f2dcbe60b3"
+        "digest": "sha256:cc5e79fc624ef974add84de58e84edc36be02947fef110e3859e06f81c1623a7"
       },
       "context": {
         "chain": [
@@ -1312,11 +1312,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -1338,7 +1338,7 @@
       "note": "action.id and action.canonical swapped in the source receipt. Both are plain strings and both are schema-legal; the projection LABELS them, so the transposition changes the digest instead of colliding with it — the failure a concatenation-based construction would have.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -1395,11 +1395,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "Seah51HvTvNbhHkbhHgmJUfGmel54YFs2kkJOyqCruxmktuNZkqB9pe3UVTzciBfJ0FcC/zAd8t7+t9NJqY0Dg=="
+            "value": "DgP2Ibz51n82dItjbKVQJIEll9DhGoyR3hU4URQCpu61afzd0Az87SMbeIpact33c5CKkYD7hleGceWN1zMZCA=="
           }
         },
         "keyring": {
@@ -1478,11 +1478,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -1504,7 +1504,7 @@
       "note": "The same digest in uppercase hex. One value, one spelling — otherwise two stores disagree.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:B98009F84298648CF01E268DE5A71BF680E0585C3AF5311D26579745DFB8099B"
+        "digest": "sha256:D2AACD3B98450F5D108470E70AE4F0240A44FAEDB19E9D129F69EF48986067CA"
       },
       "context": {
         "chain": [
@@ -1561,11 +1561,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -1641,11 +1641,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -1667,7 +1667,7 @@
       "note": "The same at the context boundary. Both arguments are bytes and both are parsed strictly.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "contextText": "{\"chain\":",
       "expect": {
@@ -1680,7 +1680,7 @@
       "note": "The chain mirror of reject-cross-tenant-expectation: honest chain-acme-1 documents presented to a verifier that believes it is on chain-acme-2. Without this vector the expected-CHAIN check is unmeasured — the cross-chain replay vector is caught by the digest and would stay green if the check were deleted.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -1737,11 +1737,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -1763,7 +1763,7 @@
       "note": "THE DOMAIN-SEPARATION VECTOR. The byte-identical projection, hashed under the RECEIPT signing tag instead of NOA-ActionDigest-v0.1-dig. If the tag were dropped from the construction this value would verify.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:04b8924a71e66c3b8ce70addd8a867d0cdffbbebf0ec3e24e3fbe9e6b310f18a"
+        "digest": "sha256:90b12e3d73880d16d1180c74b63dcdf3876bc3040beb084a5336447e70189ab1"
       },
       "context": {
         "chain": [
@@ -1820,11 +1820,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -1846,7 +1846,7 @@
       "note": "The same projection with NO tag at all — what an implementation that skipped domain separation would emit. It is a different value, and it is refused.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:7bfb95ddcb2b8a9109fc302dba7de16e2a739ff3ac1440197d6357dbb91ca3ad"
+        "digest": "sha256:44f3de1b1a4dc92dd1b4e218e6c31f322ce48cbc6f32f8869bcec235b6ddd628"
       },
       "context": {
         "chain": [
@@ -1903,11 +1903,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -1929,7 +1929,7 @@
       "note": "A /0.2 claim compared by a /0.1 verifier. The version tag on the wire value is checked.",
       "claim": {
         "spec": "noa.action-digest/0.2",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -1986,11 +1986,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -2012,7 +2012,7 @@
       "note": "A grant whose approvalReceiptHash names a DIFFERENT authorization, paired with this receipt. Without the tie the pair would digest happily and the digest would correlate nothing.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -2069,11 +2069,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-77",
+          "nonce": "d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "VPyjn4tIpvZ38MreRqYoNYMb9y0TaoST94RRwcKFZBB7B+5EUA/bPLCMe2i0ImSxeztsrtSN9MN0/ZpdYaQkAw=="
+            "value": "btvEzJ0r2M+xS16/MBdrLQgFfT0omLAb2vJ5bZpf59SupHg8QE24Dp0KS/W6Sa+JL2e3Ynvmfi/Em0jxuCi9Ag=="
           }
         },
         "keyring": {
@@ -2095,7 +2095,7 @@
       "note": "A correctly-bound grant whose paramsHash is for different parameters — an authorization for A must not correlate to an action with parameters B.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -2156,11 +2156,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "oeBzvPHL4BbzNscEhquRwMQVzcnpAkTFSJwmckVfOrUQKuLQgy3LUGN1KeMholhB8qiqWBwyf8VAHXRhxHp8Bw=="
+            "value": "Vo5lkh80zPRH5G3WiqpJB1NR8s31YFZ9Qx90xBDnfiqSknIcgjKytSqyEU0/a34U3L/9vTykZ+xrsz7x7cA7Ag=="
           }
         },
         "expect": {
@@ -2178,7 +2178,7 @@
       "note": "A receipt with no scope.tenant — legal under the frozen receipt schema, refused here: a correlation value whose tenant is sometimes empty is replayable exactly when it matters.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -2234,11 +2234,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "iCecznf5c8bLwW+KaDJg65qS2B38zZnHfVKT7MpB50CEniUyWDwJcRTItDsyEuT+b/OJONPi9TDzvX6F6M0DAA=="
+            "value": "eT3/n2ayja/Vg+7yPLh0PQAAor9pdp9yPLUwr0VwSQqN9kR5YuaAWfa24qUCCssrn7IMy/KyxxPYWH7Nc6BfAA=="
           }
         },
         "keyring": {
@@ -2260,7 +2260,7 @@
       "note": "riskClass rewritten HIGH -> LOW after the receipt was hashed and signed. The committed chain.hash and the signature are the genuine ones; only the body moved.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -2317,11 +2317,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {
@@ -2343,7 +2343,91 @@
       "note": "An otherwise-valid grant carrying one extra field. The grant schema is closed and the grant hash covers the whole document, so accepting it would let two honest parties compute two digests.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
+      },
+      "context": {
+        "chain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_allowed_a",
+            "ts": "2026-07-14T11:55:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "deploy.apply",
+              "canonical": "deploy.apply:prod/api",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1-device-2",
+                "at": "2026-07-14T11:55:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:84b95bb4e8ac3c9d3bb8425276201feecea904dfc1f349989a278c575c87ab89"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "iQHcfGUeNtQt1m3fd7Fyijo5QQvreZc8WP36k0EA9MhInovep0V7LeL4eZL0RNwtup4P12rklv0nLqqs16w4Bw=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "holdEnvelopeHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "approvalReceiptHash": "sha256:84b95bb4e8ac3c9d3bb8425276201feecea904dfc1f349989a278c575c87ab89",
+          "issuedAt": "2026-07-14T11:55:00.000Z",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "priority": "high",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "RJEH3CcKPHsA3TZU79ClaySD1sS07tQ59CFOdatD31/aPUPWiVYbodjyggOcxF8YS7SCXIIyrN264prZ0BW7CA=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEATypZ7cg2fetABHzoPuf1znEaV9k6u9qdHOhYjFajzog=",
+          "approver-1-device-2": "MCowBQYDK2VwAyEAalqPukhEXt00RPZU+CC9cfF+bDlGaTOcigAEuk7Sw8w="
+        },
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "reasonContains": "unknown property"
+      }
+    },
+    {
+      "name": "reject-grant-nonce-not-hex64",
+      "note": "F5 (round-1): a grant whose nonce is a legacy identifier string, not 64 lowercase hex. The nonce is the D7 correlation seed; the kernel must refuse what the shipped grant schema refuses, or a UUID-nonce grant verifies here and fails every settlement layer — a verdict split on the money path.",
+      "claim": {
+        "spec": "noa.action-digest/0.1",
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -2401,11 +2485,10 @@
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
           "nonce": "grant-nonce-01",
-          "priority": "high",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "UTGSIdHQZyseWwn+uS4DcjMGSyzjfK+gjkONegUI91IRkqsd7WHG1WkhGZwK7gGUiGdQJ52lCYjKfo0jMIBgBw=="
+            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
           }
         },
         "keyring": {
@@ -2419,7 +2502,7 @@
       },
       "expect": {
         "ok": false,
-        "reasonContains": "unknown property"
+        "reasonContains": "grant.nonce"
       }
     },
     {
@@ -2427,7 +2510,7 @@
       "note": "maxUses relaxed past 1. `carlos.md` §3 requires a SINGLE-USE nonce; a reusable grant is not one.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -2484,11 +2567,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 2,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "zXcfphCspfa4L0A/GwaaIeCVznb5VbCCXTl9F3s5OXwkAaB/fdLxep1J/WYlXAjf/xyw2pFvEfq9Beg/oeFlBg=="
+            "value": "CjT7NNv9p6O7g6Wok40bWAJ74mUvyrD5hoLAxrcSpFd/fZ2Mq5kB74j74u+Iyl3o8mAHqp7759SvW74F3vuKBA=="
           }
         },
         "keyring": {
@@ -2510,7 +2593,7 @@
       "note": "No context.expect at all. A verifier that cannot state which tenant it is cannot detect a replay, and 'unknown' must not be spelled 'accept'.",
       "claim": {
         "spec": "noa.action-digest/0.1",
-        "digest": "sha256:b98009f84298648cf01e268de5a71bf680e0585c3af5311d26579745dfb8099b"
+        "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"
       },
       "context": {
         "chain": [
@@ -2567,11 +2650,11 @@
           "issuedAt": "2026-07-14T11:55:00.000Z",
           "expiresAt": "2026-07-14T12:30:00.000Z",
           "maxUses": 1,
-          "nonce": "grant-nonce-01",
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
           "sig": {
             "alg": "ed25519",
             "kid": "gate-prod-1",
-            "value": "0mTWObkj/1yZeSWGG+rT48MrpLH4cTjJYjPF3Gq0GZfAMzGWuKX9dTTfo+MGlwZ897MVI128KTXbrDpfB4PtBw=="
+            "value": "kjlPXtgTdgsCAguM93dspeeNUC6lEs2ndiq5/J/b7ngl2+trUk8XQCIkPeAo6BHBY2aCp2IKNrh51KO1iQ/KCw=="
           }
         },
         "keyring": {

@@ -88,7 +88,11 @@ positive verdict, because recomputation from the bundle's own documents yields T
 **Derivation-input provenance is normative.** `chainId`, `token` and `payer` come ONLY from the
 hash-verified canonical params preimage (§4):
 
-- `chainId` = the decimal tail of the preimage's `networkCaip2` (`"eip155:8453"` → `8453`);
+- `chainId` = the decimal tail of the preimage's `networkCaip2` (`"eip155:8453"` → `8453`).
+  The CAIP-2 grammar admits up to 19 decimal digits, but the derivation refuses any chainId above
+  2^53−1 (non-safe integer) — such a coordinate set is FAIL-CLOSED (`SETTLEMENT_CORRELATION_MISMATCH`,
+  vector `reject-unsafe-chainid`); no silent misderivation band exists, because any inexact
+  `Number()` rounding lands on a non-safe integer;
 - `token` = the address tail of the preimage's `assetCaip19`
   (`"eip155:8453/erc20:0x…"` → `0x…`);
 - `payer` = the preimage's `payer`.
@@ -123,7 +127,10 @@ Verification of the full artifact is the AND of six layers. **Layers 1–3 and 5
 signature and F15 trust matrix, reference-hash linkage, time policy) are owned by the generic
 side-artifact verifier and the evidence pipeline. `reconcileSettlementEvidence` implements layers
 4 and 6 over PRE-VERIFIED inputs, and its positive result over unauthenticated inputs means
-nothing.** What it does authenticate itself is the pair of bundle documents the correlation is
+nothing.** Provisioning a `settlement-observer` key is an OPERATOR CEREMONY: no gate constructor
+in this repository mints one, so a deployment built from this repository alone rejects every
+settlement-evidence artifact at the F15 role check — fail-closed by design — until the operator
+enrolls an observer key in the tenant key manifest. What it does authenticate itself is the pair of bundle documents the correlation is
 recomputed from: the receipt chain and the grant go through the kernel's `verifyActionDigest`
 (bytes-in; runs the receipt-chain verification and the grant's Ed25519 signature against the
 caller keyring) — never the bare digest builder.
@@ -155,17 +162,23 @@ The reconciler's obligations, in evaluation order:
    as a byte-parsed `noa.chain-facts/0.1` record that MUST originate from the relying party's own
    node — a record supplied by the bundle producer, observer, facilitator or payee is refused
    (`SETTLEMENT_CHAIN_FACTS_UNTRUSTED`). The positive `chainStatus: RECONFIRMED` requires the
-   full conjunction, bound to ONE successful transaction: `authorizationState == true` AND
-   exactly one `AuthorizationUsed` log AND its `txStatus == "SUCCESS"` AND zero
-   `AuthorizationCanceled` logs AND a transfer recovered under the route constraints
-   (`transfer.address == approved token contract`, `transfer.from == approved payer`, exactly one
-   — the single-transfer record shape IS the uniqueness rule) AND every reported-field
-   corroboration agreed (reject-only, normalized domains) AND the caller's depth
-   (`minConfirmations`) and freshness (`now` + `freshnessWindowMs` over `queriedAt` and
-   `observedAt`) thresholds were supplied and met AND `boundsStatus == WITHIN`.
+   full conjunction, bound to ONE successful transaction (revised 2026-08-13, round-1 F1/F2/F7 —
+   the binding fields below are what MAKE "one transaction" checkable rather than asserted):
+   `authorizationState == true` (checked on the one-log path BEFORE the log is processed) AND
+   exactly one `AuthorizationUsed` log AND its `nonce == the recomputed D7 correlation nonce` AND
+   its `authorizer == the approved payer` AND its `txStatus == "SUCCESS"` AND zero SUCCESSFUL
+   `AuthorizationCanceled` logs (a REVERTED cancel changed no state: it neither contradicts a
+   settlement nor counts toward a burn) AND a transfer recovered under the route constraints
+   (`transfer.address == approved token contract`, `transfer.from == approved payer`,
+   `transfer.txHash == the used log's txHash` and `transfer.blockNumber == the used log's
+   blockNumber` — same transaction, same block — exactly one; the single-transfer record shape IS
+   the uniqueness rule) AND every reported-field corroboration agreed (reject-only, normalized
+   domains) AND the caller's depth (`minConfirmations`) and freshness (`now` +
+   `freshnessWindowMs` over `queriedAt` and `observedAt`) thresholds were supplied and met AND
+   `boundsStatus == WITHIN`.
    `authorizationState == true` alone is NEVER settlement: cancellation sets the same bit; a
-   burned correlation (zero used logs, ≥1 canceled log) is `chainStatus: CANCELLED` with
-   `SETTLEMENT_CORRELATION_BURNED` — terminal, not "not yet".
+   burned correlation (zero used logs, ≥1 SUCCESSFUL canceled log) is `chainStatus: CANCELLED`
+   with `SETTLEMENT_CORRELATION_BURNED` — terminal, not "not yet".
 7. **Caps.** Each cap sets `chainStatus` (to `UNRECONFIRMED`) AND the code
    (`SETTLEMENT_CORRELATED_UNRECONFIRMED`) AND its warning, together: the same-signing-key
    observer (`observerKid == grant.sig.kid`, regardless of whether the key legitimately holds
@@ -250,8 +263,10 @@ counterparty a denial-of-verification switch.
 keys, fixed timestamps, no randomness at generation time), regenerated by
 `packages/rail-x402/conformance/gen-settlement-evidence-vectors.mjs` and drift-gated by the
 runner. Exactly ONE vector is an ACCEPT; every vector asserts the CODE, not a boolean; the
-anti-vacuity knockouts (the D7 seed pin, the R-19(b) address constraint) are registered in the
-repository's control-knockout registry and are proven to turn named vectors red.
+anti-vacuity knockouts (the D7 seed pin, the R-19(b) address constraint, and the round-1 entries:
+the F1 transfer-transaction binding, the F2 state conjunction, the F3 byte-level same-key cap, the
+F9 settledAt instant arm) are registered in the repository's control-knockout registry and are
+proven to turn named vectors red.
 
 ## 9. Non-claims (summary — the register in `NON-CLAIMS.md` §NC-S4 governs)
 

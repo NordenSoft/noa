@@ -138,7 +138,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -148,7 +150,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -299,7 +303,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -309,7 +315,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -455,7 +463,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -465,7 +475,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -611,7 +623,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -621,7 +635,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -767,7 +783,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -777,7 +795,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -924,7 +944,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -934,7 +956,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -1080,7 +1104,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -1090,7 +1116,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -1235,7 +1263,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -1245,7 +1275,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -1391,7 +1423,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -1401,7 +1435,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -1547,7 +1583,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -1557,7 +1595,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -1703,7 +1743,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -1713,7 +1755,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -1859,7 +1903,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -1869,7 +1915,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -2015,7 +2063,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -2025,7 +2075,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -2171,7 +2223,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -2181,7 +2235,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -2458,7 +2514,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -2468,7 +2526,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -2614,7 +2674,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -2624,7 +2686,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -2770,7 +2834,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -2780,7 +2846,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -2926,7 +2994,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -2936,7 +3006,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -3082,7 +3154,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x5c22708962875b7b288246e439f57800c92cdd0d52d60afa784fa4a7eb43322a",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -3092,13 +3166,146 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
         },
         "chainFactsOrigin": "RELYING_PARTY_NODE",
         "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
+      "name": "reject-unsafe-chainid",
+      "description": "F13 (round-1) — a chainId the schema grammar admits (19 digits max) but the derivation refuses (> 2^53-1, non-safe integer): fail-closed by arithmetic, and this vector is what makes that documented claim measured. No silent misderivation band exists — any inexact Number() rounding lands on a non-safe integer.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_CORRELATION_MISMATCH",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:04efa5d4ae3579dada52f7610126f1104e07420294758cf61771a3933a86fdbf",
+          "executionGrantHash": "sha256:5258e8fbac48a79bcf99a152642404b62e7fbcf3e60ab710198e5d2c5e00e9fe",
+          "correlation": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:9007199254740993",
+            "asset": "eip155:9007199254740993/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "cXB0gD8wMUkW/varskt+PIRi6quek6Rfuf49AaLab1YLfEuZZVebDqMHsdjbaA9dpfWHf72RWPYaCOjfJBmpAg=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_u",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:98f1e3d2bce41b2431f385241b3a0e9c1f9a57f355ffc09d4f613870149c4289",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:04efa5d4ae3579dada52f7610126f1104e07420294758cf61771a3933a86fdbf"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "ix3PC3UPzp2wN2SLoFHTwjhWbknMYN1zP/Gt1n8jcRnG0+hNHmK8gFpUK9ufRXblTNU2PdqHuMqNHkkXWZ34CQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-u",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:98f1e3d2bce41b2431f385241b3a0e9c1f9a57f355ffc09d4f613870149c4289",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:04efa5d4ae3579dada52f7610126f1104e07420294758cf61771a3933a86fdbf",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "r+yP4mGJTAHh6m21oOiknGPC338XoUiezMu9lvjfX5d85Qs138Rrsn+asNQ0iv+siTw5nGJ0ifHvXNZKDnzfCQ=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": null,
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:9007199254740993/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:9007199254740993\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
         "expect": {
           "tenant": "tenant-acme",
           "chain": "chain-acme-1"
@@ -3238,7 +3445,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -3248,7 +3457,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -3394,7 +3605,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -3404,7 +3617,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -3550,7 +3765,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -3560,7 +3777,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -3706,7 +3925,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -3716,7 +3937,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -3862,7 +4085,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -3872,7 +4097,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "10000001"
+            "value": "10000001",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -4018,7 +4245,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -4028,7 +4257,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "0"
+            "value": "0",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -4305,7 +4536,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -4315,7 +4548,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -4461,7 +4696,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -4471,7 +4708,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -4617,7 +4856,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -4627,7 +4868,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -4773,7 +5016,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T09:59:00.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -4783,7 +5028,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -4929,7 +5176,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -4939,7 +5188,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -5085,7 +5336,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -5095,7 +5348,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -5241,7 +5496,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -5251,7 +5508,169 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
+      "name": "reject-impossible-settledAt",
+      "description": "F4 (round-1) — settledAt names a day that does not exist (2026-07-44). Date.UTC used to NORMALIZE it to Aug 13 — the base fixture's real block time — and the artifact earned the positive; the strict calendar parser refuses the string outright.",
+      "expect": "REJECT",
+      "expectCode": "ARTIFACT_TAMPERED",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "executionGrantHash": "sha256:755fa2e0e1ad6f05aaba8ab81ca967ef0088d3ded219084f9751c887df762914",
+          "correlation": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-07-44T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "bCVXm9eDtfQoTjV4ERNE+lu1PR3i2FwurawW+wVBSyZU+BhHLLMwUC/h7kIhcfDAnf3m5VfmfIKK2Dm0LrwMBA=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_1",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "/71Ii97F8ZWi5BbTlCAlGz3S3VzhogJ0j/j3eHWYda1bK+7yuuoU3veAH+KfxjC9QuFfPAwIvifKJMPoKvlmAQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "Gs84bZrH6pOwKlMm0HLtgvR6y2RKPWnk/XKt/gnRiikLl12SogRpOwv7RngILgrVasspUAymQuJOhc+lUex6Ag=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -5538,7 +5957,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -5548,7 +5969,809 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
+      "name": "reject-state-false-with-log",
+      "description": "F2 (round-1) — ONE SUCCESS AuthorizationUsed log with authorizationState false: EIP-3009 sets the state bit when it emits the log, so this record describes an impossible chain state and fails CLOSED. Knockout: skip the conjunction -> this vector earns the positive.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_CHAIN_CONTRADICTED",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "executionGrantHash": "sha256:755fa2e0e1ad6f05aaba8ab81ca967ef0088d3ded219084f9751c887df762914",
+          "correlation": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "9BdUW1MrqCnZg94jZnrSMNPccAOdCx7B8Z57zFM56sMaE0iQWYDiyQBdShwUMPnzl1aFwDF9C5m+o7UD1KSaDQ=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_1",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "/71Ii97F8ZWi5BbTlCAlGz3S3VzhogJ0j/j3eHWYda1bK+7yuuoU3veAH+KfxjC9QuFfPAwIvifKJMPoKvlmAQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "Gs84bZrH6pOwKlMm0HLtgvR6y2RKPWnk/XKt/gnRiikLl12SogRpOwv7RngILgrVasspUAymQuJOhc+lUex6Ag=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": false,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
+      "name": "reject-log-wrong-nonce",
+      "description": "F1 (round-1) — the used log carries a DIFFERENT on-chain nonce than the recomputed correlation: a log lifted from an unrelated transaction is a different payment, and without the binding field the record could not even express the difference.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_CHAIN_CONTRADICTED",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "executionGrantHash": "sha256:755fa2e0e1ad6f05aaba8ab81ca967ef0088d3ded219084f9751c887df762914",
+          "correlation": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "9BdUW1MrqCnZg94jZnrSMNPccAOdCx7B8Z57zFM56sMaE0iQWYDiyQBdShwUMPnzl1aFwDF9C5m+o7UD1KSaDQ=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_1",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "/71Ii97F8ZWi5BbTlCAlGz3S3VzhogJ0j/j3eHWYda1bK+7yuuoU3veAH+KfxjC9QuFfPAwIvifKJMPoKvlmAQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "Gs84bZrH6pOwKlMm0HLtgvR6y2RKPWnk/XKt/gnRiikLl12SogRpOwv7RngILgrVasspUAymQuJOhc+lUex6Ag=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x7777777777777777777777777777777777777777777777777777777777777777",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
+      "name": "reject-log-wrong-authorizer",
+      "description": "F1 (round-1) — the used log's authorizer is not the approved payer: EIP-3009 uniqueness is per (authorizer, nonce), so a third party's log for an equal nonce is a different fact.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_CHAIN_CONTRADICTED",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "executionGrantHash": "sha256:755fa2e0e1ad6f05aaba8ab81ca967ef0088d3ded219084f9751c887df762914",
+          "correlation": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "9BdUW1MrqCnZg94jZnrSMNPccAOdCx7B8Z57zFM56sMaE0iQWYDiyQBdShwUMPnzl1aFwDF9C5m+o7UD1KSaDQ=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_1",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "/71Ii97F8ZWi5BbTlCAlGz3S3VzhogJ0j/j3eHWYda1bK+7yuuoU3veAH+KfxjC9QuFfPAwIvifKJMPoKvlmAQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "Gs84bZrH6pOwKlMm0HLtgvR6y2RKPWnk/XKt/gnRiikLl12SogRpOwv7RngILgrVasspUAymQuJOhc+lUex6Ag=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x3333333333333333333333333333333333333333"
+            }
+          ],
+          "authorizationCanceledLogs": [],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
+      "name": "reject-transfer-foreign-tx",
+      "description": "F1 (round-1) — the recovered transfer names a DIFFERENT transaction than the AuthorizationUsed log: the same-block decoy in another tx satisfies every value bound while the settling transaction paid someone else. Knockout: drop the txHash binding -> GREEN.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_CHAIN_CONTRADICTED",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "executionGrantHash": "sha256:755fa2e0e1ad6f05aaba8ab81ca967ef0088d3ded219084f9751c887df762914",
+          "correlation": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "9BdUW1MrqCnZg94jZnrSMNPccAOdCx7B8Z57zFM56sMaE0iQWYDiyQBdShwUMPnzl1aFwDF9C5m+o7UD1KSaDQ=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_1",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "/71Ii97F8ZWi5BbTlCAlGz3S3VzhogJ0j/j3eHWYda1bK+7yuuoU3veAH+KfxjC9QuFfPAwIvifKJMPoKvlmAQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "Gs84bZrH6pOwKlMm0HLtgvR6y2RKPWnk/XKt/gnRiikLl12SogRpOwv7RngILgrVasspUAymQuJOhc+lUex6Ag=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
+      "name": "reject-settledAt-contradicts-blocktime",
+      "description": "F9 (round-1) / R-20's settledAt arm — a fabricated in-window settledAt contradicting the real blockTimestamp as INSTANTS; nothing else catches this fabrication, and before this vector no test executed the arm.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_CHAIN_CONTRADICTED",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "executionGrantHash": "sha256:755fa2e0e1ad6f05aaba8ab81ca967ef0088d3ded219084f9751c887df762914",
+          "correlation": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "9BdUW1MrqCnZg94jZnrSMNPccAOdCx7B8Z57zFM56sMaE0iQWYDiyQBdShwUMPnzl1aFwDF9C5m+o7UD1KSaDQ=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_1",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "/71Ii97F8ZWi5BbTlCAlGz3S3VzhogJ0j/j3eHWYda1bK+7yuuoU3veAH+KfxjC9QuFfPAwIvifKJMPoKvlmAQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "Gs84bZrH6pOwKlMm0HLtgvR6y2RKPWnk/XKt/gnRiikLl12SogRpOwv7RngILgrVasspUAymQuJOhc+lUex6Ag=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:05.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -5694,14 +6917,18 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             },
             {
               "txHash": "0x4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a",
               "blockNumber": 33554433,
               "logIndex": 2,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -5711,7 +6938,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -5857,7 +7086,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "REVERTED"
+              "txStatus": "REVERTED",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -5867,7 +7098,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -6013,7 +7246,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -6023,7 +7258,9 @@
             "logIndex": 9,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -6169,7 +7406,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -6180,7 +7419,9 @@
               "logIndex": 8,
               "from": "0x1111111111111111111111111111111111111111",
               "to": "0x2222222222222222222222222222222222222222",
-              "value": "1000000"
+              "value": "1000000",
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432
             },
             {
               "source": "TRANSFER_LOG",
@@ -6188,7 +7429,9 @@
               "logIndex": 9,
               "from": "0x1111111111111111111111111111111111111111",
               "to": "0x3333333333333333333333333333333333333333",
-              "value": "1000000"
+              "value": "1000000",
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432
             }
           ],
           "headBlockNumber": 33554462,
@@ -6335,7 +7578,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -6345,7 +7590,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -6491,7 +7738,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -6501,7 +7750,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554432,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -6648,7 +7899,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -6658,7 +7911,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -6805,7 +8060,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -6815,7 +8072,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -6956,7 +8215,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x07f6cf212b36991f365c76c5c949107ee3230150e2a99aab105ea1cc79d3e831",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -6966,7 +8227,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -7114,7 +8377,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -7124,7 +8389,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -7272,7 +8539,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -7282,7 +8551,9 @@
             "logIndex": 9,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -7424,7 +8695,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -7434,7 +8707,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -7581,7 +8856,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -7591,7 +8868,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -7739,7 +9018,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -7749,7 +9030,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -7895,7 +9178,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -7905,7 +9190,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -8184,7 +9471,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -8194,7 +9483,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -8214,8 +9505,8 @@
       "expectWarning": "SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER"
     },
     {
-      "name": "control-dual-role-observer",
-      "description": "R-16's rewrite pin — a key that LEGITIMATELY holds both roles: the cap keys on the relationship, not on how the role was obtained. Knockout: condition the cap on anything else -> RED.",
+      "name": "control-alias-kid-observer",
+      "description": "F3 (round-1) — the grant signer's PUBLIC KEY registered under a SECOND kid holding the observer role; the artifact is signed with that key under the alias. This is BOTH the alias evasion of a kid-string R-16 cap AND the legitimate dual-role configuration (one key, both roles, two kids): the byte-level cap catches both. Knockout: revert the cap to kid-string equality -> this vector earns the positive.",
       "expect": "CONTROL",
       "expectCode": "SETTLEMENT_CORRELATED_UNRECONFIRMED",
       "input": {
@@ -8244,12 +9535,12 @@
             "encoding": "base64",
             "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
           },
-          "observerKid": "gate-prod-1",
+          "observerKid": "gate-observer-alias",
           "observedAt": "2026-08-13T10:06:00.000Z",
           "sig": {
             "alg": "ed25519",
-            "kid": "gate-prod-1",
-            "value": "u9QM8CoaLH55lG8LelzStzwhjh3GD5hqrUvqa2OIrBOtJy9sActYlltZbTKjStZ5PE9o/g5kWURzhIipRXD6CA=="
+            "kid": "gate-observer-alias",
+            "value": "nXjt5it4jPXAc3K7Z3hSEOXlSJTI4e+LdKi1ExhmRcLN2bN3S6uuVz5pnh2b26tT/qgFipRHlZCqjgt7RTpQDw=="
           }
         },
         "receiptChain": [
@@ -8315,7 +9606,8 @@
         },
         "keyring": {
           "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
-          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY=",
+          "gate-observer-alias": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo="
         },
         "holdEnvelope": {
           "spec": "noa.hold-envelope/0.1",
@@ -8343,7 +9635,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:05:04.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -8353,7 +9647,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:06:30.000Z"
@@ -8785,6 +10081,175 @@
       "expectChainStatus": "CANCELLED"
     },
     {
+      "name": "control-reverted-cancel-ignored",
+      "description": "F7 (round-1) — a REVERTED cancelAuthorization entry alongside the genuine settlement: a reverted transaction changed no state, so it neither contradicts the settlement nor counts toward a burn. A post-settlement cancel reverting with 'authorization already used' is a real, observable chain event; flipping an honest settlement on it manufactures a rejection from an honest state.",
+      "expect": "CONTROL",
+      "expectCode": "SETTLEMENT_CORRELATED_AND_RECONFIRMED",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "executionGrantHash": "sha256:755fa2e0e1ad6f05aaba8ab81ca967ef0088d3ded219084f9751c887df762914",
+          "correlation": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "9BdUW1MrqCnZg94jZnrSMNPccAOdCx7B8Z57zFM56sMaE0iQWYDiyQBdShwUMPnzl1aFwDF9C5m+o7UD1KSaDQ=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_1",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "/71Ii97F8ZWi5BbTlCAlGz3S3VzhogJ0j/j3eHWYda1bK+7yuuoU3veAH+KfxjC9QuFfPAwIvifKJMPoKvlmAQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "Gs84bZrH6pOwKlMm0HLtgvR6y2RKPWnk/XKt/gnRiikLl12SogRpOwv7RngILgrVasspUAymQuJOhc+lUex6Ag=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [
+            {
+              "txHash": "0x4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a",
+              "blockNumber": 33554434,
+              "logIndex": 1,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "REVERTED"
+            }
+          ],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      },
+      "expectChainStatus": "RECONFIRMED"
+    },
+    {
       "name": "control-settled-after-grant-expiry",
       "description": "R-13 SHOULD — facilitator delay pushed settlement past the grant window; the single-use burn already happened at dispatch. A warning, not a rejection — named so nobody tightens it into a false negative.",
       "expect": "CONTROL",
@@ -8914,7 +10379,9 @@
               "blockNumber": 33554432,
               "logIndex": 7,
               "blockTimestamp": "2026-08-13T10:40:00.000Z",
-              "txStatus": "SUCCESS"
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
             }
           ],
           "authorizationCanceledLogs": [],
@@ -8924,7 +10391,9 @@
             "logIndex": 8,
             "from": "0x1111111111111111111111111111111111111111",
             "to": "0x2222222222222222222222222222222222222222",
-            "value": "1000000"
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
           },
           "headBlockNumber": 33554462,
           "queriedAt": "2026-08-13T10:41:30.000Z"

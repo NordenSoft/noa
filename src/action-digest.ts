@@ -80,7 +80,7 @@ import { signingMessage } from "./signing.js";
 import { receiptHashInput } from "./canonicalize.js";
 import { parseDocument } from "./bytes.js";
 import { validateReceiptShapeParsed } from "./schema.js";
-import { isSha256Hash, isParamsHash, isRfc3339 } from "./scan.js";
+import { isSha256Hash, isParamsHash, isRfc3339, isHex64 } from "./scan.js";
 import { verifyChain } from "./verify.js";
 import { resolveVerificationKey } from "./verification-keyring.js";
 import { verifyEd25519 } from "./keys.js";
@@ -333,7 +333,11 @@ function checkGrant(grant: unknown): { ok: true; value: Record<string, unknown> 
   // `maxUses:1` and the schema pins the const; restating it here means a relaxed grant cannot be
   // correlated by this construction at all, rather than being correlated and quietly reusable.
   if (grant["maxUses"] !== 1) return fail("grant.maxUses: must be exactly 1 (the digest binds a single-use grant)");
-  if (!boundedString(grant["nonce"], 256)) return fail("grant.nonce: non-empty string ≤256 chars");
+  // S4 round-1 F5 — the nonce is the D7 correlation SEED (settlement-evidence spec §3), pinned by
+  // the shipped grant schema to `^[0-9a-f]{64}$`. This is the AUTHENTICATING path: the old
+  // 1-256-char rule here let a UUID-nonce grant pass `verifyActionDigest` while the settlement
+  // layers refused it — a cross-implementation verdict split on the money path.
+  if (!isHex64(grant["nonce"] as string)) return fail("grant.nonce: must be exactly 64 lowercase hex characters (32 bytes — the D7 correlation seed)");
   const sig = grant["sig"];
   if (!isObject(sig)) return fail("grant.sig: not an object");
   // ── THE NESTED OBJECT IS CLOSED TOO (round-2 QA, reproduced) ────────────────────────────────────

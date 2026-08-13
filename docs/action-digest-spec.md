@@ -202,7 +202,7 @@ claim is only true if the values that change a verdict are written down, so they
 | JSON nesting depth | 64 |
 | `tenant`, `chain` | 1-128 code points, non-blank, equal to their own trim |
 | `grantId`, `holdId`, `sig.kid` | 1-128 code points, non-blank after trim |
-| `nonce` | 1-256 code points, non-blank after trim |
+| `nonce` | exactly 64 **lowercase** hex characters (32 bytes) — REVISED 2026-08-13 (S4 round-1 F5): the nonce is the D7 correlation seed (settlement-evidence spec §3) and the shipped grant schema pins `^[0-9a-f]{64}$`; the prior "1-256 code points, non-blank" row let a UUID-nonce grant verify here while every settlement layer refused it |
 | `sig.value` | 1-512 code points, non-blank after trim |
 | `digest`, `*Hash` fields | exactly `sha256:` + 64 **lowercase** hex |
 | `paramsHash` | `sha256:` or `hmac-sha256:` + 64 lowercase hex |

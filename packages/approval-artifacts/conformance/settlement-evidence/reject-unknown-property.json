@@ -1,5 +1,5 @@
 {
-  "description": "smuggled extra ROOT field — additionalProperties:false (layer 1)",
+  "description": "smuggled extra ROOT field, RE-SIGNED so layer 1 (additionalProperties:false) is the only refuser",
   "spec": "noa.settlement-evidence/0.1",
   "expect": "REJECT",
   "rejectionClass": "unknown-property",
@@ -30,12 +30,12 @@
     },
     "observerKid": "gate-observer-2",
     "observedAt": "2026-07-14T11:58:00.000Z",
+    "_smuggled": "x",
     "sig": {
       "alg": "ed25519",
       "kid": "gate-observer-2",
-      "value": "2jl1nHHn40490GooMR4CZNpIqUPm67VkfqCY6cgslWTuxyEwBi6Uf0Raf5xSUqdPbGdd/NLpEUelndL8PrpsAA=="
-    },
-    "_smuggled": "x"
+      "value": "XplkBjaDWBmBSwVb/0HEmPMiF3oeCp4SrBQy5+2nSHlQqa8t98f/EqYglcVijzMKUZ/p6YIztNGMjn5Un2w+Dw=="
+    }
   },
   "context": {
     "now": "2026-07-14T12:00:00.000Z",

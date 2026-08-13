@@ -517,6 +517,54 @@ const KNOCKOUTS = [
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
   {
+    id: "s4-f1-transfer-tx-binding",
+    control: "S4/F1 (round-1) — the recovered transfer must come from the AuthorizationUsed log's OWN transaction (txHash equality)",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (lc(transfer.txHash) !== lc(log.txHash)) {",
+    // Drop the same-transaction binding and a decoy transfer in a DIFFERENT transaction — approved
+    // token, payer->approved-payee, compliant amount — reconfirms a settlement whose actual
+    // transaction paid someone else. `reject-transfer-foreign-tx` is what turns red.
+    replace: "  if (false && lc(transfer.txHash) !== lc(log.txHash)) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-f2-authorization-state-conjunction",
+    control: "S4/F2 (round-1) — the one-log path requires authorizationState == true BEFORE the log is processed (spec §5(6) conjunction)",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (facts.authorizationState !== true) {",
+    // Skip the conjunction and a record carrying a SUCCESS log with state false — an impossible
+    // chain state no honest node returns — earns the positive. `reject-state-false-with-log` is
+    // what turns red.
+    replace: "  if (false && facts.authorizationState !== true) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-f3-same-key-cap-on-bytes",
+    control: "S4/F3 (round-1) — the R-16 SAME_SIGNING_KEY cap keys on public-key BYTES resolved through the keyring, not on the kid string",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (artifact.observerKid === grant?.sig?.kid || sameSigningKeyMaterial) {",
+    // Revert to kid-string equality and the grant signer's key registered under a second kid — the
+    // alias registration, which is also the legitimate dual-role shape — signs 'and it settled'
+    // uncapped. `control-alias-kid-observer` is what turns red.
+    replace: "  if (artifact.observerKid === grant?.sig?.kid) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-f9-settledat-instant-corroboration",
+    control: "S4/F9 (round-1) — R-20's settledAt arm: a reported settledAt disagreeing with the resolved blockTimestamp as INSTANTS contradicts",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "    if (a === null || b === null || a !== b) {",
+    // Neutralize the arm and a fabricated in-window settledAt sails past the only check that reads
+    // it against the chain. `reject-settledAt-contradicts-blocktime` is what turns red — before
+    // round 1 NO vector executed this arm (measured GREEN-uncovered by both reviewers).
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
     id: "s3-consumed-nonce-reconciles",
     control: "S3(b) — a front-run (consumed) nonce is reconciled against chain state, never reported as failure",
     file: "packages/rail-x402/src/settlement-proof.mjs",
