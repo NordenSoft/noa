@@ -94,6 +94,16 @@ const INVENTORY = {
       "a split read there is a split anchor. Marker: canonicalize.",
   },
 
+  "packages/rail-x402/src": {
+    gated: true,
+    note: "S4 (2026-08-13): `settlement-evidence.mjs` renders SETTLEMENT_* verdicts — it byte-parses " +
+      "caller inputs, recomputes the D7 correlation via the kernel's verifyActionDigest, and decides " +
+      "the §10.1 result envelope, i.e. it parses, verifies AND decides. Before S4 this root held only " +
+      "derivation/proof helpers and never tripped isCritical(); the reconciler changes that, and this " +
+      "entry was added the moment L9 went red on it (the gate working as designed, same shape as the " +
+      "2026-07-30 .mjs blindness fix). Also scanned by RAIL_X402_TCB in lint-security-gates and L11.",
+  },
+
   "packages/e2e-demo/src": {
     gated: false,
     reason: "demo/harness code, not a shipped decision path -- but it CONSTRUCTS security artifacts, " +
