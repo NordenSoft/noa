@@ -153,6 +153,18 @@ jobs:
         run: cd packages/tsa-anchor && npm ci && npm test
       - name: framework-adapters tests
         run: cd packages/framework-adapters && npm ci && npm test
+      - name: rail-x402 tests
+        # S3. Pure logic and no chain, so it runs anywhere — which is exactly why it must run HERE
+        # rather than on a maintainer's laptop. Everything this package decides (the
+        # nonce derivation, the four-part settlement proof, the consumed-nonce reconciliation) is
+        # offline by construction; the chain-facing half sits behind an injected reader and has no
+        # test in this repository at all, which its README states rather than implies.
+        # `npm ci` is NOT optional here and its absence is what turned this step red on the first
+        # run: the package gained a `noa-receipt` file: dependency (the L11 gate requires the
+        # kernel's INERT_ARRAY_PROTOTYPE, a locally-named one earns nothing), so without the install
+        # the import resolves to nothing. Every other package step above does the same thing; I
+        # copied the shape of the one step that had no dependency to install.
+        run: cd packages/rail-x402 && npm ci && npm test
 
   e2e-demo-contract:
     # THE HALF THAT IS ALWAYS OURS TO GATE — and it is now its OWN job, for a measured reason.
@@ -562,6 +574,11 @@ jobs:
           npm --prefix packages/framework-adapters ci
           npm --prefix packages/signer-sidecar ci
           npm --prefix packages/mcp-proxy ci
+          # rail-x402 joined 2026-08-13 (S3): its three knockout entries re-run ITS suite, and that
+          # suite imports the kernel for `INERT_ARRAY_PROTOTYPE`. Omitting it here is what turned the
+          # L4 step red — the same shape as the adapter-core ordering note above, and the reason that
+          # note says to look for siblings.
+          npm --prefix packages/rail-x402 ci
           npm --prefix packages/e2e-demo ci
           # e2e-demo runs `node --import tsx --test test/*.test.ts` straight from source, but it
           # IMPORTS six siblings' BUILD OUTPUT. `npm ci` alone left it at `exit 1` with real failures
