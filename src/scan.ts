@@ -107,10 +107,10 @@ export function isParamsHash(s: string): boolean {
 }
 
 /** Replaces `/^[0-9a-f]{64}$/` — the S4/D7 grant-nonce rule: exactly 32 bytes as lowercase hex.
- *  (2026-08-13, round-1 F5: the grant nonce is the D7 correlation seed; the artifact schema pinned
+ *  (2026-08-13: the grant nonce is the D7 correlation seed; the artifact schema pinned
  *  this while the kernel still accepted any non-blank ≤256-char string — the authenticating path
  *  must enforce the same rule.) */
-export function isHex64(s: string): boolean {
+export function isHex64(s: unknown): boolean {
   if (typeof s !== "string") return false;
   if (s.length !== 64) return false;
   return lowerHexRun(s, 0, 64);

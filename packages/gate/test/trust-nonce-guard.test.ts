@@ -1,5 +1,5 @@
 /**
- * S4 round-1 F14 — the grant-nonce format tripwire at the trust boundary.
+ * The grant-nonce format tripwire at the trust boundary (added 2026-08-13).
  *
  * `nonces` is a public `CreateTrustInput` member and `localExecutionSigner` performs no post-sign
  * schema self-check, so before this guard an injected `() => "zz"` source minted gate-signed grants
@@ -12,19 +12,19 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createAlphaTrust } from "../src/trust.js";
 
-test("F14: an injected non-hex64 nonce source fails at the gate, loudly, on the draw", () => {
+test("an injected non-hex64 nonce source fails at the gate, loudly, on the draw", () => {
   const trust = createAlphaTrust({ tenant: "tenant-acme", nonces: () => "zz" });
   assert.throws(() => trust.newNonce(), /64 lowercase hex/, "a bad injected nonce must be refused with the named format rule");
 });
 
-test("F14: uppercase and short hex are refused too (the schema pins lowercase, exactly 64)", () => {
+test("uppercase and short hex are refused too (the schema pins lowercase, exactly 64)", () => {
   for (const bad of ["9C".repeat(32), "9c".repeat(31), "9c".repeat(33), "", "9c".repeat(31) + "g1"]) {
     const trust = createAlphaTrust({ tenant: "tenant-acme", nonces: () => bad });
     assert.throws(() => trust.newNonce(), /64 lowercase hex/, `accepted: ${JSON.stringify(bad)}`);
   }
 });
 
-test("F14 anti-vacuity: a conforming injected source passes through verbatim, per draw", () => {
+test("anti-vacuity: a conforming injected source passes through verbatim, per draw", () => {
   const seq = ["9c".repeat(32), "8b".repeat(32)];
   let i = 0;
   const trust = createAlphaTrust({ tenant: "tenant-acme", nonces: () => seq[i++] as string });
@@ -32,11 +32,26 @@ test("F14 anti-vacuity: a conforming injected source passes through verbatim, pe
   assert.equal(trust.newNonce(), "8b".repeat(32), "the guard must not consume or reorder draws");
 });
 
-test("F14 anti-vacuity: the CSPRNG default satisfies its own gate and draws are distinct", () => {
+test("anti-vacuity: the CSPRNG default satisfies its own gate and draws are distinct", () => {
   const trust = createAlphaTrust({ tenant: "tenant-acme" });
   const a = trust.newNonce();
   const b = trust.newNonce();
   assert.match(a, /^[0-9a-f]{64}$/);
   assert.match(b, /^[0-9a-f]{64}$/);
   assert.notEqual(a, b, "two default draws must differ");
+});
+
+test("the guard survives a poisoned RegExp.prototype.test (it validates via captured isHex64)", () => {
+  // Reproduced before the fix: `RegExp.prototype.test = () => true` let an invalid injected nonce
+  // through the guard, because the guard dispatched into the regex engine on a decision path. The
+  // guard now validates with the kernel's captured-charCode isHex64, which looks nothing up.
+  const real = RegExp.prototype.test;
+  RegExp.prototype.test = () => true;
+  try {
+    const trust = createAlphaTrust({ tenant: "tenant-acme", nonces: () => "zz" });
+    assert.throws(() => trust.newNonce(), /64 lowercase hex/,
+      "an invalid nonce must still be refused with RegExp.prototype.test poisoned to always pass");
+  } finally {
+    RegExp.prototype.test = real;
+  }
 });

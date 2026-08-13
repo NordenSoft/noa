@@ -284,7 +284,7 @@ test("field differential: each projection slot separates authorizations that dif
       g["paramsHash"] = other; // the grant authorizes ONE param hash; moving one without the other is refused
     }],
     ["executionGrantId", (_r, g) => { g["grantId"] = "grant-999"; }],
-    ["executionNonce", (_r, g) => { g["nonce"] = "b9".repeat(32); }], // hex64 — the F5 nonce rule applies to mutants too
+    ["executionNonce", (_r, g) => { g["nonce"] = "b9".repeat(32); }], // hex64 — the nonce rule applies to mutants too
     // THE TWO LOAD-BEARING ROWS. Each moves a field that lives in no other projection slot, so only
     // the whole-document hash can carry it.
     ["executionGrantHash (via a grant field in no other slot)", (_r, g) => {
@@ -387,7 +387,7 @@ test("HIGH-3: a forged authorization is REFUSED, and refused for the authenticit
     issuedAt: "2026-07-14T11:55:00.000Z",
     expiresAt: "2026-07-14T12:30:00.000Z",
     maxUses: 1,
-    nonce: "f0".repeat(32), // hex64 (F5) — the forgery lives in the KEY, not the nonce shape
+    nonce: "f0".repeat(32), // hex64 — the forgery lives in the KEY, not the nonce shape
     sig: { alg: "ed25519", kid: "gate-prod-1", value: Buffer.alloc(64).toString("base64") },
   };
 

@@ -2424,7 +2424,7 @@
     },
     {
       "name": "reject-grant-nonce-not-hex64",
-      "note": "F5 (round-1): a grant whose nonce is a legacy identifier string, not 64 lowercase hex. The nonce is the D7 correlation seed; the kernel must refuse what the shipped grant schema refuses, or a UUID-nonce grant verifies here and fails every settlement layer — a verdict split on the money path.",
+      "note": "A grant whose nonce is a legacy identifier string, not 64 lowercase hex. The nonce is the D7 correlation seed; the kernel must refuse what the shipped grant schema refuses, or a UUID-nonce grant verifies here and fails every settlement layer — a verdict split on the money path.",
       "claim": {
         "spec": "noa.action-digest/0.1",
         "digest": "sha256:d2aacd3b98450f5d108470e70ae4f0240a44faedb19e9d129f69ef48986067ca"

@@ -30,7 +30,8 @@ const VALID = {
       nonce: "0x" + "9c".repeat(32), authorizer: "0x1111111111111111111111111111111111111111" },
   ],
   authorizationCanceledLogs: [
-    { txHash: "0x" + "4a".repeat(32), blockNumber: 2, logIndex: 1, blockTimestamp: "2026-08-13T10:05:04Z", txStatus: "SUCCESS" },
+    { txHash: "0x" + "4a".repeat(32), blockNumber: 2, logIndex: 1, blockTimestamp: "2026-08-13T10:05:04Z", txStatus: "SUCCESS",
+      nonce: "0x" + "9c".repeat(32), authorizer: "0x1111111111111111111111111111111111111111" },
   ],
   transfer: {
     source: "TRANSFER_LOG",

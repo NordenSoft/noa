@@ -147,6 +147,7 @@ export const NOA_RECEIPT: EntryPoint[] = [
   { name: "parseDocument", cls: "dataless" },
   { name: "isUint8Array", cls: "dataless" },
   { name: "isNFC", cls: "dataless" },
+  { name: "isHex64", cls: "dataless" },
   { name: "sha256Hex", cls: "dataless" },
   { name: "sha256Prefixed", cls: "dataless" },
   { name: "sha256Digest", cls: "dataless" },

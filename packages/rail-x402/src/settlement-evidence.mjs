@@ -54,7 +54,6 @@
  * must evolve independently. `deriveCorrelationNonce` IS reused — it is the one shared rule.
  */
 
-import { createHash } from "node:crypto";
 import {
   intrinsics,
   frozenTable,
@@ -72,7 +71,10 @@ import { deriveCorrelationNonce } from "./correlation-nonce.mjs";
 // that walk to the mutable Object.prototype, where a planted accessor can swallow a warning while
 // length still advances — a silently de-fanged cap. Re-rooted while EMPTY, written through the
 // captured arrayPush, copied out by Array.from (CreateDataProperty, not [[Set]]).
-const { INERT_ARRAY_PROTOTYPE, objectSetPrototypeOf, arrayPush } = intrinsics;
+// `bufferFrom`/`bufEquals` are captured at kernel load: a byte compare or a base64 decode on a
+// decision path must dispatch through nothing a post-load `Buffer.prototype.equals = …` / `Buffer.from
+// = …` can rewrite (the same discipline settlement-proof.mjs and the L11 gate already follow).
+const { INERT_ARRAY_PROTOTYPE, objectSetPrototypeOf, arrayPush, bufferFrom, bufEquals } = intrinsics;
 const inertBuffer = () => objectSetPrototypeOf([], INERT_ARRAY_PROTOTYPE);
 const arrayFrom = Array.from;
 
@@ -148,8 +150,8 @@ const ownKeys = (o) => Object.getOwnPropertyNames(o);
 /** Proleptic-Gregorian calendar validity — the strict checks `parseTime` in
  *  packages/approval-artifacts/src/verify.ts ships (P0-6: "Date.parse IS NOT A SECURITY PARSER"),
  *  replicated here because that function is module-local and this package must not re-export it.
- *  S4 round-1 F4: `Date.UTC` NORMALIZES impossible dates (2026-07-44 → Aug 13, hour 24 → next
- *  day), so a lexically-valid string naming no real instant used to parse to an invented one. */
+ *  Measured 2026-08-13: `Date.UTC` NORMALIZES impossible dates (2026-07-44 → Aug 13, hour 24 →
+ *  next day), so a lexically-valid string naming no real instant used to parse to an invented one. */
 function isLeapYear(y) {
   return y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0);
 }
@@ -163,7 +165,7 @@ function daysInMonth(y, m) {
  * RFC3339 → epoch nanoseconds as BigInt, or null. Instants compare as PARSED TIME (R-20): the
  * grammar admits 1–9 fractional digits and any numeric offset, so "…04.000Z" and "…04Z" are the
  * same instant and different strings — a naive string equality manufactures rejections.
- * STRICT calendar (F4): a string naming no real instant is null, never a normalized neighbour.
+ * STRICT calendar: a string naming no real instant is null, never a normalized neighbour.
  */
 function parseInstant(s) {
   if (typeof s !== "string") return null;
@@ -180,7 +182,13 @@ function parseInstant(s) {
   if (day < 1 || day > daysInMonth(year, month)) return null;
   // Leap seconds (`:60`) are refused — the same contract as the kernel's strict parseTime.
   if (hour > 23 || minute > 59 || second > 59) return null;
-  const ms = Date.UTC(year, month - 1, day, hour, minute, second);
+  // `Date.UTC(year, …)` / `new Date(year, …)` map a two-digit `year` 0..99 onto 1900..1999, so
+  // "0099-…" and "1999-…" would parse to the SAME instant (measured 2026-08-13). Set the true year
+  // back EXPLICITLY — `setUTCFullYear` takes the literal year with no offset — so two RFC3339 strings
+  // naming instants 1900 years apart never compare equal.
+  const dt = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  dt.setUTCFullYear(year);
+  const ms = dt.getTime();
   if (!Number.isFinite(ms)) return null;
   let nanos = BigInt(ms) * 1000000n;
   if (frac !== undefined) {
@@ -221,8 +229,9 @@ export function validateChainFacts(v) {
   if (typeof v.network !== "string" || !RE_NETWORK.test(v.network)) return bad("network: must match ^eip155:[1-9][0-9]{0,18}$");
   if (typeof v.asset !== "string" || !RE_ASSET.test(v.asset)) return bad("asset: must be a lowercase eip155/erc20 CAIP-19");
   if (typeof v.authorizationState !== "boolean") return bad("authorizationState: must be a boolean");
-  // S4 round-1 F1: used logs carry the (nonce, authorizer) pair they were emitted for; canceled
-  // logs keep the coordinate shape (closed world: they must NOT carry the two binding fields).
+  // BOTH used and canceled logs carry the (nonce, authorizer) pair they were emitted for: a cancel
+  // drives the TERMINAL burn verdict, so the record must be able to prove the cancel belongs to the
+  // adjudicated (payer, nonce) pair and not to some unrelated authorization.
   const logCheck = (log, where, withBinding) => {
     if (!isObj(log)) return `${where}: entry is not an object`;
     const lk = withBinding
@@ -248,7 +257,7 @@ export function validateChainFacts(v) {
   }
   if (!Array.isArray(v.authorizationCanceledLogs)) return bad("authorizationCanceledLogs: must be an array");
   for (let i = 0; i < v.authorizationCanceledLogs.length; i++) {
-    const r = logCheck(v.authorizationCanceledLogs[i], `authorizationCanceledLogs[${i}]`, false);
+    const r = logCheck(v.authorizationCanceledLogs[i], `authorizationCanceledLogs[${i}]`, true);
     if (r !== null) return bad(r);
   }
   const t = v.transfer;
@@ -263,7 +272,7 @@ export function validateChainFacts(v) {
     if (typeof t.from !== "string" || !RE_ADDR.test(t.from)) return bad("transfer.from: must be a lowercase 0x address");
     if (typeof t.to !== "string" || !RE_ADDR.test(t.to)) return bad("transfer.to: must be a lowercase 0x address");
     if (typeof t.value !== "string" || !RE_MINOR_UNITS.test(t.value)) return bad("transfer.value: must be a decimal minor-units string");
-    // S4 round-1 F1: the transfer names the transaction it was recovered from.
+    // The transfer names the transaction it was recovered from.
     if (typeof t.txHash !== "string" || !RE_0X64.test(t.txHash)) return bad("transfer.txHash: must be 0x + 64 lowercase hex");
     if (!isInt(t.blockNumber, 0)) return bad("transfer.blockNumber: must be an integer >= 0");
   }
@@ -372,27 +381,27 @@ function verifyParamsPreimage(preimageBytes, paramsHash) {
     return bad("receipt.action.paramsHash is hmac-sha256: — the preimage is not third-party checkable, so bounds AND the D7 derivation are blocked");
   }
   if (preimageBytes === null || preimageBytes === undefined) return bad("not supplied — the bounds were never compared, so no positive is reachable");
-  // S4 round-1 F11 (R-1 totality) — type-gate BEFORE conversion: `Buffer.from(Symbol())` throws,
+  // R-1 totality — type-gate BEFORE conversion: `Buffer.from(Symbol())` throws,
   // and an uncaught throw from a hostile field is exactly what R-1 forbids.
   if (typeof preimageBytes !== "string" && !(preimageBytes instanceof Uint8Array)) {
     return bad("must be bytes (Uint8Array) or a string");
   }
   // Hash the RAW bytes EXACTLY — never a lossy decode-then-reencode. A `Uint8Array` carrying an
-  // invalid UTF-8 sequence (e.g. a lone 0x80) would, under `Buffer.from(bytes).toString("utf8")`,
-  // collapse to U+FFFD and then re-encode to DIFFERENT bytes, so a malformed preimage would match a
-  // receipt that committed to the cleaned text (S4 round-1 Codex #4). Hash the bytes as received.
-  const rawBuf = typeof preimageBytes === "string" ? Buffer.from(preimageBytes, "utf8") : Buffer.from(preimageBytes);
-  const digest = "sha256:" + createHash("sha256").update(rawBuf).digest("hex");
+  // invalid UTF-8 sequence (e.g. a lone 0x80) would, under a decode-then-reencode, collapse to
+  // U+FFFD and then re-encode to DIFFERENT bytes, so a malformed preimage would match a receipt that
+  // committed to the cleaned text (the hole this closes, measured 2026-08-13). Hash the bytes as
+  // received, through the kernel's captured SHA-256 (bufferFrom + sha256Hex look nothing up at call
+  // time), so a rewriting Buffer.from / createHash poison cannot map a forged preimage back to the
+  // signed digest.
+  const rawBuf = typeof preimageBytes === "string" ? bufferFrom(preimageBytes, "utf8") : bufferFrom(preimageBytes);
+  const digest = "sha256:" + sha256Hex(rawBuf);
   if (digest !== paramsHash) return bad(`sha256 over the supplied bytes (${digest}) does not equal receipt.action.paramsHash (${paramsHash})`);
-  // Only now decode, STRICTLY — a legitimate JCS preimage is always valid UTF-8; malformed bytes are
-  // refused rather than silently cleaned (they already failed the hash above unless they round-trip).
-  let text;
-  try {
-    text = new TextDecoder("utf-8", { fatal: true }).decode(rawBuf);
-  } catch {
-    return bad("preimage bytes are not valid UTF-8");
-  }
-  const parsed = parseDocument(text, "paramsPreimage");
+  // Decode + strict-parse through the ONE hardened byte boundary. `parseDocument` owns bytes->document
+  // — its fatal, BOM-preserving UTF-8 decode runs through bindings captured at kernel load, so there
+  // is no live `globalThis.TextDecoder` lookup between the hash match and the parse for a post-load
+  // substitution to seize. A legitimate JCS preimage is always valid UTF-8; malformed bytes are
+  // refused, never silently cleaned (and they already failed the hash above unless they round-trip).
+  const parsed = parseDocument(rawBuf, "paramsPreimage");
   if (!parsed.ok) return bad(parsed.reason);
   const p = parsed.value;
   if (!isObj(p)) return bad("not a JSON object");
@@ -418,7 +427,7 @@ function keyringHasKid(keyring, kid) {
 }
 
 /**
- * S4 round-1 F3 — resolve a kid to its PUBLIC-KEY BYTES over the same two keyring shapes, or null.
+ * Resolve a kid to its PUBLIC-KEY BYTES over the same two keyring shapes, or null.
  * The R-16 cap must key on key MATERIAL: nothing anywhere forbids registering one public key under
  * two kids, so a kid-string comparison is evaded by the alias registration the cap exists to catch.
  * `Buffer.from(s, "base64")` never throws; a non-decodable entry yields bytes that equal nothing.
@@ -434,7 +443,7 @@ function keyringPublicKeyBytes(keyring, kid) {
   } else if (Object.hasOwn(keyring, kid) && typeof keyring[kid] === "string" && keyring[kid].length > 0) {
     material = keyring[kid];
   }
-  return material === null ? null : Buffer.from(material, "base64");
+  return material === null ? null : bufferFrom(material, "base64");
 }
 
 /**
@@ -464,7 +473,7 @@ function keyringPublicKeyBytes(keyring, kid) {
  * @returns the §6 result envelope
  */
 export function reconcileSettlementEvidence(input) {
-  // S4 round-1 F11 — the R-1 totality BOUNDARY, structural rather than asserted: every field
+  // The R-1 totality BOUNDARY, structural rather than asserted: every field
   // conversion below is type-gated, and if a future edit misses one, the throw still becomes the
   // full fail-closed envelope instead of escaping to the caller. The two policy hashes cannot be
   // derived honestly after a throw, so they hash the literal "null" — the same value the inner
@@ -744,7 +753,7 @@ function reconcileSettlementEvidenceInner(input) {
       tokenAddress: approvedToken,
       payerAddress: approved.payer,
       dispatchId: verified.digest, // the ASCII "sha256:<64hex>" string, prefix included (D7)
-      seed: Uint8Array.from(Buffer.from(grantNonce, "hex")),
+      seed: Uint8Array.from(bufferFrom(grantNonce, "hex")),
     });
   } catch (e) {
     correlationStatus = "MISMATCH";
@@ -805,7 +814,7 @@ function reconcileSettlementEvidenceInner(input) {
   // chainStatus, and vice versa). They are FLAGS here and are applied after layer 6, so a chain
   // CONTRADICTION still outranks them — a cap softens a positive, never a rejection.
   let capped = false;
-  // S4 round-1 F3 — the cap keys on key MATERIAL, resolved through the caller keyring; the
+  // The cap keys on key MATERIAL, resolved through the caller keyring; the
   // kid-string equality is kept only as a fast path (two equal kids name one key by construction,
   // even when the keyring cannot resolve them). The dual-role legitimate case — ONE key holding
   // both execution-signer and settlement-observer under TWO kids — MUST cap: the key that says
@@ -814,7 +823,7 @@ function reconcileSettlementEvidenceInner(input) {
   const observerKeyBytes = keyringPublicKeyBytes(parsedKeyring.value, artifact.observerKid);
   const grantSignerKeyBytes = keyringPublicKeyBytes(parsedKeyring.value, grant?.sig?.kid);
   const sameSigningKeyMaterial = observerKeyBytes !== null && grantSignerKeyBytes !== null
-    && observerKeyBytes.equals(grantSignerKeyBytes);
+    && bufEquals(observerKeyBytes, grantSignerKeyBytes);
   if (artifact.observerKid === grant?.sig?.kid || sameSigningKeyMaterial) {
     // R-16 — THE CAP KEYS ON THE RELATIONSHIP, NOT ON HOW THE ROLE WAS OBTAINED.
     observerRelationship = "SAME_SIGNING_KEY";
@@ -892,11 +901,31 @@ function reconcileSettlementEvidenceInner(input) {
 
   const used = facts.authorizationUsedLogs;
   const canceled = facts.authorizationCanceledLogs;
+  const expectedOnChainNonce = "0x" + derivedNonceHex;
 
-  // S4 round-1 F7 — ONLY a canceled log whose transaction SUCCEEDED changed any state. A REVERTED
+  // A cancel bears on THIS correlation only if it names OUR (nonce, authorizer). The schema now
+  // requires the pair on every canceled log; here it is asserted against the recomputed correlation
+  // and the approved payer BEFORE any cancel is allowed to burn or contradict — a cancel lifted from
+  // an unrelated authorization describes a coordinate set that is not the one adjudicated, and is
+  // refused rather than permitted to burn ours. Symmetric with the used-log binding below.
+  for (let i = 0; i < canceled.length; i++) {
+    if (lc(canceled[i].nonce) !== expectedOnChainNonce) {
+      chainStatus = "CONTRADICTED";
+      return finish("SETTLEMENT_CHAIN_CONTRADICTED",
+        `an AuthorizationCanceled log carries nonce ${canceled[i].nonce}, not the recomputed correlation nonce ${expectedOnChainNonce} — a cancel for a different (payer, nonce) cannot bear on this settlement`);
+    }
+    if (lc(canceled[i].authorizer) !== approved.payer) {
+      chainStatus = "CONTRADICTED";
+      return finish("SETTLEMENT_CHAIN_CONTRADICTED",
+        `an AuthorizationCanceled log carries authorizer ${canceled[i].authorizer}, not the approved payer ${approved.payer} — EIP-3009 uniqueness is per (authorizer, nonce)`);
+    }
+  }
+
+  // ONLY a canceled log whose transaction SUCCEEDED changed any state. A REVERTED
   // cancelAuthorization is a non-event: it neither contradicts a genuine settlement (a
   // post-settlement cancel reverting with "authorization already used" is a real, observable chain
-  // event) nor satisfies the R-21b burn. One guard, shared by both consumers below.
+  // event) nor satisfies the R-21b burn. One guard, shared by both consumers below — every entry it
+  // counts has already been bound to OUR (nonce, authorizer) above.
   let successfulCancelCount = 0;
   for (let i = 0; i < canceled.length; i++) {
     if (canceled[i].txStatus === "SUCCESS") successfulCancelCount++;
@@ -926,7 +955,7 @@ function reconcileSettlementEvidenceInner(input) {
     return finish(offlineCode(), null);
   }
 
-  // S4 round-1 F2 — the spec's conjunction (§5(6)) requires authorizationState == true AND the one
+  // The spec's conjunction (§5(6)) requires authorizationState == true AND the one
   // SUCCESS log. A real EIP-3009 contract sets the state bit when it emits AuthorizationUsed, so a
   // record carrying the log with state false is internally impossible and fails CLOSED — checked
   // BEFORE the log is processed, so no later arm can rescue the record.
@@ -937,19 +966,18 @@ function reconcileSettlementEvidenceInner(input) {
   }
 
   const log = used[0];
-  // S4 round-1 F1 — the log must be the log for OUR nonce and OUR payer. Without these two
+  // The log must be the log for OUR nonce and OUR payer. Without these two
   // comparisons a record assembled from an unrelated transaction's AuthorizationUsed log is
   // indistinguishable from the real one, because the record could not even express the difference.
-  const expectedOnChainNonce = "0x" + derivedNonceHex;
   if (lc(log.nonce) !== expectedOnChainNonce) {
     chainStatus = "CONTRADICTED";
     return finish("SETTLEMENT_CHAIN_CONTRADICTED",
-      `the resolved AuthorizationUsed log carries nonce ${log.nonce}, not the recomputed correlation nonce ${expectedOnChainNonce} (F1) — a log for a different nonce is a different payment`);
+      `the resolved AuthorizationUsed log carries nonce ${log.nonce}, not the recomputed correlation nonce ${expectedOnChainNonce} — a log for a different nonce is a different payment`);
   }
   if (lc(log.authorizer) !== approved.payer) {
     chainStatus = "CONTRADICTED";
     return finish("SETTLEMENT_CHAIN_CONTRADICTED",
-      `the resolved AuthorizationUsed log carries authorizer ${log.authorizer}, not the approved payer ${approved.payer} (F1) — EIP-3009 uniqueness is per (authorizer, nonce)`);
+      `the resolved AuthorizationUsed log carries authorizer ${log.authorizer}, not the approved payer ${approved.payer} — EIP-3009 uniqueness is per (authorizer, nonce)`);
   }
   if (log.txStatus !== "SUCCESS") {
     // R-19b — a reverted transaction changes no state; a log read that ignores status is the naive
@@ -959,7 +987,7 @@ function reconcileSettlementEvidenceInner(input) {
   }
   if (successfulCancelCount >= 1) {
     // A single-use nonce cannot be both used and cancelled; a record asserting both is wrong.
-    // (F7: a REVERTED cancel entry changed nothing and contradicts nothing.)
+    // (A REVERTED cancel entry changed nothing and contradicts nothing.)
     chainStatus = "CONTRADICTED";
     return finish("SETTLEMENT_CHAIN_CONTRADICTED", "the record carries both an AuthorizationUsed log and SUCCESSFUL AuthorizationCanceled logs for one single-use (payer, nonce)");
   }
@@ -985,19 +1013,19 @@ function reconcileSettlementEvidenceInner(input) {
     chainStatus = "CONTRADICTED";
     return finish("SETTLEMENT_PAYER_UNEXPECTED", `chainFacts.transfer.from "${transfer.from}" is not the approved payer "${approved.payer}" (R-19(b))`);
   }
-  // S4 round-1 F1 — SAME TRANSACTION: the recovered transfer must come from the AuthorizationUsed
+  // SAME TRANSACTION: the recovered transfer must come from the AuthorizationUsed
   // log's own transaction. Without this, a decoy in a DIFFERENT transaction (same block, approved
   // token, payer->approved-payee, compliant amount) satisfies every other check while the money in
   // the settling transaction went elsewhere.
   if (lc(transfer.txHash) !== lc(log.txHash)) {
     chainStatus = "CONTRADICTED";
     return finish("SETTLEMENT_CHAIN_CONTRADICTED",
-      `chainFacts.transfer.txHash ${transfer.txHash} is not the resolved AuthorizationUsed log's transaction ${log.txHash} (F1) — a transfer recovered from a different transaction is a decoy, not this settlement`);
+      `chainFacts.transfer.txHash ${transfer.txHash} is not the resolved AuthorizationUsed log's transaction ${log.txHash} — a transfer recovered from a different transaction is a decoy, not this settlement`);
   }
   if (transfer.blockNumber !== log.blockNumber) {
     chainStatus = "CONTRADICTED";
     return finish("SETTLEMENT_CHAIN_CONTRADICTED",
-      `chainFacts.transfer.blockNumber ${transfer.blockNumber} is not the resolved log's blockNumber ${log.blockNumber} (F1) — one transaction lives in one block`);
+      `chainFacts.transfer.blockNumber ${transfer.blockNumber} is not the resolved log's blockNumber ${log.blockNumber} — one transaction lives in one block`);
   }
 
   // Online bounds — B4/B5/B6 over the RECOVERED transfer.

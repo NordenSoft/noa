@@ -89,7 +89,7 @@ test("every valid vector ACCEPTS and every rejection vector REJECTS", () => {
 });
 
 /**
- * S4 round-1 F6 — `rejectionClass` is ASSERTED, not decorative. Each class names the layer that
+ * `rejectionClass` is ASSERTED, not decorative. Each class names the layer that
  * must refuse, as a set of stable reason prefixes; a vector drifting to a different refuser (most
  * dangerously the signature backstop swallowing a deleted schema or F15 control) fails here even
  * though the boolean verdict is unchanged. Measured before this test existed: the F15 GATE-type

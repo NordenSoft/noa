@@ -183,7 +183,7 @@ function assertRawParity(receipt: Receipt, grant: Grant): void {
   if (a !== b) throw new Error(`generator: rawDigest has drifted from buildActionDigest (${b} != ${a})`);
 }
 
-// S4 round-1 F5: grant nonces are hex64 (the D7 correlation seed) — the kernel now enforces the
+// Grant nonces are hex64 (the D7 correlation seed) — the kernel now enforces the
 // same `^[0-9a-f]{64}$` rule the shipped grant schema pins, so every fixture grant carries one.
 // Fixed constants keep the corpus byte-reproducible; TEST-ONLY, never real seeds.
 const NONCE_01 = "a1".repeat(32);
@@ -339,7 +339,7 @@ const grantMultiUse = issueGrant({
   mutate: (d) => { d["maxUses"] = 2; },
 });
 
-// F5 regression: a grant carrying the CORPUS'S OWN pre-round-1 nonce form — schema-legal under
+// Nonce-rule regression: a grant carrying the CORPUS'S OWN legacy nonce form — schema-legal under
 // the old 1-256-char rule, signed, and refused by the hex64 rule alone. This is the vector that
 // would have caught the kernel/schema split both reviewers reproduced.
 const grantLegacyNonce = issueGrant({
@@ -660,7 +660,7 @@ const vectors: Vector[] = [
   {
     name: "reject-grant-nonce-not-hex64",
     note:
-      "F5 (round-1): a grant whose nonce is a legacy identifier string, not 64 lowercase hex. The nonce " +
+      "A grant whose nonce is a legacy identifier string, not 64 lowercase hex. The nonce " +
       "is the D7 correlation seed; the kernel must refuse what the shipped grant schema refuses, or a " +
       "UUID-nonce grant verifies here and fails every settlement layer — a verdict split on the money path.",
     claim: claimOf(digestA),

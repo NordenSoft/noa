@@ -10,6 +10,7 @@
  */
 
 import { refHash, receiptRefHash } from "noa-approval-artifacts";
+import { isHex64 } from "noa-receipt";
 import type { ExecutionSigner } from "./exec-signer.js";
 import type {
   ExecutionConsumption,
@@ -45,6 +46,17 @@ export function issueGrant(args: {
   nonce: string;
   signer: ExecutionSigner;
 }): ExecutionGrant {
+  // Enforce the D7/grant-schema nonce format BEFORE the signer is touched. `grant.nonce` is the
+  // on-chain correlation seed and the schema pins `^[0-9a-f]{64}$`; a UUID or any other spelling
+  // produces a grant every verifier rejects, so signing one mints an unusable authorization. Refused
+  // here rather than downstream (the sidecar validates the identical rule before it signs), so a bad
+  // nonce costs ZERO signer invocations.
+  if (!isHex64(args.nonce)) {
+    throw new Error(
+      "issueGrant: nonce must be exactly 64 lowercase hex characters (the D7 correlation seed; grant schema ^[0-9a-f]{64}$) — " +
+        "refusing to sign a grant every verifier would reject",
+    );
+  }
   const doc = {
     spec: "noa.execution-grant/0.1" as const,
     grantId: args.grantId,

@@ -133,7 +133,7 @@ test("R-1: the reconciler never throws — hostile top-level inputs return the e
   }
 });
 
-test("R-1 per-field hammer (round-1 F11): every input field, hostile in isolation, returns the FULL envelope", () => {
+test("R-1 per-field hammer: every input field, hostile in isolation, returns the FULL envelope", () => {
   // The reproduced hole: `paramsPreimage: Symbol()` escaped as an uncaught TypeError from
   // Buffer.from AFTER the documents were otherwise valid. Each field is now fuzzed on top of the
   // committed ACCEPT vector, so the hostile value is reached, not shadowed by an earlier refusal.
@@ -178,7 +178,7 @@ test("R-1 per-field hammer (round-1 F11): every input field, hostile in isolatio
   }
 });
 
-test("round-1 Codex #4: a malformed-UTF-8 params preimage cannot match a receipt that committed to the cleaned text", () => {
+test("a malformed-UTF-8 params preimage cannot match a receipt that committed to the cleaned text", () => {
   // The reproduced hole: verifyParamsPreimage decoded Uint8Array bytes with a lossy
   // Buffer.from(bytes).toString("utf8") (invalid bytes -> U+FFFD) and hashed the RE-ENCODING, so raw
   // bytes carrying 0x80 matched a receipt that committed to the U+FFFD-cleaned form, and the bounds

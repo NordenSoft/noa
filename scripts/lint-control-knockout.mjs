@@ -517,8 +517,8 @@ const KNOCKOUTS = [
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
   {
-    id: "s4-f1-transfer-tx-binding",
-    control: "S4/F1 (round-1) — the recovered transfer must come from the AuthorizationUsed log's OWN transaction (txHash equality)",
+    id: "s4-transfer-tx-binding",
+    control: "S4 — the recovered transfer must come from the AuthorizationUsed log's OWN transaction (txHash equality)",
     file: "packages/rail-x402/src/settlement-evidence.mjs",
     find: "  if (lc(transfer.txHash) !== lc(log.txHash)) {",
     // Drop the same-transaction binding and a decoy transfer in a DIFFERENT transaction — approved
@@ -529,8 +529,8 @@ const KNOCKOUTS = [
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
   {
-    id: "s4-f2-authorization-state-conjunction",
-    control: "S4/F2 (round-1) — the one-log path requires authorizationState == true BEFORE the log is processed (spec §5(6) conjunction)",
+    id: "s4-authorization-state-conjunction",
+    control: "S4 — the one-log path requires authorizationState == true BEFORE the log is processed (spec §5(6) conjunction)",
     file: "packages/rail-x402/src/settlement-evidence.mjs",
     find: "  if (facts.authorizationState !== true) {",
     // Skip the conjunction and a record carrying a SUCCESS log with state false — an impossible
@@ -541,8 +541,8 @@ const KNOCKOUTS = [
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
   {
-    id: "s4-f3-same-key-cap-on-bytes",
-    control: "S4/F3 (round-1) — the R-16 SAME_SIGNING_KEY cap keys on public-key BYTES resolved through the keyring, not on the kid string",
+    id: "s4-same-key-cap-on-bytes",
+    control: "S4 — the R-16 SAME_SIGNING_KEY cap keys on public-key BYTES resolved through the keyring, not on the kid string",
     file: "packages/rail-x402/src/settlement-evidence.mjs",
     find: "  if (artifact.observerKid === grant?.sig?.kid || sameSigningKeyMaterial) {",
     // Revert to kid-string equality and the grant signer's key registered under a second kid — the
@@ -553,14 +553,38 @@ const KNOCKOUTS = [
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
   {
-    id: "s4-f9-settledat-instant-corroboration",
-    control: "S4/F9 (round-1) — R-20's settledAt arm: a reported settledAt disagreeing with the resolved blockTimestamp as INSTANTS contradicts",
+    id: "s4-settledat-instant-corroboration",
+    control: "S4 — R-20's settledAt arm: a reported settledAt disagreeing with the resolved blockTimestamp as INSTANTS contradicts",
     file: "packages/rail-x402/src/settlement-evidence.mjs",
     find: "    if (a === null || b === null || a !== b) {",
     // Neutralize the arm and a fabricated in-window settledAt sails past the only check that reads
     // it against the chain. `reject-settledAt-contradicts-blocktime` is what turns red — before
-    // round 1 NO vector executed this arm (measured GREEN-uncovered by both reviewers).
+    // that vector existed NO test executed this arm (measured GREEN-uncovered by both reviewers).
     replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-cancel-log-nonce-binding",
+    control: "S4/R-21b — a canceled log may burn or contradict THIS correlation only if it names OUR (payer, nonce)",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "    if (lc(canceled[i].nonce) !== expectedOnChainNonce) {",
+    // Drop the canceled-log nonce binding and a SUCCESSFUL cancel for a FOREIGN nonce burns this
+    // correlation — the record cannot even express whose cancel it is. `reject-cancel-foreign-nonce`
+    // is what turns red (SETTLEMENT_CHAIN_CONTRADICTED -> SETTLEMENT_CORRELATION_BURNED).
+    replace: "    if (false && lc(canceled[i].nonce) !== expectedOnChainNonce) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-parseinstant-true-year",
+    control: "S4 — parseInstant sets the true year explicitly so Date.UTC does not alias 0000-0099 onto 1900-1999",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  dt.setUTCFullYear(year);",
+    // Drop the explicit year and a settledAt of 0099-08-13 aliases to 1999-08-13, matching a resolved
+    // blockTimestamp of 1999-08-13 as instants -> the R-20 arm passes and the artifact earns the
+    // positive. `reject-year-0099-not-1999` is what turns red.
+    replace: "  void year;",
     kind: "tests",
     suite: ["packages/rail-x402", "npm", ["test"]],
   },

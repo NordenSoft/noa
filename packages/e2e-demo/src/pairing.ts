@@ -319,7 +319,7 @@ export function assembleGateTrust(
     tenant: auth.tenant,
     now: () => clock.now(),
     newId,
-    // S4 round-1 F10 — CSPRNG, same as the production default in packages/gate/src/trust.ts. The
+    // CSPRNG, same as the production default in packages/gate/src/trust.ts. The
     // previous wiring hashed the deterministic id counter, which made every grant nonce PREDICTABLE
     // and voided D7's leak-resistance in the wiring most likely to be copied ("the nonce is the
     // ONLY thing standing between a public ledger and a confirmation oracle"). No test here relies

@@ -69,6 +69,7 @@ const EXEMPT = {
   sha256Digest: ["UTILITY", "pure hash"],
   isNFC: ["UTILITY", "pure predicate over a string"],
   nonNfcPaths: ["UTILITY", "pure predicate"],
+  isHex64: ["UTILITY", "pure charCode-scan predicate (src/scan.ts); no verdict, no attacker-owned bytes"],
   receiptHashInput: ["UTILITY", "pure pre-image construction"],
   checkpointHashInput: ["UTILITY", "pure pre-image construction"],
   anchorSigningInput: ["UTILITY", "pure pre-image construction"],
