@@ -446,10 +446,31 @@ const KNOCKOUTS = [
   },
   {
     id: "grant-single-use-cas",
-    control: "F8a — the atomic CAS UNUSED→RESERVED makes a grant single-use",
+    // MOVED 2026-08-13 (S2). This used to target `if (rec.status !== "UNUSED") return 409` — the
+    // read-compare-write that made single-use a property of the in-memory DRIVER rather than of the
+    // gate. That line no longer exists: the comparison happens inside the store, where a durable
+    // driver expresses it as one `UPDATE ... WHERE status = 'UNUSED'`. The registry caught the move
+    // ITSELF (`find` matched 0×, MUTATION_NOT_APPLIED) instead of quietly certifying a control that
+    // had been rewritten out from under it — which is the entire reason the match count is checked.
+    control: "F8a — the single-use burn is a compare-and-swap IN THE STORE, not a local read-compare-write",
     file: "packages/gate/src/engine.ts",
-    find: 'if (rec.status !== "UNUSED") return err(409, "GRANT_ALREADY_RESERVED", { status: rec.status });',
-    replace: 'if (false as boolean) return err(409, "GRANT_ALREADY_RESERVED", { status: rec.status });',
+    find: 'const claimed = this.store.claimGrantStatus(grantId, "UNUSED", "RESERVED", this.now());',
+    // Knock it out by claiming whatever the status already is: the store is told to move the grant to
+    // RESERVED from wherever it stands, so a second caller wins too. That is the DURABLE defect
+    // exactly — two callers authorized from one human approval — and `single-use-durable.test.ts` is
+    // what turns red for it.
+    replace: 'const claimed = this.store.claimGrantStatus(grantId, this.store.getGrant(grantId)!.status, "RESERVED", this.now());',
+    kind: "tests",
+    suite: ["packages/gate", "npm", ["test"]],
+  },
+  {
+    id: "grant-terminal-report-cas",
+    control: "F8c — the one-shot TERMINAL report lock is a compare-and-swap, not the pre-check 120 lines above it",
+    file: "packages/gate/src/engine.ts",
+    find: "const locked = this.store.claimGrantReported(grantId, this.now());",
+    // Same shape: hand back a record without ever asking the store to claim, so a second terminal
+    // report takes the "lock" as well.
+    replace: 'const locked = { ...this.store.getGrant(grantId)!, reportedAt: this.now(), status: "REPORTED" as const };',
     kind: "tests",
     suite: ["packages/gate", "npm", ["test"]],
   },

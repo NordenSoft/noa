@@ -9,7 +9,7 @@ import { signArtifact, refHash, canonicalize, sha256Prefixed } from "noa-approva
 import { GateEngine, type DisplaySealer } from "../src/engine.js";
 import { resolveGateConfig, type GateConfig } from "../src/config.js";
 import { createAlphaTrust, type GateTrust } from "../src/trust.js";
-import { InMemoryStore } from "../src/store.js";
+import { InMemoryStore, type Store } from "../src/store.js";
 import { hashSecret } from "../src/auth.js";
 import { loadSchemas } from "../src/schemas.js";
 import type { AgentRecord, HoldEnvelope } from "../src/types.js";
@@ -69,7 +69,7 @@ export function alphaPhoneSigner(trust: GateTrust): { kid: string; privateKey: s
 export interface GateFixture {
   clock: Clock;
   trust: GateTrust;
-  store: InMemoryStore;
+  store: Store;
   engine: GateEngine;
   agent: AgentRecord;
   apiKey: string;
@@ -82,13 +82,22 @@ export function setupGate(opts: {
    *  wrong one — that is the whole threat: the gate asks for a display bound to THIS hold and signs
    *  whatever comes back. Defaults to `testSealer`, so every existing call site is unchanged. */
   sealer?: DisplaySealer;
+  /**
+   * S2. The store is INJECTED in production too, so a test must be able to supply one that behaves
+   * like a DURABLE driver rather than like an in-process map — above all one that does NOT hand out
+   * live objects. Without this the single-use compare-and-swap cannot be tested at all: against
+   * `InMemoryStore` a read-compare-write and a CAS are indistinguishable, which is exactly how
+   * "atomic single-use" stayed a property of one driver while reading like a property of the gate.
+   * Defaults to `InMemoryStore`, so every existing call site is unchanged.
+   */
+  store?: Store;
 } = {}): GateFixture {
   const clock = makeClock();
   const now = () => clock.t;
   let seq = 0;
   const ids = () => `id-${(seq++).toString(16).padStart(8, "0")}`;
   const trust = createAlphaTrust({ tenant: "alpha-tenant", now, ...(opts.approverRole ? { approverRole: opts.approverRole } : {}), ids });
-  const store = new InMemoryStore();
+  const store = opts.store ?? new InMemoryStore();
   const apiKey = "noa_gateagent_test-secret-abc123";
   const agent: AgentRecord = { id: "agent-1", name: "test-agent", apiKeyHash: hashSecret(apiKey), createdAt: now() };
   store.putAgent(agent);

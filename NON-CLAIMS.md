@@ -713,10 +713,41 @@ exactly the distance this register is for.
   the approval and costs the human another tap. That is the direction chosen: a spent approval with
   no grant delivered is recoverable, a grant delivered without the approval spent is a second
   authorization for one human decision.
-- **The gate's own record-keeping is not transactional.** `decide()` writes the grant record and the
-  hold separately, and the `Store` interface exposes no compare-and-swap (`store.ts` says so about
+- **The gate's own record-keeping is not transactional** — narrowed 2026-08-13 (S2), because half of
+  this stopped being true. It used to read: *"`decide()` writes the grant record and the hold
+  separately, and the `Store` interface exposes no compare-and-swap (`store.ts` says so about
   itself). This is safe for the shipped single-process in-memory driver and is a precondition on any
-  durable driver that replaces it, not a property of the interface.
+  durable driver that replaces it, not a property of the interface."*
+
+  **The compare-and-swap half is now closed.** `Store` carries two claim primitives —
+  `claimGrantStatus` (the single-use burn) and `claimGrantReported` (the one-shot terminal lock) —
+  and the engine goes through them instead of reading, comparing and writing locally. Both are shaped
+  as one statement a durable driver runs without a transaction
+  (`UPDATE … WHERE grant_id = $1 AND status = $2 RETURNING *`); the WHERE clause is the compare and
+  the row count is the verdict. What was there before conceded its own limit in parentheses —
+  *"single-process ⇒ the map write IS the atomic step"* — so two processes both observing `UNUSED`
+  would both write `RESERVED` and both return 200: **two executions from one human approval.**
+
+  It is proven, not asserted. `test/store-cas-contract.ts` supplies a store that behaves like a
+  durable driver in exactly one respect — reads return copies, because a row fetched from a database
+  is not the row — and `single-use-durable.test.ts` races two callers that both read before either
+  writes. Against the old code two callers win; against the CAS one does. Both primitives are in the
+  knockout registry (`grant-single-use-cas`, `grant-terminal-report-cas`) and turn the suite red when
+  removed. The first draft of that race test called `reserve()` twice in a row, which is not a race at
+  all in synchronous code, and it PASSED against the defective engine — that is recorded here because
+  a test claiming more than its body proves is the failure mode this register exists to catch.
+
+  **What is still open, and is the whole remaining item.** `decide()` still writes the grant record
+  and the hold as two calls, and there is still no DURABLE driver — the shipped store is in-memory,
+  so the primitives above are exercised only against a test double shaped like a durable one.
+  Writing the grant and the hold in one transaction is not expressible in the interface today and is
+  not claimed. What changed is narrower and is the one-way door `store.ts` named: on the single-use
+  path a durable driver can now express the comparison as ONE statement whose WHERE clause decides
+  the outcome, instead of a read followed by a separate write that another process can land between.
+
+  One residual, named rather than left to be discovered: a losing concurrent `report()` still builds
+  and signs its consumption before the lock refuses it. Nothing escapes — the artifact is discarded
+  and the grant stays single-use — but a lost race does consume one signing operation.
 - **None of this makes an approval load-bearing at the target.** A grant nobody validates authorizes
   nothing. NC-6.x and `docs/ADR-0003-enforcement-boundary.md` are unchanged by this work: this closes
   the custody of the authority root, not the question of who enforces it.
