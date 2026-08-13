@@ -63,6 +63,47 @@ test("an expired grant cannot be reserved (410 GRANT_EXPIRED)", () => {
   assert.equal((r.body as { error: string }).error, "GRANT_EXPIRED");
 });
 
+test("a SHORT hold still yields a grant — the window is CLAMPED to the hold, not fixed at the TTL", () => {
+  // LIVENESS, not safety — and it was broken by the safety fix that shipped hours earlier the same
+  // day. The signer sidecar now refuses any grant that would outlive its hold (correct, and the
+  // bound this engine must respect). But the engine asked for `receivedAt + grantTtlMs`
+  // unconditionally, so whenever a hold had LESS life left than the configured ceiling, every
+  // request the engine could make was one the sidecar HAD to refuse — on every retry, until the
+  // hold expired. Holds accept TTLs down to `minTtlMs`, so short holds could never be granted at
+  // all. A second-voice review reproduced it against a live sidecar:
+  //     ttl-15min -> status 200, grant issued
+  //     ttl-2min  -> REFUSED: grant expires 180s after the hold it derives from; hold left PENDING
+  // Nothing was signed and no approval was burnt, so the direction was safe — but the effective
+  // approval window had silently become `holdTTL - grantTtlMs`, which nobody chose and nothing
+  // wrote down. This pins the clamp.
+  const fx = setupGate({ approverRole: "approve-high", config: { grantTtlMs: 600_000 } }); // 10-min ceiling
+  const created = fx.engine.createHold(fx.agent, "idem-short-hold", body({
+    mode: "ENFORCED",
+    action: { canonical: "noa.command.exec", riskClass: "HIGH", reversible: false },
+    params: sampleCommandParams(),
+    chain: "chain-short-hold",
+    ttlMs: 60_000,                                                                         // 1-minute hold
+  }));
+  assert.equal(created.status, 201, "a 60s hold must be inside minTtlMs — otherwise this test proves nothing");
+  const holdId = (created.body as { holdId: string }).holdId;
+  const hold = fx.store.getHold(holdId)!;
+  const { receipt, decisionArtifact } = signPhoneDecision({ trust: fx.trust, deferredReceipt: hold.deferredReceipt, holdEnvelope: hold.holdEnvelope, decision: "APPROVE" });
+  const decided = fx.engine.decide(holdId, body({ receipt, decisionArtifact }));
+  assert.equal(decided.status, 200, "a short hold must still produce a grant");
+
+  const grantId = (decided.body as { grantId: string }).grantId;
+  const grant = fx.store.getGrant(grantId)!.grant;
+  const grantEnd = Date.parse(grant.expiresAt);
+  const holdEnd = Date.parse(hold.holdEnvelope.expiresAt);
+  assert.ok(
+    grantEnd <= holdEnd,
+    `grant ends ${(grantEnd - holdEnd) / 1000}s after its hold — the sidecar refuses exactly this`,
+  );
+  // CONTROL: the clamp must not collapse the window to nothing, or "issued" would mean nothing and
+  // the assertion above would pass for a grant that authorizes no instant at all.
+  assert.ok(grantEnd > Date.parse(grant.issuedAt), "the clamped grant must still have a live window");
+});
+
 /**
  * ── C-04 — THIS TEST USED TO CERTIFY THE DEFECT ────────────────────────────────────────────────
  *

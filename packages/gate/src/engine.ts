@@ -1037,7 +1037,21 @@ export class GateEngine {
       holdEnvelope: hold.holdEnvelope,
       allowedReceipt: rDoc as unknown as Receipt,
       issuedAt: receivedAt,
-      expiresAt: this.iso(receivedAtMs + this.cfg.grantTtlMs),
+      // CLAMPED TO THE HOLD'S REMAINING LIFE, not only to the configured ceiling (second-voice
+      // review 2026-08-13, reproduced against a live sidecar). The sidecar now refuses a grant that
+      // would outlive its hold — correct, and the bound this engine must respect. But this line
+      // asked for `receivedAt + grantTtlMs` unconditionally, so a hold with less life left than
+      // `grantTtlMs` (5 min by default) produced a request the sidecar HAD to refuse, on every
+      // retry, until the hold expired. Holds accept TTLs down to 60s, so short holds could never be
+      // granted at all. Measured:
+      //     ttl-15min -> status 200, grant issued
+      //     ttl-2min  -> REFUSED: grant expires 180s after the hold it derives from; hold PENDING
+      // The failure direction was safe — nothing signed, the human's approval not burnt — but the
+      // effective approval window had silently become `holdTTL - grantTtlMs`, which nobody chose and
+      // nothing wrote down. A grant is authority derived from an answer to a question that stayed
+      // open until the hold expired: it may be SHORTER than the configured ceiling, and it may never
+      // outlast the question.
+      expiresAt: this.iso(Math.min(receivedAtMs + this.cfg.grantTtlMs, Date.parse(hold.holdEnvelope.expiresAt))),
       nonce: this.trust.newId(),
       deferredReceipt: hold.deferredReceipt,
       decisionArtifact: daDoc,
