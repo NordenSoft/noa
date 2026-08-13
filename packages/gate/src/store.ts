@@ -16,7 +16,7 @@
  * Adding a CAS method to the interface is the one-way door here; only the driver is deferred.
  */
 
-import type { AgentRecord, GrantRecord, HoldRecord, HoldStatus } from "./types.js";
+import type { AgentRecord, GrantRecord, GrantStatus, HoldRecord, HoldStatus } from "./types.js";
 
 export interface Store {
   // agents (per-agent API key, F29)
@@ -36,6 +36,35 @@ export interface Store {
   putGrant(g: GrantRecord): void;
   getGrant(grantId: string): GrantRecord | undefined;
   listGrants(): GrantRecord[];
+
+  // ── THE COMPARE-AND-SWAP PRIMITIVES (S2, 2026-08-13) ──────────────────────────────────────────
+  // The one-way door this file's own header named: without these, "atomic single-use" was a property
+  // of the in-memory DRIVER, not of the interface, and any faithful durable implementation would have
+  // been non-atomic BY CONSTRUCTION. `reserve()` read the status, compared it, then wrote — two
+  // processes both observing UNUSED would both write RESERVED and both return 200, which is two
+  // executions from one human approval.
+  //
+  // Both are shaped so a durable driver expresses them as ONE statement with no transaction:
+  //   UPDATE grants SET status=$next, reserved_at=$at WHERE grant_id=$id AND status=$expected RETURNING *
+  //   UPDATE grants SET status='REPORTED', reported_at=$at WHERE grant_id=$id AND reported_at IS NULL RETURNING *
+  // The WHERE clause IS the compare; the row count IS the verdict. A driver that implements either as
+  // read-then-write has reintroduced the defect these replaced.
+
+  /**
+   * Atomically move a grant from `expected` to `next`, stamping `reservedAt`.
+   * Returns the post-transition record when THIS caller made the move, `null` when it did not —
+   * because the grant is gone, or because its observed status was not `expected`.
+   * A `null` is a LOST RACE, never an error: the caller answers 409, never a second authorization.
+   */
+  claimGrantStatus(grantId: string, expected: GrantStatus, next: GrantStatus, at: number): GrantRecord | null;
+
+  /**
+   * Atomically take the one-shot TERMINAL report lock (F8c), stamping `reportedAt` and moving the
+   * status to REPORTED. Returns the post-transition record when THIS caller took the lock, `null`
+   * when it was already taken. Keyed on `reportedAt IS NULL` rather than on a status, because an
+   * UNKNOWN hint is explicitly NOT terminal and must not consume the lock.
+   */
+  claimGrantReported(grantId: string, at: number): GrantRecord | null;
 }
 
 export class InMemoryStore implements Store {
@@ -95,5 +124,27 @@ export class InMemoryStore implements Store {
   }
   listGrants(): GrantRecord[] {
     return [...this.grants.values()];
+  }
+
+  // The compare and the swap are one synchronous block with no `await` inside — on a single-threaded
+  // event loop nothing can interleave between them, which is what makes this driver's version atomic.
+  // That is a property of THIS driver and is stated here rather than in the interface, because
+  // writing it in the interface is precisely the mistake this file's header records.
+  claimGrantStatus(grantId: string, expected: GrantStatus, next: GrantStatus, at: number): GrantRecord | null {
+    const rec = this.grants.get(grantId);
+    if (!rec || rec.status !== expected) return null;
+    rec.status = next;
+    rec.reservedAt = at;
+    this.grants.set(grantId, rec);
+    return rec;
+  }
+
+  claimGrantReported(grantId: string, at: number): GrantRecord | null {
+    const rec = this.grants.get(grantId);
+    if (!rec || rec.reportedAt !== null) return null;
+    rec.status = "REPORTED";
+    rec.reportedAt = at;
+    this.grants.set(grantId, rec);
+    return rec;
   }
 }

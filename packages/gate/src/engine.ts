@@ -1136,14 +1136,29 @@ export class GateEngine {
     if (!this.ownsHold(hold, agent, "reserve")) return err(404, "UNKNOWN_GRANT");
     if (hold && hold.status !== "APPROVED") return err(409, "HOLD_NOT_APPROVED", { status: hold.status });
     if (this.now() >= gateDateParse(rec.grant.expiresAt)) return err(410, "GRANT_EXPIRED");
-    // F8a — ATOMIC CAS UNUSED→RESERVED (single-process => the map write IS the atomic step). The
-    // race LOSER (already RESERVED/REPORTED) gets 409, never a second execution.
-    if (rec.status !== "UNUSED") return err(409, "GRANT_ALREADY_RESERVED", { status: rec.status });
-    rec.status = "RESERVED";
-    rec.reservedAt = this.now();
-    this.store.putGrant(rec);
+    // F8a — the single-use BURN is now a real compare-and-swap IN THE STORE, not a
+    // read-compare-write here (S2, 2026-08-13). What stood here was:
+    //     if (rec.status !== "UNUSED") return 409;
+    //     rec.status = "RESERVED"; store.putGrant(rec);
+    // and its own comment conceded the atomicity in parentheses — "single-process => the map write
+    // IS the atomic step". True of the in-memory driver and FALSE of every durable one: two
+    // processes both observing UNUSED both write RESERVED and both return 200, which is two
+    // executions from one human approval. `store.ts` had already named this the one-way door and
+    // deferred only the driver.
+    //
+    // The comparison now lives where the data lives, so a durable driver expresses it as ONE
+    // statement (`... WHERE grant_id = $id AND status = 'UNUSED' RETURNING *`) with the row count as
+    // the verdict. `null` is a LOST RACE, never an error: the loser answers 409, never a second
+    // authorization.
+    const claimed = this.store.claimGrantStatus(grantId, "UNUSED", "RESERVED", this.now());
+    if (!claimed) {
+      // Re-read for the reported status ONLY. The verdict was already decided by the CAS above; this
+      // is the loser describing what it lost to, and must never re-open the decision.
+      const observed = this.store.getGrant(grantId);
+      return err(409, "GRANT_ALREADY_RESERVED", { status: observed ? observed.status : "UNKNOWN" });
+    }
     this.log("grant.reserved", { grantId });
-    return { status: 200, body: { grant: rec.grant, status: "RESERVED" } };
+    return { status: 200, body: { grant: claimed.grant, status: "RESERVED" } };
   }
 
   report(grantId: string, body: Uint8Array, agent: AgentRecord): EngineResult {
@@ -1277,10 +1292,16 @@ export class GateEngine {
       result: "DISPATCHED", // the only outcome this method can still sign
       signer: this.execSigner,
     });
-    rec.status = "REPORTED";
-    rec.reportedAt = this.now();
-    rec.consumption = consumption;
-    this.store.putGrant(rec);
+    // F8c — the one-shot TERMINAL lock, taken by compare-and-swap rather than by the read-compare at
+    // the top of this method (S2, 2026-08-13). The pre-check ~120 lines above is now a cheap,
+    // oracle-safe FAST PATH only; between it and this write sits every C-04 branch and a signature,
+    // and on a durable multi-process driver that gap is a race window wide enough for two callers to
+    // both pass the check and both write REPORTED. The lock is keyed on `reportedAt IS NULL`, not on
+    // a status, because an UNKNOWN hint is explicitly NOT terminal and must not consume it.
+    const locked = this.store.claimGrantReported(grantId, this.now());
+    if (!locked) return err(409, "GRANT_ALREADY_REPORTED");
+    locked.consumption = consumption;
+    this.store.putGrant(locked);
     this.log("grant.reported", { grantId, result });
     // `grant`↔executionGrant, `consumption`↔executionConsumption (1:1 to the Evidence Bundle, §13);
     // `attemptReceipt` is the EXECUTED/FAILED receipt the bundle carries as executedReceipt/failedReceipt.
