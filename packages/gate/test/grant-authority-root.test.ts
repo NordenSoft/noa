@@ -25,7 +25,7 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { generateKeyPairSync } from "node:crypto";
+import { generateKeyPairSync, randomBytes } from "node:crypto";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, chmodSync, symlinkSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -166,7 +166,9 @@ function grantDoc(o: {
     issuedAt: o.issuedAt ?? new Date(now).toISOString(),
     expiresAt: o.expiresAt ?? new Date(now + 5 * 60_000).toISOString(),
     maxUses: 1,
-    nonce: o.nonce ?? `nonce-${Math.random().toString(16).slice(2)}`,
+    // 64 lowercase hex — the grant schema pins `^[0-9a-f]{64}$` (S4 / R-AD-3(i)); the old
+    // `nonce-<random>` spelling no longer validates and would fail every signed grant here.
+    nonce: o.nonce ?? randomBytes(32).toString("hex"),
   };
 }
 

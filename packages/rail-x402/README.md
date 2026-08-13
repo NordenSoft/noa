@@ -47,6 +47,30 @@ beside the mandate and later prove the nonce came from that seed without publish
 **Losing the seed loses the ability to re-derive the nonce.** There is no fallback derivation, and
 that is deliberate: a fallback would be a nonce someone else can also derive, which is the attack.
 
+### The mandate composition contract (D7) — what `dispatchId` and `seed` ARE
+
+When the correlation ties a NOA mandate to a settlement (the `noa.settlement-evidence/0.1` path,
+`reconcileSettlementEvidence`), two of the six inputs are **pinned, not caller-chosen**:
+
+- **`dispatchId` = the `noa.action-digest/0.1` value as its ASCII string `"sha256:<64hex>"`** —
+  the `sha256:` prefix IS part of the preimage. The digest is a pure function of the ALLOWED
+  receipt and the signed execution grant, so a retry (new grant) is a new dispatch id by
+  construction.
+- **`seed` = the 32 bytes hex-decoded from `grant.nonce`** (the grant schema pins
+  `^[0-9a-f]{64}$`, minted from a CSPRNG). There is no seed field in any artifact: **the grant IS
+  the pre-dispatch seed commitment.** One grant derives exactly one nonce; a sibling-seed
+  settlement (same grant, different seed) can exist on-chain and can never earn a positive
+  verdict, because verification recomputes the nonce from the bundle's own documents.
+- `chainId`, token and payer derive ONLY from the hash-verified canonical params preimage — never
+  from the artifact, never from `receipt.scope.chain`.
+
+The octet framing (length-prefixed `label:byteLength:` fields, decimal-ASCII chainId, lowercased
+0x-ASCII addresses) is pinned byte-for-byte in
+[`docs/settlement-evidence-spec.md`](../../docs/settlement-evidence-spec.md) §3, together with the
+verification algorithm, the result envelope and the stable codes. Because `grant.nonce` is the
+seed, it is **confidentiality-critical**: whoever holds the bundle can locate the settlement
+on-chain, permanently — stated as a non-claim, not papered over.
+
 ## What counts as proof
 
 `authorizationState == true` is **not** proof. Circle's implementation sets the same state bit for

@@ -491,6 +491,32 @@ const KNOCKOUTS = [
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
   {
+    id: "s4-d7-correlation-recomputed-never-accepted",
+    control: "S4/D7 — the correlation is RECOMPUTED from the bundle's own grant seed; an artifact-supplied value is never accepted",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (derivedNonceHex !== artifactCorrelationHex) {",
+    // Neutralize the comparison and the reconciler accepts whatever 32 bytes the artifact carries —
+    // exactly the sibling-seed attack: same grant, different seed, a REAL on-chain settlement, and
+    // recomputation is the only thing standing between it and a positive verdict.
+    // `reject-sibling-seed` (and every other correlation vector) is what turns red.
+    replace: "  if (false && derivedNonceHex !== artifactCorrelationHex) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-transfer-log-address-constraint",
+    control: "S4/R-19(b) — a recovered Transfer must come from the approved token CONTRACT, not merely from the payer",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (lc(transfer.address) !== approvedToken) {",
+    // Drop the address constraint and a batched transaction carrying (i) a genuine USDC Transfer
+    // payer->mallory and (ii) a worthless-token Transfer payer->approved-payee for a compliant
+    // amount recovers (ii): every bound passes, RECONFIRMED, and the money went to mallory.
+    // `reject-decoy-transfer-log` is what turns red.
+    replace: "  if (false && lc(transfer.address) !== approvedToken) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
     id: "s3-consumed-nonce-reconciles",
     control: "S3(b) — a front-run (consumed) nonce is reconciled against chain state, never reported as failure",
     file: "packages/rail-x402/src/settlement-proof.mjs",

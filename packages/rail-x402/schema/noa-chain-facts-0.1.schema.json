@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-chain-facts-0.1.schema.json",
+  "title": "NOA Chain Facts (caller-supplied record of what the caller's OWN node returned)",
+  "description": "The relying party's byte-parsed record of its own node's answers for one (network, asset, payer, correlation) coordinate set. It MUST originate from the relying party's own node and MUST NOT be accepted from the bundle producer, the observer, the facilitator or the payee — a verifier handed this record by the party being judged has been handed RECONFIRMED with no chain contact by anyone. This schema is the normative shape; packages/rail-x402 evaluates it with a strict hand-rolled structural validator (the package ships no schema evaluator), and a mirror test asserts the validator refuses what this schema refuses, field by field. The `$defs` block realizes the two references the specification's schema body names: `rfc3339` is the shipped timestamp grammar (byte-identical to noa-execution-grant-0.1.schema.json), and `canceledLog` mirrors the used-log entry shape.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec","network","asset","authorizationState","authorizationUsedLogs",
+               "authorizationCanceledLogs","transfer","headBlockNumber","queriedAt"],
+  "properties": {
+    "spec":    { "const": "noa.chain-facts/0.1" },
+    "network": { "type": "string", "pattern": "^eip155:[1-9][0-9]{0,18}$" },
+    "asset":   { "type": "string", "pattern": "^eip155:[1-9][0-9]{0,18}/erc20:0x[0-9a-f]{40}$" },
+    "authorizationState": { "type": "boolean" },
+    "authorizationUsedLogs": {
+      "type": "array",
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["txHash","blockNumber","logIndex","blockTimestamp","txStatus"],
+        "properties": {
+          "txHash":         { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+          "blockNumber":    { "type": "integer", "minimum": 0 },
+          "logIndex":       { "type": "integer", "minimum": 0 },
+          "blockTimestamp": { "$ref": "#/$defs/rfc3339" },
+          "txStatus":       { "enum": ["SUCCESS","REVERTED"] }
+        }
+      }
+    },
+    "authorizationCanceledLogs": { "type": "array", "items": { "$ref": "#/$defs/canceledLog" } },
+    "transfer": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object", "additionalProperties": false,
+          "required": ["source","address","logIndex","from","to","value"],
+          "properties": {
+            "source":   { "enum": ["CALLDATA","TRANSFER_LOG"] },
+            "address":  { "type": "string", "pattern": "^0x[0-9a-f]{40}$" },
+            "logIndex": { "type": "integer", "minimum": 0 },
+            "from":     { "type": "string", "pattern": "^0x[0-9a-f]{40}$" },
+            "to":       { "type": "string", "pattern": "^0x[0-9a-f]{40}$" },
+            "value":    { "type": "string", "pattern": "^(0|[1-9][0-9]{0,77})$" }
+          }
+        }
+      ]
+    },
+    "headBlockNumber": { "type": "integer", "minimum": 0 },
+    "queriedAt": { "$ref": "#/$defs/rfc3339" }
+  },
+  "$defs": {
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "canceledLog": {
+      "type": "object", "additionalProperties": false,
+      "required": ["txHash","blockNumber","logIndex","blockTimestamp","txStatus"],
+      "properties": {
+        "txHash":         { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+        "blockNumber":    { "type": "integer", "minimum": 0 },
+        "logIndex":       { "type": "integer", "minimum": 0 },
+        "blockTimestamp": { "$ref": "#/$defs/rfc3339" },
+        "txStatus":       { "enum": ["SUCCESS","REVERTED"] }
+      }
+    }
+  }
+}

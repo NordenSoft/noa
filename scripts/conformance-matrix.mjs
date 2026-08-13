@@ -840,6 +840,15 @@ function renderMarkdown({ table, totalTsPyResults, tsPyExitCode, fileLangRuns, o
   });
   lines.push("Total checks in this run — " + [tsPyLine, ...fileLangLines].join(" · "));
   lines.push("");
+  // S4 (2026-08-13): the D7 correlation COMPOSITION corpus (fixed receipt+grant -> action digest ->
+  // seeded correlation nonce; `packages/rail-x402/conformance/settlement-evidence/`) is consumed by
+  // the TS suite only. The matrix does NOT claim composition cells for the other four
+  // implementations until their suites consume those vectors — same discipline as the
+  // `malleability` footnote above: an open coverage gap is recorded, never silently absorbed.
+  lines.push(
+    "**`correlation-composition` (S4) — not asserted for Python/Go/Rust/C#.** The D7 composition corpus (fixed receipt + grant → `noa.action-digest/0.1` → seeded correlation nonce → settlement-evidence verdict; `packages/rail-x402/conformance/settlement-evidence/vectors.json`, octet framing pinned in `docs/settlement-evidence-spec.md` §3) is currently consumed by the TS suite only (`packages/rail-x402`, gated by its own `npm test`). No vector in the shared file-based corpus exercises the composition for the other four implementations, and none of their suites loads the rail corpus — so no composition cell is claimed for them. Treat this as an open coverage gap, not a passing claim: porting the corpus into a language's own runner is what closes it for real, exactly as the `malleability` note above prescribes for its gap.",
+  );
+  lines.push("");
   lines.push(
     "See also [`conformance/golden/`](golden/) for the SEPARATE cross-*version* backcompat guarantee (does a real past release's own signed output still verify today) — this matrix is cross-*implementation* only (does an independent verifier agree with the TS reference on the SAME, freshly-built bytes).",
   );

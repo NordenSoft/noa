@@ -702,6 +702,11 @@ const ADAPTER_CORE_OUT_OF_TCB = {
 const RAIL_X402_TCB = [
   "packages/rail-x402/src/settlement-proof.mjs",    // the settlement verdict and the consumed-nonce reconciliation
   "packages/rail-x402/src/correlation-nonce.mjs",   // derives the value the whole correlation rests on
+  // S4. `reconcileSettlementEvidence` renders the verdict-shaped §10.1 envelope for a settlement
+  // artifact — the D7 correlation recomputation, the mandate bounds, the chain reconciliation and
+  // every cap live here. It is the exact "exploitable decision in a package the layers stop short
+  // of" this inventory exists to prevent.
+  "packages/rail-x402/src/settlement-evidence.mjs",
 ];
 const RAIL_X402_OUT_OF_TCB = {
   "packages/rail-x402/src/index.mjs":

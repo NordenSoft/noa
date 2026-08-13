@@ -16,7 +16,7 @@
  * carries and the §13 verifier cross-checks — a bare, unverifiable "unknown" is never accepted.
  */
 
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from "noa-approval-artifacts";
 import { SIGNING_KEY_LIFECYCLE_SPEC, type SigningKeyLifecycle } from "noa-receipt";
 import { encodeDocument } from "./bytes.js";
@@ -102,12 +102,29 @@ export interface CreateTrustInput {
   now?: () => number;
   /** Deterministic id source for tests (defaults to node:crypto randomUUID). */
   ids?: () => string;
+  /**
+   * Deterministic GRANT-NONCE source for tests (defaults to 32 CSPRNG bytes as 64 lowercase hex).
+   *
+   * ── WHY GRANT NONCES ARE NOT `newId()` (S4 / R-AD-3(ii), 2026-08-13) ──────────────────────────
+   * `grant.nonce` is the `executionNonce` of the `noa.action-digest/0.1` projection, and under the
+   * S4 correlation design (D7) it is ALSO the confidentiality-critical seed of the on-chain
+   * correlation nonce: nine of the ten projection members are low-entropy or enumerable for a given
+   * tenant, so the nonce is the ONLY thing standing between a public ledger and a confirmation
+   * oracle over customers' private approvals. `randomUUID()` is 122 random bits — below the 128-bit
+   * floor the digest spec asserts — and the grant schema now pins `nonce` to `^[0-9a-f]{64}$`
+   * (exactly 32 bytes, lowercase hex). Grant IDs and every other `newId()` use are identifiers,
+   * not secrets, and stay on `randomUUID()`.
+   */
+  nonces?: () => string;
 }
 
 export interface GateTrust {
   tenant: string;
   now: () => number;
   newId: () => string;
+  /** GRANT NONCES ONLY — 32 CSPRNG bytes as 64 lowercase hex (see `CreateTrustInput.nonces`).
+   *  Never used for grant ids, hold ids, envelope nonces or any other identifier. */
+  newNonce: () => string;
 
   /** The gate signing key. GATE + `hold-signer`, also the receipt signer — and `execution-signer`
    *  TOO unless `executionSigner` below is set, in which case that role has left this process. */
@@ -167,6 +184,8 @@ export interface GateTrust {
 export function createAlphaTrust(input: CreateTrustInput): GateTrust {
   const now = input.now ?? (() => Date.now());
   const newId = input.ids ?? (() => randomUUID());
+  // 32 CSPRNG bytes, hex — injectable for deterministic tests exactly the way `ids` is.
+  const newNonce = input.nonces ?? (() => randomBytes(32).toString("hex"));
   const tenant = input.tenant;
   const approverRole = input.approverRole ?? "approve-critical";
 
@@ -338,6 +357,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
     tenant,
     now,
     newId,
+    newNonce,
     gate,
     ...(external ? { executionSigner: { kid: external.kid, publicKey: external.publicKey } } : {}),
     approver,

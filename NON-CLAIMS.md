@@ -875,6 +875,121 @@ checked against a key that does not live beside it — that does not exist in th
 Also outside: an attacker who controls the proxy process (they need no file at all — see NC-6.6).
 
 
+## S4. Settlement evidence and the payment rail (added 2026-08-13)
+
+The subject is `noa.settlement-evidence/0.1` + the `noa-rail-x402` reconciler
+(`docs/settlement-evidence-spec.md`). The one-sentence claims ceiling for the whole family:
+**at most one settlement is correlatable to this grant** — never "exactly one settlement per
+mandate", and never a human-approval claim.
+
+### NC-S4.0 — Activity outside enforced gateways is outside coverage
+
+Stated here verbatim, not only in design files, because this document is what a stranger actually
+reaches. Model sandbox escapes fall inside it.
+
+### NC-S4.1 — Settlement is not delivery, and `RECONFIRMED` is not a proof
+
+A `SETTLEMENT_CORRELATED_AND_RECONFIRMED` result establishes that **the chain facts the caller
+supplied are consistent with** an EIP-3009 authorization whose nonce equals this mandate's
+correlation, that the transaction succeeded, and that the observed transfer lies within the
+approved bounds. It does **not** prove the resource, goods or service was received — the
+`resource` URL never touches the chain — and per NC-S4.3 it is not a statement about the chain.
+
+### NC-S4.2 — The rail receipt is counterparty evidence and is never load-bearing
+
+It is signed by the party being paid. No conforming verifier validates its signature, and no
+verdict depends on it.
+
+### NC-S4.3 — `RECONFIRMED` is a statement about the caller's chain facts, not about the chain
+
+The verifier performs no network I/O. Whether the node that produced those facts told the truth is
+the caller's question. A caller reading a lagging or hostile RPC gets a wrong answer and this
+system cannot detect it.
+
+### NC-S4.4 — The correlation proves the payer key signed, not that the approver authorised
+
+The link from correlation to mandate rests on **our** preimage. It is our evidence, not the
+chain's.
+
+### NC-S4.5 — Absence of a settlement observation is not evidence of non-payment
+
+`NOT_SETTLED_AT_OBSERVATION` and `NOT_OBSERVED` are observation states. A later block may consume
+the authorization. There is deliberately no `SETTLEMENT_DID_NOT_OCCUR` code.
+
+### NC-S4.6 — The observer and the execution signer are not independent parties today
+
+Both are GATE-type keys in one manifest, frequently the same key. The verifier reports the
+relationship (and caps the result on `SAME_SIGNING_KEY`); it does not manufacture independence.
+Separate keys prove only distinct keys.
+
+### NC-S4.7 — The correlation is public and permanent; its unguessability rests entirely on `grant.nonce`
+
+The on-chain nonce is a deterministic function of the receipt, the grant and the grant's seed,
+published on a public ledger forever. Every other derivation input is low-entropy or enumerable
+for a given tenant. **Measured 2026-08-13: the entropy floor is now met in this repository** —
+the grant schema pins `nonce` to `^[0-9a-f]{64}$` and the gate's grant-path generator mints
+32 CSPRNG bytes (`packages/gate/src/trust.ts`). What remains true and unfixable: a party who
+obtains the seed (see NC-S4.14) computes the correlation and locates the settlement, permanently.
+
+### NC-S4.8 — This changes nothing about the authority root
+
+An attacker holding the grant-signing key cannot conjure an approval (the ALLOWED receipt is
+signed by the phone), but **can** mint *additional* grants for an action the human genuinely
+approved. Under this design each such grant derives a *different* correlation, so each duplicate
+needs its own real settlement — and each duplicate settlement is real money leaving the payer,
+each earning a positive verdict. The chain refuses a *free* duplicate, not a *paid* one.
+Settlement evidence proves correlation, never authority.
+
+### NC-S4.9 — Settlement evidence is downstream of intent binding, and amplifies a break in it
+
+On a RAW-mode hold, the `paramsHash` a grant authorizes need not be the action a human
+understood. Every mechanism here would then reconfirm the attacker's payment against the
+attacker's own preimage. The R-23 cap refuses the positive code on a RAW-mode hold, which
+contains the damage; it does not repair intent binding, and nothing here can.
+
+### NC-S4.10 — A relying party that queries the chain itself gets most of the value without trusting our observer
+
+Once the coordinates are known, the settlement is resolvable by anyone with an RPC endpoint. The
+artifact's irreducible contribution is the **linkage**. A producer can decline to *mention* a
+settlement; it cannot make one invisible.
+
+### NC-S4.11 — This artifact is a durable correlation capability, not a one-time view
+
+Handing a third party the material to recompute the correlation permanently grants them the
+ability to locate the corresponding on-chain event, and the 32 bytes are immutable on a public
+ledger forever. A `railReceipt` on the `FULL` branch additionally embeds the counterparty receipt
+verbatim, which names the payee and the `resource`. Producers presenting a bundle to a third
+party SHOULD use the `HASH_ONLY` branch by default.
+
+### NC-S4.12 — Absence of an `AuthorizationUsed` log is not "not yet"; it may be "never"
+
+Anyone holding the payer key can `cancelAuthorization` the correlation, burning it permanently
+without paying, at negligible cost. `chainStatus: CANCELLED` names that state; nothing prevents
+it.
+
+### NC-S4.13 — A settlement this system reports as failed may have happened
+
+`transferWithAuthorization` payloads are extractable and front-runnable; a third party can execute
+the identical payment first, consuming the nonce, and a facilitator that then reports failure
+without locating the consuming transaction produces a false negative. Until consumed-nonce
+reconciliation ships on the producing side, a facilitator-reported failure is not evidence of
+non-payment. (When chain facts ARE supplied, the reconciler is the thing that catches this: the
+log exists, the transfer resolves, and the result is the positive code.)
+
+### NC-S4.14 — Disclosing an evidence bundle discloses the payer-wallet link, permanently
+
+The mandate documents alone contain no wallet identity; the grant's seed makes the on-chain
+lookup computable by **every holder of the bundle**, before and after settlement. This is a
+property of recompute-and-compare verification, not an implementation defect, and it cannot be
+revoked after disclosure.
+
+### NC-S4.15 — There is no minimized (commitment-only) presentation tier in v0.1
+
+Recompute-and-compare verification makes the disclosed grant nonce load-bearing: a bundle that
+withholds it cannot be verified, and one that includes it discloses the wallet link (NC-S4.14).
+A minimized presentation tier is a `/0.2` schema event, not a configuration.
+
+
 ## 7. Changing this document
 
 **Adding** a non-claim: an ordinary commit. Always in scope, never needs justification.

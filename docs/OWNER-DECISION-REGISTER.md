@@ -61,6 +61,34 @@ against it. Changing the meaning later silently breaks correlation with no signa
 **If deferred:** change nothing. `paramsHash` keeps its current narrow meaning and no document may call
 it the action digest.
 
+### A-4 · The rail-facing correlation projection (D7) — DECIDED 2026-08-13, flagged for owner review
+
+**What was decided.** The 32-byte value carried in an EIP-3009 payment's on-chain `nonce` is
+**S3's seeded derivation over the action digest** (domain tag `noa.x402.correlation-nonce/0.1`):
+`deriveCorrelationNonce({chainId, tokenAddress, payerAddress, dispatchId, seed})` where
+`dispatchId` is the `noa.action-digest/0.1` value as its ASCII `"sha256:<64hex>"` string and
+`seed` is the 32 bytes hex-decoded from `grant.nonce` — the grant IS the pre-dispatch seed
+commitment, so one grant derives exactly one nonce. This supersedes the earlier bare-digest
+construction (D2): a deterministic public digest **leaks equality** across settlements and
+**permits dictionary recovery** of low-entropy payment parameters, and neither is repairable on a
+permanent public ledger. Neither construction is prescribed by `carlos.md` §3, which governs the
+digest as the mandate-side correlation VALUE and is silent on rail placement — so A-3 is
+unaffected: the digest remains the mandate-side carrier; D7 is the rail-facing projection of it.
+
+**Who took it, and how.** Taken by the fork-decider seat on 2026-08-13 after a two-voice
+adversarial panel (two independent external reviews of a written decision memo) both returned
+REDESIGN with a CONVERGENT fix, adopted as D7. Implemented in `packages/rail-x402`
+(`docs/settlement-evidence-spec.md` pins the octet framing byte-for-byte); the two entropy
+preconditions landed in the same change-set (grant `nonce` schema `^[0-9a-f]{64}$`; gate
+generator → 32 CSPRNG bytes).
+
+**Reversible?** **Partly, by versioning only.** The derivation is versioned by its domain tag:
+changing anything about it is a NEW tag, never a silent re-derivation — bytes already settled
+under the old tag remain verifiable under it forever, and no rotation can rewrite them.
+
+**Blocks?** Nothing; S4 ships on it. **Owner action:** review and ratify (or order a new tag);
+until then D7 stands as the safe default, recorded here rather than discovered.
+
 ---
 
 ## PART B — REVERSIBLE, AND BLOCKING ADR-0005
