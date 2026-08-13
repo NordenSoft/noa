@@ -574,6 +574,11 @@ jobs:
           npm --prefix packages/framework-adapters ci
           npm --prefix packages/signer-sidecar ci
           npm --prefix packages/mcp-proxy ci
+          # rail-x402 joined 2026-08-13 (S3): its three knockout entries re-run ITS suite, and that
+          # suite imports the kernel for `INERT_ARRAY_PROTOTYPE`. Omitting it here is what turned the
+          # L4 step red — the same shape as the adapter-core ordering note above, and the reason that
+          # note says to look for siblings.
+          npm --prefix packages/rail-x402 ci
           npm --prefix packages/e2e-demo ci
           # e2e-demo runs `node --import tsx --test test/*.test.ts` straight from source, but it
           # IMPORTS six siblings' BUILD OUTPUT. `npm ci` alone left it at `exit 1` with real failures
