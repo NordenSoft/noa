@@ -740,9 +740,10 @@ exactly the distance this register is for.
   **What is still open, and is the whole remaining item.** `decide()` still writes the grant record
   and the hold as two calls, and there is still no DURABLE driver — the shipped store is in-memory,
   so the primitives above are exercised only against a test double shaped like a durable one.
-  Cross-record atomicity (grant + hold in one transaction) is not expressible in the interface today
-  and is not claimed. What changed is that a durable driver is no longer non-atomic *by construction*
-  on the single-use path, which was the one-way door.
+  Writing the grant and the hold in one transaction is not expressible in the interface today and is
+  not claimed. What changed is narrower and is the one-way door `store.ts` named: on the single-use
+  path a durable driver can now express the comparison as ONE statement whose WHERE clause decides
+  the outcome, instead of a read followed by a separate write that another process can land between.
 
   One residual, named rather than left to be discovered: a losing concurrent `report()` still builds
   and signs its consumption before the lock refuses it. Nothing escapes — the artifact is discarded
