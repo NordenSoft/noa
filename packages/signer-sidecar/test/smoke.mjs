@@ -19,9 +19,35 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SIDECAR_CLI = path.join(__dirname, "..", "src", "sidecar.mjs");
 
 let fail = 0;
+let pass = 0;
 function ok(label, cond) {
   console.log(`${cond ? "✓" : "✗"} ${label}`);
-  if (!cond) fail++;
+  if (cond) pass++;
+  else fail++;
+}
+
+/**
+ * Emit the counts this repository's own gate reads — `scripts/pre-push-gate.mjs` -> `classifySuite`
+ * parses `# fail` and `# cancelled`.
+ *
+ * WHY THIS WAS MISSING AND WHY IT MATTERS. This suite is a real two-process proof, not a
+ * `node --test` file, so it printed a prose verdict and NO numbers. The gate was never FOOLED —
+ * `classifySuite` treats unparseable counts as SETUP_FAILED rather than green, which is the correct
+ * fail-closed direction. What was missing is the measurement itself: "how much does this package
+ * actually cover?" had no answer, so coverage here could drift to nearly nothing without any signal.
+ *
+ * The numbers are DERIVED from real `ok()` calls, never declared. A hardcoded total would be exactly
+ * the decoration this repository has already caught itself shipping once.
+ *
+ * DELIBERATELY NOT EMITTED ON THE CRASH PATH. A crash means an unknown number of checks never ran,
+ * and `classifySuite` already fails closed on an exit code its summary cannot explain. Printing
+ * `fail 0` there would be the single shape that turns a crash into a pass.
+ */
+function emitCounts() {
+  console.log(`\n# tests ${pass + fail}`);
+  console.log(`# pass ${pass}`);
+  console.log(`# fail ${fail}`);
+  console.log(`# cancelled 0`);
 }
 function section(title) {
   console.log(`\n== ${title} ==`);
@@ -158,6 +184,14 @@ async function main() {
 
   if (fail) {
     console.error(`\nSMOKE TEST FAILED: ${fail} assertion(s).`);
+    emitCounts();
+    process.exit(1);
+  }
+  // A suite that runs to the end having checked NOTHING is the failure mode a count exists to
+  // expose; without this, deleting every `ok()` call would still print the verdict below.
+  if (pass === 0) {
+    console.error("\nSMOKE TEST FAILED: zero assertions ran — a suite that checks nothing cannot pass.");
+    emitCounts();
     process.exit(1);
   }
   console.log(
@@ -166,6 +200,7 @@ async function main() {
       "--key-file keeps the same kid, malformed requests get {error} without crashing the process, and a " +
       "loosely-permissioned --socket directory refuses to start.",
   );
+  emitCounts();
   process.exit(0);
 }
 

@@ -209,9 +209,37 @@ for (const e of resolved) {
   console.log(`  ${e.name.padEnd(44)}: ${state}`);
 }
 
+/**
+ * Emit the counts this repository's own gate reads (`scripts/pre-push-gate.mjs` -> `classifySuite`,
+ * which parses `# fail` and `# cancelled`). This guard is a script, not a `node --test` file, so it
+ * printed a verdict and NO numbers. `classifySuite` treats unparseable counts as SETUP_FAILED rather
+ * than green, so the gate was never fooled — but the MEASUREMENT was absent, and a guard whose check
+ * count nobody knows can shrink toward nothing without producing a single signal.
+ *
+ * The total is DERIVED: one reachability check, plus one version-floor check per advisory-carrying
+ * dependency that actually resolved. Passes are that total minus the failures actually collected —
+ * never a declared number.
+ */
+const checksRun = 1 + resolved.length;
+function emitCounts(failed) {
+  console.log(`\n# tests ${checksRun}`);
+  console.log(`# pass ${checksRun - failed}`);
+  console.log(`# fail ${failed}`);
+  console.log('# cancelled 0');
+}
+
+// A guard that resolved NOTHING would otherwise print GUARD PASS having checked only that the
+// subpath is unimported — the floors it exists to enforce would go unenforced, silently.
+if (resolved.length === 0) {
+  console.error('\nGUARD FAIL: no advisory-carrying dependency resolved — this guard checked nothing.');
+  emitCounts(checksRun);
+  process.exit(1);
+}
+
 if (failures.length > 0) {
   console.error('\nGUARD FAIL:');
   for (const f of failures) console.error(`  - ${f}`);
+  emitCounts(failures.length);
   process.exit(1);
 }
 
@@ -221,3 +249,4 @@ console.log(
   'reachability argument. The other three are VERSION FLOORS on code the SDK runs on our behalf —\n' +
   'a floor is a control, not a proof that the code cannot execute.',
 );
+emitCounts(0);

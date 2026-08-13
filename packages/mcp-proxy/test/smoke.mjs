@@ -41,9 +41,31 @@ const PROXY_CLI = path.join(__dirname, "..", "src", "proxy.mjs");
 const execFileAsync = promisify(execFile);
 
 let fail = 0;
+let pass = 0;
 function ok(label, cond) {
   console.log(`${cond ? "✓" : "✗"} ${label}`);
-  if (!cond) fail++;
+  if (cond) pass++;
+  else fail++;
+}
+
+/**
+ * Emit the counts this repository's own gate reads (`scripts/pre-push-gate.mjs` -> `classifySuite`,
+ * which parses `# fail` and `# cancelled`).
+ *
+ * This suite is a real multi-process proof, not a `node --test` file, so it printed a prose verdict
+ * and NO numbers. The gate was never FOOLED — unparseable counts classify as SETUP_FAILED, not green
+ * — but the MEASUREMENT was missing, so "how much does this package actually cover?" had no answer
+ * and coverage could drift toward nothing without any signal.
+ *
+ * Derived from real `ok()` calls, never declared. DELIBERATELY NOT EMITTED ON THE CRASH PATH: a crash
+ * leaves an unknown number of checks unrun, and `classifySuite` already fails closed on an exit code
+ * its summary cannot explain. Printing `fail 0` there is the one shape that turns a crash into a pass.
+ */
+function emitCounts() {
+  console.log(`\n# tests ${pass + fail}`);
+  console.log(`# pass ${pass}`);
+  console.log(`# fail ${fail}`);
+  console.log(`# cancelled 0`);
 }
 function section(title) {
   console.log(`\n== ${title} ==`);
@@ -2055,6 +2077,14 @@ async function main() {
 
   if (fail) {
     console.error(`\nSMOKE TEST FAILED: ${fail} assertion(s).`);
+    emitCounts();
+    process.exit(1);
+  }
+  // A suite that reaches the end having checked NOTHING is the exact failure a count exists to
+  // expose; without this, deleting every `ok()` call would still print the verdict below.
+  if (pass === 0) {
+    console.error("\nSMOKE TEST FAILED: zero assertions ran — a suite that checks nothing cannot pass.");
+    emitCounts();
     process.exit(1);
   }
   console.log(
@@ -2066,6 +2096,7 @@ async function main() {
       "progress are forwarded; rotation lifecycle verification refuses every retired-key artifact " +
       "without an independent time witness and accepts current/static controls.",
   );
+  emitCounts();
   process.exit(0);
 }
 
