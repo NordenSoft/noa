@@ -479,10 +479,14 @@ const KNOCKOUTS = [
     id: "s3-settlement-needs-transfer",
     control: "S3(c) — settlement proof requires a matching ERC-20 Transfer, not just a consumed authorization",
     file: "packages/rail-x402/src/settlement-proof.mjs",
-    find: '  if (!o.transfer) reasons.push("no matching ERC-20 Transfer observed");',
+    // The anchor was written BEFORE this file's containers were made inert, so `reasons.push(` became
+    // `arrayPush(reasons, ` and the entry rotted the same day it was added. The registry caught it
+    // (`find` matched 0x) rather than certifying a control it could no longer find — which is the
+    // behaviour, and the reason a knockout entry is worth having.
+    find: '  if (!o.transfer) arrayPush(reasons, "no matching ERC-20 Transfer observed");',
     // Without this part, a CANCELLED authorization reads as a settled payment: Circle sets the same
     // state bit for cancellation as for use, so "the nonce was consumed" is not "the money moved".
-    replace: '  if (false) reasons.push("no matching ERC-20 Transfer observed");',
+    replace: '  if (false) arrayPush(reasons, "no matching ERC-20 Transfer observed");',
     kind: "tests",
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
