@@ -662,10 +662,17 @@ Three things make that more than an assertion, and each is a control that has be
   cannot forge: the approver's signature.
 
 `packages/gate/test/grant-authority-root.test.ts` runs a real sidecar process against an attacker
-holding everything the gate process holds. **Three** of these controls are registered in the knockout
+holding everything the gate process holds. **Five** of these controls are registered in the knockout
 registry and are therefore proven to turn the suite red when removed
 (`s0-grant-authority-out-of-gate-process`, `s0-cross-keyring-kid-agreement`,
+`s0-approver-key-not-co-resident`, `s0-returned-signature-is-verified`,
 `s0-grant-params-bound-to-approval`); the rest have regression tests but no knockout binding.
+
+**Recounted 2026-08-13, same day, by the second reviewer.** The first correction of this paragraph
+said *three*. It was written from the three IDs the fixing commit added and never checked against the
+registry, which already carried two more from earlier rounds. Understating coverage errs in the safe
+direction and is still a number nobody measured — the same mistake as overstating it, pointing the
+other way.
 
 **Corrected 2026-08-13.** This paragraph previously said *every* control above was so registered. An
 independent review checked the registry against the claim and found the coverage partial, and found
