@@ -14,6 +14,7 @@
  * by the operator, NEVER transmitted; manifest issuance does not proceed without the gate-signed
  * local SAS confirmation (F12).
  */
+import { createHash } from 'node:crypto';
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from 'noa-approval-artifacts';
 import type { GateTrust, GateKeyPair } from 'noa-gate';
 import { SIGNING_KEY_LIFECYCLE_SPEC, type SigningKeyLifecycle } from 'noa-receipt';
@@ -318,6 +319,10 @@ export function assembleGateTrust(
     tenant: auth.tenant,
     now: () => clock.now(),
     newId,
+    // Demo grant-nonce source: 64 lowercase hex as the schema requires, deterministic exactly when
+    // the injected `newId` is — this demo replays byte-stable flows, and a CSPRNG here would only
+    // randomize a fixture. The production default lives in packages/gate/src/trust.ts.
+    newNonce: () => createHash('sha256').update(`nonce:${newId()}`).digest('hex'),
     gate,
     approver,
     approverHpkePublicKey: phone.approverHpkePublicKey,
