@@ -1,0 +1,119 @@
+name: branch-hygiene
+
+# STRANDED-BRANCH SWEEP. Runs on a schedule, not on push, because the defect it looks for is an
+# ABSENCE: a branch that was pushed and then never turned into a pull request emits no event at all.
+# Nothing on the push path can catch it — by the time it matters, the push is weeks in the past.
+#
+# Measured 2026-08-13: a hand sweep across three repositories found 67 branches, 27 of them with no
+# pull request in any state. Two carried real work nobody could see — a dependency upgrade that closed
+# a silent at-rest-format hazard, and the ONLY copy of a plan-of-record entry. Cost to find by hand:
+# most of a working day. Cost of this job: ~20 seconds a day.
+#
+# It writes to a single tracking issue rather than failing the default branch, because a red X on
+# `main` for something that is not `main`'s fault teaches people to ignore red X's.
+
+on:
+  schedule:
+    - cron: '17 6 * * *'   # 06:17 UTC daily — off the hour, so it does not queue behind everyone else's cron
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  issues: write            # the report IS the output; without this the job can only fail silently
+
+concurrency:
+  group: branch-hygiene
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # REQUIRED. The gate compares branch tips against main's history and refuses to run on a
+          # shallow clone (a shallow clone would report zero stranded branches — a false GREEN).
+          fetch-depth: 0
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+
+      - name: Prove the gate can still fail
+        # Runs BEFORE the real sweep, every time. A hygiene job that has quietly stopped measuring
+        # reports a clean repository, which is indistinguishable from success and worse than no job.
+        run: node scripts/lint-stranded-branches.mjs --selftest
+
+      - name: Sweep for stranded branches
+        id: sweep
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          node scripts/lint-stranded-branches.mjs --grace-days 3 > sweep.txt 2>&1
+          echo "code=$?" >> "$GITHUB_OUTPUT"
+          set -e
+          cat sweep.txt
+          {
+            echo '## Stranded-branch sweep'
+            echo '```'
+            cat sweep.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: The gate could not measure — fail loudly
+        # Exit 2 means UNKNOWN (no `gh`, shallow clone, unparseable API answer). UNKNOWN is not GREEN:
+        # a sweep that cannot see is exactly the state this whole job exists to end.
+        if: steps.sweep.outputs.code == '2'
+        run: |
+          echo "::error::the stranded-branch gate could not measure — see the log. This is not a clean result."
+          exit 1
+
+      - name: Open or update the tracking issue
+        if: steps.sweep.outputs.code == '1'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TITLE="Branch hygiene: work sitting on branches with no pull request"
+          BODY_FILE=issue.md
+          {
+            echo "Branches below carry commits \`main\` does not have, and have **no pull request in any state**."
+            echo "Nothing runs CI on them and no reviewer sees them, so the work is invisible until someone sweeps by hand."
+            echo
+            echo '```'
+            cat sweep.txt
+            echo '```'
+            echo
+            echo "Updated automatically by \`.github/workflows/branch-hygiene.yml\` — run \`$GITHUB_RUN_ID\`."
+          } > "$BODY_FILE"
+
+          NUM="$(gh issue list --state open --search "$TITLE in:title" --json number,title \
+                 --jq "[.[] | select(.title == \"$TITLE\")][0].number // empty")"
+          if [ -n "$NUM" ]; then
+            gh issue edit "$NUM" --body-file "$BODY_FILE"
+            echo "updated issue #$NUM"
+          else
+            gh issue create --title "$TITLE" --body-file "$BODY_FILE" --label "chore" 2>/dev/null \
+              || gh issue create --title "$TITLE" --body-file "$BODY_FILE"
+          fi
+
+      - name: Close the tracking issue when the sweep is clean
+        # Symmetry matters: an issue that only ever opens becomes wallpaper. This one closes itself
+        # the day the repository is clean, so its presence always means something is outstanding.
+        if: steps.sweep.outputs.code == '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TITLE="Branch hygiene: work sitting on branches with no pull request"
+          NUM="$(gh issue list --state open --search "$TITLE in:title" --json number,title \
+                 --jq "[.[] | select(.title == \"$TITLE\")][0].number // empty")"
+          if [ -n "$NUM" ]; then
+            gh issue close "$NUM" --comment "Sweep is clean: every branch is either in \`main\` or has a pull request."
+            echo "closed issue #$NUM"
+          else
+            echo "clean, and no open issue to close"
+          fi
