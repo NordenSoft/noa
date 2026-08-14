@@ -1780,56 +1780,80 @@ if (REQUIRES && selected.length === 0) {
 //   • THE PREVIOUS RUN'S LEFTOVERS COULD NOT BE PROVEN CLEAN — a mutant source that could not be
 //     restored, or a file whose contents are neither pristine nor the recorded mutation. Every
 //     baseline after that would be measured against unknown bytes.
-const RECOVERY = buildStateGuardFor(ROOT).recover();
-if (RECOVERY && RECOVERY.kind === "held") {
+const GUARD = buildStateGuardFor(ROOT);
+const START = GUARD.start();
+if (!START.ok && START.kind === "held") {
   console.error(
     `\nANOTHER KNOCKOUT RUN OWNS THIS TREE.\n` +
-    `  holder:   pid ${RECOVERY.pid}, in arm "${RECOVERY.entry}", since ${RECOVERY.startedAt}\n` +
-    `  marker:   ${RECOVERY.markerPath}\n` +
-    `Its mutation is on disk right now. Two runs mutating one worktree measure a third tree that is\n` +
-    `neither of theirs, so this one refuses to start rather than race. Wait for it, or — if that pid\n` +
-    `is gone — delete the marker.\n`,
+    `  holder:   ${START.detail}${START.startedAt ? `, since ${START.startedAt}` : ""}\n` +
+    `  lock:     ${START.lockPath}\n` +
+    (START.certainty === "indeterminate"
+      ? `This machine would not tell us whether that process is alive (\`ps\` refused). An unknown\n` +
+        `holder is treated exactly as a live one: the alternative is to recover a tree somebody else\n` +
+        `may be mid-suite in.\n`
+      : `Its mutation is on disk right now. Two runs mutating one worktree measure a third tree that\n` +
+        `is neither of theirs, so this one refuses to start rather than race.\n`) +
+    `Wait for it, or — once you have confirmed that process is gone — delete the lock file.\n`,
   );
   process.exit(1);
 }
-if (RECOVERY) {
-  console.log(`⚠ RECOVERED an interrupted knockout run (entry ${RECOVERY.entry}, started ${RECOVERY.startedAt}):`);
-  const say = (label, items) => { if (items.length) console.log(`    ${label}: ${items.join(", ")}`); };
-  say("restored mutant SOURCE", RECOVERY.sources);
-  say(`restored ${RECOVERY.artifacts.length} build artefact(s)`, RECOVERY.artifacts.slice(0, 6));
-  say("deleted build output the interrupted arm created", RECOVERY.removed.slice(0, 6));
-  const blocking = [...RECOVERY.failures, ...RECOVERY.unresolved];
-  if (blocking.length === 0 && RECOVERY.suspect.length === 0) {
-    console.log("    the tree is provably back to its pre-crash state\n");
-  } else {
-    for (const f of blocking) console.error(`    ⚠ ${f}`);
-    for (const p of RECOVERY.suspect) {
-      console.error(
-        `    ⚠ ${p} went dirty during the interrupted arm. During a live arm this runner is the only` +
-        ` actor and can prove that file is its output; after a crash the window is unbounded, so it` +
-        ` will not revert it for you.`,
-      );
-    }
-    console.error(
-      `\nTHE PREVIOUS RUN'S LEFTOVERS COULD NOT BE PROVEN CLEAN.\n` +
-      `  marker:   ${RECOVERY.markerPath}  (kept, deliberately — a cleared marker over an\n` +
-      `            unrestored tree tells the next run there is nothing to look at)\n` +
-      `Every baseline measured from here would be measured against unknown bytes, so no baseline is\n` +
-      `measured. Inspect the files above, put them right, then re-run.\n`,
-    );
-    process.exit(1);
-  }
+if (!START.ok && START.kind === "corrupt") {
+  console.error(
+    `\nTHE KNOCKOUT LOCK COULD NOT BE READ.\n  ${START.detail}\n  lock:     ${START.lockPath}\n` +
+    `Only a lock file that is ABSENT means no run is in flight. One that cannot be parsed might\n` +
+    `describe a run holding a mutation, so this refuses rather than assume. Inspect it and remove it.\n`,
+  );
+  process.exit(1);
 }
+if (!START.ok) {
+  const r = START.recovered;
+  console.error(`\n⚠ an interrupted knockout run (entry ${r.entry}, started ${r.startedAt}) could not be repaired:`);
+  for (const f of [...r.failures, ...r.unresolved]) console.error(`    ⚠ ${f}`);
+  for (const p of r.suspect) {
+    console.error(
+      `    ⚠ ${p} went dirty during the interrupted phase. During a live phase this runner is the` +
+      ` only actor and can prove that file is its output; after a crash the window is unbounded, so` +
+      ` it will not touch it for you.`,
+    );
+  }
+  console.error(
+    `\nTHE PREVIOUS RUN'S LEFTOVERS COULD NOT BE PROVEN CLEAN.\n` +
+    `  lock:     ${START.lockPath}  (kept, deliberately — a cleared lock over an unrestored tree\n` +
+    `            tells the next run there is nothing to look at)\n` +
+    `Every baseline measured from here would be measured against unknown bytes, so no baseline is\n` +
+    `measured. Inspect the files above, put them right, then re-run.\n`,
+  );
+  process.exit(1);
+}
+if (START.recovered) {
+  const r = START.recovered;
+  console.log(`⚠ RECOVERED an interrupted knockout run (entry ${r.entry}, started ${r.startedAt}):`);
+  const say = (label, items) => { if (items.length) console.log(`    ${label}: ${items.join(", ")}`); };
+  say("restored mutant SOURCE", r.sources);
+  say(`restored ${r.artifacts.length} build artefact(s)`, r.artifacts.slice(0, 6));
+  say("deleted build output the interrupted phase created", r.removed.slice(0, 6));
+  console.log("    the tree is provably back to its pre-crash state\n");
+}
+
+// The lock is this run's, and it must not outlive the process — a lock left behind would make every
+// later run refuse. `exit` covers the ordinary paths and every `process.exit` below it.
+process.on("exit", () => { try { GUARD.release(); } catch { /* nothing left to release */ } });
 
 // The tracked-file half of the guard is only as good as git's answer, and "git could not tell us"
 // must never arrive as "nothing was dirty". Inside the gate that distinction is not left to a
-// library default: this repository IS a git work tree, and if it ever is not, the sweep says so and
-// stops rather than running with a third of the guard silently inert.
-if (!isGitWorkTree(ROOT)) {
-  console.error(
-    `\n${ROOT} is not a git work tree, so the guard cannot see which generated files an arm\n` +
-    `rewrites — the surface that corrupted a committed conformance fixture in CI. Refusing to run.\n`,
-  );
+// library default: this repository IS a git work tree, and if it ever is not — or if the probe
+// itself cannot answer — the sweep says so and stops rather than running with a third of the guard
+// silently inert.
+try {
+  if (!isGitWorkTree(ROOT)) {
+    console.error(
+      `\n${ROOT} is not a git work tree, so the guard cannot see which generated files a suite\n` +
+      `rewrites — the surface that corrupted a committed conformance fixture in CI. Refusing to run.\n`,
+    );
+    process.exit(1);
+  }
+} catch (e) {
+  console.error(`\ncannot tell whether ${ROOT} is a git work tree (${String(e && e.message)}). Refusing to run.\n`);
   process.exit(1);
 }
 
@@ -1838,6 +1862,28 @@ let WORKTREE_BEFORE = "";
 try {
   WORKTREE_BEFORE = execFileSync("git", ["status", "--porcelain"], { cwd: ROOT, encoding: "utf8" }).trim();
 } catch { /* not a git tree */ }
+
+// ── THE BASELINE PHASE IS PROTECTED TOO ────────────────────────────────────────────────────────
+// Panel round 2 #2. Protection used to begin at the first MUTATION, and the damage does not: the
+// clean baseline for `packages/evidence` runs `npm run build && node dist/fixtures/gen-fixtures.js`,
+// which rewrites committed conformance fixtures. A developer with an uncommitted edit in one of
+// those files lost it before any arm existed to protect them, and the residue check could not see
+// the loss because it compares status STRINGS and ` M fixture.json` is unchanged either way.
+//
+// Two deliberate narrowings, so this protects work without hiding facts:
+//   • `artifacts: false` — the baselines COMPILE from pristine sources, and that build is the
+//     reference every arm is later restored to. Snapshotting `dist/` here and putting it back would
+//     delete a package's first build and make every arm rebuild it.
+//   • `tracked: "dirty-only"` — only paths that were ALREADY dirty are put back. A file that was
+//     clean and that a baseline changed is a genuine drift between the committed fixtures and their
+//     generator; reverting that would hide something the residue check should report.
+const BASELINE_PHASE = "<suite baselines>";
+try {
+  GUARD.beginPhase({ label: BASELINE_PHASE, artifacts: false, tracked: "dirty-only" });
+} catch (e) {
+  console.error(`\ncannot protect the tree before measuring baselines: ${String(e && e.message)}\nRefusing to run.\n`);
+  process.exit(1);
+}
 
 const suiteKey = (k) => JSON.stringify(k.suite);
 const baselines = new Map();
@@ -1848,6 +1894,23 @@ for (const k of selected) {
   // `out` is carried so runKnockout can CROSS-CHECK an entry's declared `kind` against what the
   // clean baseline actually printed (QA-16). Without it the declaration would be trusted.
   baselines.set(key, { exit: obs.exit, failing: obs.failing, findings: obs.findings, ms: obs.ms, timedOut: obs.timedOut, out: obs.out });
+}
+
+// Close the baseline phase: any uncommitted work a baseline generator overwrote goes back now,
+// before the first mutation, and a phase that cannot be closed stops the run exactly as an arm's
+// would — nothing measured after an unrestored tree is about the tree anybody meant to measure.
+const BASELINE_RESTORE = GUARD.endPhase();
+if (BASELINE_RESTORE && BASELINE_RESTORE.failures.length > 0) {
+  console.error(`\nthe suite baselines left this tree in a state the guard could not return:`);
+  for (const f of BASELINE_RESTORE.failures) console.error(`    ⚠ ${f}`);
+  console.error(`No mutation was applied. Refusing to measure anything from here.\n`);
+  process.exit(1);
+}
+if (BASELINE_RESTORE && BASELINE_RESTORE.trackedReverted.length > 0) {
+  console.log(
+    `  baseline phase: put back ${BASELINE_RESTORE.trackedReverted.length} uncommitted file(s) a ` +
+    `baseline generator had overwritten (${BASELINE_RESTORE.trackedReverted.slice(0, 4).join(", ")})\n`,
+  );
 }
 
 // A knockout whose baseline could not even be measured proves nothing, so say that rather than
@@ -1955,8 +2018,10 @@ if (aborted) {
     `  SWEEP ABORTED              ${aborted.id} could not return the tree, so the run STOPPED after ` +
     `${aborted.done} of ${aborted.total} controls.\n` +
     `      ${aborted.detail || "(no detail)"}\n` +
-    `      The ${aborted.total - aborted.done} control(s) after it were NOT measured. A knockout that ` +
-    `cannot restore the tree has not produced a security result, and neither has anything measured after it.`,
+    `      The ${aborted.total - aborted.done} knockout experiment(s) after it were NOT PERFORMED. ` +
+    `(Every suite baseline above had already been measured, on a tree that was still clean.) A ` +
+    `knockout that cannot restore the tree has not produced a security result, and neither has ` +
+    `anything measured after it.`,
   );
 }
 for (const r of bad) {

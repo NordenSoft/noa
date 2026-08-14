@@ -31,7 +31,8 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
-import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, isGitWorkTree, processIdentity, unsupportedArtifactRoots, owningPackageDir } from "./lib/knockout-runner.mjs";
+import { fileURLToPath } from "node:url";
+import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs } from "./lib/knockout-runner.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ko-selftest-"));
 let failures = 0;
@@ -243,7 +244,7 @@ check("requires must be a NON-EMPTY array — an empty one declares nothing whil
  * subject is mutated, WRITES THE MUTATION INTO `dist/` (what `tsc` does) and rewrites a committed
  * fixture from it (what a generator does). Both directions are measured, because a guard that is
  * silently doing nothing looks exactly like a guard that is working. */
-const buildFixture = ({ stageGenerated = false } = {}) => {
+const buildFixture = ({ stageGenerated = false, stageSubject = false } = {}) => {
   const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-derived-"));
   fs.mkdirSync(path.join(r, "dist"), { recursive: true });
   fs.writeFileSync(path.join(r, "subject.js"), `${MARKER}\nexport default guard;\n`);
@@ -270,6 +271,11 @@ const buildFixture = ({ stageGenerated = false } = {}) => {
       ...(stageGenerated
         ? [`try { (await import("node:child_process")).execFileSync("git", ["add", "fixture.json"], { cwd: dir, stdio: "ignore" }); } catch {}`]
         : []),
+      // A suite that stages the SOURCE it was handed. Contrived, and the reason the mutation-target
+      // exemption was wrong: the worktree gets restored and the index keeps the knockout's mutation.
+      ...(stageSubject
+        ? [`try { (await import("node:child_process")).execFileSync("git", ["add", "subject.js"], { cwd: dir, stdio: "ignore" }); } catch {}`]
+        : []),
       `if (broken) console.log("\\u2716 the guard is load-bearing (1.0ms)");`,
       `console.log("\\u2139 tests 1");`,
       `console.log("\\u2139 pass " + (broken ? 0 : 1));`,
@@ -290,7 +296,7 @@ const derivedBaseline = (r) => {
 };
 
 /** A guard that does nothing — the runner as it behaved before this fix. */
-const NO_GUARD = { recover: () => null, beginArm: () => true, endArm: () => null };
+const NO_GUARD = { start: () => ({ ok: true }), beginArm: () => true, endArm: () => null };
 
 /** The exact bytes every arm below mutates the subject to. */
 const MUTANT_SOURCE = "const guard = true;\nexport default guard;\n";
@@ -302,6 +308,13 @@ const cacheFor = (r, tag) => {
   const dir = path.join(r, "..", `${path.basename(r)}-${tag}-cache`);
   cacheDirs.push(dir);
   return dir;
+};
+/** A guard that has already taken its own lock — what `runKnockout` is handed in a real run. */
+const startedGuard = (r, tag) => {
+  const g = createBuildStateGuard({ root: r, cacheDir: cacheFor(r, tag) });
+  const state = g.start();
+  assert.equal(state.ok, true, `the fixture guard could not take its lock: ${JSON.stringify(state)}`);
+  return g;
 };
 const initGit = (r) => {
   const git = (...args) => execFileSync("git", args, { cwd: r, stdio: "pipe", encoding: "utf8" });
@@ -342,7 +355,7 @@ check("the mutant NEVER survives in dist/ — the build state is restored byte-f
     };
     const ev = runKnockout({
       root: r, entry: derivedEntry(r), baseline: base, timeoutMs: 60_000,
-      guard: createBuildStateGuard({ root: r, cacheDir: path.join(r, "..", path.basename(r) + "-cache") }),
+      guard: startedGuard(r, "dist"),
     });
     assert.equal(ev.verdict, VERDICT.DETECTOR_TRIGGERED, `got ${ev.verdict}: ${ev.detail}`);
     assert.equal(digestOf(path.join(r, "dist", "subject.js")), before.compiled,
@@ -358,84 +371,140 @@ check("the mutant NEVER survives in dist/ — the build state is restored byte-f
   });
 });
 
+/* ─── THE CRASH PATH ───────────────────────────────────────────────────────────────────────────
+ * No `finally` runs after SIGKILL, and a fully synchronous sweep cannot service a signal handler
+ * (installing one would only stop Ctrl-C working until the sweep ended). So each phase leaves an
+ * on-disk marker naming the bytes it holds, and the NEXT run reads it. `died()` is that: a guard
+ * that arms a phase, writes the mutant, and is then simply dropped on the floor. */
+const died = (r, cacheDir, { label = "killed-arm", sources } = {}) => {
+  const g = createBuildStateGuard({ root: r, cacheDir });
+  assert.equal(g.start().ok, true, "the fixture guard could not even take its own lock");
+  g.beginArm({ entryId: label, sources });
+  return g;
+};
+const markerOf = (cacheDir) => {
+  const lock = JSON.parse(fs.readFileSync(path.join(cacheDir, "lock.json"), "utf8"));
+  return path.join(lock.runDir, "inflight.json");
+};
+const restampLock = (cacheDir, patch) => {
+  const p = path.join(cacheDir, "lock.json");
+  fs.writeFileSync(p, JSON.stringify({ ...JSON.parse(fs.readFileSync(p, "utf8")), ...patch }));
+};
+
 check("a run that DIES mid-arm is repaired by the next run, source AND build", () => {
   withDerivedFixture((r) => {
     const cacheDir = cacheFor(r, "crash");
     const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
     const pristineBuild = digestOf(path.join(r, "dist", "subject.js"));
 
-    // Exactly what an arm does before it runs a suite, and then the process dies: no `finally`,
-    // no restore, a mutant on disk in BOTH source and build.
-    createBuildStateGuard({ root: r, cacheDir }).beginArm({
-      entryId: "killed-arm", sources: [["subject.js", pristineSource, MUTANT_SOURCE]],
-    });
+    died(r, cacheDir, { sources: [["subject.js", pristineSource, MUTANT_SOURCE]] });
     fs.writeFileSync(path.join(r, "subject.js"), MUTANT_SOURCE);
     fs.writeFileSync(path.join(r, "dist", "subject.js"), "COMPILED FROM: const guard = true;\n");
+    restampLock(cacheDir, { pid: 999999, identity: "Thu Jan  1 00:00:00 1970", identityAvailable: true });
 
-    const report = createBuildStateGuard({ root: r, cacheDir }).recover();
-    assert.ok(report, "the next run did not notice that the previous one died holding a mutant");
-    assert.equal(report.kind, "repaired");
-    assert.deepEqual(report.sources, ["subject.js"]);
-    assert.deepEqual(report.failures, []);
-    assert.deepEqual(report.unresolved, []);
-    assert.equal(report.markerCleared, true, "a provably repaired tree must not keep claiming a crash");
+    const next = createBuildStateGuard({ root: r, cacheDir }).start();
+    assert.equal(next.ok, true, `the next run did not take over a dead run's tree: ${JSON.stringify(next)}`);
+    assert.ok(next.recovered, "it took the lock without noticing there was anything to repair");
+    assert.deepEqual(next.recovered.sources, ["subject.js"]);
+    assert.deepEqual(next.recovered.failures, []);
+    assert.deepEqual(next.recovered.unresolved, []);
     assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), pristineSource,
       "the mutant SOURCE survived the crash — this happened twice for real, found by hand with git status");
     assert.equal(digestOf(path.join(r, "dist", "subject.js")), pristineBuild,
       "the mutant BUILD survived the crash, and git status cannot see it at all");
-    assert.equal(createBuildStateGuard({ root: r, cacheDir }).recover(), null,
-      "recovery is not idempotent — every later run would keep claiming a crash");
   });
 });
 
-/* ─── PANEL ROUND 1, HIGH #5 ───────────────────────────────────────────────────────────────────
+/* ─── ROUND 1 #5 ───────────────────────────────────────────────────────────────────────────────
  * Recovery used to overwrite any source whose hash differed from the recorded PRISTINE hash. A
- * human who fixed that file after the crash — the most likely thing to happen next — would have
- * had their work silently reverted by the next sweep. The marker now records the exact MUTANT hash,
- * and recovery is allowed to touch a file only while it still holds those bytes. */
+ * human who fixed that file after the crash — the most likely next thing to happen — would have had
+ * their work silently reverted. The marker records the exact MUTANT hash, and recovery may touch a
+ * file only while it still holds those bytes. */
 check("recovery touches a crashed file ONLY while it still holds the recorded mutant", () => {
   withDerivedFixture((r) => {
     const cacheDir = cacheFor(r, "unprovable");
     const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
-    createBuildStateGuard({ root: r, cacheDir }).beginArm({
-      entryId: "killed-arm", sources: [["subject.js", pristineSource, MUTANT_SOURCE]],
-    });
+    died(r, cacheDir, { sources: [["subject.js", pristineSource, MUTANT_SOURCE]] });
     fs.writeFileSync(path.join(r, "subject.js"), MUTANT_SOURCE);
-    // ...and then a human edits it, hours later, before the next sweep runs.
     const theirs = "const guard = REAL_CHECK; // and a human note\nexport default guard;\n";
     fs.writeFileSync(path.join(r, "subject.js"), theirs);
+    restampLock(cacheDir, { pid: 999999, identity: "Thu Jan  1 00:00:00 1970", identityAvailable: true });
 
-    const report = createBuildStateGuard({ root: r, cacheDir }).recover();
-    assert.equal(report.kind, "repaired");
-    assert.deepEqual(report.sources, [], "it claimed to have restored a file it must not have touched");
-    assert.equal(report.unresolved.length, 1, "the unprovable file was not reported at all");
-    assert.match(report.unresolved[0], /edited after the crash/);
+    const next = createBuildStateGuard({ root: r, cacheDir }).start();
+    assert.equal(next.ok, false, "the run started over a tree it could not account for");
+    assert.equal(next.kind, "unrepaired");
+    assert.equal(next.recovered.unresolved.length, 1, "the unprovable file was not reported at all");
+    assert.match(next.recovered.unresolved[0], /changed after the crash/);
     assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), theirs,
       "recovery overwrote a legitimate post-crash edit — it reverted a human, not a mutation");
-    assert.equal(report.markerCleared, false,
+    assert.ok(fs.existsSync(markerOf(cacheDir)),
       "the marker was cleared over a tree that is not provably clean, so the next run starts blind");
   });
 });
 
-check("a dead marker is recognised even when its pid has been REUSED", () => {
+/* ─── ROUND 2 #1 ───────────────────────────────────────────────────────────────────────────────
+ * An untracked file the crashed phase created is a leftover nobody has accounted for, and it used
+ * to be filtered out of the clean predicate — so recovery declared success and cleared the marker
+ * with the file still sitting there. */
+check("an untracked file a crashed phase created BLOCKS the marker from clearing", () => {
   withDerivedFixture((r) => {
-    const cacheDir = cacheFor(r, "reuse");
-    const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
-    createBuildStateGuard({ root: r, cacheDir }).beginArm({
-      entryId: "killed-arm", sources: [["subject.js", pristineSource, MUTANT_SOURCE]],
-    });
-    fs.writeFileSync(path.join(r, "subject.js"), MUTANT_SOURCE);
-    // pid 1 is always alive, so a pid-only liveness test would call this marker LIVE forever and
-    // the tree would never be repaired. The recorded identity is what makes it decidable.
-    const marker = JSON.parse(fs.readFileSync(path.join(cacheDir, "inflight.json"), "utf8"));
-    assert.equal(typeof marker.identity, "string", "no process identity was recorded at all");
-    fs.writeFileSync(path.join(cacheDir, "inflight.json"),
-      JSON.stringify({ ...marker, pid: 1, identity: "Thu Jan  1 00:00:00 1970 a-process-that-is-gone" }));
+    initGit(r);
+    const cacheDir = cacheFor(r, "leftover");
+    died(r, cacheDir, { sources: [] });
+    fs.writeFileSync(path.join(r, "left-behind.txt"), "something the crashed phase wrote\n");
+    restampLock(cacheDir, { pid: 999999, identity: "Thu Jan  1 00:00:00 1970", identityAvailable: true });
 
-    const report = createBuildStateGuard({ root: r, cacheDir }).recover();
-    assert.equal(report.kind, "repaired",
-      "a reused pid made a dead run look alive — the tree would stay mutant and every run would refuse");
-    assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), pristineSource);
+    const next = createBuildStateGuard({ root: r, cacheDir }).start();
+    assert.equal(next.ok, false, "recovery declared success over a file nobody accounted for");
+    assert.equal(next.kind, "unrepaired");
+    assert.deepEqual(next.recovered.suspect, ["left-behind.txt"]);
+    assert.ok(fs.existsSync(path.join(r, "left-behind.txt")),
+      "the runner deleted a file it cannot prove it created");
+  });
+});
+
+/* ─── ROUND 2 #1, the marker itself ────────────────────────────────────────────────────────────
+ * A marker that cannot be PARSED is not "no marker". Only ENOENT is. The same for the artifact
+ * index: an "empty snapshot" would make recovery treat every real build output as something the
+ * crashed arm created — and DELETE it. */
+check("a CORRUPT marker refuses the run; it never reads as 'nothing in flight'", () => {
+  withDerivedFixture((r) => {
+    const cacheDir = cacheFor(r, "corrupt-marker");
+    died(r, cacheDir, { sources: [] });
+    fs.writeFileSync(markerOf(cacheDir), "{ this is not json");
+    restampLock(cacheDir, { pid: 999999, identity: "Thu Jan  1 00:00:00 1970", identityAvailable: true });
+    const next = createBuildStateGuard({ root: r, cacheDir }).start();
+    assert.equal(next.ok, false, "an unparseable marker was treated as no marker at all");
+    assert.equal(next.kind, "corrupt");
+    assert.match(next.detail, /not valid JSON/);
+  });
+});
+
+check("a CORRUPT artifact index refuses the run — an empty one would DELETE real build output", () => {
+  withDerivedFixture((r) => {
+    const cacheDir = cacheFor(r, "corrupt-index");
+    died(r, cacheDir, { sources: [] });
+    const lock = JSON.parse(fs.readFileSync(path.join(cacheDir, "lock.json"), "utf8"));
+    fs.rmSync(path.join(lock.runDir, "index.json"), { force: true });
+    restampLock(cacheDir, { pid: 999999, identity: "Thu Jan  1 00:00:00 1970", identityAvailable: true });
+    const before = digestOf(path.join(r, "dist", "subject.js"));
+    const next = createBuildStateGuard({ root: r, cacheDir }).start();
+    assert.equal(next.ok, false, "a missing index was treated as an empty snapshot");
+    assert.equal(next.kind, "corrupt");
+    assert.match(next.detail, /artifact index is missing/);
+    assert.equal(digestOf(path.join(r, "dist", "subject.js")), before,
+      "recovery deleted a real build output as though the crashed arm had created it");
+  });
+});
+
+check("a CORRUPT lock refuses the run", () => {
+  withDerivedFixture((r) => {
+    const cacheDir = cacheFor(r, "corrupt-lock");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(path.join(cacheDir, "lock.json"), "not json either");
+    const next = createBuildStateGuard({ root: r, cacheDir }).start();
+    assert.equal(next.ok, false);
+    assert.equal(next.kind, "corrupt");
   });
 });
 
@@ -447,7 +516,7 @@ check("a committed file the mutated suite regenerated is put back from HEAD", ()
 
     const ev = runKnockout({
       root: r, entry: derivedEntry(r), baseline: derivedBaseline(r), timeoutMs: 60_000,
-      guard: createBuildStateGuard({ root: r, cacheDir: cacheFor(r, "git") }),
+      guard: startedGuard(r, "git"),
     });
     assert.equal(ev.verdict, VERDICT.DETECTOR_TRIGGERED, `got ${ev.verdict}: ${ev.detail}`);
     assert.equal(fs.readFileSync(path.join(r, "fixture.json"), "utf8"), committed,
@@ -458,23 +527,19 @@ check("a committed file the mutated suite regenerated is put back from HEAD", ()
   });
 });
 
-/* ─── PANEL ROUND 1, HIGH #2 ───────────────────────────────────────────────────────────────────
- * The first version skipped every already-dirty path so as not to destroy a developer's work, and
- * by skipping it destroyed exactly that: the arm's generator OVERWRITES the dirty file, so their
- * edit was gone and the MUTANT's content stayed — invisibly, because the residue check compares
- * status strings and ` M fixture.json` is ` M fixture.json` either way. Both halves are measured. */
+/* ─── ROUND 1 #2 ───────────────────────────────────────────────────────────────────────────────
+ * The guard skipped every already-dirty path so as not to destroy a developer's work, and by
+ * skipping destroyed exactly that: the arm's generator OVERWRITES the file, so their edit was gone
+ * and the MUTANT's content stayed — invisibly, because the residue check compares status strings
+ * and ` M fixture.json` is ` M fixture.json` either way. Both directions are measured. */
 const MINE = `{"generatedFrom":"MY OWN UNCOMMITTED EDIT"}\n`;
 check("uncommitted work in a file the arm DOES rewrite survives, and the mutant does not", () => {
-  // `base` is the baseline measured by the harness BEFORE the edit below, which is the real
-  // ordering: the sweep measures every suite clean, and only then starts mutating. An edit made
-  // after that point is a developer's live work while the arms run.
   withDerivedFixture((r, base) => {
     initGit(r);
     fs.writeFileSync(path.join(r, "fixture.json"), MINE);
 
     const ev = runKnockout({
-      root: r, entry: derivedEntry(r), baseline: base, timeoutMs: 60_000,
-      guard: createBuildStateGuard({ root: r, cacheDir: cacheFor(r, "dirty") }),
+      root: r, entry: derivedEntry(r), baseline: base, timeoutMs: 60_000, guard: startedGuard(r, "dirty"),
     });
     const after = fs.readFileSync(path.join(r, "fixture.json"), "utf8");
     assert.equal(after, MINE,
@@ -498,17 +563,60 @@ check("ANTI-VACUITY: without the guard, that same dirty file keeps the mutant's 
   });
 });
 
+/* ─── ROUND 2 #2, the half that has nothing to do with arms ────────────────────────────────────
+ * Protection used to begin at the first MUTATION. The damage does not: `packages/evidence`'s CLEAN
+ * baseline runs the fixture generator too, so a developer's uncommitted fixture was destroyed
+ * before any arm existed to protect it. Here the edit is made BEFORE the baseline measurement,
+ * which is the case the previous selftest carefully stepped around. */
+check("a dirty file is protected across the BASELINE phase, before any arm exists", () => {
+  const r = buildFixture();
+  derivedRoots.push(r);
+  initGit(r);
+  fs.writeFileSync(path.join(r, "fixture.json"), MINE);
+
+  const guard = startedGuard(r, "baseline");
+  guard.beginPhase({ label: "<suite baselines>", artifacts: false, tracked: "dirty-only" });
+  const base = derivedBaseline(r);                     // the generator runs here, over MINE
+  assert.notEqual(fs.readFileSync(path.join(r, "fixture.json"), "utf8"), MINE,
+    "the baseline suite did not overwrite the dirty file, so this arm measures nothing");
+  const report = guard.endPhase();
+
+  assert.deepEqual(report.failures, []);
+  assert.deepEqual(report.trackedReverted, ["fixture.json"]);
+  assert.equal(fs.readFileSync(path.join(r, "fixture.json"), "utf8"), MINE,
+    "uncommitted work was destroyed by a BASELINE run, before the first mutation existed");
+  assert.equal(base.exit, 0, "the baseline itself must still have been measured normally");
+});
+
+check("the baseline phase does NOT revert a clean file the baseline changed — that is real drift", () => {
+  const r = buildFixture();
+  derivedRoots.push(r);
+  const git = initGit(r);
+  // A committed fixture that disagrees with its own generator: the baseline regenerates it, and
+  // that is a fact about the repository, not this runner's mess to tidy away.
+  fs.writeFileSync(path.join(r, "fixture.json"), `{"generatedFrom":"STALE COMMITTED CONTENT"}\n`);
+  git("add", "-A");
+  git("commit", "-q", "-m", "stale fixture");
+
+  const guard = startedGuard(r, "drift");
+  guard.beginPhase({ label: "<suite baselines>", artifacts: false, tracked: "dirty-only" });
+  derivedBaseline(r);
+  const report = guard.endPhase();
+  assert.deepEqual(report.failures, []);
+  assert.deepEqual(report.trackedReverted, [], "the baseline phase reverted a genuine drift out of sight");
+  assert.notEqual(git("status", "--porcelain").trim(), "",
+    "the drift was hidden from the residue check, which is the one thing meant to report it");
+});
+
 check("uncommitted work the arm never touched is NEVER reverted by the guard", () => {
   withDerivedFixture((r) => {
     initGit(r);
-    // A developer legitimately has uncommitted work while the sweep runs. Reverting it would
-    // destroy that work silently — which is why the guard restores only what the arm CHANGED.
     const mine = "MY OWN UNCOMMITTED EDIT\n";
     fs.writeFileSync(path.join(r, "notes.md"), mine);
 
     const ev = runKnockout({
       root: r, entry: derivedEntry(r), baseline: derivedBaseline(r), timeoutMs: 60_000,
-      guard: createBuildStateGuard({ root: r, cacheDir: cacheFor(r, "mine") }),
+      guard: startedGuard(r, "mine"),
     });
     assert.equal(fs.readFileSync(path.join(r, "notes.md"), "utf8"), mine,
       "the guard reverted a file the arm never touched — it just deleted a developer's work");
@@ -517,25 +625,21 @@ check("uncommitted work the arm never touched is NEVER reverted by the guard", (
   });
 });
 
-/* ─── PANEL ROUND 1, HIGH #2, second half ──────────────────────────────────────────────────────
- * `git checkout -- <path>` restores the worktree FROM THE INDEX. If the suite staged its output,
- * the index holds the mutant, so the "restore" copied the mutation back over itself and left the
- * index mutated as well. The restore reads HEAD and resets both. */
+/* ─── ROUND 1 #2 / ROUND 2 #2, the INDEX ───────────────────────────────────────────────────────
+ * `git checkout -- <path>` restores the worktree FROM THE INDEX, so a suite that staged its output
+ * had the mutation copied back over itself. Reading HEAD fixes the clean-before case; a path that
+ * was ALREADY dirty needs its recorded index entry putting back, and so does a mutated SOURCE that
+ * the suite staged — which the old mutation-target exemption made worse rather than better. */
 check("a generated file the suite STAGED is reset in the index as well as the worktree", () => {
-  // A suite that stages what it generates. Contrived here, catastrophic if real: `git checkout --`
-  // restores the worktree FROM THE INDEX, so the mutant would have been copied back over itself.
   const r = buildFixture({ stageGenerated: true });
   derivedRoots.push(r);
   const git = initGit(r);
   const base = derivedBaseline(r);
-  git("reset", "-q");                       // the baseline run staged it too; start from clean
+  git("reset", "-q");
   assert.equal(git("status", "--porcelain").trim(), "", "the fixture did not start clean");
   const committed = fs.readFileSync(path.join(r, "fixture.json"), "utf8");
 
-  runKnockout({
-    root: r, entry: derivedEntry(r), baseline: base, timeoutMs: 60_000,
-    guard: createBuildStateGuard({ root: r, cacheDir: cacheFor(r, "staged") }),
-  });
+  runKnockout({ root: r, entry: derivedEntry(r), baseline: base, timeoutMs: 60_000, guard: startedGuard(r, "staged") });
   assert.equal(fs.readFileSync(path.join(r, "fixture.json"), "utf8"), committed,
     "the worktree kept the mutant's generated bytes");
   assert.equal(git("diff", "--cached", "--name-only").trim(), "",
@@ -555,41 +659,144 @@ check("ANTI-VACUITY: the staging fixture really does stage a mutant", () => {
     "the fixture never staged anything, so the arm above proves nothing about the index");
 });
 
-/* ─── PANEL ROUND 1, HIGH #3 ───────────────────────────────────────────────────────────────────
- * Declining to CORRUPT another live run is not the same as declining to RACE it. The first version
- * did the first and then carried on, resnapshotted, and overwrote the other run's marker. */
-check("a LIVE marker is a LOCK: the second runner refuses to start, and mutates nothing", () => {
+check("an ALREADY-DIRTY file the suite stages gets BOTH its bytes and its index entry back", () => {
+  const r = buildFixture({ stageGenerated: true });
+  derivedRoots.push(r);
+  const git = initGit(r);
+  const base = derivedBaseline(r);
+  git("reset", "-q");
+  // worktree != index != HEAD, the case a byte-only snapshot cannot express.
+  fs.writeFileSync(path.join(r, "fixture.json"), `{"generatedFrom":"STAGED WORK IN PROGRESS"}\n`);
+  git("add", "fixture.json");
+  const stagedEntry = git("ls-files", "-s", "--", "fixture.json").trim();
+  fs.writeFileSync(path.join(r, "fixture.json"), MINE);
+  const statusBefore = git("status", "--porcelain").trim();
+  assert.equal(statusBefore, "MM fixture.json", `the fixture is not in the intended state: ${statusBefore}`);
+
+  runKnockout({ root: r, entry: derivedEntry(r), baseline: base, timeoutMs: 60_000, guard: startedGuard(r, "dirty-staged") });
+  assert.equal(fs.readFileSync(path.join(r, "fixture.json"), "utf8"), MINE,
+    "the developer's unstaged work was lost");
+  assert.equal(git("ls-files", "-s", "--", "fixture.json").trim(), stagedEntry,
+    "the INDEX kept the mutant's content — the next `git commit` would have shipped it");
+  assert.equal(git("status", "--porcelain").trim(), statusBefore,
+    "the arm did not leave the tree in the state it found it");
+});
+
+check("a mutated SOURCE the suite stages is unstaged again", () => {
+  const r = buildFixture({ stageSubject: true });
+  derivedRoots.push(r);
+  const git = initGit(r);
+  const base = derivedBaseline(r);
+  git("reset", "-q");
+  const entryBefore = git("ls-files", "-s", "--", "subject.js").trim();
+
+  const ev = runKnockout({ root: r, entry: derivedEntry(r), baseline: base, timeoutMs: 60_000, guard: startedGuard(r, "staged-src") });
+  assert.equal(ev.restored, true, `the arm did not report a proven restore: ${ev.detail}`);
+  assert.equal(git("ls-files", "-s", "--", "subject.js").trim(), entryBefore,
+    "a MUTATED SOURCE stayed staged in the index; the worktree looked clean and the commit would " +
+      "have carried the knockout's own mutation");
+  assert.equal(git("status", "--porcelain").trim(), "", "the arm left the tree dirty");
+});
+
+/* ─── ROUND 1 #3 / ROUND 2 #3 ──────────────────────────────────────────────────────────────────
+ * Declining to CORRUPT another live run is not declining to RACE it. The marker was never a lock:
+ * two runners could both see no marker, both snapshot, and both overwrite. The lock is an O_EXCL
+ * create, and two attempts in one process are enough to prove exclusivity. */
+check("the lock is EXCLUSIVE: a second guard on the same cache cannot start", () => {
+  withDerivedFixture((r) => {
+    const cacheDir = cacheFor(r, "exclusive");
+    const first = createBuildStateGuard({ root: r, cacheDir });
+    const second = createBuildStateGuard({ root: r, cacheDir });
+    assert.equal(first.start().ok, true, "the first run could not take a free lock");
+    const blocked = second.start();
+    assert.equal(blocked.ok, false, "two runs took the same lock — nothing here is exclusive");
+    assert.equal(blocked.kind, "held");
+    assert.notEqual(first.ownerNonce, null);
+    assert.throws(() => second.beginPhase({ label: "second", sources: [] }), /another knockout run holds this tree/,
+      "the blocked run went on to snapshot and mutate anyway");
+    // ...and the loser must not have been able to touch the winner's record.
+    assert.equal(JSON.parse(fs.readFileSync(path.join(cacheDir, "lock.json"), "utf8")).nonce, first.ownerNonce);
+    assert.equal(second.release(), false, "a run that never held the lock released it");
+    assert.equal(first.release(), true, "the owner could not release its own lock");
+  });
+});
+
+check("a LIVE lock refuses a whole arm, and mutates nothing", () => {
   withDerivedFixture((r) => {
     const cacheDir = cacheFor(r, "lock");
     const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
     const pristineBuild = digestOf(path.join(r, "dist", "subject.js"));
-    createBuildStateGuard({ root: r, cacheDir }).beginArm({
-      entryId: "an-arm-in-flight-elsewhere",
-      sources: [["subject.js", pristineSource, MUTANT_SOURCE]],
-    });
+    died(r, cacheDir, { label: "an-arm-in-flight-elsewhere", sources: [["subject.js", pristineSource, MUTANT_SOURCE]] });
     // Re-stamp as a process that is certainly alive and certainly not this one, identity and all.
-    const marker = JSON.parse(fs.readFileSync(path.join(cacheDir, "inflight.json"), "utf8"));
-    fs.writeFileSync(path.join(cacheDir, "inflight.json"),
-      JSON.stringify({ ...marker, pid: 1, identity: processIdentity(1) }));
-    const markerBefore = fs.readFileSync(path.join(cacheDir, "inflight.json"), "utf8");
+    const probe = probeProcess(1);
+    restampLock(cacheDir, { pid: 1, identity: probe.identity, identityAvailable: probe.identity !== null });
+    const lockBefore = fs.readFileSync(path.join(cacheDir, "lock.json"), "utf8");
 
     const second = createBuildStateGuard({ root: r, cacheDir });
-    const held = second.recover();
-    assert.equal(held.kind, "held", "a live run's in-flight arm was not recognised as a holder");
-    assert.equal(held.pid, 1, "the refusal does not name the process that must be waited on");
+    const held = second.start();
+    assert.equal(held.ok, false, "a live run's lock was taken over");
+    assert.equal(held.kind, "held");
+    assert.match(held.detail, /pid 1|may still be alive/, "the refusal does not name the process to wait on");
 
     const ev = runKnockout({
       root: r, entry: derivedEntry(r), baseline: derivedBaseline(r), timeoutMs: 60_000, guard: second,
     });
     assert.equal(ev.verdict, VERDICT.RESTORATION_FAILED, `got ${ev.verdict}: ${ev.detail}`);
     assert.match(ev.detail, /NOTHING was mutated/);
-    assert.match(ev.detail, /pid 1/, "the refusal reaches the operator without the holder's pid");
     assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), pristineSource,
       "the second run mutated a tree another run is holding");
     assert.equal(digestOf(path.join(r, "dist", "subject.js")), pristineBuild);
-    assert.equal(fs.readFileSync(path.join(cacheDir, "inflight.json"), "utf8"), markerBefore,
-      "the second run overwrote the live run's marker, so the holder lost its own recovery record");
+    assert.equal(fs.readFileSync(path.join(cacheDir, "lock.json"), "utf8"), lockBefore,
+      "the second run overwrote the live run's lock, so the holder lost its own recovery record");
   });
+});
+
+/* ─── ROUND 2 #5 ───────────────────────────────────────────────────────────────────────────────
+ * `ps` returning nothing because a process is gone, and `ps` refusing to run at all, were the same
+ * `null` — and the second was read as "dead", so a run would start recovering a tree another run
+ * might still be holding. The reviewer's own runtime returned EPERM from `/bin/ps`, so this is a
+ * measured environment. The classifier is pure precisely so all three states are testable. */
+check("holder liveness is THREE-valued: unknown is treated exactly like live", () => {
+  const rec = { pid: 4242, identity: "Mon Jan  1 00:00:00 2020", identityAvailable: true };
+  assert.equal(classifyHolder(rec, { exists: "no", identity: null }), "DEAD",
+    "a pid that provably does not exist must be recoverable, or a crash locks the repo forever");
+  assert.equal(classifyHolder(rec, { exists: "yes", identity: rec.identity }), "LIVE");
+  assert.equal(classifyHolder(rec, { exists: "yes", identity: "Tue Feb  2 11:11:11 2021" }), "DEAD",
+    "a REUSED pid was read as the original process; the tree would never be repaired");
+  assert.equal(classifyHolder(rec, { exists: "unknown", identity: null }), "UNKNOWN",
+    "a process this machine will not answer about was declared dead");
+  assert.equal(classifyHolder(rec, { exists: "yes", identity: null }), "UNKNOWN",
+    "`ps` refused (EPERM is real: the reviewer's runtime did exactly this) and the holder was " +
+      "declared dead anyway");
+  assert.equal(classifyHolder({ pid: 4242, identity: null, identityAvailable: false }, { exists: "yes", identity: "x" }),
+    "UNKNOWN", "a lock written where `ps` was unavailable cannot later prove identity, so it is held");
+  assert.equal(classifyHolder({ pid: process.pid }, { exists: "yes", identity: null }), "SELF");
+});
+
+check("an UNKNOWN holder refuses the run rather than recovering it", () => {
+  withDerivedFixture((r) => {
+    const cacheDir = cacheFor(r, "unknown-holder");
+    const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
+    died(r, cacheDir, { sources: [["subject.js", pristineSource, MUTANT_SOURCE]] });
+    fs.writeFileSync(path.join(r, "subject.js"), MUTANT_SOURCE);
+    // pid 1 exists; the recorded lock says `ps` could not be consulted when it was written, so
+    // identity can never be compared — indeterminate, and indeterminate is held.
+    restampLock(cacheDir, { pid: 1, identity: null, identityAvailable: false });
+
+    const next = createBuildStateGuard({ root: r, cacheDir }).start();
+    assert.equal(next.ok, false, "an indeterminate holder was recovered over");
+    assert.equal(next.kind, "held");
+    assert.equal(next.certainty, "indeterminate");
+    assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), MUTANT_SOURCE,
+      "it restored a file that may belong to a run still using it");
+  });
+});
+
+check("probeProcess reports THIS process as existing, and pid 0 as absent", () => {
+  const self = probeProcess(process.pid);
+  assert.equal(self.exists, "yes");
+  assert.deepEqual(probeProcess(0), { exists: "no", identity: null });
+  assert.deepEqual(probeProcess(-1), { exists: "no", identity: null });
 });
 
 check("a guard that cannot snapshot means NO experiment happens — not a weaker one", () => {
@@ -598,7 +805,7 @@ check("a guard that cannot snapshot means NO experiment happens — not a weaker
     const pristineBuild = digestOf(path.join(r, "dist", "subject.js"));
     const ev = runKnockout({
       root: r, entry: derivedEntry(r), baseline: derivedBaseline(r), timeoutMs: 60_000,
-      guard: { recover: () => null, endArm: () => null, beginArm() { throw new Error("no room on device"); } },
+      guard: { start: () => ({ ok: true }), endArm: () => null, beginArm() { throw new Error("no room on device"); } },
     });
     assert.equal(ev.verdict, VERDICT.RESTORATION_FAILED, `got ${ev.verdict}: ${ev.detail}`);
     assert.match(ev.detail, /NOTHING was mutated/);
@@ -608,11 +815,11 @@ check("a guard that cannot snapshot means NO experiment happens — not a weaker
   });
 });
 
-/* ─── PANEL ROUND 1, HIGH #4 ───────────────────────────────────────────────────────────────────
+/* ─── ROUND 1 #4 ───────────────────────────────────────────────────────────────────────────────
  * The arm above injects a throw, which only proves the wiring. The REAL incomplete-snapshot paths
  * were the silent ones: a directory that cannot be read used to `catch { return; }` and produce a
  * SHORTER list, and a short list is not a smaller snapshot — it is a snapshot with holes that
- * restoration will never fill. This uses a genuinely unreadable directory. */
+ * restoration will never fill. */
 check("an UNREADABLE build directory refuses the arm — a short list is not a snapshot", () => {
   withDerivedFixture((r) => {
     const locked = path.join(r, "dist", "locked");
@@ -622,8 +829,6 @@ check("an UNREADABLE build directory refuses the arm — a short list is not a s
     let readable = true;
     try { fs.readdirSync(locked); } catch { readable = false; }
     try {
-      // Anti-vacuity: if the platform (or root) lets us read it anyway, this arm proves nothing and
-      // must say so rather than pass.
       assert.equal(readable, false,
         "the unreadable directory is readable here — running as root? this arm cannot measure anything");
       assert.throws(() => listBuildArtifacts(r), /cannot read/,
@@ -632,7 +837,7 @@ check("an UNREADABLE build directory refuses the arm — a short list is not a s
       const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
       const ev = runKnockout({
         root: r, entry: derivedEntry(r), baseline: derivedBaseline(r), timeoutMs: 60_000,
-        guard: createBuildStateGuard({ root: r, cacheDir: cacheFor(r, "unreadable") }),
+        guard: startedGuard(r, "unreadable"),
       });
       assert.equal(ev.verdict, VERDICT.RESTORATION_FAILED, `got ${ev.verdict}: ${ev.detail}`);
       assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), pristineSource,
@@ -643,59 +848,121 @@ check("an UNREADABLE build directory refuses the arm — a short list is not a s
   });
 });
 
-/* ─── PANEL ROUND 1, MEDIUM #6 ─────────────────────────────────────────────────────────────────
- * The walker knows one artifact root: `dist`. That is complete today because every tsconfig here
- * emits there — a convention, checked by nothing. A package emitting to `build/`, or beside its
- * sources, would be outside both the walker and (being gitignored) `git status`. */
-check("an artifact root this guard cannot see REFUSES the arm, by name", () => {
+/* ─── ROUND 2 #4 ───────────────────────────────────────────────────────────────────────────────
+ * Enumeration and hashing are two moments. A file that disappears between them used to be skipped;
+ * if it came back, restoration would delete it as "created by the arm". And a regular file swapped
+ * for a SYMLINK in that window would have been read — and later WRITTEN THROUGH — pointing this
+ * guard's restore at a path outside the repository. */
+check("a build file that VANISHES mid-snapshot refuses the arm", () => {
   withDerivedFixture((r) => {
-    fs.mkdirSync(path.join(r, "packages", "odd"), { recursive: true });
-    fs.writeFileSync(path.join(r, "packages", "odd", "package.json"), `{"name":"odd"}\n`);
-    fs.writeFileSync(path.join(r, "packages", "odd", "tsconfig.json"),
-      `{ // a package that emits somewhere this guard does not look\n  "compilerOptions": { "outDir": "build" } }\n`);
-    assert.deepEqual(unsupportedArtifactRoots(r, []), [], "an empty package list invented a problem");
-    const problems = unsupportedArtifactRoots(r, ["packages/odd"]);
-    assert.equal(problems.length, 1, "a non-dist outDir was accepted");
-    assert.match(problems[0], /outDir is "build"/);
-
-    fs.writeFileSync(path.join(r, "packages", "odd", "tsconfig.json"), `{ "compilerOptions": { } }\n`);
-    assert.match(unsupportedArtifactRoots(r, ["packages/odd"])[0], /BESIDE its sources/,
-      "a tsconfig with no outDir emits next to the sources and must not be treated as supported");
-
-    fs.writeFileSync(path.join(r, "packages", "odd", "tsconfig.json"),
-      `{ "compilerOptions": { "noEmit": true } }\n`);
-    assert.deepEqual(unsupportedArtifactRoots(r, ["packages/odd"]), [],
-      "a package that emits NOTHING has no artifact root to miss");
-
-    fs.writeFileSync(path.join(r, "packages", "odd", "tsconfig.json"),
-      `{ "compilerOptions": { "outDir": "./dist/" } }\n`);
-    assert.deepEqual(unsupportedArtifactRoots(r, ["packages/odd"]), [],
-      "the supported convention was rejected over a trailing slash");
-
-    // ...and end to end: an entry that mutates a file in that package is REFUSED before anything
-    // is written, rather than measured over a build the guard would never have restored.
-    fs.writeFileSync(path.join(r, "packages", "odd", "tsconfig.json"),
-      `{ "compilerOptions": { "outDir": "build" } }\n`);
-    fs.writeFileSync(path.join(r, "packages", "odd", "subject.js"), `${MARKER}\nexport default guard;\n`);
-    assert.equal(owningPackageDir(r, "packages/odd/subject.js"), "packages/odd");
-    const pristineSource = fs.readFileSync(path.join(r, "packages", "odd", "subject.js"), "utf8");
-    const ev = runKnockout({
-      root: r,
-      entry: { ...derivedEntry(r), file: "packages/odd/subject.js" },
-      baseline: derivedBaseline(r),
-      timeoutMs: 60_000,
-      guard: createBuildStateGuard({ root: r, cacheDir: cacheFor(r, "outdir") }),
-    });
-    assert.equal(ev.verdict, VERDICT.RESTORATION_FAILED, `got ${ev.verdict}: ${ev.detail}`);
-    assert.match(ev.detail, /unsupported artifact root/);
-    assert.equal(fs.readFileSync(path.join(r, "packages", "odd", "subject.js"), "utf8"), pristineSource,
-      "the arm mutated a package whose build output it cannot restore");
+    const guard = startedGuard(r, "vanish");
+    const real = fs.readdirSync;
+    let armed = false;
+    fs.readdirSync = (...args) => {
+      const out = real.apply(fs, args);
+      if (!armed && String(args[0]).endsWith(path.join(r, "dist"))) {
+        armed = true;
+        fs.rmSync(path.join(r, "dist", "untouched.js"), { force: true });   // gone before it is hashed
+      }
+      return out;
+    };
+    try {
+      assert.throws(() => guard.beginPhase({ label: "vanishing", sources: [] }), /vanished between enumeration and hashing/,
+        "a file that disappeared mid-snapshot left a hole the restore can never fill");
+    } finally { fs.readdirSync = real; }
   });
 });
 
-check("the real repository's own packages all satisfy the artifact-root invariant", () => {
-  const repo = path.resolve(path.dirname(new URL(import.meta.url).pathname), "..");
-  const dirs = ["", ...fs.readdirSync(path.join(repo, "packages")).map((p) => `packages/${p}`)];
+check("a build file REPLACED BY A SYMLINK is never read or written through", () => {
+  withDerivedFixture((r) => {
+    const outside = path.join(r, "..", `${path.basename(r)}-outside.txt`);
+    cacheDirs.push(outside);
+    fs.writeFileSync(outside, "a file outside the repository\n");
+    const victim = path.join(r, "dist", "untouched.js");
+    fs.rmSync(victim, { force: true });
+    fs.symlinkSync(outside, victim);
+    // The walker rejects it by dirent type, so it is simply not in the snapshot...
+    assert.ok(!listBuildArtifacts(r).includes("dist/untouched.js"),
+      "a symlink was taken into the build snapshot; restoring it would write outside the repository");
+    // ...and a direct read of that path refuses rather than following it.
+    assert.throws(() => listBuildArtifacts(path.join(r, "dist", "untouched.js")), /cannot read/);
+    assert.equal(fs.readFileSync(outside, "utf8"), "a file outside the repository\n",
+      "the guard wrote through a symlink to a path outside the repository");
+  });
+});
+
+/* ─── ROUND 1 #6 / ROUND 2 #7 ──────────────────────────────────────────────────────────────────
+ * The walker knows one artifact root: `dist`. That is complete today because every tsconfig here
+ * emits there — a convention, checked by nothing. And the CHECK was itself fail-open: an extends
+ * chain that could not be resolved left the effective outDir unknown, and unknown was accepted. */
+check("an artifact root this guard cannot see REFUSES the arm, by name", () => {
+  withDerivedFixture((r) => {
+    const odd = path.join(r, "packages", "odd");
+    fs.mkdirSync(odd, { recursive: true });
+    const write = (body) => fs.writeFileSync(path.join(odd, "tsconfig.json"), body);
+
+    write(`{ // a package that emits somewhere this guard does not look\n  "compilerOptions": { "outDir": "build" } }\n`);
+    assert.deepEqual(unsupportedArtifactRoots(r, []), [], "an empty project list invented a problem");
+    assert.match(unsupportedArtifactRoots(r, ["packages/odd"])[0], /outDir is "build"/);
+
+    write(`{ "compilerOptions": { } }\n`);
+    assert.match(unsupportedArtifactRoots(r, ["packages/odd"])[0], /BESIDE its sources/,
+      "a tsconfig with no outDir emits next to the sources and must not be treated as supported");
+
+    write(`{ "compilerOptions": { "noEmit": true } }\n`);
+    assert.deepEqual(unsupportedArtifactRoots(r, ["packages/odd"]), [],
+      "a package that emits NOTHING has no artifact root to miss");
+
+    write(`{ "compilerOptions": { "outDir": "./dist/" } }\n`);
+    assert.deepEqual(unsupportedArtifactRoots(r, ["packages/odd"]), [],
+      "the supported convention was rejected over a trailing slash");
+
+    // ── the resolution paths, every one of which used to be accepted silently ──
+    write(`{ "extends": "./missing-base" }\n`);
+    assert.match(unsupportedArtifactRoots(r, ["packages/odd"])[0], /does not exist/);
+    write(`{ "extends": "@some/tsconfig-base" }\n`);
+    assert.match(unsupportedArtifactRoots(r, ["packages/odd"])[0], /package-style base/);
+    write(`{ "extends": "./tsconfig.json" }\n`);
+    assert.match(unsupportedArtifactRoots(r, ["packages/odd"])[0], /cycle/);
+    write(`{ "compilerOptions": { "outDir": "dist" `);
+    assert.match(unsupportedArtifactRoots(r, ["packages/odd"])[0], /cannot be read or parsed/);
+
+    // ── and a resolvable chain still resolves ──
+    fs.writeFileSync(path.join(odd, "base.json"), `{ "compilerOptions": { "outDir": "dist" } }\n`);
+    write(`{ "extends": "./base" }\n`);
+    assert.deepEqual(unsupportedArtifactRoots(r, ["packages/odd"]), [],
+      "an extensionless but perfectly resolvable base was rejected");
+
+    // ── end to end: the arm is refused before anything is written ──
+    write(`{ "compilerOptions": { "outDir": "build" } }\n`);
+    const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
+    const ev = runKnockout({
+      root: r, entry: derivedEntry(r), baseline: derivedBaseline(r), timeoutMs: 60_000,
+      guard: startedGuard(r, "outdir"),
+    });
+    assert.equal(ev.verdict, VERDICT.RESTORATION_FAILED, `got ${ev.verdict}: ${ev.detail}`);
+    assert.match(ev.detail, /unsupported artifact root/);
+    assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), pristineSource,
+      "the arm mutated a tree holding a package whose build output it cannot restore");
+  });
+});
+
+check("EVERY TypeScript project is checked, not only the arm's own package", () => {
+  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-projects-"));
+  derivedRoots.push(r);
+  for (const d of ["", "packages/a", "packages/b", "packages/b/node_modules/dep", "dist/nested"]) {
+    fs.mkdirSync(path.join(r, d), { recursive: true });
+    fs.writeFileSync(path.join(r, d, "tsconfig.json"), `{ "compilerOptions": { "outDir": "dist" } }\n`);
+  }
+  assert.deepEqual(typescriptProjectDirs(r), ["", "packages/a", "packages/b"],
+    "a sibling an arbitrary suite command could build was left unchecked, or a dependency's own " +
+      "config was dragged in");
+});
+
+check("the real repository's own TypeScript projects all satisfy the artifact-root invariant", () => {
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const dirs = typescriptProjectDirs(repo);
+  assert.ok(dirs.length >= 7, `only ${dirs.length} TypeScript projects found; the walk is not seeing this repository`);
   assert.deepEqual(unsupportedArtifactRoots(repo, dirs), [],
     "a package in this repository emits where the guard cannot see it, so its knockouts would " +
       "report a clean restore over a leaked build");
@@ -718,30 +985,36 @@ check("listBuildArtifacts takes every dist/ tree and never enters node_modules",
   ], "a dependency's dist/ was snapshotted (thousands of files per arm) or a real one was missed");
 });
 
-/* NOT a git tree and CANNOT ASK git are opposite facts, and the first version returned the same
- * value for both — so a `git status` that failed inside a real repository read as "no tracked file
- * was dirty", and every generated file an arm rewrote was then left alone. */
-check("gitDirtyPaths: NULL only where there is provably nothing tracked", () => {
+/* ─── ROUND 2 #6 ───────────────────────────────────────────────────────────────────────────────
+ * "There is no work tree here" and "the probe would not answer" are opposite facts, and both were
+ * returning `false` — so a git that failed for any other reason read as "nothing is tracked", and
+ * every generated file an arm rewrote was then left alone. */
+check("gitWorkTreeState is THREE-valued; only a probe that RAN may answer 'no'", () => {
   const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-nogit-"));
   derivedRoots.push(r);
+  assert.equal(gitWorkTreeState(r), "no");
   assert.equal(isGitWorkTree(r), false);
   assert.equal(gitDirtyPaths(r), null,
-    "a non-git tree is the one place where 'nothing is tracked' is a complete answer");
+    "a proven non-work-tree is the one place where 'nothing is tracked' is a complete answer");
+
+  const gone = path.join(r, "a-directory-that-does-not-exist");
+  assert.equal(gitWorkTreeState(gone), "unknown",
+    "git could not even be launched there, and that was reported as a definite 'no'");
+  assert.throws(() => isGitWorkTree(gone), /cannot determine/);
+  assert.throws(() => gitDirtyPaths(gone), /IncompleteSnapshot|git status failed|cannot determine/);
 
   const g = fs.mkdtempSync(path.join(os.tmpdir(), "ko-git-"));
   derivedRoots.push(g);
   fs.writeFileSync(path.join(g, "a.txt"), "a\n");
+  const cfg = ["-c", "user.email=s@e.invalid", "-c", "user.name=s", "-c", "commit.gpgsign=false"];
   execFileSync("git", ["init", "-q"], { cwd: g, stdio: "pipe" });
-  execFileSync("git", ["-c", "user.email=s@e.invalid", "-c", "user.name=s", "-c", "commit.gpgsign=false",
-    "add", "-A"], { cwd: g, stdio: "pipe" });
-  execFileSync("git", ["-c", "user.email=s@e.invalid", "-c", "user.name=s", "-c", "commit.gpgsign=false",
-    "commit", "-q", "-m", "x"], { cwd: g, stdio: "pipe" });
-  assert.equal(isGitWorkTree(g), true);
+  execFileSync("git", [...cfg, "add", "-A"], { cwd: g, stdio: "pipe" });
+  execFileSync("git", [...cfg, "commit", "-q", "-m", "x"], { cwd: g, stdio: "pipe" });
+  assert.equal(gitWorkTreeState(g), "yes");
   assert.ok(gitDirtyPaths(g) instanceof Map, "a real work tree must answer with a map, not null");
 
-  // Now git is present, the tree IS a work tree, and `status` cannot run — it needs the index and
-  // `rev-parse --is-inside-work-tree` does not. That is an UNKNOWN, and the first version returned
-  // exactly the same `null` it returns for "there is nothing tracked here".
+  // git is present, the tree IS a work tree, and `status` cannot run — it needs the index and
+  // `rev-parse --is-inside-work-tree` does not.
   const indexPath = path.join(g, ".git", "index");
   fs.chmodSync(indexPath, 0o000);
   let statusRuns = true;
@@ -749,7 +1022,7 @@ check("gitDirtyPaths: NULL only where there is provably nothing tracked", () => 
   try {
     assert.equal(statusRuns, false,
       "git status still works with an unreadable index — running as root? this arm measures nothing");
-    assert.equal(isGitWorkTree(g), true, "the tree stopped identifying as a work tree; the arm is not measuring the intended case");
+    assert.equal(gitWorkTreeState(g), "yes", "the tree stopped identifying as a work tree; the arm is not measuring the intended case");
     assert.throws(() => gitDirtyPaths(g), /git status failed inside a git work tree/,
       "git failed inside a work tree and the guard reported it as 'nothing was dirty'");
   } finally {

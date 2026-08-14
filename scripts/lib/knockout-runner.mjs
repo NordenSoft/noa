@@ -308,13 +308,15 @@ const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
  *
  * ── THE CLASS, NOT THE INSTANCE ────────────────────────────────────────────────────────────────
  * The rule this restores is: **an experiment owns everything it derives.** Source is one derived
- * surface among three, and it was the only one being returned:
+ * surface among four, and it was the only one being returned:
  *
  *   1. the mutated source files            — restored + sha-verified above (was already correct)
- *   2. compiled output (`dist/`)           — RESTORED HERE, byte-exact, from a pre-mutation snapshot
- *   3. generated files that git TRACKS     — RESTORED HERE: from the arm's own byte snapshot when
- *      (conformance fixtures, vectors)       the path was already dirty, and from HEAD (index AND
- *                                            worktree) when it was clean
+ *   2. compiled output (`dist/`)           — byte-exact, from a pre-mutation snapshot
+ *   3. generated files git TRACKS          — from this run's own byte snapshot when the path was
+ *      (conformance fixtures, vectors)       already dirty, from HEAD when it was clean
+ *   4. the INDEX entry of both of those    — `git checkout --` reads FROM the index, so a suite
+ *                                            that stages its output would have had the mutation
+ *                                            restored from the very thing that needed undoing
  *
  * ── WHY A SNAPSHOT AND NOT A REBUILD ───────────────────────────────────────────────────────────
  * "Rebuild the affected package after each arm" was the obvious repair and is the weaker one.
@@ -332,33 +334,36 @@ const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
  *     mutant source is also still on disk.
  * The rebuild is kept where it belongs — as the sweep-level backstop in the caller.
  *
- * ── FAIL-CLOSED, EVERYWHERE (panel round 1, 2026-08-14: five HIGHs, all accepted) ───────────────
- * The first version of this guard was fail-OPEN in five places, and every one of them had the same
- * shape as the defect it was written to fix: something could not be verified, and the code carried
- * on as if it had been.
+ * ── FAIL-CLOSED, EVERYWHERE (panel rounds 1 and 2, 2026-08-14) ─────────────────────────────────
+ * Two adversarial rounds found thirteen ways this guard could report success it had not earned,
+ * and every one had the same shape as the defect it was written to fix: something could not be
+ * verified, and the code carried on as though it had been. The rule underneath all of them, and
+ * the one to apply to any future change here:
  *
- *   1. A failed SOURCE recovery was appended to the "restored" list, the marker was cleared, and
- *      the caller printed "the tree is back to its pre-crash state". A baseline measured over a
- *      mutant source is worse than no sweep at all. Recovery failures are now failures, the marker
- *      SURVIVES until the tree is provably clean, and the sweep refuses to start.
- *   2. An already-dirty tracked file was skipped without saving its bytes, so a generator running
- *      under the mutant could overwrite a developer's uncommitted fixture: their work destroyed,
- *      the mutant content left behind, and the residue check blind to it because the status string
- *      (` M fixture.json`) was identical before and after. Dirty tracked paths are now byte-
- *      snapshotted like everything else.
- *   3. A live marker made recovery decline — and then the run continued anyway and overwrote the
- *      marker. Declining to CORRUPT another run is not the same as declining to RACE it. The
- *      marker is now a LOCK.
- *   4. Directory-read failures, hash failures and an unavailable `git status` were swallowed, and
- *      `beginArm` still returned success. A snapshot is complete or it does not exist.
- *   5. Recovery overwrote any source whose hash differed from the recorded PRISTINE hash — which
- *      includes a legitimate edit made after the crash. The marker now also records the exact
- *      MUTANT hash, and recovery touches a file ONLY when it still holds those bytes. Anything
- *      else is reported and left alone, and the sweep refuses rather than guessing.
+ *     THIS GUARD MAY ONLY CLAIM WHAT IT CAN PROVE. WHERE IT CANNOT PROVE, THE RUN STOPS.
  *
- * The rule underneath all five: this guard may only claim what it can prove, and where it cannot
- * prove, the run stops. "The check could not run" and "the check passed" must never share an exit
- * code — the same sentence this repository already applies to its gates, applied to the instrument.
+ * Concretely, and each of these was once the opposite:
+ *   • a marker that cannot be PARSED is not "no marker" — only ENOENT is (round 2 #1);
+ *   • a recovery index that is missing or corrupt is not "an empty snapshot", which would have let
+ *     recovery DELETE real build output as though the crashed arm had created it (round 2 #1);
+ *   • a file that vanishes between enumeration and hashing is not "one fewer file to protect"
+ *     (round 2 #4), and a stored copy is not trusted until it is re-hashed against the digest it
+ *     was recorded under, in both directions;
+ *   • `ps` refusing to answer is not "the process is dead" — it is UNKNOWN, and an unknown holder
+ *     is treated exactly like a live one (round 2 #5). The reviewer's own runtime returned EPERM
+ *     from `/bin/ps`, so this is a measured environment, not a hypothetical;
+ *   • `git rev-parse` failing is not "this is not a work tree" (round 2 #6);
+ *   • a `tsconfig` whose effective `outDir` cannot be RESOLVED — a chain that extends something
+ *     missing, or a cycle — is not a package that emits to `dist` (round 2 #7);
+ *   • a marker file whose deletion failed is not a cleared marker (round 2 #1).
+ *
+ * And the tree is protected from the FIRST BASELINE, not from the first mutation (round 2 #2):
+ * `packages/evidence`'s baseline runs the fixture generator too, so a developer's uncommitted
+ * fixture could be overwritten before any arm existed to protect it.
+ *
+ * Concurrency is a real lock, not a note in a file (round 2 #3): an `O_EXCL` create, an owner
+ * nonce that must match before anything is replaced or removed, and per-run storage so two runs
+ * cannot share a byte of state even if the lock itself were ever wrong.
  */
 
 /**
@@ -369,12 +374,57 @@ const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
  */
 const skipWalk = (name) => name === "node_modules" || name.startsWith(".");
 
-/** A snapshot that could not be taken completely. Distinguished so callers can refuse, not degrade. */
+/**
+ * Anything this guard could not PROVE. Every construction site is a place the run refuses rather
+ * than continues — the type exists so a caller cannot accidentally treat one as a soft warning.
+ */
 export class IncompleteSnapshotError extends Error {
   constructor(message) {
     super(message);
     this.name = "IncompleteSnapshotError";
   }
+}
+
+const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+
+/**
+ * Read a file WITHOUT following a final symlink, and prove what was read is a regular file.
+ *
+ * The walk below rejects symlinks by their directory entry, but that check and the read that
+ * follows it are two moments. A regular file swapped for a symlink in between would have been
+ * hashed, copied and later WRITTEN THROUGH — pointing this guard's restore at a path outside the
+ * repository. `O_NOFOLLOW` closes the window at the syscall, and `fstat` on the descriptor we
+ * actually hold closes it for hard-linked and special files.
+ */
+function readFileNoFollow(abs) {
+  let fd;
+  try { fd = fs.openSync(abs, fs.constants.O_RDONLY | NOFOLLOW); }
+  catch (e) {
+    if (e && e.code === "ELOOP") {
+      throw new IncompleteSnapshotError(`${abs} became a symlink while it was being snapshotted`);
+    }
+    throw e;
+  }
+  try {
+    const st = fs.fstatSync(fd);
+    if (!st.isFile()) throw new IncompleteSnapshotError(`${abs} is not a regular file`);
+    return fs.readFileSync(fd);
+  } finally { fs.closeSync(fd); }
+}
+
+/** Write a file WITHOUT following a final symlink. Same window, the other direction. */
+function writeFileNoFollow(abs, bytes) {
+  fs.mkdirSync(path.dirname(abs), { recursive: true });
+  const flags = fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_TRUNC | NOFOLLOW;
+  let fd;
+  try { fd = fs.openSync(abs, flags, 0o644); }
+  catch (e) {
+    if (e && e.code === "ELOOP") {
+      throw new IncompleteSnapshotError(`${abs} is a symlink; refusing to write through it`);
+    }
+    throw e;
+  }
+  try { fs.writeSync(fd, bytes); } finally { fs.closeSync(fd); }
 }
 
 /**
@@ -384,10 +434,6 @@ export class IncompleteSnapshotError extends Error {
  * THROWS on any directory it cannot read. It used to `catch { return; }`, which silently produced a
  * SHORTER list — and a short list is not a smaller snapshot, it is a snapshot with holes that
  * restoration will never fill. An unreadable directory is a refusal, not a shrug.
- *
- * Symlinks are skipped rather than followed: every package links the kernel back to the repo root
- * (`packages/evidence/node_modules/noa-receipt -> ../../..`), so following them makes this tree
- * cyclic, and a symlinked file's bytes belong to whatever it points at.
  */
 export function listBuildArtifacts(root) {
   const found = [];
@@ -427,14 +473,35 @@ export function listBuildArtifacts(root) {
   return found.sort();
 }
 
-const git = (root, args) => execFileSync("git", args, {
-  cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
-});
+function runGit(root, args) {
+  return execFileSync("git", args, {
+    cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  });
+}
 
-/** Is `root` inside a git work tree at all? A definite NO is an answer; anything else is not. */
+/**
+ * THREE-VALUED, because "git would not answer" and "this is not a repository" are opposite facts
+ * and were returning the same `false`. Only a probe that RAN and said no means no.
+ */
+export function gitWorkTreeState(root) {
+  try {
+    return runGit(root, ["rev-parse", "--is-inside-work-tree"]).trim() === "true" ? "yes" : "no";
+  } catch (e) {
+    const said = `${(e && e.stderr) || ""}`;
+    if (/not a git repository|does not exist/i.test(said)) return "no";
+    return "unknown";
+  }
+}
+
+/** Boolean form for callers that must have an answer. An UNKNOWN throws rather than guessing. */
 export function isGitWorkTree(root) {
-  try { return git(root, ["rev-parse", "--is-inside-work-tree"]).trim() === "true"; }
-  catch { return false; }
+  const state = gitWorkTreeState(root);
+  if (state === "unknown") {
+    throw new IncompleteSnapshotError(
+      `cannot determine whether ${root} is a git work tree; refusing to assume it is not`,
+    );
+  }
+  return state === "yes";
 }
 
 /**
@@ -444,17 +511,15 @@ export function isGitWorkTree(root) {
  * (`core.quotePath`), and a quoted path handed back to `git checkout` names a file that does not
  * exist.
  *
- * Returns `null` ONLY when this is provably not a git work tree — there, "nothing is tracked" is a
- * complete answer. If it IS a work tree and `git status` fails, that is an UNKNOWN and it THROWS:
- * the old code returned `null` for both, and the caller read the unknown as "no tracked file was
- * dirty", which is the fail-open shape this whole guard exists to remove.
+ * Returns `null` ONLY where a probe RAN and proved there is no work tree — there, "nothing is
+ * tracked" is a complete answer. Everything else throws.
  */
 export function gitDirtyPaths(root) {
   let raw;
   try {
-    raw = git(root, ["status", "--porcelain", "-z"]);
+    raw = runGit(root, ["status", "--porcelain", "-z"]);
   } catch (e) {
-    if (!isGitWorkTree(root)) return null;
+    if (gitWorkTreeState(root) === "no") return null;
     throw new IncompleteSnapshotError(
       `git status failed inside a git work tree at ${root}: ${String(e && e.message)}`,
     );
@@ -495,6 +560,28 @@ function parseJsonc(text) {
   return JSON.parse(out);
 }
 
+/** Every directory under `root` that holds a `tsconfig.json` — i.e. everything that can emit. */
+export function typescriptProjectDirs(root) {
+  const dirs = [];
+  const walk = (relDir) => {
+    let entries;
+    try { entries = fs.readdirSync(relDir ? path.join(root, relDir) : root, { withFileTypes: true }); }
+    catch (e) {
+      throw new IncompleteSnapshotError(
+        `cannot read ${relDir || "."} while looking for TypeScript projects: ${String(e && e.message)}`,
+      );
+    }
+    for (const e of entries) {
+      const rel = relDir ? `${relDir}/${e.name}` : e.name;
+      if (e.isSymbolicLink()) continue;
+      if (e.isDirectory()) { if (!skipWalk(e.name) && e.name !== "dist") walk(rel); continue; }
+      if (e.isFile() && e.name === "tsconfig.json") dirs.push(relDir);
+    }
+  };
+  walk("");
+  return [...new Set(dirs)].sort();
+}
+
 /**
  * THE ARTIFACT-SET INVARIANT, asserted rather than assumed.
  *
@@ -504,38 +591,52 @@ function parseJsonc(text) {
  * that emitted to `build/`, or beside its sources, would be OUTSIDE both the walker and (being
  * gitignored) `git status`, and the guard would report a clean restore over a leak.
  *
- * So it is checked, per arm, for every package the arm touches: emit to `dist`, or declare
- * `noEmit`, or the arm is REFUSED by name. A future package that emits somewhere else fails loudly
- * on the first knockout that touches it instead of quietly widening the hole.
+ * Round 2 #7: the RESOLUTION was itself fail-open. An `extends` that pointed at something missing,
+ * an extensionless base, a package-style base, a cycle, or a chain longer than the hop limit all
+ * left the effective options unknown — and unknown was being accepted. A tsconfig whose `outDir`
+ * cannot be resolved is now a refusal, in exactly the same way as one that resolves to the wrong
+ * place, because the two are indistinguishable from the outside.
  */
-export function unsupportedArtifactRoots(root, packageDirs) {
+export function unsupportedArtifactRoots(root, projectDirs) {
   const problems = [];
-  for (const rel of new Set(packageDirs)) {
-    const dir = path.join(root, rel);
-    const tsconfigPath = path.join(dir, "tsconfig.json");
-    let config;
-    let seen = 0;
-    let current = tsconfigPath;
+  const MAX_HOPS = 8;
+  for (const rel of [...new Set(projectDirs)].sort()) {
+    const start = path.join(root, rel, "tsconfig.json");
+    if (!fs.existsSync(start)) continue;                 // nothing here emits; nothing to miss
+    const name = rel || ".";
+    const seen = new Set();
+    let current = start;
     let options = null;
-    while (seen++ < 8) {
-      if (!fs.existsSync(current)) break;
-      try { config = parseJsonc(fs.readFileSync(current, "utf8")); }
-      catch (e) {
-        problems.push(`${rel || "."}: cannot parse ${path.relative(root, current)} (${String(e && e.message)})`);
-        options = "unreadable";
-        break;
-      }
-      const co = config.compilerOptions ?? {};
+    let unresolved = null;
+    for (let hop = 0; ; hop++) {
+      if (hop >= MAX_HOPS) { unresolved = `its extends chain is longer than ${MAX_HOPS} hops`; break; }
+      const key = path.resolve(current);
+      if (seen.has(key)) { unresolved = "its extends chain is a cycle"; break; }
+      seen.add(key);
+      let config;
+      try { config = parseJsonc(readFileNoFollow(current).toString("utf8")); }
+      catch (e) { unresolved = `${path.relative(root, current)} cannot be read or parsed (${String(e && e.message)})`; break; }
+      const co = (config && typeof config.compilerOptions === "object" && config.compilerOptions) || {};
       if (co.noEmit === true || typeof co.outDir === "string") { options = co; break; }
       if (typeof config.extends !== "string") { options = co; break; }
-      current = path.resolve(path.dirname(current), config.extends);
+      if (!config.extends.startsWith(".") && !path.isAbsolute(config.extends)) {
+        unresolved = `it extends the package-style base ${JSON.stringify(config.extends)}, whose outDir this guard cannot resolve`;
+        break;
+      }
+      const base = path.resolve(path.dirname(current), config.extends);
+      const candidate = fs.existsSync(base) ? base : `${base}.json`;
+      if (!fs.existsSync(candidate)) { unresolved = `it extends ${JSON.stringify(config.extends)}, which does not exist`; break; }
+      current = candidate;
     }
-    if (options === null || options === "unreadable") continue;   // no tsconfig here, or already reported
-    if (options.noEmit === true) continue;                        // nothing is emitted; nothing to snapshot
+    if (unresolved !== null) {
+      problems.push(`${name}: the effective outDir cannot be resolved — ${unresolved}`);
+      continue;
+    }
+    if (options.noEmit === true) continue;               // nothing is emitted; nothing to snapshot
     const outDir = typeof options.outDir === "string" ? options.outDir : null;
     if (outDir === null) {
       problems.push(
-        `${rel || "."}: tsconfig.json emits BESIDE its sources (no outDir). Compiled output would be ` +
+        `${name}: tsconfig.json emits BESIDE its sources (no outDir). Compiled output would be ` +
         `outside this guard's snapshot and outside git, so a mutant build could survive the arm`,
       );
       continue;
@@ -543,7 +644,7 @@ export function unsupportedArtifactRoots(root, packageDirs) {
     const normalized = path.normalize(outDir).replace(/[\\/]+$/, "");
     if (normalized !== "dist") {
       problems.push(
-        `${rel || "."}: tsconfig.json outDir is ${JSON.stringify(outDir)}, and this guard snapshots ` +
+        `${name}: tsconfig.json outDir is ${JSON.stringify(outDir)}, and this guard snapshots ` +
         `only "dist". The build output would not be restored`,
       );
     }
@@ -551,7 +652,7 @@ export function unsupportedArtifactRoots(root, packageDirs) {
   return problems;
 }
 
-/** Where the snapshot store and the in-flight marker live. Never inside git's view. */
+/** Where the snapshot store and the lock live. Never inside git's view. */
 function defaultArtifactCacheDir(root) {
   const nodeModules = path.join(root, "node_modules");
   if (fs.existsSync(nodeModules)) return path.join(nodeModules, ".cache", "noa-knockout");
@@ -560,109 +661,226 @@ function defaultArtifactCacheDir(root) {
   return path.join(os.tmpdir(), `noa-knockout-${sha(path.resolve(root)).slice(0, 16)}`);
 }
 
-const copyInto = (from, to) => {
-  fs.mkdirSync(path.dirname(to), { recursive: true });
-  fs.copyFileSync(from, to);
-};
-
-/** Signal 0 asks "does this pid exist?" and sends nothing. A pid we may not signal still exists. */
-const processIsAlive = (pid) => {
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
-  try { process.kill(pid, 0); return true; } catch (e) { return e && e.code === "EPERM"; }
-};
-
 /**
- * A pid is not an identity: pids are reused, and a reused pid makes a dead run look alive forever
- * while making a live run look dead the moment the number wraps. The process START TIME turns the
- * pair into something durable — the kernel will not hand out the same (pid, start time) twice.
- * `null` means the process is gone, or that this platform would not say.
+ * Does this pid exist, and what durably identifies it?
+ *
+ * THREE-VALUED (round 2 #5). `ps` returning nothing because the process is gone and `ps` refusing
+ * to run at all were the same `null`, and the second was being read as "dead" — so a run would
+ * start recovering a tree another run might still be holding. The reviewer's own runtime returned
+ * EPERM from `/bin/ps`; this is measured, not hypothetical.
+ *
+ * The identity is the process START TIME only. `comm` was in it and should not have been: it is
+ * mutable, so a process that rewrote its own name would have been read as a different process.
  */
-export function processIdentity(pid) {
-  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return null;
+export function probeProcess(pid) {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) {
+    return { exists: "no", identity: null };
+  }
+  let exists = "unknown";
+  try { process.kill(pid, 0); exists = "yes"; }
+  catch (e) {
+    if (e && e.code === "ESRCH") return { exists: "no", identity: null };
+    if (e && e.code === "EPERM") exists = "yes";          // it exists; we simply may not signal it
+  }
+  let identity = null;
   try {
-    const out = execFileSync("ps", ["-o", "lstart=,comm=", "-p", String(pid)], {
+    const out = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
       encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
     }).trim();
-    return out.length > 0 ? out.replace(/\s+/g, " ") : null;
-  } catch { return null; }
+    if (out.length > 0) identity = out.replace(/\s+/g, " ");
+    else if (exists !== "yes") return { exists: "no", identity: null };
+  } catch { identity = null; }
+  return { exists, identity };
 }
 
 /**
- * The per-arm guard over derived state. One instance per repository root, reused across arms so the
- * snapshot store is refreshed incrementally instead of rebuilt.
+ * LIVE / DEAD / UNKNOWN for a recorded lock owner. Pure, so every branch is testable without
+ * needing a real process in each state.
  *
- * Lifecycle, per arm:
- *   beginArm()  — assert the artifact roots are ones this guard can see, refresh the byte snapshot
- *                 of every `dist/` file AND of every already-dirty tracked file, record git's view
- *                 of the tree, and write an in-flight marker holding the pristine bytes and the
- *                 exact mutant hashes. Any of that failing THROWS, and the caller must not mutate.
- *   endArm()    — restore any artefact whose bytes changed, delete any that did not exist before,
- *                 put back every tracked file this arm dirtied, and clear the marker.
- *   recover()   — at startup: a surviving marker is either a LIVE run holding this tree (refuse to
- *                 start) or a dead one (repair what is PROVABLY its leftovers, and refuse to start
- *                 if anything cannot be proven). This is the crash path; no `finally` runs after
- *                 SIGKILL, and a fully synchronous sweep cannot service a signal handler.
+ * UNKNOWN is treated by every caller exactly as LIVE is: nothing is recovered, nothing is taken
+ * over, the run refuses and says what a human should check. "We could not tell" must never be the
+ * cheaper answer than "it is running".
+ */
+export function classifyHolder(record, probe) {
+  if (record && record.pid === process.pid) return "SELF";
+  if (probe.exists === "no") return "DEAD";
+  if (probe.exists === "unknown") return "UNKNOWN";
+  // The pid exists. Whether it is the SAME process needs the identity on both sides.
+  if (record && record.identityAvailable === false) return "UNKNOWN";
+  if (typeof (record && record.identity) !== "string") return "UNKNOWN";
+  if (probe.identity === null) return "UNKNOWN";
+  return probe.identity === record.identity ? "LIVE" : "DEAD";
+}
+
+/**
+ * The guard over derived state, for one repository root.
  *
- * The snapshot is taken PER ARM rather than once per sweep on purpose. Whatever is on disk when an
- * arm begins is that arm's ground truth — including a developer's own uncommitted work and
- * including anything a baseline run legitimately regenerated. The guard returns the tree to where
- * the arm found it; it never asserts a repo-wide opinion about what `dist/` "should" contain.
+ * Lifecycle:
+ *   start()        — take the EXCLUSIVE lock. If another run holds it: refuse (`held`). If a dead
+ *                    run left it: repair what is PROVABLY its leftovers and take the lock, or
+ *                    refuse (`unrepaired`). If the lock or its metadata is unreadable: refuse
+ *                    (`corrupt`). Nothing else in this object may run before this succeeds.
+ *   beginPhase()   — snapshot what the phase can change: the byte contents of every `dist/` file
+ *                    (unless the phase cannot build), the bytes AND index entry of every already-
+ *                    dirty tracked path, and, for an arm, the pristine and mutant hashes of the
+ *                    sources about to be written. Any of it failing THROWS and nothing is mutated.
+ *   endPhase()     — put all of that back and clear the marker, but ONLY if the tree is provably
+ *                    back. A cleared marker over an unrestored tree tells the next run there is
+ *                    nothing to look at.
+ *   release()      — drop the lock at the end of the run.
+ *
+ * The snapshot is taken PER PHASE rather than once, because whatever is on disk when a phase
+ * begins is that phase's ground truth — including a developer's own uncommitted work. The guard
+ * returns the tree to where the phase found it; it never asserts a repo-wide opinion about what
+ * `dist/` "should" contain.
  */
 export function createBuildStateGuard({ root, cacheDir = defaultArtifactCacheDir(root) } = {}) {
   const repoRoot = path.resolve(root);
-  const storeDir = path.join(cacheDir, "artifacts");
-  const sourceDir = path.join(cacheDir, "sources");
-  const dirtyDir = path.join(cacheDir, "dirty");
-  const indexPath = path.join(cacheDir, "index.json");
-  const markerPath = path.join(cacheDir, "inflight.json");
+  const lockPath = path.join(cacheDir, "lock.json");
 
-  /** rel → sha256 of the bytes currently held in the store. */
-  let index = new Map();
+  let owner = null;          // { nonce, pid, identity, identityAvailable, startedAt, runDir }
+  let index = new Map();     // rel → sha256 of the bytes this run's store holds
   let armed = null;
-  let inspected = null;
+  let started = null;        // the result of start(), memoised
 
-  const loadIndex = () => {
-    try { index = new Map(Object.entries(JSON.parse(fs.readFileSync(indexPath, "utf8")))); }
-    catch { index = new Map(); }
-  };
-  const saveIndex = () => {
-    fs.mkdirSync(cacheDir, { recursive: true });
-    fs.writeFileSync(indexPath, JSON.stringify(Object.fromEntries(index)));
-  };
-  /** The sha of a file, `null` if it is absent — and a THROW if it exists and cannot be read. */
-  const hashFile = (abs) => {
-    try { return sha(fs.readFileSync(abs)); }
+  const runPaths = (runDir) => ({
+    store: path.join(runDir, "artifacts"),
+    sources: path.join(runDir, "sources"),
+    dirty: path.join(runDir, "dirty"),
+    index: path.join(runDir, "index.json"),
+    marker: path.join(runDir, "inflight.json"),
+  });
+
+  const digestOfBytes = (bytes) => sha(bytes);
+
+  /** Read a tree file for snapshotting. `null` ONLY when it is provably absent. */
+  const readTreeFile = (abs) => {
+    try { return readFileNoFollow(abs); }
     catch (e) {
       if (e && e.code === "ENOENT") return null;
+      if (e instanceof IncompleteSnapshotError) throw e;
       throw new IncompleteSnapshotError(`cannot read ${path.relative(repoRoot, abs)}: ${String(e && e.message)}`);
     }
   };
 
-  /** Bring the store to the tree's CURRENT bytes. Copies only what actually differs. */
-  const syncStore = () => {
+  /** Copy a tree file into this run's store and PROVE the stored copy matches what was hashed. */
+  const storeBytes = (dest, bytes, digest) => {
+    writeFileNoFollow(dest, bytes);
+    const back = readFileNoFollow(dest);
+    if (digestOfBytes(back) !== digest) {
+      throw new IncompleteSnapshotError(`the stored copy of ${dest} does not match the bytes it was recorded under`);
+    }
+  };
+
+  /** Read back from the store, VERIFYING the digest before anything is written to the tree. */
+  const loadStored = (src, digest) => {
+    const bytes = readFileNoFollow(src);
+    if (digestOfBytes(bytes) !== digest) {
+      throw new IncompleteSnapshotError(`the stored copy at ${src} no longer matches its recorded digest`);
+    }
+    return bytes;
+  };
+
+  const saveIndex = (p) => {
+    fs.mkdirSync(path.dirname(p.index), { recursive: true });
+    writeFileNoFollow(p.index, Buffer.from(JSON.stringify(Object.fromEntries(index))));
+  };
+
+  /**
+   * Load a run's artifact index. THROWS when it is missing or corrupt while a marker exists:
+   * an "empty snapshot" would make recovery treat every real build output as something the crashed
+   * arm created, and DELETE it (round 2 #1).
+   */
+  const loadIndexOrThrow = (p) => {
+    let raw;
+    try { raw = readFileNoFollow(p.index); }
+    catch (e) {
+      if (e && e.code === "ENOENT") {
+        throw new IncompleteSnapshotError(`the interrupted run's artifact index is missing (${p.index})`);
+      }
+      throw new IncompleteSnapshotError(`the interrupted run's artifact index cannot be read: ${String(e && e.message)}`);
+    }
+    try { return new Map(Object.entries(JSON.parse(raw.toString("utf8")))); }
+    catch (e) {
+      throw new IncompleteSnapshotError(`the interrupted run's artifact index is corrupt: ${String(e && e.message)}`);
+    }
+  };
+
+  /** ENOENT means "no marker". EVERYTHING else means "refuse" (round 2 #1). */
+  const readMarkerStrict = (p) => {
+    let raw;
+    try { raw = readFileNoFollow(p.marker); }
+    catch (e) {
+      if (e && e.code === "ENOENT") return null;
+      throw new IncompleteSnapshotError(`the interrupted run's marker cannot be read: ${String(e && e.message)}`);
+    }
+    let marker;
+    try { marker = JSON.parse(raw.toString("utf8")); }
+    catch (e) {
+      throw new IncompleteSnapshotError(`the interrupted run's marker is not valid JSON: ${String(e && e.message)}`);
+    }
+    if (!marker || typeof marker !== "object" || marker.root !== repoRoot) {
+      throw new IncompleteSnapshotError(
+        `the interrupted run's marker describes ${JSON.stringify(marker && marker.root)}, not ${repoRoot}`,
+      );
+    }
+    return marker;
+  };
+
+  /** Remove a file and PROVE it is gone. A deletion that silently failed is not a deletion. */
+  const removeVerified = (p, what) => {
+    try { fs.rmSync(p, { force: true }); }
+    catch (e) { throw new IncompleteSnapshotError(`could not remove ${what} at ${p}: ${String(e && e.message)}`); }
+    if (fs.existsSync(p)) throw new IncompleteSnapshotError(`${what} at ${p} still exists after removal`);
+  };
+
+  // ── the git index, which `git checkout --` reads FROM ───────────────────────────────────────
+  const indexEntryOf = (rel) => {
+    let out;
+    try { out = runGit(repoRoot, ["ls-files", "-s", "--", rel]).trim(); }
+    catch (e) { throw new IncompleteSnapshotError(`cannot read the index entry for ${rel}: ${String(e && e.message)}`); }
+    if (out === "") return null;
+    const m = /^(\d+)\s+([0-9a-f]{40,64})\s+(\d+)\t/.exec(out);
+    if (m === null) throw new IncompleteSnapshotError(`cannot parse the index entry for ${rel}: ${JSON.stringify(out)}`);
+    return { mode: m[1], blob: m[2], stage: m[3] };
+  };
+  const sameIndexEntry = (a, b) =>
+    (a === null && b === null) || (a !== null && b !== null && a.mode === b.mode && a.blob === b.blob && a.stage === b.stage);
+  const restoreIndexEntry = (rel, want) => {
+    // The three-argument `--cacheinfo` form, not `mode,sha,path`: a repository path may contain a
+    // comma, and the packed form would split on it.
+    if (want === null) runGit(repoRoot, ["update-index", "--force-remove", "--", rel]);
+    else runGit(repoRoot, ["update-index", "--cacheinfo", want.mode, want.blob, rel]);
+  };
+
+  /** Bring this run's store to the tree's CURRENT bytes. */
+  const syncStore = (p) => {
     const present = new Set();
     for (const rel of listBuildArtifacts(repoRoot)) {
       const abs = path.join(repoRoot, rel);
-      const digest = hashFile(abs);
-      if (digest === null) continue;      // vanished between listing and hashing; it is not there to protect
+      const bytes = readTreeFile(abs);
+      if (bytes === null) {
+        // Round 2 #4: it was enumerated a moment ago and is gone now. Skipping it would leave a
+        // hole, and if it came back, restoration would delete it as "created by the arm".
+        throw new IncompleteSnapshotError(`${rel} vanished between enumeration and hashing`);
+      }
+      const digest = digestOfBytes(bytes);
       present.add(rel);
-      const stored = path.join(storeDir, rel);
-      // The index is only a claim about the store; if the stored copy is gone, believing the index
-      // would mean discovering at RESTORE time that there is nothing to restore from.
+      const stored = path.join(p.store, rel);
       if (index.get(rel) === digest && fs.existsSync(stored)) continue;
-      copyInto(abs, stored);
+      storeBytes(stored, bytes, digest);
       index.set(rel, digest);
     }
     for (const rel of [...index.keys()]) {
       if (present.has(rel)) continue;
-      try { fs.rmSync(path.join(storeDir, rel), { force: true }); } catch { /* already gone */ }
+      try { fs.rmSync(path.join(p.store, rel), { force: true }); } catch { /* already gone */ }
       index.delete(rel);
     }
-    saveIndex();
+    saveIndex(p);
   };
 
-  /** Put every derived artefact back to the bytes the store holds. Byte-exact, verified by hash. */
-  const restoreStore = () => {
+  /** Put every derived artefact back to the bytes the store holds. Byte-exact, verified twice. */
+  const restoreStore = (p) => {
     const restored = [];
     const removed = [];
     const failures = [];
@@ -675,27 +893,25 @@ export function createBuildStateGuard({ root, cacheDir = defaultArtifactCacheDir
       present.add(rel);
       const want = index.get(rel);
       if (want === undefined) {
-        // Built during the arm and absent before it: returning the tree means it goes away. It is
+        // Built during the phase and absent before it: returning the tree means it goes away. It is
         // derived from the MUTANT, so keeping it is the leak this guard exists to stop.
         try { fs.rmSync(abs, { force: true }); removed.push(rel); }
         catch (e) { failures.push(`could not delete mutant build output ${rel}: ${String(e && e.message)}`); }
         continue;
       }
-      let current;
-      try { current = hashFile(abs); }
-      catch (e) { failures.push(String(e && e.message)); continue; }
-      if (current === want) continue;
       try {
-        copyInto(path.join(storeDir, rel), abs);
+        const current = readTreeFile(abs);
+        if (current !== null && digestOfBytes(current) === want) continue;
+        writeFileNoFollow(abs, loadStored(path.join(p.store, rel), want));
         restored.push(rel);
       } catch (e) {
         failures.push(`could not restore build output ${rel}: ${String(e && e.message)}`);
       }
     }
     for (const rel of index.keys()) {
-      if (present.has(rel)) continue;   // deleted by the arm (a build that cleans its own output)
+      if (present.has(rel)) continue;   // deleted by the phase (a build that cleans its own output)
       try {
-        copyInto(path.join(storeDir, rel), path.join(repoRoot, rel));
+        writeFileNoFollow(path.join(repoRoot, rel), loadStored(path.join(p.store, rel), index.get(rel)));
         restored.push(rel);
       } catch (e) {
         failures.push(`could not restore deleted build output ${rel}: ${String(e && e.message)}`);
@@ -705,52 +921,59 @@ export function createBuildStateGuard({ root, cacheDir = defaultArtifactCacheDir
   };
 
   /**
-   * Snapshot the BYTES of every tracked path git already considers dirty.
+   * Snapshot the BYTES and the INDEX ENTRY of every tracked path that is already dirty, plus of
+   * every path this phase is about to mutate.
    *
-   * The first version of this guard only remembered that these paths were dirty, and then skipped
-   * them at restore time so as not to destroy a developer's work. That reasoning is right and the
-   * implementation inverted it: a generator running under the mutant OVERWRITES the dirty file, so
-   * skipping it destroyed exactly the work it meant to protect AND left the mutant's content
-   * behind — invisibly, because the residue check compares status STRINGS and ` M fixture.json` is
-   * ` M fixture.json` either way.
+   * Round 1 #2 was the bytes: the guard used to skip already-dirty paths so as not to destroy a
+   * developer's work, and by skipping destroyed exactly that — the phase's generator overwrites the
+   * file, so their edit was gone and the mutant's content stayed, invisibly, because the residue
+   * check compares status STRINGS and ` M fixture.json` is ` M fixture.json` either way.
+   *
+   * Round 2 #2 was the index: a path whose worktree, index and HEAD all differed got its worktree
+   * restored and its index left holding whatever the suite staged — including a staged MUTATED
+   * SOURCE, which the mutation-target exemption made worse rather than better.
    *
    * Untracked paths (`??`) are deliberately not snapshotted: porcelain collapses an untracked
-   * DIRECTORY into one entry, so this would be an unbounded copy, and nothing here ever writes to
-   * a path git does not track without also being visible some other way.
+   * DIRECTORY into one entry, so this would be an unbounded copy.
    */
-  const snapshotDirty = (dirtyBefore) => {
-    fs.mkdirSync(dirtyDir, { recursive: true });
+  const snapshotProtected = (p, dirtyBefore, targets) => {
+    fs.mkdirSync(p.dirty, { recursive: true });
     const saved = [];
     if (dirtyBefore === null) return saved;
+    const wanted = new Map();
+    for (const [rel, code] of dirtyBefore) if (code !== "??") wanted.set(rel, code);
+    for (const rel of targets) if (!wanted.has(rel)) wanted.set(rel, null);
     let n = 0;
-    for (const [rel, code] of dirtyBefore) {
-      if (code === "??") continue;
+    for (const [rel, code] of wanted) {
       const abs = path.join(repoRoot, rel);
-      const digest = hashFile(abs);            // throws if it exists and cannot be read
-      if (digest === null) { saved.push({ rel, code, sha: null, store: null }); continue; }
+      const bytes = readTreeFile(abs);
+      const entry = indexEntryOf(rel);
+      if (bytes === null) { saved.push({ rel, code, sha: null, store: null, entry, isTarget: targets.has(rel) }); continue; }
+      const digest = digestOfBytes(bytes);
       const store = `d${n++}`;
-      copyInto(abs, path.join(dirtyDir, store));
-      saved.push({ rel, code, sha: digest, store });
+      storeBytes(path.join(p.dirty, store), bytes, digest);
+      saved.push({ rel, code, sha: digest, store, entry, isTarget: targets.has(rel) });
     }
     return saved;
   };
 
   /**
-   * Put back every tracked file this arm dirtied.
+   * Put back every tracked file this phase disturbed.
    *
-   *   • already dirty when the arm began → restore the arm's own BYTE SNAPSHOT (the developer's
-   *     work), or delete it again if it was absent then.
-   *   • clean when the arm began → `git checkout HEAD --`, which resets the INDEX as well as the
-   *     worktree. `git checkout --` alone reads from the index, so a suite that STAGED its output
-   *     would have had its mutant restored from the very thing that needed undoing. A path that is
-   *     clean in porcelain has worktree == index == HEAD by definition, so HEAD is exactly the
-   *     pre-arm content.
-   *   • newly ADDED to the index by the arm → unstaged and reported; it is not in HEAD to restore.
+   *   • protected (already dirty, or a mutation target) → restore this run's own BYTE SNAPSHOT and
+   *     its INDEX ENTRY. A mutation target's bytes are restored by the caller and sha-verified
+   *     there; its index entry is restored here, because nothing else does.
+   *   • clean when the phase began → `git checkout HEAD --`, which resets the INDEX as well as the
+   *     worktree. A path that is clean in porcelain has worktree == index == HEAD by definition,
+   *     so HEAD is exactly the pre-phase content. Only in `tracked: "all"` mode: during the
+   *     BASELINE phase a clean-before file that changed is a real drift in the repository, and
+   *     silently reverting it would hide something the residue check should report.
+   *   • newly ADDED to the index by the phase → unstaged and reported; it is not in HEAD.
    *   • untracked → REPORTED, never deleted. Deleting a file this process cannot prove it created
-   *     is how a tool destroys work it does not own, and the residue check already refuses a run
-   *     that leaves one behind.
+   *     is how a tool destroys work it does not own. It counts as a FAILURE, so the marker cannot
+   *     clear over it (round 2 #1).
    */
-  const restoreTracked = (before, dirtySnapshot, skip) => {
+  const restoreTracked = (before, protectedPaths, mode) => {
     const reverted = [];
     const additions = [];
     const failures = [];
@@ -759,247 +982,353 @@ export function createBuildStateGuard({ root, cacheDir = defaultArtifactCacheDir
     catch (e) { return { reverted, additions, failures: [String(e && e.message)] }; }
     if (after === null || before === null) return { reverted, additions, failures };
 
-    for (const saved of dirtySnapshot) {
-      if (skip.has(saved.rel)) continue;
+    for (const saved of protectedPaths) {
       const abs = path.join(repoRoot, saved.rel);
-      let current;
-      try { current = hashFile(abs); }
-      catch (e) { failures.push(String(e && e.message)); continue; }
-      if (current === saved.sha) continue;                       // the arm never touched it
       try {
-        if (saved.store === null) fs.rmSync(abs, { force: true });
-        else copyInto(path.join(dirtyDir, saved.store), abs);
-        reverted.push(saved.rel);
+        const current = readTreeFile(abs);
+        const currentSha = current === null ? null : digestOfBytes(current);
+        // A mutation target's bytes are the caller's business (it verifies them against the
+        // pristine sha and refuses to overwrite a concurrent edit); everything else is ours.
+        if (currentSha !== saved.sha && !saved.isTarget) {
+          if (saved.store === null) fs.rmSync(abs, { force: true });
+          else writeFileNoFollow(abs, loadStored(path.join(runPathsOf().dirty, saved.store), saved.sha));
+          reverted.push(saved.rel);
+        }
+        const nowEntry = indexEntryOf(saved.rel);
+        if (!sameIndexEntry(nowEntry, saved.entry)) {
+          restoreIndexEntry(saved.rel, saved.entry);
+          if (!reverted.includes(saved.rel)) reverted.push(saved.rel);
+        }
       } catch (e) {
-        failures.push(`could not restore already-dirty ${saved.rel}: ${String(e && e.message)}`);
+        failures.push(`could not restore ${saved.rel}: ${String(e && e.message)}`);
       }
     }
 
-    for (const [p, code] of after) {
-      if (before.has(p)) continue;         // handled by the byte snapshot above
-      if (skip.has(p)) continue;           // a mutation target: restored and sha-verified separately
-      if (code === "??") { additions.push(p); continue; }
+    const protectedSet = new Set(protectedPaths.map((s) => s.rel));
+    for (const [rel, code] of after) {
+      if (protectedSet.has(rel)) continue;      // handled above
+      if (before.has(rel)) continue;            // dirty before and not protected: not ours to touch
+      if (code === "??") { additions.push(rel); continue; }
+      if (mode !== "all") continue;             // baseline phase: a real drift, left for the residue check
       if (code[0] === "A") {
-        try { git(repoRoot, ["reset", "-q", "--", p]); } catch { /* reported as an addition anyway */ }
-        additions.push(p);
+        try { runGit(repoRoot, ["reset", "-q", "--", rel]); } catch { /* reported as an addition */ }
+        additions.push(rel);
         continue;
       }
       try {
-        git(repoRoot, ["checkout", "HEAD", "--", p]);
-        reverted.push(p);
+        runGit(repoRoot, ["checkout", "HEAD", "--", rel]);
+        reverted.push(rel);
       } catch (e) {
-        failures.push(`could not revert generated file ${p}: ${String(e && e.message)}`);
+        failures.push(`could not revert generated file ${rel}: ${String(e && e.message)}`);
       }
     }
     return { reverted: reverted.sort(), additions: additions.sort(), failures };
   };
 
-  const readMarker = () => {
-    try {
-      const marker = JSON.parse(fs.readFileSync(markerPath, "utf8"));
-      return marker && marker.root === repoRoot ? marker : null;
-    } catch { return null; }
-  };
-  const clearMarker = () => { try { fs.rmSync(markerPath, { force: true }); } catch { /* nothing to clear */ } };
+  const runPathsOf = () => runPaths(owner.runDir);
 
-  /** Is the process that wrote this marker still running? Proven by identity where the platform says. */
-  const holderIsLive = (marker) => {
-    if (marker.pid === process.pid) return false;
-    const identity = processIdentity(marker.pid);
-    if (typeof marker.identity === "string") return identity !== null && identity === marker.identity;
-    return processIsAlive(marker.pid);
+  // ── the lock ────────────────────────────────────────────────────────────────────────────────
+  /** Repair a dead run's leftovers. Returns a report; `clean` decides whether its lock may be taken. */
+  const repairDeadRun = (record) => {
+    const p = runPaths(record.runDir);
+    const marker = readMarkerStrict(p);                    // throws on anything but ENOENT
+    if (marker === null) {
+      // The lock outlived its run without ever arming a phase: nothing was mutated.
+      return { clean: true, entry: "<none>", startedAt: record.startedAt, sources: [], artifacts: [], removed: [], unresolved: [], suspect: [], failures: [] };
+    }
+    index = loadIndexOrThrow(p);                           // throws when missing or corrupt
+
+    const restoredSources = [];
+    const unresolved = [];
+    const failures = [];
+    for (const s of marker.sources ?? []) {
+      const abs = path.join(repoRoot, s.rel);
+      let current;
+      try { const bytes = readTreeFile(abs); current = bytes === null ? null : digestOfBytes(bytes); }
+      catch (e) { failures.push(String(e && e.message)); continue; }
+      if (current === s.pristineSha) continue;             // its `finally` did run
+      if (current !== s.mutantSha) {
+        unresolved.push(
+          `${s.rel} holds neither the pristine bytes nor the mutation the interrupted arm wrote; ` +
+          `it was changed after the crash and this runner will not overwrite it`,
+        );
+        continue;
+      }
+      try {
+        writeFileNoFollow(abs, loadStored(path.join(p.sources, s.store), s.pristineSha));
+        const back = readTreeFile(abs);
+        if (back === null || digestOfBytes(back) !== s.pristineSha) {
+          failures.push(`${s.rel} did not return to its pristine sha256 after recovery`);
+        } else restoredSources.push(s.rel);
+      } catch (e) {
+        failures.push(`could not restore mutant source ${s.rel}: ${String(e && e.message)}`);
+      }
+    }
+
+    const artefacts = marker.artifacts === false
+      ? { restored: [], removed: [], failures: [] }
+      : restoreStore(p);
+
+    // Generated files are NOT auto-reverted here, and that is the honest limit of a crash path.
+    // During a live phase this runner is the only actor in the window, so a tracked file that went
+    // dirty is provably its output. After a crash the window is unbounded — hours, a rebase, a
+    // colleague — so there is no proof, and the rule is the same as for sources: report it, refuse,
+    // let a human look. Untracked leftovers count too (round 2 #1): a file the crashed arm created
+    // is still a file nobody has accounted for.
+    const suspect = [];
+    let dirtyNow = null;
+    try { dirtyNow = gitDirtyPaths(repoRoot); } catch (e) { failures.push(String(e && e.message)); }
+    const dirtyThen = marker.dirtyBefore == null ? null : new Map(marker.dirtyBefore);
+    if (dirtyNow !== null && dirtyThen !== null) {
+      const sourceRels = new Set((marker.sources ?? []).map((s) => s.rel));
+      for (const [rel] of dirtyNow) {
+        if (dirtyThen.has(rel) || sourceRels.has(rel)) continue;
+        suspect.push(rel);
+      }
+    }
+
+    const clean = failures.length === 0 && unresolved.length === 0 &&
+      artefacts.failures.length === 0 && suspect.length === 0;
+    return {
+      clean,
+      entry: marker.entry ?? "<unknown>",
+      startedAt: marker.startedAt ?? record.startedAt ?? "<unknown>",
+      sources: restoredSources,
+      artifacts: artefacts.restored,
+      removed: artefacts.removed,
+      unresolved, suspect,
+      failures: [...failures, ...artefacts.failures],
+    };
+  };
+
+  const readLockStrict = () => {
+    let raw;
+    try { raw = readFileNoFollow(lockPath); }
+    catch (e) {
+      if (e && e.code === "ENOENT") return null;
+      throw new IncompleteSnapshotError(`the knockout lock at ${lockPath} cannot be read: ${String(e && e.message)}`);
+    }
+    let record;
+    try { record = JSON.parse(raw.toString("utf8")); }
+    catch (e) {
+      throw new IncompleteSnapshotError(`the knockout lock at ${lockPath} is not valid JSON: ${String(e && e.message)}`);
+    }
+    if (!record || typeof record !== "object" || typeof record.nonce !== "string" ||
+        typeof record.runDir !== "string" || record.root !== repoRoot) {
+      throw new IncompleteSnapshotError(`the knockout lock at ${lockPath} does not describe a run of ${repoRoot}`);
+    }
+    return record;
+  };
+
+  /** Create the lock with O_EXCL, or say who holds it. Nothing shared is written before this wins. */
+  const tryTakeLock = () => {
+    const nonce = crypto.randomBytes(12).toString("hex");
+    const probe = probeProcess(process.pid);
+    const record = {
+      version: 3, root: repoRoot, nonce, pid: process.pid,
+      identity: probe.identity, identityAvailable: probe.identity !== null,
+      startedAt: new Date().toISOString(),
+      runDir: path.join(cacheDir, "runs", nonce),
+    };
+    fs.mkdirSync(cacheDir, { recursive: true });
+    let fd;
+    try { fd = fs.openSync(lockPath, "wx", 0o644); }
+    catch (e) {
+      if (e && e.code === "EEXIST") return null;
+      throw new IncompleteSnapshotError(`cannot create the knockout lock at ${lockPath}: ${String(e && e.message)}`);
+    }
+    try { fs.writeSync(fd, JSON.stringify(record)); } finally { fs.closeSync(fd); }
+    fs.mkdirSync(record.runDir, { recursive: true });
+    return record;
   };
 
   const guard = {
     cacheDir,
-    markerPath,
+    lockPath,
+    get ownerNonce() { return owner === null ? null : owner.nonce; },
 
     /**
-     * What does a surviving marker mean, and what did this call do about it?
-     *
-     *   null                          — nothing was in flight.
-     *   { kind: "held", pid, … }      — ANOTHER RUN OWNS THIS TREE. The caller must not start.
-     *   { kind: "repaired", … }       — a dead run's leftovers. `failures` and `unresolved` are
-     *                                   empty only when the tree is provably back; when they are
-     *                                   not, the marker is deliberately LEFT so nothing can mistake
-     *                                   the next run for a clean start.
+     * Take the lock, or refuse. Memoised: the result of the first call is the state of this run.
+     *   { ok: true, recovered? }        — this run owns the tree
+     *   { ok: false, kind: "held" }     — another run owns it, or might (UNKNOWN counts as held)
+     *   { ok: false, kind: "unrepaired" } — a dead run's leftovers could not be proven clean
+     *   { ok: false, kind: "corrupt" }  — the lock or its metadata could not be read
      */
-    recover() {
-      if (inspected !== null) return inspected;
-      loadIndex();
-      const marker = readMarker();
-      if (marker === null) { inspected = null; return null; }
-
-      if (holderIsLive(marker)) {
-        inspected = {
-          kind: "held",
-          pid: marker.pid,
-          entry: marker.entry ?? "<unknown>",
-          startedAt: marker.startedAt ?? "<unknown>",
-          markerPath,
-        };
-        return inspected;
-      }
-
-      // ── DEAD HOLDER: repair only what is PROVABLY its leftovers ────────────────────────────────
-      // A file is this arm's leftover when it still holds the exact MUTANT bytes the arm wrote.
-      // Anything else — pristine already, or something a human edited after the crash — is not
-      // ours to overwrite. The first version compared against the PRISTINE hash and rewrote
-      // everything that differed, which silently reverts a legitimate post-crash edit.
-      const restoredSources = [];
-      const unresolved = [];
-      const failures = [];
-      for (const s of marker.sources ?? []) {
-        const abs = path.join(repoRoot, s.rel);
-        let current;
-        try { current = hashFile(abs); }
-        catch (e) { failures.push(String(e && e.message)); continue; }
-        if (current === s.pristineSha) continue;                       // its `finally` did run
-        if (current !== s.mutantSha) {
-          unresolved.push(
-            `${s.rel} holds neither the pristine bytes nor the mutation the interrupted arm wrote; ` +
-            `it was edited after the crash and this runner will not overwrite it`,
-          );
-          continue;
+    start() {
+      if (started !== null) return started;
+      try {
+        let taken = tryTakeLock();
+        let recovered = null;
+        if (taken === null) {
+          const record = readLockStrict();
+          if (record === null) {
+            taken = tryTakeLock();          // it vanished between the failed create and the read
+            if (taken === null) {
+              started = { ok: false, kind: "held", detail: "the lock is being contended right now", lockPath };
+              return started;
+            }
+          } else {
+            const state = classifyHolder(record, probeProcess(record.pid));
+            if (state === "LIVE" || state === "UNKNOWN" || state === "SELF") {
+              started = {
+                ok: false, kind: "held", pid: record.pid, startedAt: record.startedAt, lockPath,
+                certainty: state === "UNKNOWN" ? "indeterminate" : "live",
+                detail: state === "UNKNOWN"
+                  ? `a run recorded as pid ${record.pid} may still be alive — this machine would not confirm either way`
+                  : `pid ${record.pid} is running`,
+              };
+              return started;
+            }
+            recovered = repairDeadRun(record);
+            if (!recovered.clean) {
+              started = { ok: false, kind: "unrepaired", lockPath, recovered };
+              return started;
+            }
+            removeVerified(path.join(record.runDir, "inflight.json"), "the interrupted run's marker");
+            removeVerified(lockPath, "the dead run's lock");
+            taken = tryTakeLock();
+            if (taken === null) {
+              started = { ok: false, kind: "held", detail: "another run took the lock during recovery", lockPath };
+              return started;
+            }
+          }
         }
-        try {
-          fs.copyFileSync(path.join(sourceDir, s.store), abs);
-          const back = hashFile(abs);
-          if (back !== s.pristineSha) {
-            failures.push(`${s.rel} did not return to its pristine sha256 after recovery`);
-          } else restoredSources.push(s.rel);
-        } catch (e) {
-          failures.push(`could not restore mutant source ${s.rel}: ${String(e && e.message)}`);
-        }
+        owner = taken;
+        index = new Map();
+        started = { ok: true, recovered };
+        return started;
+      } catch (e) {
+        if (!(e instanceof IncompleteSnapshotError)) throw e;
+        started = { ok: false, kind: "corrupt", detail: String(e.message), lockPath };
+        return started;
       }
-
-      const artefacts = restoreStore();
-
-      // Generated files are NOT auto-reverted here, and that is the honest limit of a crash path.
-      // During a live arm the runner is the only actor in the window, so a tracked file that went
-      // dirty is provably its output. After a crash the window is unbounded — hours, a rebase, a
-      // colleague — so there is no proof, and the rule is the same as for sources: report it,
-      // refuse, let a human look.
-      const suspect = [];
-      const dirtyNow = (() => { try { return gitDirtyPaths(repoRoot); } catch (e) { failures.push(String(e && e.message)); return null; } })();
-      const dirtyThen = marker.dirtyBefore == null ? null : new Map(marker.dirtyBefore);
-      if (dirtyNow !== null && dirtyThen !== null) {
-        const sourceRels = new Set((marker.sources ?? []).map((s) => s.rel));
-        for (const [p, code] of dirtyNow) {
-          if (dirtyThen.has(p) || sourceRels.has(p) || code === "??") continue;
-          suspect.push(p);
-        }
-      }
-
-      const clean = failures.length === 0 && unresolved.length === 0 &&
-        artefacts.failures.length === 0 && suspect.length === 0;
-      if (clean) clearMarker();
-      inspected = {
-        kind: "repaired",
-        entry: marker.entry ?? "<unknown>",
-        startedAt: marker.startedAt ?? "<unknown>",
-        sources: restoredSources,
-        artifacts: artefacts.restored,
-        removed: artefacts.removed,
-        unresolved,
-        suspect,
-        failures: [...failures, ...artefacts.failures],
-        markerPath,
-        markerCleared: clean,
-      };
-      return inspected;
     },
 
     /**
-     * Snapshot everything this arm may derive, and record on disk what it would take to undo the
-     * arm if this process never reaches its `finally`.
+     * Snapshot everything this phase can change, and record on disk what it would take to undo it
+     * if this process never reaches its `finally`.
      *
-     * THROWS — and the caller must then not mutate anything — when another run holds this tree,
-     * when an artifact root is one this guard cannot see, or when any part of the snapshot cannot
-     * be taken. A snapshot is complete or it does not exist.
+     * @param {object} o
+     * @param {string} o.label           what the marker will call this phase
+     * @param {Array}  [o.sources]       [rel, pristineBytes, mutantBytes] for an arm's mutations
+     * @param {boolean}[o.artifacts]     false for a phase that cannot leave a mutant build
+     * @param {"all"|"dirty-only"} [o.tracked]
      */
-    beginArm({ entryId, sources, packageDirs = [] }) {
-      const held = guard.recover();
-      if (held !== null && held.kind === "held") {
+    beginPhase({ label, sources = [], artifacts = true, tracked = "all" }) {
+      const state = guard.start();
+      if (!state.ok) {
         throw new IncompleteSnapshotError(
-          `another knockout run (pid ${held.pid}) is holding this tree at ${held.entry}`,
+          state.kind === "held"
+            ? `another knockout run holds this tree (${state.detail})`
+            : state.kind === "unrepaired"
+              ? `a previous run's leftovers could not be repaired; see ${lockPath}`
+              : `the knockout lock could not be read: ${state.detail}`,
         );
       }
-      if (held !== null && held.markerCleared === false) {
-        throw new IncompleteSnapshotError(
-          `a previous run's leftovers could not be repaired; see ${markerPath}`,
-        );
-      }
-      const started = Date.now();
+      const clock = Date.now();
+      const p = runPathsOf();
 
-      const unsupported = unsupportedArtifactRoots(repoRoot, packageDirs);
+      const unsupported = unsupportedArtifactRoots(repoRoot, typescriptProjectDirs(repoRoot));
       if (unsupported.length > 0) {
         throw new IncompleteSnapshotError(`unsupported artifact root — ${unsupported.join("; ")}`);
       }
 
-      fs.mkdirSync(sourceDir, { recursive: true });
-      syncStore();
+      fs.mkdirSync(p.sources, { recursive: true });
+      if (artifacts) syncStore(p); else saveIndex(p);
       const dirtyBefore = gitDirtyPaths(repoRoot);
-      const dirtySnapshot = snapshotDirty(dirtyBefore);
+      const targets = new Set(sources.map(([rel]) => rel));
+      const protectedPaths = snapshotProtected(p, dirtyBefore, targets);
+
       const marker = {
-        version: 2,
-        root: repoRoot,
-        pid: process.pid,
-        identity: processIdentity(process.pid),
-        nonce: crypto.randomBytes(8).toString("hex"),
-        entry: entryId,
-        startedAt: new Date().toISOString(),
+        version: 3, root: repoRoot, nonce: owner.nonce, pid: owner.pid,
+        identity: owner.identity, identityAvailable: owner.identityAvailable,
+        entry: label, startedAt: new Date().toISOString(),
+        artifacts, tracked,
         dirtyBefore: dirtyBefore === null ? null : [...dirtyBefore],
         sources: [],
       };
       let n = 0;
       for (const [rel, pristineBytes, mutantBytes] of sources) {
         const store = `s${n++}`;
-        fs.writeFileSync(path.join(sourceDir, store), pristineBytes);
-        marker.sources.push({
-          rel, store, pristineSha: sha(pristineBytes), mutantSha: sha(mutantBytes),
-        });
+        const digest = digestOfBytes(Buffer.from(pristineBytes));
+        storeBytes(path.join(p.sources, store), Buffer.from(pristineBytes), digest);
+        marker.sources.push({ rel, store, pristineSha: digest, mutantSha: sha(mutantBytes) });
       }
-      fs.writeFileSync(markerPath, JSON.stringify(marker));
-      inspected = null;   // this marker is ours; it is no longer a thing to recover from
+      writeFileNoFollow(p.marker, Buffer.from(JSON.stringify(marker)));
       // The guard's OWN cost, so the sweep can report what this protection actually charges. It
-      // must never include the suite run that happens between the two halves — a number that big
-      // would be a claim about the wrong thing.
-      armed = {
-        dirtyBefore, dirtySnapshot,
-        targets: new Set(marker.sources.map((s) => s.rel)),
-        ms: Date.now() - started,
-      };
+      // must never include the suite run that happens between the two halves.
+      armed = { dirtyBefore, protectedPaths, targets, artifacts, tracked, ms: Date.now() - clock };
       return true;
     },
 
-    /** Put the derived state back. Safe to call when no arm is in flight. */
-    endArm() {
+    /** Put the derived state back. Safe to call when no phase is in flight. */
+    endPhase() {
       if (armed === null) return null;
-      const { dirtyBefore, dirtySnapshot, targets, ms } = armed;
+      const { dirtyBefore, protectedPaths, artifacts, tracked, ms } = armed;
       armed = null;
-      const started = Date.now();
-      const artefacts = restoreStore();
-      const tracked = restoreTracked(dirtyBefore, dirtySnapshot, targets);
-      const failures = [...artefacts.failures, ...tracked.failures];
-      // The marker is the record that this tree is being held. It is cleared only when the tree is
-      // provably back — a cleared marker over an unrestored tree tells the next run there is
-      // nothing to look at.
-      if (failures.length === 0) clearMarker();
+      const clock = Date.now();
+      const p = runPathsOf();
+      const artefacts = artifacts ? restoreStore(p) : { restored: [], removed: [], failures: [] };
+      const trackedResult = restoreTracked(dirtyBefore, protectedPaths, tracked);
+      // Round 2 #1: an untracked leftover is a failure HERE, not a finding the caller derives
+      // later — otherwise the marker clears while the tree still holds a file nobody accounted for.
+      const failures = [
+        ...artefacts.failures,
+        ...trackedResult.failures,
+        ...trackedResult.additions.map((rel) =>
+          `${rel} was created by this phase and git does not track it; this runner does not remove a ` +
+          `file it cannot prove it created, so the tree is NOT as the phase found it`),
+      ];
+      if (failures.length === 0) {
+        // Only the recorded owner may remove its own marker (round 2 #3).
+        try {
+          const marker = readMarkerStrict(p);
+          if (marker !== null && marker.nonce !== owner.nonce) {
+            failures.push(`the in-flight marker belongs to run ${marker.nonce}, not to this one`);
+          } else if (marker !== null) {
+            removeVerified(p.marker, "this run's marker");
+          }
+        } catch (e) { failures.push(String(e && e.message)); }
+      }
       return {
         artifactsRestored: artefacts.restored,
         artifactsRemoved: artefacts.removed,
-        trackedReverted: tracked.reverted,
-        untrackedAdditions: tracked.additions,
+        trackedReverted: trackedResult.reverted,
+        untrackedAdditions: trackedResult.additions,
         failures,
-        ms: ms + (Date.now() - started),
+        ms: ms + (Date.now() - clock),
       };
+    },
+
+    /** An arm is a phase that mutates sources and can leave a mutant build. */
+    beginArm({ entryId, sources }) { return guard.beginPhase({ label: entryId, sources }); },
+    endArm() { return guard.endPhase(); },
+
+    /**
+     * Drop the lock — but ONLY if this run left nothing behind. A surviving in-flight marker means
+     * a phase could not return the tree, and the lock is what makes the NEXT run find that marker
+     * instead of starting on top of it. Releasing there would throw away the record of the damage.
+     */
+    release() {
+      if (owner === null) return false;
+      let released = false;
+      try {
+        const record = readLockStrict();
+        if (record !== null && record.nonce === owner.nonce && !fs.existsSync(runPathsOf().marker)) {
+          fs.rmSync(owner.runDir, { recursive: true, force: true });
+          removeVerified(lockPath, "this run's lock");
+          released = true;
+        }
+      } catch { /* a lock we cannot read is not ours to remove */ }
+      owner = null;
+      started = null;
+      return released;
     },
   };
   return guard;
 }
 
-/** One guard per repository root, so the snapshot store survives across the arms of a sweep. */
+/** One guard per repository root, so a single run holds a single lock. */
 const GUARDS = new Map();
 export function buildStateGuardFor(root) {
   const key = path.resolve(root);
@@ -1009,16 +1338,6 @@ export function buildStateGuardFor(root) {
     GUARDS.set(key, guard);
   }
   return guard;
-}
-
-/** The package directory that owns a repo-relative file — the nearest ancestor with a package.json. */
-export function owningPackageDir(root, relFile) {
-  let dir = path.dirname(relFile);
-  while (dir !== "." && dir !== path.sep && dir !== "") {
-    if (fs.existsSync(path.join(root, dir, "package.json"))) return dir;
-    dir = path.dirname(dir);
-  }
-  return "";
 }
 
 /**
@@ -1179,7 +1498,7 @@ export function runKnockout({
   // ── (1) baseline hashes, captured BEFORE anything is touched ──────────────────────────────────
   for (const rel of targets) {
     const abs = path.join(root, rel);
-    const bytes = fs.readFileSync(abs, "utf8");
+    const bytes = readFileNoFollow(abs).toString("utf8");
     pristine.set(rel, bytes);
   }
   ev.hashBefore = Object.fromEntries([...pristine].map(([k, v]) => [k, sha(v)]));
@@ -1242,13 +1561,6 @@ export function runKnockout({
         // exact mutation this arm wrote; without the mutant hash, "differs from pristine" also
         // matches a legitimate edit made after the crash, and recovery would revert a human.
         sources: [...toWrite].map(([rel, mutant]) => [rel, pristine.get(rel), mutant]),
-        // Every package this arm can cause a build in: the ones owning the mutated files, the one
-        // whose suite runs, and the repo root — whose kernel `dist/` every suite reaches through
-        // the workspace symlinks. Their artifact roots must be ones this guard can actually see.
-        packageDirs: [
-          "", entry.suite[0] === "." ? "" : entry.suite[0],
-          ...targets.map((rel) => owningPackageDir(root, rel)),
-        ],
       });
     } catch (e) {
       ev.verdict = VERDICT.RESTORATION_FAILED;
@@ -1262,7 +1574,7 @@ export function runKnockout({
     // never tries to un-write a mutation that was never applied.
     for (const [rel, src] of toWrite) {
       written.set(rel, src);
-      fs.writeFileSync(path.join(root, rel), src);
+      writeFileNoFollow(path.join(root, rel), Buffer.from(src));
     }
     ev.hashMutated = sha(mutated.get(entry.file));
     if (paired) {
@@ -1375,14 +1687,14 @@ export function runKnockout({
     for (const [rel, expectedMutant] of written) {
       try {
         const abs = path.join(root, rel);
-        const current = fs.readFileSync(abs, "utf8");
+        const current = readFileNoFollow(abs).toString("utf8");
         if (sha(current) !== sha(expectedMutant)) {
           restorationFailures.push(
             `${rel} changed unexpectedly while the suite ran; refusing to overwrite a concurrent edit`,
           );
           continue;
         }
-        fs.writeFileSync(abs, pristine.get(rel));
+        writeFileNoFollow(abs, Buffer.from(pristine.get(rel)));
       } catch (e) {
         restorationFailures.push(`could not restore ${rel}: ${String(e && e.message)}`);
       }
@@ -1423,7 +1735,7 @@ export function runKnockout({
     ev.hashAfter = {};
     for (const rel of targets) {
       try {
-        ev.hashAfter[rel] = sha(fs.readFileSync(path.join(root, rel), "utf8"));
+        ev.hashAfter[rel] = sha(readFileNoFollow(path.join(root, rel)).toString("utf8"));
       } catch (e) {
         ev.hashAfter[rel] = null;
         restorationFailures.push(`could not hash restored ${rel}: ${String(e && e.message)}`);
