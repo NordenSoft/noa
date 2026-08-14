@@ -177,6 +177,12 @@ export type StepCode =
   // step 10 (EXECUTED), and only when the bundle carries a settlement artifact (present ⇒ always
   // checked). These are the artifact-plane rules R1/R2/R3.
   | "E_SETTLEMENT_BINDING" // R1 — the artifact is not a valid, bound noa.settlement-evidence/0.1
+  // R1's two NAMED reference failures. They are members of their own rather than folded into
+  // E_SETTLEMENT_BINDING because §5.3 pins one vector to each (C.4, C.5): sharing a code makes them
+  // mutually substitutable, so a bug that reports "wrong approval" for a wrong GRANT still passes
+  // both fixtures. That is the exact bucket defect the spec names for E_SETTLEMENT_BINDING.
+  | "E_SETTLEMENT_APPROVAL_REF" // R1 — authorizationReceiptHash is not this bundle's ALLOWED receipt
+  | "E_SETTLEMENT_GRANT_REF" // R1 — executionGrantHash is not this bundle's execution grant
   | "E_SETTLEMENT_POLARITY" // R1 — a determinate non-settlement status under an EXECUTED outcome
   | "E_SETTLEMENT_CORRELATION" // R3 — the recomputed D7 nonce != the artifact's correlation
   | "E_PARAMS_PREIMAGE_MISMATCH" // R2 — a SUPPLIED preimage does not hash to paramsHash / bad shape

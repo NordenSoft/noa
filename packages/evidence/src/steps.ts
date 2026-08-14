@@ -1024,6 +1024,17 @@ function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
       }
       ctx.settlement = "CONTRADICTED";
       return fail(S, "E_PARAMS_PREIMAGE_MISMATCH", `a supplied actionParamsPreimage does not hash to the approved parameters, or is not the closed six-member shape (R2)${detail}`);
+    // R1 — the artifact points at a DIFFERENT approval, or at a DIFFERENT grant. Two codes, not one,
+    // and not the R1 catch-all: §5.3 gives each its own member precisely so they cannot substitute
+    // for each other. Folded into `E_SETTLEMENT_BINDING` (where they sat until this slice), a bug
+    // that turned "wrong approval" into "wrong grant" passed both vectors — the bucket defect the
+    // spec names for that code and then, until now, committed with these two.
+    case "AUTHORIZATION_RECEIPT_MISMATCH":
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_SETTLEMENT_APPROVAL_REF", `the settlement artifact's authorizationReceiptHash is not this bundle's ALLOWED receipt (R1)${detail}`);
+    case "EXECUTION_GRANT_MISMATCH":
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_SETTLEMENT_GRANT_REF", `the settlement artifact's executionGrantHash is not this bundle's execution grant (R1)${detail}`);
     // R3 — the recomputed D7 nonce disagrees with the artifact's correlation.
     case "SETTLEMENT_CORRELATION_MISMATCH":
       ctx.settlement = "CONTRADICTED";
