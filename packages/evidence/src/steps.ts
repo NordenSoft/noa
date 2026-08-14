@@ -914,7 +914,7 @@ function checkGrantUnexpiredAtConsumption(ctx: Ctx, S: StepName, code: StepResul
  * "independent". Mapping rather than passing through also means a new reconciler value shows up as a
  * conservative report instead of as an unexplained string in a published surface.
  */
-function observerRelationshipOf(value: unknown): VerdictDimensions["settlementObserver"] {
+export function observerRelationshipOf(value: unknown): VerdictDimensions["settlementObserver"] {
   return value === "SAME_SIGNING_KEY" || value === "SAME_ADMINISTRATIVE_PARTY" ? value : "UNKNOWN";
 }
 
@@ -931,7 +931,7 @@ function observerRelationshipOf(value: unknown): VerdictDimensions["settlementOb
  * else; a value that is not one is reported as an unrecognised warning rather than pasted verbatim,
  * so this reporting surface cannot become a channel for text this verifier did not author.
  */
-function settlementWarningsOf(warnings: unknown): string[] {
+export function settlementWarningsOf(warnings: unknown): string[] {
   const out: string[] = [];
   if (!Array.isArray(warnings)) return out;
   for (const w of warnings) {

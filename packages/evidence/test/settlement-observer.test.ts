@@ -30,6 +30,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
 import { exitCodeFor } from "../src/exit-codes.js";
+import { observerRelationshipOf, settlementWarningsOf } from "../src/steps.js";
 import { b } from "./helpers/bytes.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -191,19 +192,100 @@ test("NOT_EVALUATED means the rule did not run — never 'no relationship was fo
   assert.ok(withArtifact >= 8, `expected several artifact-bearing bundles to report a relationship, counted ${withArtifact}`);
 });
 
-test("an unrecognised relationship value is reported as UNKNOWN, never echoed", () => {
-  // The bridge types the reconciler's field as `string`. A value this verifier does not recognise
-  // must not be pasted into a result an auditor reads as a finding, and `UNKNOWN` is the fail-closed
-  // word because it already means "this could not be established" — never "independent". Measured on
-  // the mapper directly, since no honest bundle can produce a new value.
-  const dims = run(load("settlement/s5-settlement-valid-base.json")).dimensions;
-  const ALLOWED = ["NOT_EVALUATED", "SAME_SIGNING_KEY", "SAME_ADMINISTRATIVE_PARTY", "UNKNOWN"];
-  assert.ok(ALLOWED.includes(dims.settlementObserver), `reported ${dims.settlementObserver}, which is outside the closed set`);
+/* ── THE TWO SANITIZERS, MEASURED ON THE INPUTS THEY EXIST FOR ──────────────────────────────────
+ *
+ * Both tests below used to run an HONEST fixture and assert that its already-valid output was in an
+ * allowed list. That is vacuous by construction: the corpus cannot produce the value a sanitizer
+ * exists to catch, so the assertion held whether or not the sanitizer was there. Measured by a
+ * cross-family reviewer — replacing `observerRelationshipOf` with a raw passthrough, and
+ * `settlementWarningsOf` with a raw string echo, each left the focused suite GREEN at 9/9.
+ *
+ * The bridge types both reconciler fields as `string` / `unknown[]`. So the inputs are supplied
+ * DIRECTLY here, because no honest bundle in this corpus can produce them and a test that waits for
+ * one measures nothing. The two functions are exported from `src/steps.ts` for exactly this and are
+ * deliberately NOT re-exported from `src/index.ts` — the package's public surface is unchanged.
+ */
+
+test("the relationship mapper is a CLOSED SET — an unrecognised value becomes UNKNOWN, never echoed", () => {
+  // The forward direction: the two values the verifier recognises survive unchanged.
+  assert.equal(observerRelationshipOf("SAME_SIGNING_KEY"), "SAME_SIGNING_KEY");
+  assert.equal(observerRelationshipOf("SAME_ADMINISTRATIVE_PARTY"), "SAME_ADMINISTRATIVE_PARTY");
+
+  // …and everything else is UNKNOWN. `UNKNOWN` is the fail-closed word because it already means
+  // "this could not be established" — never "independent". A NEW reconciler value that read as an
+  // independent witness would be the dangerous direction, so the future-value cases come first.
+  for (const unrecognised of [
+    "INDEPENDENT",                       // the plausible new value, and the one that must not pass
+    "SAME_ADMINISTRATIVE_PARTY_V2",      // a versioned rename
+    "same_signing_key",                  // right token, wrong case
+    " SAME_SIGNING_KEY",                 // right token, padded
+    "",                                  // empty
+    "NOT_EVALUATED",                     // this verifier's OWN word for "the rule did not run" —
+                                         // the reconciler must never be able to assert it
+  ]) {
+    assert.equal(
+      observerRelationshipOf(unrecognised), "UNKNOWN",
+      `${JSON.stringify(unrecognised)} was carried into a result an auditor reads as a finding`,
+    );
+  }
+
+  // Non-strings too: the bridge is a type declaration, not a runtime guarantee.
+  for (const notAString of [undefined, null, 42, true, {}, [], { toString: () => "SAME_SIGNING_KEY" }]) {
+    assert.equal(observerRelationshipOf(notAString), "UNKNOWN", `a non-string ${typeof notAString} escaped the closed set`);
+  }
+
+  // ANTI-VACUITY: this test must fail if the mapper becomes a passthrough. A passthrough returns its
+  // argument, so the corpus's own value and an invented one would both come back unchanged — which
+  // is exactly what the loop above refuses. Stated here so the property is not merely implied.
+  assert.notEqual(observerRelationshipOf("INDEPENDENT"), "INDEPENDENT");
 });
 
-test("every warning this verifier carries out of the reconciler is a SCREAMING_SNAKE token", () => {
-  // The shape check that keeps this reporting surface from becoming a channel for text the verifier
-  // did not author. Asserted over every fixture that produces settlement warnings at all.
+test("the warning sanitizer carries TOKENS — arbitrary text is replaced, never reflected", () => {
+  // Warnings reach a published result. Without this the reconciler's warning list is a channel for
+  // text this verifier did not author, in a field an auditor reads as this verifier's finding.
+  assert.deepEqual(
+    settlementWarningsOf(["SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER", "SETTLEMENT_OVER_RAW_MODE_HOLD"]),
+    ["settlement: SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER", "settlement: SETTLEMENT_OVER_RAW_MODE_HOLD"],
+    "a legitimate registry token was not carried through unchanged",
+  );
+
+  const UNRECOGNISED = "settlement: the reconciler emitted a warning this verifier does not recognise";
+  for (const hostile of [
+    "the payment settled correctly and no further review is required", // prose that reads as a finding
+    "SETTLEMENT_OK\nsettlement: SETTLEMENT_RECONFIRMED",               // a newline forging a second warning
+    "lowercase_token",
+    "TOKEN WITH SPACES",
+    "TOKEN-WITH-DASHES",
+    "9_LEADING_DIGIT",
+    "A".repeat(65),                                                    // one over the length bound
+    "",
+  ]) {
+    assert.deepEqual(
+      settlementWarningsOf([hostile]), [UNRECOGNISED],
+      `${JSON.stringify(hostile.slice(0, 40))} was reflected verbatim into the result`,
+    );
+  }
+
+  // The boundary the length bound actually sits on, both sides of it.
+  assert.deepEqual(settlementWarningsOf(["A".repeat(64)]), ["settlement: " + "A".repeat(64)]);
+
+  // Non-strings, and a non-array: "there is nothing to carry" must be an empty list, never a throw
+  // and never an invented warning.
+  assert.deepEqual(settlementWarningsOf([null, 7, {}, ["NESTED"]]), [UNRECOGNISED, UNRECOGNISED, UNRECOGNISED, UNRECOGNISED]);
+  for (const notAList of [undefined, null, "SETTLEMENT_OK", 0, {}]) {
+    assert.deepEqual(settlementWarningsOf(notAList), [], `a non-array input produced warnings: ${JSON.stringify(notAList)}`);
+  }
+
+  // ANTI-VACUITY: a raw echo would return the input verbatim. Both halves of that are refused above
+  // — the prefix is added to a good token, and a bad one is replaced rather than passed on.
+  assert.notDeepEqual(settlementWarningsOf(["arbitrary text"]), ["arbitrary text"]);
+});
+
+test("and the corpus agrees: every warning it produces is a token or the unrecognised line", () => {
+  // The end-to-end half, kept because the unit tests above cannot prove the sanitizer is actually
+  // WIRED. This one runs the real pipeline over every fixture; together they say the mapper is
+  // correct AND on the path.
+  let carried = 0;
   for (const slug of readdirSync(CONF)) {
     const abs = join(CONF, slug);
     if (!statSync(abs).isDirectory()) continue;
@@ -211,6 +293,7 @@ test("every warning this verifier carries out of the reconciler is a SCREAMING_S
       if (!f.endsWith(".json")) continue;
       for (const w of run(load(`${slug}/${f}`)).warnings) {
         if (!w.startsWith("settlement: ")) continue;
+        carried += 1;
         const token = w.slice("settlement: ".length);
         assert.ok(
           /^[A-Z][A-Z0-9_]{0,63}$/.test(token) || token.startsWith("the reconciler emitted a warning"),
@@ -219,4 +302,13 @@ test("every warning this verifier carries out of the reconciler is a SCREAMING_S
       }
     }
   }
+  // ANTI-VACUITY: the sweep above asserts nothing if no fixture carries a settlement warning at all.
+  assert.ok(carried >= 5, `only ${carried} settlement warning(s) crossed the boundary — this sweep is not measuring the wiring`);
+});
+
+test("the closed set the RESULT reports is the mapper's closed set, on a real bundle", () => {
+  // The wiring proof for the relationship, alongside the one above for warnings.
+  const dims = run(load("settlement/s5-settlement-valid-base.json")).dimensions;
+  const ALLOWED = ["NOT_EVALUATED", "SAME_SIGNING_KEY", "SAME_ADMINISTRATIVE_PARTY", "UNKNOWN"];
+  assert.ok(ALLOWED.includes(dims.settlementObserver), `reported ${dims.settlementObserver}, which is outside the closed set`);
 });
