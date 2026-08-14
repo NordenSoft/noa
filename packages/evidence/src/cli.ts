@@ -15,7 +15,7 @@
  *      reachable: the rule it named as the first that could produce it — a settlement artifact with
  *      no verifiable params preimage — shipped in slice I2, and 11 conformance fixtures now exit 6
  *      at the process boundary (`test/cli-wire.test.ts` starts a real node and reads the real
- *      status). An integrator reading the shipped source was being told to expect a status this
+ *      status). An integrator reading the shipped source was being told NOT to expect a status this
  *      binary really returns, which is the one direction a reserved-code note must never be wrong in.
  *      It is MANY-TO-ONE by design — an enrolled class with no witness, a self-witnessed one, a
  *      witness missing its coordinates, and an unverifiable-bounds settlement all land here — so the

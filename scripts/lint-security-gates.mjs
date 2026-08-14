@@ -1318,6 +1318,69 @@ for (const lint of LINTS) {
   }
 }
 
+// ── THE RATCHET, WHICH UNTIL NOW WAS ONLY A SENTENCE ───────────────────────────────────────────
+//
+// The line above says "the count may only fall" and did not implement it: it compares against a
+// BUDGET, and a budget has slack. Measured by an adversarial reviewer on 2026-08-15 — L10 relay sat
+// at 37 against a budget of 38, L8 adapter-core at 143 against 144, L8 mcp-proxy at 37 against 47 —
+// so between one and ten new violations could enter each gate and the build stayed green. The
+// reviewer inserted a real prohibited `.map()` dispatch into the MCP proxy AUTHORIZATION path, the
+// count went 37 → 38, and this gate reported GREEN. Both the comment here and the claim in
+// 00_CURRENT_STATE.md were therefore false.
+//
+// A ratchet compares against the LAST RECORDED COUNT, not against a ceiling, and it is tight in both
+// directions: a rise is a regression and fails; a fall means the recorded number is stale and also
+// fails, with the command to re-record. Requiring that re-record is the point — an improvement
+// becomes a visible commit, and the ratchet never carries slack forward for a later regression to
+// spend.
+const RATCHET_FILE = path.join(ROOT, "scripts", "security-gate-counts.json");
+const ratchetable = summary.filter((s) => s.mode === "warn" && typeof s.count === "number" && s.count >= 0);
+
+if (process.argv.includes("--write-security-counts")) {
+  const next = Object.fromEntries(ratchetable.map((s) => [s.id, s.count]).sort((a, b) => a[0].localeCompare(b[0])));
+  fs.writeFileSync(RATCHET_FILE, `${JSON.stringify(next, null, 2)}\n`);
+  console.log(`recorded ${Object.keys(next).length} warn-mode count(s) to ${path.relative(ROOT, RATCHET_FILE)}`);
+  process.exit(0);
+}
+
+let recorded = null;
+try {
+  recorded = JSON.parse(fs.readFileSync(RATCHET_FILE, "utf8"));
+} catch {
+  add("RATCHET", path.relative(ROOT, RATCHET_FILE), 0,
+    `the recorded warn-mode counts are missing or unreadable, so no regression can be detected. ` +
+    `Create them: node scripts/lint-security-gates.mjs --write-security-counts`);
+  exitCode = 1;
+}
+if (recorded) {
+  for (const s of ratchetable) {
+    const was = recorded[s.id];
+    if (typeof was !== "number") {
+      add("RATCHET", "-", 0,
+        `${s.id} has no recorded count, so it has no ratchet and any number of new violations would ` +
+        `pass. Record it: node scripts/lint-security-gates.mjs --write-security-counts`);
+      exitCode = 1;
+    } else if (s.count > was) {
+      add("RATCHET", "-", 0,
+        `REGRESSION: ${s.id} rose from ${was} to ${s.count}. A warn-mode gate blocks on ANY rise — ` +
+        `that is what "the count may only fall" means, and a budget with slack is not that.`);
+      exitCode = 1;
+    } else if (s.count < was) {
+      add("RATCHET", "-", 0,
+        `${s.id} FELL from ${was} to ${s.count} — good, and the ratchet must be tightened to match or ` +
+        `it carries ${was - s.count} finding(s) of slack for a later regression to spend. ` +
+        `Re-record: node scripts/lint-security-gates.mjs --write-security-counts`);
+      exitCode = 1;
+    }
+  }
+  for (const id of Object.keys(recorded)) {
+    if (!ratchetable.some((s) => s.id === id)) {
+      add("RATCHET", "-", 0, `${id} is recorded but is no longer a warn-mode gate — re-record to drop it.`);
+      exitCode = 1;
+    }
+  }
+}
+
 // L1's registry-staleness finding blocks regardless of L1's warn mode: it is not a migration
 // scoreboard, it is "someone changed the public surface and nothing looked at it".
 if (findings.some((f) => f.lint === "L1" && f.file === "conformance/ENTRY-POINTS.md")) exitCode = 1;
@@ -1337,7 +1400,10 @@ for (const s of summary) {
 
 const blocking = findings.filter((f) => {
   const l = LINTS.find((x) => x.id === f.lint);
-  return l?.mode === "block" || f.msg.startsWith("BUDGET EXCEEDED") || f.msg.startsWith("LINT ITSELF FAILED") || f.file === "conformance/ENTRY-POINTS.md";
+  // `RATCHET` is not a lint id, so without naming it here a ratchet regression flipped the exit code
+  // while the report still printed "N warn-mode finding(s) within budget" and said nothing else. A
+  // gate that fails without saying why is only marginally better than one that does not fail.
+  return l?.mode === "block" || f.lint === "RATCHET" || f.msg.startsWith("BUDGET EXCEEDED") || f.msg.startsWith("LINT ITSELF FAILED") || f.file === "conformance/ENTRY-POINTS.md";
 });
 if (blocking.length) {
   console.error(`\n${blocking.length} BLOCKING finding(s):`);
