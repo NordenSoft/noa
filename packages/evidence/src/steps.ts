@@ -906,30 +906,6 @@ function checkGrantUnexpiredAtConsumption(ctx: Ctx, S: StepName, code: StepResul
 }
 
 /**
- * S5 REVISION 3 — THE SETTLEMENT ARTIFACT PLANE (R1/R2/R3), run INSIDE step 10 AFTER every shipped
- * EXECUTED check, and ONLY when the bundle carries a settlement artifact (present ⇒ always checked,
- * §5.2 R0). It bridges to the shipped D7 reconciler; it invents no rule of its own.
- *
- * TWO GATES, IN THIS ORDER. First `verifyArtifact` authenticates the artifact itself — schema, the
- * observer Ed25519 signature, the F15 `settlement-observer` role, revocation. Then the shipped
- * reconciler runs S4 layers 4+6 over the bundle's own documents: the hash-verified params preimage
- * (R2), the offline bounds and the RECOMPUTED D7 correlation (R3), all under the reconciler's
- * derivation-provenance rule (chainId/token/payer come only from the verified preimage, never the
- * artifact). The reconciler authenticates NOTHING itself (its own R-12b), so the verifyArtifact gate
- * is load-bearing, not decorative — a positive reconciler result over an unsigned artifact is
- * meaningless.
- *
- * WHAT THIS SLICE DECIDES, AND WHAT IT LEAVES TO ENROLMENT. No enrolment registry exists in this
- * verifier, so the class is never ENROLLED. A VALID, bound, offline artifact therefore leaves the
- * settlement dimension at the pipeline-complete default `NO_EXECUTION_BINDING` (R-DIM-1's "unenrolled,
- * valid artifact" row) — it is NOT upgraded to `ATTESTED_UNVERIFIED` or `RECONFIRMED`, because nobody
- * asked and nobody re-queried. `chainFacts` (R9) is therefore never supplied here, so no online code
- * arises. What the plane DOES decide is the fail-closed half — a supplied-but-wrong preimage, an
- * out-of-bounds coordinate, a mis-recomputed correlation, a determinate non-settlement under EXECUTED,
- * or an unbound/tampered artifact are all rejected, and a witness with no verifiable params preimage
- * is INCONCLUSIVE / `BOUNDS_UNCHECKABLE`, never a positive.
- */
-/**
  * The reconciler's relationship value, mapped through a CLOSED set.
  *
  * The bridge types this as `string`, and a value this verifier does not recognise must not be echoed
@@ -968,6 +944,30 @@ function settlementWarningsOf(warnings: unknown): string[] {
   return out;
 }
 
+/**
+ * S5 REVISION 3 — THE SETTLEMENT ARTIFACT PLANE (R1/R2/R3), run INSIDE step 10 AFTER every shipped
+ * EXECUTED check, and ONLY when the bundle carries a settlement artifact (present ⇒ always checked,
+ * §5.2 R0). It bridges to the shipped D7 reconciler; it invents no rule of its own.
+ *
+ * TWO GATES, IN THIS ORDER. First `verifyArtifact` authenticates the artifact itself — schema, the
+ * observer Ed25519 signature, the F15 `settlement-observer` role, revocation. Then the shipped
+ * reconciler runs S4 layers 4+6 over the bundle's own documents: the hash-verified params preimage
+ * (R2), the offline bounds and the RECOMPUTED D7 correlation (R3), all under the reconciler's
+ * derivation-provenance rule (chainId/token/payer come only from the verified preimage, never the
+ * artifact). The reconciler authenticates NOTHING itself (its own R-12b), so the verifyArtifact gate
+ * is load-bearing, not decorative — a positive reconciler result over an unsigned artifact is
+ * meaningless.
+ *
+ * WHAT THIS SLICE DECIDES, AND WHAT IT LEAVES TO ENROLMENT. No enrolment registry exists in this
+ * verifier, so the class is never ENROLLED. A VALID, bound, offline artifact therefore leaves the
+ * settlement dimension at the pipeline-complete default `NO_EXECUTION_BINDING` (R-DIM-1's "unenrolled,
+ * valid artifact" row) — it is NOT upgraded to `ATTESTED_UNVERIFIED` or `RECONFIRMED`, because nobody
+ * asked and nobody re-queried. `chainFacts` (R9) is therefore never supplied here, so no online code
+ * arises. What the plane DOES decide is the fail-closed half — a supplied-but-wrong preimage, an
+ * out-of-bounds coordinate, a mis-recomputed correlation, a determinate non-settlement under EXECUTED,
+ * or an unbound/tampered artifact are all rejected, and a witness with no verifiable params preimage
+ * is INCONCLUSIVE / `BOUNDS_UNCHECKABLE`, never a positive.
+ */
 function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
   const b = ctx.bundle;
   if (b.settlementEvidence === undefined) {
