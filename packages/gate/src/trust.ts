@@ -16,9 +16,9 @@
  * carries and the §13 verifier cross-checks — a bare, unverifiable "unknown" is never accepted.
  */
 
-import { generateKeyPairSync, randomUUID } from "node:crypto";
+import { generateKeyPairSync, randomBytes, randomUUID } from "node:crypto";
 import { generateKeyPair, signArtifact, refHash, type KeyEntry } from "noa-approval-artifacts";
-import { SIGNING_KEY_LIFECYCLE_SPEC, type SigningKeyLifecycle } from "noa-receipt";
+import { SIGNING_KEY_LIFECYCLE_SPEC, isHex64, type SigningKeyLifecycle } from "noa-receipt";
 import { encodeDocument } from "./bytes.js";
 
 export interface GateKeyPair {
@@ -102,12 +102,32 @@ export interface CreateTrustInput {
   now?: () => number;
   /** Deterministic id source for tests (defaults to node:crypto randomUUID). */
   ids?: () => string;
+  /**
+   * Deterministic GRANT-NONCE source for tests (defaults to 32 CSPRNG bytes as 64 lowercase hex).
+   *
+   * ── WHY GRANT NONCES ARE NOT `newId()` (S4 / R-AD-3(ii), 2026-08-13) ──────────────────────────
+   * `grant.nonce` is the `executionNonce` of the `noa.action-digest/0.1` projection, and under the
+   * S4 correlation design (D7) it is ALSO the confidentiality-critical seed of the on-chain
+   * correlation nonce: nine of the ten projection members are low-entropy or enumerable for a given
+   * tenant, so the nonce is the ONLY thing standing between a public ledger and a confirmation
+   * oracle over customers' private approvals. The real rule (corrected 2026-08-13 — an earlier
+   * revision here cited a "128-bit floor the digest spec asserts", which does not exist
+   * anywhere): the settlement-evidence spec's §3 seed rule requires `grant.nonce` to be
+   * EXACTLY 32 bytes as lowercase hex so it serves as a full-entropy D7 seed, and the grant
+   * schema pins `nonce` to `^[0-9a-f]{64}$`. `randomUUID()` satisfies neither the format nor the
+   * 32-byte full-entropy requirement. Grant IDs and every other `newId()` use are identifiers,
+   * not secrets, and stay on `randomUUID()`.
+   */
+  nonces?: () => string;
 }
 
 export interface GateTrust {
   tenant: string;
   now: () => number;
   newId: () => string;
+  /** GRANT NONCES ONLY — 32 CSPRNG bytes as 64 lowercase hex (see `CreateTrustInput.nonces`).
+   *  Never used for grant ids, hold ids, envelope nonces or any other identifier. */
+  newNonce: () => string;
 
   /** The gate signing key. GATE + `hold-signer`, also the receipt signer — and `execution-signer`
    *  TOO unless `executionSigner` below is set, in which case that role has left this process. */
@@ -167,6 +187,26 @@ export interface GateTrust {
 export function createAlphaTrust(input: CreateTrustInput): GateTrust {
   const now = input.now ?? (() => Date.now());
   const newId = input.ids ?? (() => randomUUID());
+  // 32 CSPRNG bytes, hex — injectable for deterministic tests exactly the way `ids` is.
+  const nonceSource = input.nonces ?? (() => randomBytes(32).toString("hex"));
+  // EVERY draw is format-validated at the trust boundary, so an injected bad
+  // nonce source fails HERE, loudly, instead of minting schema-invalid (or worse, schema-valid
+  // but degenerate) grants that fail silently downstream. Per-call rather than a one-off probe
+  // draw at construction: a probe draw would silently shift injected deterministic sequences.
+  // Entropy is unenforceable at this boundary; format is what CAN be checked, and is.
+  const newNonce = () => {
+    const nonce = nonceSource();
+    // Validated with the kernel's captured-charCode `isHex64`, never a live `RegExp.prototype.test`
+    // (which per spec does a dynamic Get(re,"exec") and is poisonable at the prototype); the guard
+    // that refuses a bad nonce must not itself dispatch through a slot an attacker can rewrite.
+    if (!isHex64(nonce)) {
+      throw new Error(
+        "createAlphaTrust: newNonce() produced a value that is not 64 lowercase hex characters — " +
+          "grant nonces are the D7 correlation seed and must satisfy the grant schema's ^[0-9a-f]{64}$",
+      );
+    }
+    return nonce;
+  };
   const tenant = input.tenant;
   const approverRole = input.approverRole ?? "approve-critical";
 
@@ -338,6 +378,7 @@ export function createAlphaTrust(input: CreateTrustInput): GateTrust {
     tenant,
     now,
     newId,
+    newNonce,
     gate,
     ...(external ? { executionSigner: { kid: external.kid, publicKey: external.publicKey } } : {}),
     approver,

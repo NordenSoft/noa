@@ -83,7 +83,7 @@ import {
   verifyArtifact,
   type KeyEntry,
 } from "noa-approval-artifacts";
-import { verifyChain, type SigningKeyLifecycle } from "noa-receipt";
+import { verifyChain, isHex64, type SigningKeyLifecycle } from "noa-receipt";
 import { loadOrCreateKeyFile } from "noa-mcp-adapter-core";
 import { describeThrown, thrownCode } from "noa-mcp-adapter-core/safe-throw";
 import { encodeDocument } from "./bytes.js";
@@ -277,6 +277,11 @@ export function validateGrantRequest(input: ValidateGrantInput): ValidateGrantRe
   for (const f of ["grantId", "holdId", "paramsHash", "holdEnvelopeHash", "approvalReceiptHash", "issuedAt", "expiresAt", "nonce"]) {
     if (!asString(grant[f])) return refuse(`grant field ${f} is missing or not a non-empty string`);
   }
+  // `nonce` is the on-chain correlation seed (D7) and the grant schema pins `^[0-9a-f]{64}$`. Enforced
+  // HERE, before this process signs anything, so a UUID-nonce (or any non-hex64) grant costs zero
+  // signer invocations rather than being minted and rejected by every verifier downstream. The
+  // in-process `issueGrant` surface enforces the identical rule.
+  if (!isHex64(grant["nonce"])) return refuse("grant.nonce must be exactly 64 lowercase hex characters (the D7 correlation seed; grant schema ^[0-9a-f]{64}$)");
 
   const holdEnvelope = proof["holdEnvelope"];
   const decisionArtifact = proof["decisionArtifact"];

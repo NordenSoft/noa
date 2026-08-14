@@ -14,3 +14,16 @@ export {
   isAllowlistedAsset,
   ALLOWLISTED_ASSETS,
 } from "./settlement-proof.mjs";
+// S4 — layers 4+6 for `noa.settlement-evidence/0.1` over PRE-VERIFIED inputs (D7 correlation).
+// The module header carries the trust contract; a positive result over unauthenticated inputs
+// means nothing (spec R-12b).
+export {
+  reconcileSettlementEvidence,
+  validateChainFacts,
+  SETTLEMENT_EVIDENCE_SPEC,
+  CHAIN_FACTS_SPEC,
+  RAIL_FAMILIES,
+  CHAIN_FACTS_ORIGIN_RELYING_PARTY,
+  SETTLEMENT_RESULT_CODES,
+  SETTLEMENT_WARNINGS,
+} from "./settlement-evidence.mjs";

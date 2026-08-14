@@ -1,5 +1,5 @@
 {
-  "description": "nonce changed (re-signed) — replay/nonce-equality fails",
+  "description": "nonce changed (re-signed) — replay/nonce-equality fails (still schema-valid 64-hex, so the EQUALITY layer is what trips)",
   "spec": "noa.execution-grant/0.1",
   "expect": "REJECT",
   "rejectionClass": "wrong-nonce",
@@ -13,11 +13,11 @@
     "issuedAt": "2026-07-14T11:55:00.000Z",
     "expiresAt": "2026-07-14T12:30:00.000Z",
     "maxUses": 1,
-    "nonce": "attacker-nonce",
+    "nonce": "bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0bad0",
     "sig": {
       "alg": "ed25519",
       "kid": "gate-prod-1",
-      "value": "aQx6d3T/O576e/EEg4KvuX7ySfMd00SnaOfvb2WZOi1DFhFMIKQ1lKF7dHlONNirO3CKe12w1TqV88NeDXufCA=="
+      "value": "W57IIAI4rov7QYJY0Q5a/zMcgVX51AIkxLU57OdvGSKlhb0ZBR+k6AHR6vkHeNJeeDoVf/R9N5XD+59WLqh6BQ=="
     }
   },
   "context": {
@@ -25,7 +25,7 @@
     "equals": [
       {
         "path": "nonce",
-        "value": "grant-nonce-01"
+        "value": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed"
       },
       {
         "path": "maxUses",

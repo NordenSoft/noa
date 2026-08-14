@@ -702,11 +702,43 @@ const ADAPTER_CORE_OUT_OF_TCB = {
 const RAIL_X402_TCB = [
   "packages/rail-x402/src/settlement-proof.mjs",    // the settlement verdict and the consumed-nonce reconciliation
   "packages/rail-x402/src/correlation-nonce.mjs",   // derives the value the whole correlation rests on
+  // S4. `reconcileSettlementEvidence` renders the verdict-shaped §10.1 envelope for a settlement
+  // artifact — the D7 correlation recomputation, the mandate bounds, the chain reconciliation and
+  // every cap live here. It is the exact "exploitable decision in a package the layers stop short
+  // of" this inventory exists to prevent.
+  "packages/rail-x402/src/settlement-evidence.mjs",
 ];
 const RAIL_X402_OUT_OF_TCB = {
   "packages/rail-x402/src/index.mjs":
     "re-export surface only; declares no rule and makes no runtime decision",
 };
+
+/**
+ * ── THE SUBJECT SPLIT, AND WHY IT IS TWO LISTS RATHER THAN ONE ──────────────────────────────────
+ *
+ * The package was CLASSIFIED here (reconciliation, blocking) from the commit that gave it a verdict
+ * worth attacking, but L2/L3/L8 never ran over it: `rail-x402-reconcile` proves every file is
+ * accounted for, and then no layer looked inside any of them. That is the same gap this file
+ * already records twice — for `packages/relay/src` and then for adapter-core/mcp-proxy — arriving a
+ * third time by the identical route. It was found the expensive way: two independent adversarial
+ * reviews reproduced SEVEN separate verdict flips in these files by rewriting a shared builtin
+ * after load (the RFC 3339 grammar match, the epoch arithmetic, the correlation derivation's byte
+ * conversions, the coordinate normalisation, the artifact's own base64 round-trip, the reported
+ * trust-registry hash, and the byte compare behind the same-key cap), while every gate in this file
+ * printed green about the package.
+ *
+ * The subjects are split because a SHARED budget lets one file's cleanup pay for another file's
+ * regression — the exact trade this file's own budget comment forbids between packages, applied one
+ * level down. The two verifier modules are the ones this round hardened and are held at their exact
+ * measured residue; the S3 proof module is a separate, pre-existing subject with its own number.
+ */
+const RAIL_X402_VERIFIER = [
+  "packages/rail-x402/src/correlation-nonce.mjs",
+  "packages/rail-x402/src/settlement-evidence.mjs",
+];
+const RAIL_X402_PROOF = [
+  "packages/rail-x402/src/settlement-proof.mjs",
+];
 
 const MCP_PROXY_TCB = [
   "packages/mcp-proxy/src/create-proxy-server.mjs", // authorization, approval adoption and forwarding verdicts
@@ -1061,10 +1093,51 @@ const LINTS = [
     run: () => reconcilePublishedPackage({ lint: "adapter-core-reconcile", label: "adapter-core", dir: "packages/adapter-core/src", tcb: ADAPTER_CORE_TCB, outOfTcb: ADAPTER_CORE_OUT_OF_TCB }), mode: "block" },
   { id: "mcp-proxy-reconcile", name: "mcp-proxy TCB coverage (every published src .mjs/.ts file is classified)",
     run: () => reconcilePublishedPackage({ lint: "mcp-proxy-reconcile", label: "mcp-proxy", dir: "packages/mcp-proxy/src", tcb: MCP_PROXY_TCB, outOfTcb: MCP_PROXY_OUT_OF_TCB }), mode: "block" },
-  { id: "rail-x402-reconcile", what: "every rail-x402 source file is classified in exactly one of TCB / OUT_OF_TCB",
+  { id: "rail-x402-reconcile", name: "rail-x402 TCB coverage (every rail-x402 source file is classified in exactly one of TCB / OUT_OF_TCB)",
     run: () => reconcilePublishedPackage({ lint: "rail-x402-reconcile", label: "rail-x402", dir: "packages/rail-x402/src", tcb: RAIL_X402_TCB, outOfTcb: RAIL_X402_OUT_OF_TCB }), mode: "block" },
   { id: "tsa-anchor-reconcile", name: "tsa-anchor TCB coverage (every published src .mjs/.ts file is classified)",
     run: () => reconcilePublishedPackage({ lint: "tsa-anchor-reconcile", label: "tsa-anchor", dir: "packages/tsa-anchor/src", tcb: TSA_ANCHOR_TCB, outOfTcb: TSA_ANCHOR_OUT_OF_TCB }), mode: "block" },
+  // ── rail-x402: the settlement verdict path, brought under L2/L3/L8 ────────────────────────────
+  // MEASURED ON FIRST COVERAGE, 2026-08-14, before this commit's hardening: L2 44, L3 0, L8 167
+  // (settlement-evidence 136, correlation-nonce 21, settlement-proof 9). Those numbers are written
+  // down because the ones below are what is LEFT after the same commit fixed them, and a budget
+  // whose starting point nobody recorded is a number that can only be argued with.
+  //
+  //   L8-rail-x402-verifier   157 -> 8    the two modules that render and derive the verdict
+  //   L8-rail-x402-proof        9 ->  9   the S3 module, untouched by this change
+  //   L2-rail-x402-verifier    43 -> 11
+  //   L2-rail-x402-proof        1 -> 1
+  //
+  // WHAT THE VERIFIER RESIDUE IS, item by item, because an unexplained budget is a scoreboard:
+  //   • L2 11 = the module-level `const RE_… = /…/` DECLARATIONS. L2 is a per-line text scan with
+  //     no load-time exemption, so it reports the capture mechanism itself — the same false
+  //     positive the AST gate was built to stop making, which is why L8 does NOT report them. Each
+  //     pattern is compiled once at module evaluation and is only ever matched through the
+  //     kernel's captured `exec`; `RegExp.prototype.test` is deliberately NOT used, because `test`
+  //     performs a dynamic `Get(re, "exec")` and a rewritten `exec` reaches straight through it.
+  //   • L8 5 = `instanceof` on TYPE GATES (`x instanceof Uint8Array`, `e instanceof Error`). There
+  //     is no captured brand check for a typed array, and both directions of a lying
+  //     `Symbol.hasInstance` here are fail-closed: the value is refused, or it is converted by a
+  //     captured binding that a substituted brand cannot redirect.
+  //   • L8 3 = `String(...)` on the two reason strings and the reported trust-policy hash. `String`
+  //     has no captured wrapper and is NOT interchangeable with template interpolation, which
+  //     THROWS on a Symbol and would breach the totality rule these call sites exist to keep. All
+  //     three are verdict-neutral: they build human-readable text and a reported hash, never a
+  //     comparison.
+  // The numbers may only fall, and they are written back here the day they are measured.
+  { id: "L2-rail-x402-verifier", name: "L2 primitive allowlist on the rail-x402 verifier decision path",
+    run: () => publishedL2("L2-rail-x402-verifier", "rail-x402 verifier", RAIL_X402_VERIFIER), mode: "warn", budget: 11 },
+  { id: "L2-rail-x402-proof", name: "L2 primitive allowlist on the rail-x402 settlement-proof decision path",
+    run: () => publishedL2("L2-rail-x402-proof", "rail-x402 settlement-proof", RAIL_X402_PROOF), mode: "warn", budget: 1 },
+  // L3 enters at BLOCK with no budget: measured 0 across all three modules — every module-level
+  // table in the package is built through `frozenTable`, so a zero-count gate ships blocking, per
+  // the rule at the top of this file.
+  { id: "L3-rail-x402", name: "L3 no mutable policy state on rail-x402 decision paths",
+    run: () => publishedL3("L3-rail-x402", "rail-x402", RAIL_X402_TCB), mode: "block" },
+  { id: "L8-rail-x402-verifier", name: "L8 dispatch-surface AST gate on the rail-x402 verifier decision path",
+    run: () => publishedL8("L8-rail-x402-verifier", RAIL_X402_VERIFIER), mode: "warn", budget: 8 },
+  { id: "L8-rail-x402-proof", name: "L8 dispatch-surface AST gate on the rail-x402 settlement-proof decision path",
+    run: () => publishedL8("L8-rail-x402-proof", RAIL_X402_PROOF), mode: "warn", budget: 9 },
   // MEASURED on first coverage, 2026-08-02: these two published packages contain 355 existing
   // L2/L3/L8 findings. RATCHETED 2026-08-03 after the decision paths were hardened:
   //   round 2: adapter-core L2 38->34, L8 246->200 · mcp-proxy L8 62->49 · total warn 396->330

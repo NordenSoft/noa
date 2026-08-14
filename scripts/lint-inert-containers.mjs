@@ -159,6 +159,13 @@ const ROOT_INVENTORY = {
  * L2/L8's blindness: these sites are visible and unproven, not covered.
  */
 const UNPROVEN_RATCHET = {
+  "packages/rail-x402/src/settlement-evidence.mjs": { n: 5, why:
+    "S4's settlement-evidence envelope. All 5 are `arrayPush(warnings, …)` where `warnings` is " +
+    "created by `inertBuffer()` — `objectSetPrototypeOf([], INERT_ARRAY_PROTOTYPE)` — IN THIS FILE, " +
+    "before any write, and copied out via a captured `Array.from` (CreateDataProperty). Same basis " +
+    "as settlement-proof.mjs directly below: inert IN FACT, unprovable to a layer that classifies " +
+    "receivers from declaration initialisers because a call ARGUMENT is not one. Pinned rather " +
+    "than absorbed — a 6th write is a NEW unprovable write and must be seen." },
   "packages/rail-x402/src/settlement-proof.mjs": { n: 14, why:
     "S3's settlement verdict. All 14 are `arrayPush(reasons, …)` where `reasons` is created by " +
     "`inertReasons()` — `objectSetPrototypeOf([], INERT_ARRAY_PROTOTYPE)` — IN THIS FILE, on the line " +

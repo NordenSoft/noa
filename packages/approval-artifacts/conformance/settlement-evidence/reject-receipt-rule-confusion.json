@@ -1,0 +1,140 @@
+{
+  "description": "authorizationReceiptHash computed by F1 rule b (refHash incl. sig) instead of rule a (receiptRefHash) — the exact forgery channel refhash.ts:1-6 names; RE-SIGNED under the observer key so layer 3, not layer 2, is what refuses",
+  "spec": "noa.settlement-evidence/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "cross-artifact-hash-substitution",
+  "artifact": {
+    "spec": "noa.settlement-evidence/0.1",
+    "tenant": "tenant-acme",
+    "chain": "chain-acme-1",
+    "authorizationReceiptHash": "sha256:a9c9c45165ed8f93ed15a685364d95cd9b7935a3c3faa2c18055c771dcb9686f",
+    "executionGrantHash": "sha256:226bc0786f79b27ddcf95fabfd7ec25083eb4ad42c6b78f766f36c6a3e64744c",
+    "correlation": "0xd7050b4916f6459162b0d610861a4e035ccc331a40cc6d27a453995835ddfb46",
+    "railFamily": "x402/exact/eip3009",
+    "chainWitness": {
+      "status": "SETTLED",
+      "network": "eip155:8453",
+      "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+      "payer": "0x1111111111111111111111111111111111111111",
+      "payee": "0x2222222222222222222222222222222222222222",
+      "amount": "1000000",
+      "txHash": "0xf00df00df00df00df00df00df00df00df00df00df00df00df00df00df00df00d",
+      "blockNumber": 123456,
+      "settledAt": "2026-07-14T11:57:30.000Z"
+    },
+    "railReceipt": {
+      "disclosure": "FULL",
+      "format": "x402-offer-receipt/eip712",
+      "encoding": "base64",
+      "bytes": "eyJ4NDAyIjoidGVzdC1vbmx5IG9wYXF1ZSByYWlsIHJlY2VpcHQiLCJ0eCI6IjB4ZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZGYwMGRmMDBkZjAwZCJ9"
+    },
+    "observerKid": "gate-observer-2",
+    "observedAt": "2026-07-14T11:58:00.000Z",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "gate-observer-2",
+      "value": "08fMIQ46wDa7HzKT4BUkcANS9Y3O7281RBNYD4dSfiPYV33nEYORkAQkR9DeqRJ9QDdk+FKGKz6nVBAxKxt5Cw=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "tenant",
+        "value": "tenant-acme"
+      },
+      {
+        "path": "chain",
+        "value": "chain-acme-1"
+      },
+      {
+        "path": "chainWitness.network",
+        "value": "eip155:8453"
+      },
+      {
+        "path": "chainWitness.asset",
+        "value": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"
+      },
+      {
+        "path": "chainWitness.payer",
+        "value": "0x1111111111111111111111111111111111111111"
+      }
+    ],
+    "refHashChecks": [
+      {
+        "path": "executionGrantHash",
+        "rule": "side",
+        "artifact": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "holdEnvelopeHash": "sha256:47b71f8b8416943c129da8c326578a9f75d4ddb187f3ed1291abed337ec11e8b",
+          "approvalReceiptHash": "sha256:71a9ae2ed46fcc58cc1940f943ae90d9885d15507e35382c99a51509ef20f66b",
+          "issuedAt": "2026-07-14T11:55:00.000Z",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "VmteR01cyCejrkO/3t16U8QABl9PlxDoSP9eTSEjeBGVjuv0h5KC0Szlh9EkC2PF7eEPz2h7bxtbo5DaiJkHAg=="
+          }
+        }
+      },
+      {
+        "path": "authorizationReceiptHash",
+        "rule": "receipt",
+        "artifact": {
+          "spec": "noa.receipt/0.1",
+          "id": "rcpt_allowed",
+          "ts": "2026-07-14T11:55:00.000Z",
+          "scope": {
+            "tenant": "tenant-acme",
+            "chain": "chain-acme-1"
+          },
+          "agent": {
+            "id": "approver-a",
+            "model": null,
+            "principal": "HUMAN"
+          },
+          "action": {
+            "id": "deploy.apply",
+            "canonical": "deploy.apply",
+            "riskClass": "HIGH",
+            "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "reversible": false,
+            "rollbackRef": null
+          },
+          "governance": {
+            "mode": "on",
+            "verdict": "ALLOWED",
+            "ruleId": "human-approved",
+            "approval": {
+              "by": "approver-1-device-2",
+              "at": "2026-07-14T11:55:00.000Z"
+            },
+            "sandboxed": false
+          },
+          "chain": {
+            "seq": 1,
+            "prevHash": "sha256:e31db8755f93a9c419313e6fdc7bbd3c892f1fc24feab19ef281bfd29b2d6c21",
+            "hash": "sha256:71a9ae2ed46fcc58cc1940f943ae90d9885d15507e35382c99a51509ef20f66b"
+          },
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "AA=="
+          }
+        }
+      }
+    ],
+    "mustBeWithin": [
+      {
+        "path": "observedAt",
+        "min": "2026-07-14T11:00:00.000Z",
+        "max": "2026-07-14T12:05:00.000Z"
+      }
+    ]
+  }
+}

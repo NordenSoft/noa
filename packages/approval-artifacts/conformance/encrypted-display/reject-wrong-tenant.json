@@ -1,5 +1,5 @@
 {
-  "description": "tenant does not match the expected tenant",
+  "description": "tenant does not match the expected tenant (virtual-hash pin dropped so the tenant equality is the refuser)",
   "spec": "noa.encrypted-display/0.1",
   "expect": "REJECT",
   "rejectionClass": "wrong-tenant",
@@ -34,7 +34,6 @@
         "path": "tenant",
         "value": "tenant-acme"
       }
-    ],
-    "expectVirtualHash": "sha256:0e0a6ce44061509fad8787f8a1e4beedd29050a402162d1c7f2d9984c0abab51"
+    ]
   }
 }

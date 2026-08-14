@@ -255,11 +255,11 @@
       "issuedAt": "2026-07-14T11:57:00.000Z",
       "expiresAt": "2026-07-14T12:30:00.000Z",
       "maxUses": 1,
-      "nonce": "grant-nonce-01",
+      "nonce": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "w5e7Iq3d9GIPN/xW9bGba45UmNB+k7VEW5ytrvahHNsXihUypNQ52tKQ2Jn0+3fPnLB61yf3Y1rmL7y9aIaQCw=="
+        "value": "nCSpBupbwFJf3masH/kp5DieTaSENnDd88eCHakgRCp9tS3yKMes3FCcYrDHWZ7Vws+8XA+KsrWBw6jGjRBzDg=="
       }
     }
   },

@@ -5,7 +5,7 @@ waiting to happen and, worse, a list that can drift from the code it claims to d
 
 Source: `src/index.ts` value exports, resolved through the TypeScript compiler API.
 
-- total value exports: **73**
+- total value exports: **74**
 - security-sensitive: **19**
 - security-sensitive already bytes-in: **19**
 - security-sensitive NOT yet bytes-in (ADR §3.1 target): **0**
@@ -48,6 +48,7 @@ Source: `src/index.ts` value exports, resolved through the TypeScript compiler A
 | `inertViolations` | INERT_CONSTRUCTOR | `unknown` | n/a | `src/inert.ts` | the audit walker BEHIND the policy-table control (test/security/policy-tables-inert.test.ts); reports findings, decides nothing |
 | `intrinsics` | SECURITY_SENSITIVE | `—` | n/a | `src/intrinsics.ts` |  |
 | `isFrozenSet` | INERT_CONSTRUCTOR | `unknown` | n/a | `src/inert.ts` | pure brand predicate; carries no verdict |
+| `isHex64` | UTILITY | `unknown` | n/a | `src/scan.ts` | pure charCode-scan predicate (src/scan.ts); no verdict, no attacker-owned bytes |
 | `isInertArray` | INERT_CONSTRUCTOR | `unknown` | n/a | `src/inert.ts` | pure structural predicate over a prototype identity; carries no verdict |
 | `isNFC` | UTILITY | `string` | n/a | `src/nfc.ts` | pure predicate over a string |
 | `isUint8Array` | UTILITY | `unknown` | n/a | `src/bytes.ts` | pure predicate over an internal slot |

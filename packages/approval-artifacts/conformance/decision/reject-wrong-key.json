@@ -1,5 +1,5 @@
 {
-  "description": "F15 tier: a CRITICAL-only approver key (approve-critical) may NOT sign a HIGH decision (non-overlapping tiers)",
+  "description": "F15 role: an APPROVER key holding no approve-* tier (approver-observer-8, settlement-observer only) may NOT sign a HIGH decision — equality pins dropped so the F15 role check is the refuser",
   "spec": "noa.decision/0.1",
   "expect": "REJECT",
   "rejectionClass": "wrong-key",
@@ -21,11 +21,11 @@
       "aadHash": "sha256:ac582acc9a8c5d3565a079f7ad661996b02024aba8212db07a2e68ff8cfb58d2"
     },
     "decidedAt": "2026-07-14T11:56:00.000Z",
-    "approverKid": "approver-crit-5",
+    "approverKid": "approver-observer-8",
     "sig": {
       "alg": "ed25519",
-      "kid": "approver-crit-5",
-      "value": "DU0kfyRH9zZeoIW5+9HF2CchX63IhF+7fno9hhHT20Lv7jVA6LXvciyRmiHzn6RK/q5aWT8W8c38pZyK5FLKBQ=="
+      "kid": "approver-observer-8",
+      "value": "xtL9HTx87yaR9bhiKM+qZpTCh8sfjCld4+NspOPnYDyj6IH3Z+c/jJ8ZdpSVy4Ze6a0DOSA1QBNc8MJaI9k4DA=="
     }
   },
   "context": {
@@ -35,14 +35,6 @@
       {
         "path": "reasonEncryption.recipientKid",
         "value": "audit-1"
-      },
-      {
-        "path": "approverKid",
-        "value": "approver-1-device-2"
-      },
-      {
-        "path": "sig.kid",
-        "value": "approver-1-device-2"
       }
     ],
     "refHashChecks": [

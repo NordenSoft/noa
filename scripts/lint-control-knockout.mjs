@@ -467,11 +467,17 @@ const KNOCKOUTS = [
     id: "s3-correlation-nonce-binds-seed",
     control: "S3(a) — the correlation nonce binds a high-entropy seed, so it is not a bare digest of the deal",
     file: "packages/rail-x402/src/correlation-nonce.mjs",
-    find: '  field("seed", Buffer.from(seed));',
+    // RE-PINNED when the derivation stopped feeding a live incremental hash object and started
+    // hashing ONE assembled preimage (identical bytes, identical digest — only the dispatch moved
+    // onto load-time captures). The registry CAUGHT the rot as `find` matching 0x rather than
+    // certifying a control it could no longer see, which is exactly what this layer is for, and is
+    // the second time this entry has been re-pinned by that mechanism instead of by someone
+    // remembering to.
+    find: '    label("seed", seedBytes), seedBytes,',
     // Drop the seed from the preimage and the nonce becomes a deterministic function of five PUBLIC
     // fields — exactly the refuted design: equality leaks, and an observer who can guess the deal can
     // confirm it against the chain. The dictionary-recovery test is what turns red.
-    replace: '  void seed;',
+    replace: '',
     kind: "tests",
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
@@ -487,6 +493,112 @@ const KNOCKOUTS = [
     // Without this part, a CANCELLED authorization reads as a settled payment: Circle sets the same
     // state bit for cancellation as for use, so "the nonce was consumed" is not "the money moved".
     replace: '  if (false) arrayPush(reasons, "no matching ERC-20 Transfer observed");',
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-d7-correlation-recomputed-never-accepted",
+    control: "S4/D7 — the correlation is RECOMPUTED from the bundle's own grant seed; an artifact-supplied value is never accepted",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (derivedNonceHex !== artifactCorrelationHex) {",
+    // Neutralize the comparison and the reconciler accepts whatever 32 bytes the artifact carries —
+    // exactly the sibling-seed attack: same grant, different seed, a REAL on-chain settlement, and
+    // recomputation is the only thing standing between it and a positive verdict.
+    // `reject-sibling-seed` (and every other correlation vector) is what turns red.
+    replace: "  if (false && derivedNonceHex !== artifactCorrelationHex) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-transfer-log-address-constraint",
+    control: "S4/R-19(b) — a recovered Transfer must come from the approved token CONTRACT, not merely from the payer",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (lc(transfer.address) !== approvedToken) {",
+    // Drop the address constraint and a batched transaction carrying (i) a genuine USDC Transfer
+    // payer->mallory and (ii) a worthless-token Transfer payer->approved-payee for a compliant
+    // amount recovers (ii): every bound passes, RECONFIRMED, and the money went to mallory.
+    // `reject-decoy-transfer-log` is what turns red.
+    replace: "  if (false && lc(transfer.address) !== approvedToken) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-transfer-tx-binding",
+    control: "S4 — the recovered transfer must come from the AuthorizationUsed log's OWN transaction (txHash equality)",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (lc(transfer.txHash) !== lc(log.txHash)) {",
+    // Drop the same-transaction binding and a decoy transfer in a DIFFERENT transaction — approved
+    // token, payer->approved-payee, compliant amount — reconfirms a settlement whose actual
+    // transaction paid someone else. `reject-transfer-foreign-tx` is what turns red.
+    replace: "  if (false && lc(transfer.txHash) !== lc(log.txHash)) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-authorization-state-conjunction",
+    control: "S4 — the one-log path requires authorizationState == true BEFORE the log is processed (spec §5(6) conjunction)",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (facts.authorizationState !== true) {",
+    // Skip the conjunction and a record carrying a SUCCESS log with state false — an impossible
+    // chain state no honest node returns — earns the positive. `reject-state-false-with-log` is
+    // what turns red.
+    replace: "  if (false && facts.authorizationState !== true) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-same-key-cap-on-bytes",
+    control: "S4 — the R-16 SAME_SIGNING_KEY cap keys on public-key BYTES resolved through the keyring, not on the kid string",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (artifact.observerKid === grant?.sig?.kid || sameSigningKeyMaterial) {",
+    // Revert to kid-string equality and the grant signer's key registered under a second kid — the
+    // alias registration, which is also the legitimate dual-role shape — signs 'and it settled'
+    // uncapped. `control-alias-kid-observer` is what turns red.
+    replace: "  if (artifact.observerKid === grant?.sig?.kid) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-settledat-instant-corroboration",
+    control: "S4 — R-20's settledAt arm: a reported settledAt disagreeing with the resolved blockTimestamp as INSTANTS contradicts",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "    if (a === null || b === null || a !== b) {",
+    // Neutralize the arm and a fabricated in-window settledAt sails past the only check that reads
+    // it against the chain. `reject-settledAt-contradicts-blocktime` is what turns red — before
+    // that vector existed NO test executed this arm (measured GREEN-uncovered by both reviewers).
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-cancel-log-nonce-binding",
+    control: "S4/R-21b — a canceled log may burn or contradict THIS correlation only if it names OUR (payer, nonce)",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "    if (lc(canceled[i].nonce) !== expectedOnChainNonce) {",
+    // Drop the canceled-log nonce binding and a SUCCESSFUL cancel for a FOREIGN nonce burns this
+    // correlation — the record cannot even express whose cancel it is. `reject-cancel-foreign-nonce`
+    // is what turns red (SETTLEMENT_CHAIN_CONTRADICTED -> SETTLEMENT_CORRELATION_BURNED).
+    replace: "    if (false && lc(canceled[i].nonce) !== expectedOnChainNonce) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
+  },
+  {
+    id: "s4-parseinstant-true-year",
+    control: "S4 — parseInstant reads the LITERAL year, so years 0000-0099 never alias onto 1900-1999",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    // RE-PINNED when the epoch computation stopped using the Date family altogether. The previous
+    // anchor was the explicit `setUTCFullYear` that REPAIRED the aliasing; the repair itself sat on
+    // a rewritable prototype method on the positive path, so the arithmetic replaced it. The
+    // registry caught the rot (`find` matched 0x) instead of quietly certifying a control that no
+    // longer existed.
+    //
+    // The mutation reproduces the ORIGINAL defect through the new code: fold years 0-99 into the
+    // 1900s, which is precisely what `Date.UTC(year, …)` did.
+    find: "  const days = daysFromCivil(year, month, day);",
+    // With this, a settledAt of 0099-08-13 aliases to 1999-08-13 and matches a resolved
+    // blockTimestamp of 1999-08-13 as instants -> the R-20 arm passes and the artifact earns the
+    // positive. `reject-year-0099-not-1999` is what turns red.
+    replace: "  const days = daysFromCivil(year < 100 ? year + 1900 : year, month, day);",
     kind: "tests",
     suite: ["packages/rail-x402", "npm", ["test"]],
   },

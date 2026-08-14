@@ -1052,7 +1052,11 @@ export class GateEngine {
       // open until the hold expired: it may be SHORTER than the configured ceiling, and it may never
       // outlast the question.
       expiresAt: this.iso(Math.min(receivedAtMs + this.cfg.grantTtlMs, Date.parse(hold.holdEnvelope.expiresAt))),
-      nonce: this.trust.newId(),
+      // GRANT NONCE = 32 CSPRNG bytes as 64 lowercase hex, NEVER `newId()` (S4 / R-AD-3(ii)):
+      // this value is the action-digest's `executionNonce` and the D7 correlation seed, i.e. the
+      // one secret standing between the public ledger and a confirmation oracle over approvals.
+      // The grant schema pins `^[0-9a-f]{64}$`; a UUID here no longer validates.
+      nonce: this.trust.newNonce(),
       deferredReceipt: hold.deferredReceipt,
       decisionArtifact: daDoc,
       signer: this.execSigner,

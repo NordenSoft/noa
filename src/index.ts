@@ -80,6 +80,10 @@ export {
 } from "./inert.js";
 export * as intrinsics from "./intrinsics.js";
 export { isNFC, nonNfcPaths } from "./nfc.js";
+// The D7/S4 grant-nonce format check, as a captured-charCode scan (no regex dispatch on a decision
+// path). Published so sibling packages (the gate's trust boundary and grant-signing surfaces, the
+// rail reconciler) validate the one rule the same hardened way instead of each re-deriving a regex.
+export { isHex64 } from "./scan.js";
 export { sha256Hex, sha256Prefixed, sha256Digest } from "./hash.js";
 export { receiptHashInput, checkpointHashInput } from "./canonicalize.js";
 export { validateReceiptShape, type SchemaResult } from "./schema.js";

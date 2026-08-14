@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-settlement-evidence-0.1.schema.json",
+  "title": "NOA Settlement Evidence (post-execution, rail-witnessed payment leg)",
+  "description": "An observer-signed side artifact correlating a device-approved mandate to an on-chain EIP-3009 settlement, via a 32-byte correlation value committed BEFORE dispatch and carried in the payment's nonce. Carries the counterparty-signed rail receipt as OPAQUE, NON-LOAD-BEARING bytes. Does not prove service delivery. Domain NOA-SettlementEvidence-v0.1-sig. Signer TYPE+ROLE = GATE + settlement-observer (F15).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec","tenant","chain","authorizationReceiptHash","executionGrantHash","correlation","railFamily","chainWitness","railReceipt","observerKid","observedAt","sig"],
+  "properties": {
+    "spec": { "const": "noa.settlement-evidence/0.1" },
+    "tenant": { "type": "string", "pattern": "^.{1,256}$" },
+    "chain": { "type": "string", "pattern": "^.{1,256}$" },
+    "authorizationReceiptHash": { "$ref": "#/$defs/hash256" },
+    "executionGrantHash": { "$ref": "#/$defs/hash256" },
+    "correlation": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "railFamily": { "type": "string", "pattern": "^[a-z0-9]([a-z0-9./+-]{0,62}[a-z0-9])?$" },
+    "chainWitness": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status","network","asset","payer","payee","amount","txHash","blockNumber","settledAt"],
+      "properties": {
+        "status": { "enum": ["SETTLED","NOT_SETTLED_AT_OBSERVATION","NOT_OBSERVED"] },
+        "network": { "type": "string", "pattern": "^eip155:[1-9][0-9]{0,18}$" },
+        "asset": { "type": "string", "pattern": "^eip155:[1-9][0-9]{0,18}/erc20:0x[0-9a-f]{40}$" },
+        "payer": { "$ref": "#/$defs/evmAddress" },
+        "payee": { "oneOf": [{ "$ref": "#/$defs/evmAddress" }, { "type": "null" }] },
+        "amount": { "oneOf": [{ "$ref": "#/$defs/minorUnits" }, { "type": "null" }] },
+        "txHash": { "oneOf": [{ "$ref": "#/$defs/evmTxHash" }, { "type": "null" }] },
+        "blockNumber": { "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }] },
+        "settledAt": { "oneOf": [{ "$ref": "#/$defs/rfc3339" }, { "type": "null" }] }
+      }
+    },
+    "railReceipt": {
+      "oneOf": [
+        { "type": "null" },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["disclosure","format","encoding","bytes"],
+          "properties": {
+            "disclosure": { "const": "FULL" },
+            "format": { "$ref": "#/$defs/railReceiptFormat" },
+            "encoding": { "const": "base64" },
+            "bytes": { "type": "string", "pattern": "^([A-Za-z0-9+/]{4}){1,65536}$|^([A-Za-z0-9+/]{4}){0,65535}([A-Za-z0-9+/][AQgw]==|[A-Za-z0-9+/]{2}[AEIMQUYcgkosw048]=)$" }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["disclosure","format","bytesHash"],
+          "properties": {
+            "disclosure": { "const": "HASH_ONLY" },
+            "format": { "$ref": "#/$defs/railReceiptFormat" },
+            "bytesHash": { "$ref": "#/$defs/hash256" }
+          }
+        }
+      ]
+    },
+    "observerKid": { "type": "string", "pattern": "^.{1,128}$" },
+    "observedAt": { "$ref": "#/$defs/rfc3339" },
+    "sig": { "$ref": "#/$defs/sig" }
+  },
+  "$defs": {
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "evmAddress": { "type": "string", "pattern": "^0x[0-9a-f]{40}$" },
+    "evmTxHash": { "type": "string", "pattern": "^0x[0-9a-f]{64}$" },
+    "minorUnits": { "type": "string", "pattern": "^(0|[1-9][0-9]{0,77})$" },
+    "railReceiptFormat": { "enum": ["x402-offer-receipt/eip712","x402-offer-receipt/jws","opaque"] },
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg","kid","value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}

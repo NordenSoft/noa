@@ -238,7 +238,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
         holdId: opts.grantHoldId ?? "hold-001",
         paramsHash: opts.grantParamsHash ?? PARAMS_HASH,
         holdEnvelopeHash: opts.grantHoldEnvelopeHash ?? ENV_HASH,
-        approvalReceiptHash: approvalHash, issuedAt: T_GRANT_ISSUE, expiresAt, maxUses: 1, nonce: "grant-nonce-01",
+        approvalReceiptHash: approvalHash, issuedAt: T_GRANT_ISSUE, expiresAt, maxUses: 1, nonce: "5eed".repeat(16),
       },
       "noa.execution-grant/0.1", "gate-prod-1",
     );

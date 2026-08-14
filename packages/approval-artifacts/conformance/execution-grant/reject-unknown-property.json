@@ -13,11 +13,11 @@
     "issuedAt": "2026-07-14T11:55:00.000Z",
     "expiresAt": "2026-07-14T12:30:00.000Z",
     "maxUses": 1,
-    "nonce": "grant-nonce-01",
+    "nonce": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
     "sig": {
       "alg": "ed25519",
       "kid": "gate-prod-1",
-      "value": "KwyTfvrCfvyfyL2nq4oiyAMTqQ9ArX3Sv2tzne8Z1xYPb3vaTM7vr33RsGnm5RgGXIp6n9pOJZD4O+y1CfLGCA=="
+      "value": "VmteR01cyCejrkO/3t16U8QABl9PlxDoSP9eTSEjeBGVjuv0h5KC0Szlh9EkC2PF7eEPz2h7bxtbo5DaiJkHAg=="
     },
     "_smuggled": "x"
   },
@@ -26,7 +26,7 @@
     "equals": [
       {
         "path": "nonce",
-        "value": "grant-nonce-01"
+        "value": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed"
       },
       {
         "path": "maxUses",

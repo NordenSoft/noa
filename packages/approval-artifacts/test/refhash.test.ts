@@ -43,6 +43,9 @@ test("all signing domains are distinct (anti cross-protocol replay) and disjoint
   for (const d of domains) {
     assert.ok(d !== "NOA-Receipt-v0.1-sig" && d !== "NOA-Checkpoint-v0.1-sig", `domain ${d} collides with an upstream tag`);
   }
+  // S4 (R-INT-7 / R-DOMAIN-1): the settlement-evidence tag must be IN the distinctness set — a
+  // dropped registry row would silently remove it from the invariant this test asserts.
+  assert.ok(domains.includes("NOA-SettlementEvidence-v0.1-sig"), "settlement-evidence domain tag missing from the registry");
 });
 
 test("the two HPKE-AEAD blobs are unsigned (no domain)", () => {

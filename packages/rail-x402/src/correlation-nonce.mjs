@@ -40,7 +40,41 @@
  * papered over with a fallback, because a fallback would mean a nonce someone else can also derive.
  */
 
-import { createHash } from "node:crypto";
+/**
+ * ── WHY EVERY OPERATION BELOW IS A CAPTURED BINDING, AND WHY THE OUTPUT DID NOT CHANGE ──────────
+ *
+ * The value this file returns is written into an EIP-3009 authorization and is then PUBLIC AND
+ * PERMANENT: it is the coordinate a relying party recomputes to decide whether a mandate and an
+ * on-chain settlement are the same event. Every byte-level operation on the way to that value used
+ * to be looked up at CALL time — `Buffer.from` off the mutable `Buffer` global, `createHash` off a
+ * live ESM binding, `.toLowerCase()` and `.test()` off their prototypes. Any of those slots can be
+ * rewritten by code sharing the realm AFTER this module loaded, and the derivation is the one
+ * computation the entire verdict pivots on.
+ *
+ * MEASURED, END TO END, against the shipped conformance corpus: a STATEFUL replacement of the
+ * global `Buffer.from` silently records one settlement's dispatch string and 32-byte seed during an
+ * ordinary, legitimate verification — the verdict stays positive and nothing is observable — and
+ * then replays them into the NEXT derivation, so a second, genuinely signed bundle recomputes the
+ * FIRST bundle's public on-chain nonce, matches the artifact, and earns the positive verdict that
+ * belongs to the first settlement. Verifying many settlements in one process is exactly what this
+ * module ships for, so the precondition is the ordinary deployment, not an exotic one.
+ *
+ * THE DERIVATION ITSELF IS UNCHANGED — same six bound inputs, same length-prefixed field encoding,
+ * same SHA-256, same output bytes for every input. Only the DISPATCH changed: bindings snapshotted
+ * at module evaluation, before any caller-supplied value has been read. The one restructuring is
+ * that the field encodings are concatenated and hashed once instead of being fed to an incremental
+ * hash object; SHA-256 over the concatenation is the same digest as the same updates in the same
+ * order, which is what makes this a dispatch change and not a format change.
+ *
+ * ⚠ AND IT IS ONLY THAT: a poison installed BEFORE this module loads is snapshotted, not defeated.
+ * That ceiling is stated in NON-CLAIMS.md and cannot be closed by any in-process library.
+ */
+import { intrinsics } from "noa-receipt";
+
+const {
+  bufferFrom, bufferConcat, sha256With, taByteLength,
+  regexpExec, strToLowerCase, numToString, jsonStringify, isSafeInteger,
+} = intrinsics;
 
 /** Domain separation. Any change here is a breaking change to correlation and must bump the tag. */
 export const CORRELATION_DOMAIN = "noa.x402.correlation-nonce/0.1";
@@ -50,13 +84,19 @@ const NONCE_BYTES = 32;
 /** Below this a seed is guessable, which collapses the entire derivation back to a bare digest. */
 const MIN_SEED_BYTES = 32;
 
+/** Hoisted to module scope so the literal is compiled once, at load, and matched through the
+ *  captured `exec`. `RegExp.prototype.test` is NOT equivalent: it performs a dynamic `Get(re,
+ *  "exec")` on the receiver, so a rewritten `exec` reaches through it. `exec(...) !== null` is the
+ *  same predicate for a non-global pattern, with nothing looked up at call time. */
+const RE_HEX_ADDRESS = /^0x[0-9a-fA-F]{40}$/;
+
 function assertHexAddress(value, field) {
-  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{40}$/.test(value)) {
-    throw new TypeError(`${field} must be a 0x-prefixed 20-byte hex address, got ${JSON.stringify(value)}`);
+  if (typeof value !== "string" || regexpExec(RE_HEX_ADDRESS, value) === null) {
+    throw new TypeError(`${field} must be a 0x-prefixed 20-byte hex address, got ${jsonStringify(value)}`);
   }
   // Lowercased on purpose: EIP-55 checksum casing is presentation, not identity, and two spellings
   // of one address must never produce two nonces for one payment.
-  return value.toLowerCase();
+  return strToLowerCase(value);
 }
 
 function assertNonEmptyString(value, field) {
@@ -82,42 +122,55 @@ export function deriveCorrelationNonce(input) {
   if (input === null || typeof input !== "object") throw new TypeError("input must be an object");
   const { chainId, tokenAddress, payerAddress, dispatchId, seed } = input;
 
-  if (!Number.isSafeInteger(chainId) || chainId <= 0) {
-    throw new TypeError(`chainId must be a positive safe integer, got ${JSON.stringify(chainId)}`);
+  if (!isSafeInteger(chainId) || chainId <= 0) {
+    throw new TypeError(`chainId must be a positive safe integer, got ${jsonStringify(chainId)}`);
   }
   const token = assertHexAddress(tokenAddress, "tokenAddress");
   const payer = assertHexAddress(payerAddress, "payerAddress");
   const dispatch = assertNonEmptyString(dispatchId, "dispatchId");
   if (!(seed instanceof Uint8Array)) throw new TypeError("seed must be a Uint8Array");
-  if (seed.byteLength < MIN_SEED_BYTES) {
+  const seedLength = taByteLength(seed);
+  if (seedLength < MIN_SEED_BYTES) {
     // Fail rather than pad. A short seed is the one input whose weakness is invisible in the output:
     // the nonce still looks like 32 random bytes while being trivially searchable.
-    throw new RangeError(`seed must be at least ${MIN_SEED_BYTES} bytes, got ${seed.byteLength}`);
+    throw new RangeError(`seed must be at least ${MIN_SEED_BYTES} bytes, got ${seedLength}`);
   }
 
   // Length-prefixed field encoding. Concatenating variable-length fields without lengths lets two
   // different inputs produce one preimage — `dispatchId` is caller-supplied text, so this is not
   // theoretical.
-  const h = createHash("sha256");
-  const field = (label, bytes) => {
-    h.update(Buffer.from(`${label}:${bytes.byteLength}:`, "utf8"));
-    h.update(bytes);
-  };
-  field("domain", Buffer.from(CORRELATION_DOMAIN, "utf8"));
-  field("chainId", Buffer.from(String(chainId), "utf8"));
-  field("token", Buffer.from(token, "utf8"));
-  field("payer", Buffer.from(payer, "utf8"));
-  field("dispatch", Buffer.from(dispatch, "utf8"));
-  field("seed", Buffer.from(seed));
+  //
+  // The six fields are encoded, concatenated in this exact order and hashed ONCE. That is the same
+  // digest the previous incremental form produced (SHA-256 of a concatenation equals SHA-256 of the
+  // same updates in the same order); hashing the assembled preimage is what lets the whole
+  // derivation run on bindings captured at load rather than on a live hash object whose `update`
+  // and `digest` are ordinary, rewritable prototype properties.
+  const domainBytes = bufferFrom(CORRELATION_DOMAIN, "utf8");
+  const chainIdBytes = bufferFrom(numToString(chainId), "utf8");
+  const tokenBytes = bufferFrom(token, "utf8");
+  const payerBytes = bufferFrom(payer, "utf8");
+  const dispatchBytes = bufferFrom(dispatch, "utf8");
+  const seedBytes = bufferFrom(seed);
+  const label = (name, bytes) => bufferFrom(`${name}:${taByteLength(bytes)}:`, "utf8");
 
-  const nonce = `0x${h.digest("hex")}`;
+  const preimage = bufferConcat([
+    label("domain", domainBytes), domainBytes,
+    label("chainId", chainIdBytes), chainIdBytes,
+    label("token", tokenBytes), tokenBytes,
+    label("payer", payerBytes), payerBytes,
+    label("dispatch", dispatchBytes), dispatchBytes,
+    label("seed", seedBytes), seedBytes,
+  ]);
+
+  const nonce = `0x${sha256With(preimage, "hex")}`;
   if (nonce.length !== 2 + NONCE_BYTES * 2) throw new Error("derived nonce is not 32 bytes — refusing to return it");
 
   // The commitment is domain-separated too, so it can never equal a nonce derived from the same seed.
-  const commitment = `0x${createHash("sha256")
-    .update(Buffer.from(`${CORRELATION_DOMAIN}#seed-commitment:`, "utf8"))
-    .update(Buffer.from(seed))
-    .digest("hex")}`;
+  const commitmentPreimage = bufferConcat([
+    bufferFrom(`${CORRELATION_DOMAIN}#seed-commitment:`, "utf8"),
+    seedBytes,
+  ]);
+  const commitment = `0x${sha256With(commitmentPreimage, "hex")}`;
 
   return { nonce, commitment };
 }
