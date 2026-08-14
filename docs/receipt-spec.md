@@ -247,14 +247,17 @@ That is what makes it universal rather than bespoke.
   a verifier MUST reject any other `alg` to prevent algorithm confusion. We use the curve-specific `-19`
   rather than the generic EdDSA (`-8`, RFC 9053, deprecated Oct-2025): `-8` also admits Ed448, so pinning
   `-19` closes the Ed448 algorithm-confusion surface at the alg-id layer (complementing the node:crypto
-  curve-type key pin). NOA *issues* the minimal protected header `{1: -19}` (CBOR `a10132`). On the
+  curve-type key pin). NOA *issues* the two-member protected header `{1: -19, 4: kid}` — CBOR leading
+  bytes `a2 01 32 04 …`, the `…` being the kid byte string, so the header's length follows the kid's. On the
   *verify* side, per RFC 9052 §3.1, additional registered/non-critical protected headers (e.g. `kid`,
   `content type`, `CWT_Claims`) are accepted and any unknown header NOT listed in `crit` (label `2`) is
   ignored — so a draft-conformant peer that carries `kid`/`crit`/extra headers in the protected bucket
   still verifies; only the `alg` pin and `crit`-processability are enforced (a critical header the
   verifier cannot process is rejected, fail-closed).
-- **kid:** NOA *emits* `kid` in the unprotected header (label `4`); a verifier resolves it against its
-  keyring from EITHER bucket, preferring the protected (signed) copy when present.
+- **kid:** NOA *emits* `kid` (label `4`) in the **protected** (signed) header, so the signature covers
+  the (agent, key) attribution and it cannot be swapped for a same-length victim kid; the unprotected
+  bucket is emitted empty. A verifier resolves the kid against its keyring from EITHER bucket,
+  preferring the protected (signed) copy when present.
 - **Payload:** the JCS-canonical NOA receipt bytes (§2/§4). So a standard COSE verify authenticates the
   receipt; a NOA-native consumer then parses the payload and runs the hash-chain / policy checks (§3–§6).
 - **Sig_structure:** the RFC 9052 `["Signature1", protected, external_aad(empty), payload]`, Ed25519-signed.

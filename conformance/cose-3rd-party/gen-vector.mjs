@@ -39,6 +39,19 @@ const rawPub = createPublicKey({ key: pubDer, format: "der", type: "spki" })
 // Ed25519 SPKI is 44 bytes; the raw key is the trailing 32 bytes.
 const rawPub32 = rawPub.subarray(rawPub.length - 32);
 
+// The protected header, READ OUT OF THE ENVELOPE we just produced rather than restated. It was a
+// hardcoded "a10132" ({1:-19} alone) and stayed that way after the kid moved into the PROTECTED
+// (signed) bucket, so the vector shipped a field that contradicted its own signed bytes — the file
+// said the header was 3 bytes while `cose_sign1_hex` carried the true 22. A constant cannot notice
+// that the thing it describes has changed; a derivation can only ever be wrong if the parse is.
+// COSE_Sign1 = tag(18) array(4) [ protected:bstr, unprotected, payload:bstr, sig:bstr ], so the
+// protected bstr starts at byte 3 and its length is the low 5 bits of the byte-2 head.
+const coseHex = cose.toString("hex");
+if (coseHex.slice(0, 4) !== "d284") throw new Error("expected a tag-18 4-element COSE_Sign1");
+const protLen = parseInt(coseHex.slice(4, 6), 16) - 0x40; // major type 2 (bstr), short form
+if (protLen < 0 || protLen > 23) throw new Error(`unexpected protected-header head byte ${coseHex.slice(4, 6)}`);
+const protectedHeaderHex = coseHex.slice(6, 6 + protLen * 2);
+
 // Resolved against THIS FILE, not the working directory. The header tells you to run this from
 // the repository root, and a bare relative path would then drop the vector at the root — which is
 // exactly the top-level clutter that moving these three files into a directory was meant to end.
@@ -50,8 +63,8 @@ writeFileSync(
     {
       kid,
       alg_expected: -19,
-      cose_sign1_hex: cose.toString("hex"),
-      protected_header_hex: "a10132", // {1:-19} canonical
+      cose_sign1_hex: coseHex,
+      protected_header_hex: protectedHeaderHex, // canonical {1:-19, 4:kid}, read back from the envelope
       payload_hex: payload.toString("hex"),
       pub_spki_b64: kp.publicKey,
       pub_raw32_hex: rawPub32.toString("hex"),
@@ -62,6 +75,6 @@ writeFileSync(
 );
 
 console.log("NOA self-verify:", self.ok, "kid:", self.kid);
-console.log("COSE_Sign1 -19 envelope hex:", cose.toString("hex"));
-console.log("protected header bytes (expect a10132 = {1:-19}):", cose.toString("hex").slice(cose.toString("hex").indexOf("a10132")));
+console.log("COSE_Sign1 -19 envelope hex:", coseHex);
+console.log("protected header bytes ({1:-19, 4:kid}):", protectedHeaderHex);
 console.log("wrote", OUT.pathname);
