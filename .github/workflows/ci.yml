@@ -300,7 +300,7 @@ jobs:
         # a bare checkout does not have (a developer's sibling checkout always does — which is why
         # none of this could fail anywhere but here).
         run: |
-          for p in signer-core approval-artifacts gate relay evidence adapter-core; do
+          for p in signer-core approval-artifacts gate relay evidence adapter-core rail-x402; do
             npm --prefix "packages/$p" ci
           done
           npm --prefix noa-mobile ci
@@ -405,10 +405,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm ci
-      - name: Install rail-x402 deps for the settlement plane
-        # The golden path now crosses evidence's settlement bridge into rail-x402 (symlinked file:
-        # dep), whose imports resolve from its real path — its node_modules must exist here too.
-        run: cd packages/rail-x402 && npm ci
       - name: Build + generate vectors + test
         # `id` so every INDEPENDENT gate below can condition on the BUILD succeeding rather than on
         # whichever gate happens to sit above it in this list. See the ORDERING note below.
