@@ -40,6 +40,13 @@ interface Fixture {
    */
   enrolmentRegistries?: unknown[];
   audience?: string;
+  /**
+   * The verifier's purpose. Optional for the same reason the registries are: a fixture that omits it
+   * is an ordinary `audit` run, which is every fixture that existed before the authorize-path
+   * vectors. Passed through verbatim — a runner that dropped it would silently move two fixtures
+   * onto the audit path and report the wrong code as if it were the rule.
+   */
+  purpose?: "audit" | "authorize";
 }
 interface Loaded {
   slug: string;
@@ -65,6 +72,7 @@ function run(fx: Fixture) {
     // object would authenticate a re-serialization instead of the document.
     ...(fx.enrolmentRegistries !== undefined ? { enrolmentRegistries: fx.enrolmentRegistries.map((r) => b(r)) } : {}),
     ...(fx.audience !== undefined ? { audience: fx.audience } : {}),
+    ...(fx.purpose !== undefined ? { purpose: fx.purpose } : {}),
     now: fx.now,
     maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
     schemas,

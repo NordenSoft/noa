@@ -411,6 +411,8 @@ interface Fixture {
   tenantRoot: Record<string, unknown>; checkpointKeyring: Record<string, unknown>;
   /** S5 — present only on the fixtures whose READER was handed an enrolment registry. */
   enrolmentRegistries?: unknown[]; audience?: string;
+  /** The verifier's purpose — present only on the fixtures that measure the `authorize` path. */
+  purpose?: "audit" | "authorize";
 }
 const fixtures: Array<{ id: string; fx: Fixture }> = [];
 for (const slug of readdirSync(CONF)) {
@@ -426,7 +428,9 @@ const run = (fx: Fixture, purpose?: "audit" | "authorize") => verifyEvidence(b(f
   ...(fx.enrolmentRegistries !== undefined ? { enrolmentRegistries: fx.enrolmentRegistries.map((r) => b(r)) } : {}),
   ...(fx.audience !== undefined ? { audience: fx.audience } : {}),
   now: fx.now, maxAgeMs: fx.maxAgeHours * 3600 * 1000, schemas,
-  ...(purpose !== undefined ? { purpose } : {}),
+  // The fixture's own purpose is the default; the explicit argument overrides it, because the
+  // audit-vs-authorize equivalence test below runs BOTH purposes over the same bytes on purpose.
+  ...(purpose !== undefined ? { purpose } : fx.purpose !== undefined ? { purpose: fx.purpose } : {}),
 });
 
 /** Was this fixture's READER handed an enrolment registry at all? */

@@ -449,6 +449,16 @@ interface Fixture {
   enrolmentRegistries?: J[];
   /** S5 — the reading verifier's own relying-party identity. */
   audience?: string;
+  /**
+   * The verifier's PURPOSE, and the reason it is here is a code that no fixture could reach.
+   *
+   * `E_AUTHORIZATION_WINDOW` is emitted only on the `authorize` path — an `audit` run reports the
+   * same two conditions under the step's ordinary code. The fixture format had no way to say which
+   * run it was, so the corpus could not express the authorize path at all and that code sat in the
+   * union with zero vectors: present in review, unmeasured at runtime. Omitted from the emitted JSON
+   * unless a fixture sets it, so every pre-existing fixture's bytes are unchanged.
+   */
+  purpose?: "audit" | "authorize";
 }
 const files: Array<{ path: string; fx: Fixture }> = [];
 function emit(slug: string, name: string, fx: Fixture): void {
@@ -464,6 +474,7 @@ function fixtureFrom(w: World, over: Partial<Fixture>): Fixture {
     // pre-enrolment fixture is byte-identical to what it was.
     ...(over.enrolmentRegistries !== undefined ? { enrolmentRegistries: over.enrolmentRegistries } : {}),
     ...(over.audience !== undefined ? { audience: over.audience } : {}),
+    ...(over.purpose !== undefined ? { purpose: over.purpose } : {}),
   };
 }
 function clone<T>(x: T): T {
@@ -1141,6 +1152,20 @@ emit("settlement", "s5-settlement-tenant-mismatch", fixtureFrom(settlementWorld(
   emit("settlement", "s5-params-preimage-on-expired", fixtureFrom(w, { description: "E.5 (F2): an EXPIRED bundle carrying actionParamsPreimage, which the EXPIRED union does not define. The preimage is a container member, so OPTIONAL_ARTIFACT_FIELDS + the step-0 union pre-rule own it — a name listed in the union alone would ride this bundle unverified. INVALID / STEP_0 / E_OUTCOME_ARTIFACT_SET, exit 2", expectVerdict: "INVALID", expectStep: "STEP_0_TENANT_EQUALITY", expectCode: "E_OUTCOME_ARTIFACT_SET", bundle }));
 }
 
+// R1's FIRST GATE, which had no vector at all: the artifact must AUTHENTICATE before the reconciler
+// is allowed to trust a word of it. The reconciler authenticates nothing itself (its own R-12b), so a
+// positive reconciler result over an unsigned artifact is meaningless — which makes `verifyArtifact`
+// here load-bearing rather than decorative, and an unmeasured load-bearing gate is the shape this
+// repository keeps finding. Everything else about the bundle is perfect; the only thing wrong is the
+// signature, so this is the one fixture where that gate is the only thing that can refuse.
+{
+  const w = settlementWorld();
+  const bundle = clone(w.bundle);
+  // A foreign but well-formed Ed25519 value (the deferred receipt's) — nothing else is perturbed.
+  ((bundle.settlementEvidence as J).sig as J).value = ((clone(w.bundle.deferredReceipt) as J).sig as J).value;
+  emit("settlement", "s5-settlement-tampered-signature", fixtureFrom(w, { description: "R1 AUTHENTICATION: the settlement artifact's Ed25519 signature does not verify. The D7 reconciler deliberately authenticates nothing — it adjudicates linkage and bounds and trusts its caller to have checked the signature — so this gate is the only thing between an unsigned assertion and a reconciler result that reads as one. INVALID / E_SETTLEMENT_BINDING, exit 2, and the reason names the artifact rather than the reconciler, because the artifact never reached it", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BINDING", bundle }));
+}
+
 // C.4 / C.5 — R1's TWO NAMED REFERENCE FAILURES, one per fixture and one per code. Until this slice
 // both fell into `E_SETTLEMENT_BINDING`'s default branch, which is the bucket defect §5.3 names for
 // that very code: two vectors pinned to one code are mutually substitutable, so a bug that reports
@@ -1358,6 +1383,25 @@ function enrolRegistry(over: {
   const w = buildWorld("EXECUTED", { enrolDelegation: true });
   const superseded = enrolRegistry({ version: 6, notBefore: "2025-07-01T00:00:00.000Z", notAfter: "2026-07-05T00:00:00.000Z", classes: [enrolRow({ projection: { id: "deploy.display", version: 1, hash: "sha256:" + "f".repeat(64) } })] });
   emit("enrolment", "s5-enrolment-superseded-registry-not-a-contradiction", fixtureFrom(w, { description: "ROTATION IS NOT EQUIVOCATION: the reader holds two registries — a SUPERSEDED one whose window closed before this bundle and which pins the OLD projection hash, and the current one that enrols the class correctly. Reading row-level contradictions across out-of-window registries would turn every ordinary projection re-build into a hard INVALID for every archived bundle, so row-level checks are scoped to IN-WINDOW registries while registry-level ones (tenant, closed) are not. The current registry governs, the class is enrolled, and the bundle stops where an enrolled class stops: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, exit 6", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [superseded, enrolRegistry()], audience: ENROL_AUDIENCE }));
+}
+
+// ═══ 6b. THE `authorize` PATH — the one code the corpus could not reach ══════════════════════════
+//
+// `E_AUTHORIZATION_WINDOW` distinguishes a run that is deciding whether to ACT (`--purpose
+// authorize`) from one auditing what happened (`audit`, the default). Both refuse the same two
+// conditions; only the authorize run says WHY in a way a caller can branch on. The fixture format
+// carried no purpose, so this code sat in the union with no vector at all — a code review reads as
+// covered and runtime never produced. Two vectors, because the code has two producing causes and
+// one vector for two causes is the bucket defect this slice exists to close.
+{
+  const w = buildWorld("EXECUTED");
+  // (a) the ROOT-SIGNED DELEGATION window does not contain the verifier's now. Delegation runs
+  //     10:00 on 14 Jul → 10:00 on 20 Jul; this reader is asking on the 21st.
+  emit("verdict", "authorize-delegation-window-lapsed", fixtureFrom(w, { description: "AUTHORIZE PATH (a): a verifier deciding whether to ACT, at a now the root-signed key delegation no longer covers. Signer-chosen artifact times may narrow acceptance and can never establish historical authority, so a caller with no independent time witness cannot be told the manifest signer is authorized. On the audit path the same bundle reports E_DELEGATION_CHAIN; the authorize path names the window, because a caller about to spend money branches on WHICH kind of no it received. E_AUTHORIZATION_WINDOW at STEP_1_HOLD_ENVELOPE", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_AUTHORIZATION_WINDOW", now: "2026-07-21T00:00:00.000Z", purpose: "authorize" }));
+
+  // (b) the delegation is still open and the MANIFEST's own claimed window is not — a different
+  //     cause, one layer in, and it must not be reachable only through (a).
+  emit("verdict", "authorize-manifest-window-lapsed", fixtureFrom(w, { description: "AUTHORIZE PATH (b): the root-signed delegation still covers this now (it runs to 20 Jul) and the KEY MANIFEST's own claimed window does not (it lapsed on the 15th). The second producing cause of the same code, and it needs its own vector: with only (a) the manifest branch could be deleted and the corpus would stay green, which is how a control becomes decoration. E_AUTHORIZATION_WINDOW at STEP_1_HOLD_ENVELOPE", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_AUTHORIZATION_WINDOW", now: "2026-07-16T00:00:00.000Z", purpose: "authorize" }));
 }
 
 // A.5 — FAILURE PRECEDENCE (§5.4a). The settlement requirement AND the checkpoint both fail, and the
