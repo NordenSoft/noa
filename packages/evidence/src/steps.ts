@@ -14,6 +14,11 @@
  */
 import { verifyArtifact, parseDocument, refHash, receiptRefHash, type KeyEntry } from "noa-approval-artifacts";
 import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type SigningKeyLifecycle, type VerifyResult } from "noa-receipt";
+// S5 settlement plane — the shipped D7 reconciler (S4 layers 4+6) over PRE-VERIFIED inputs. The
+// evidence pipeline authenticates the artifact FIRST (verifyArtifact, layer 2) and then hands the
+// reconciler the bundle documents; a positive reconciler result over an un-authenticated artifact
+// means nothing (the reconciler's own R-12b), so the verifyArtifact gate below is load-bearing.
+import { reconcileSettlementEvidence } from "noa-rail-x402";
 import { encodeDocument } from "./bytes.js";
 
 // PRISTINE DECISIONS (review #6, C1). Every membership/search below is a verdict input; none of them
@@ -31,6 +36,7 @@ import {
   NEGATIVE_OUTCOMES,
   type VerdictDimensions,
   type VerificationPurpose,
+  type SettlementDimension,
   OUTCOME_ARTIFACT_UNION,
   OPTIONAL_ARTIFACT_FIELDS,
   STEP_OWNED_ABSENCE,
@@ -90,6 +96,13 @@ export interface Ctx {
   purpose: VerificationPurpose;
   /** DESIGN 2: the authorization dimension, computed in step 1 and reported alongside the verdict. */
   authorization: VerdictDimensions["authorization"];
+  /**
+   * S5: the settlement dimension, set ONLY by the settlement rule inside step 10 when the bundle
+   * carries a settlement artifact. Left unset on every other path, so `verify-evidence` reads it as
+   * `UNCHECKED` on a non-settlement failure and lets the pipeline-complete default
+   * (`NO_EXECUTION_BINDING`) stand on success — the settlement rule is the ONLY writer.
+   */
+  settlement?: SettlementDimension;
 }
 
 // ─── tiny structural getters (no schema logic — that is verifyArtifact's job) ─────────────────────
@@ -857,6 +870,124 @@ function checkGrantUnexpiredAtConsumption(ctx: Ctx, S: StepName, code: StepResul
   return null;
 }
 
+/**
+ * S5 REVISION 3 — THE SETTLEMENT ARTIFACT PLANE (R1/R2/R3), run INSIDE step 10 AFTER every shipped
+ * EXECUTED check, and ONLY when the bundle carries a settlement artifact (present ⇒ always checked,
+ * §5.2 R0). It bridges to the shipped D7 reconciler; it invents no rule of its own.
+ *
+ * TWO GATES, IN THIS ORDER. First `verifyArtifact` authenticates the artifact itself — schema, the
+ * observer Ed25519 signature, the F15 `settlement-observer` role, revocation. Then the shipped
+ * reconciler runs S4 layers 4+6 over the bundle's own documents: the hash-verified params preimage
+ * (R2), the offline bounds and the RECOMPUTED D7 correlation (R3), all under the reconciler's
+ * derivation-provenance rule (chainId/token/payer come only from the verified preimage, never the
+ * artifact). The reconciler authenticates NOTHING itself (its own R-12b), so the verifyArtifact gate
+ * is load-bearing, not decorative — a positive reconciler result over an unsigned artifact is
+ * meaningless.
+ *
+ * WHAT THIS SLICE DECIDES, AND WHAT IT LEAVES TO ENROLMENT. No enrolment registry exists in this
+ * verifier, so the class is never ENROLLED. A VALID, bound, offline artifact therefore leaves the
+ * settlement dimension at the pipeline-complete default `NO_EXECUTION_BINDING` (R-DIM-1's "unenrolled,
+ * valid artifact" row) — it is NOT upgraded to `ATTESTED_UNVERIFIED` or `RECONFIRMED`, because nobody
+ * asked and nobody re-queried. `chainFacts` (R9) is therefore never supplied here, so no online code
+ * arises. What the plane DOES decide is the fail-closed half — a supplied-but-wrong preimage, an
+ * out-of-bounds coordinate, a mis-recomputed correlation, a determinate non-settlement under EXECUTED,
+ * or an unbound/tampered artifact are all rejected, and a witness with no verifiable params preimage
+ * is INCONCLUSIVE / `BOUNDS_UNCHECKABLE`, never a positive.
+ */
+function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
+  const b = ctx.bundle;
+  if (b.settlementEvidence === undefined) return null; // no artifact — enrolment's "absence is required" (R8) is a later slice
+
+  // R1 — authenticate the artifact ITSELF (layer 2) before the reconciler is allowed to trust it.
+  const av = verifyArtifact(encodeDocument(b.settlementEvidence), encodeDocument({ schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now }));
+  if (!av.ok) {
+    ctx.settlement = "CONTRADICTED";
+    return fail(S, "E_SETTLEMENT_BINDING", `settlementEvidence invalid: ${av.reason}`);
+  }
+
+  // The verifier's OWN tenant/chain (R-11): tenant from step 0, chain from the genesis receipt's own
+  // scope — never lifted from the artifact.
+  const chain = asStr(getPath(b.deferredReceipt, "scope.chain"));
+  if (ctx.tenant === undefined || chain === null) {
+    ctx.settlement = "CONTRADICTED";
+    return fail(S, "E_SETTLEMENT_BINDING", "cannot read the verifier's own tenant/chain to bound the settlement artifact (R-11)");
+  }
+
+  // The reconciler's verifyActionDigest resolves the grant signer through this keyring; the R-16 cap
+  // (not reached on the BOUNDS_UNCHECKABLE path) keys on the same material. Build the bare
+  // kid->pubkey map both accept, from the manifest-resolved keyring — signing entries only.
+  const stringKeyring: Record<string, string> = {};
+  for (const [kid, entry] of Object.entries(ctx.resolvedKeyring ?? {})) {
+    const pk = (entry as { publicKey?: unknown } | undefined)?.publicKey;
+    if (typeof pk === "string") stringKeyring[kid] = pk;
+  }
+
+  // R2's supplied/absent distinction is decided at THIS layer, because the reconciler returns one
+  // code (SETTLEMENT_BOUNDS_UNCHECKABLE) for both "no preimage" and "wrong preimage". The receipt's
+  // committed paramsHash tells them apart: a keyed hash or an absent preimage is INCONCLUSIVE (the
+  // producer withheld a checkable preimage), while a SUPPLIED preimage under a sha256 hash that still
+  // did not check is a producer LIE and a hard rejection.
+  const preimage = typeof b.actionParamsPreimage === "string" ? b.actionParamsPreimage : null;
+  const paramsHash = asStr(getPath(b.allowedReceipt, "action.paramsHash"));
+  const preimageUncheckable = preimage === null || (paramsHash !== null && paramsHash.startsWith("hmac-sha256:"));
+
+  const r = reconcileSettlementEvidence({
+    artifact: encodeDocument(b.settlementEvidence),
+    receiptChain: encodeDocument(ctx.orderedChain ?? []),
+    grant: encodeDocument(b.executionGrant),
+    keyring: encodeDocument(stringKeyring),
+    holdEnvelope: encodeDocument(b.holdEnvelope),
+    holdResolution: b.holdResolution === undefined ? null : encodeDocument(b.holdResolution),
+    // chainFacts is a VERIFIER INPUT consulted ONLY for an ENROLLED class (R9), which does not exist
+    // in this slice. Never supplied here ⇒ no online (RECONFIRMED / chain-CONTRADICTED) code arises.
+    chainFacts: null,
+    paramsPreimage: preimage,
+    expect: { tenant: ctx.tenant, chain },
+    now: ctx.now,
+  });
+
+  const detail = r.reason === null ? "" : ` — ${r.reason}`;
+  switch (r.code) {
+    // valid, bound, offline artifact. Unenrolled ⇒ the dimension stays NO_EXECUTION_BINDING (set by
+    // the pipeline-complete default), never upgraded. This is the ONLY non-reject settlement outcome
+    // this slice can produce.
+    case "SETTLEMENT_CORRELATED_UNRECONFIRMED":
+      return null;
+    // R1 polarity — the artifact reports a determinate NON-settlement under an EXECUTED outcome: the
+    // one document asserts the request was handed off AND that nothing settled.
+    case "SETTLEMENT_NOT_OBSERVED":
+    case "SETTLEMENT_NOT_SETTLED_AT_OBSERVATION":
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_SETTLEMENT_POLARITY", `settlement artifact reports ${r.code} under an EXECUTED outcome (R1 polarity)${detail}`);
+    // R2 — the preimage half. Absent/keyed ⇒ INCONCLUSIVE (no positive reachable); supplied-but-wrong
+    // ⇒ a hard rejection (the producer supplied a preimage that does not commit to the approval).
+    case "SETTLEMENT_BOUNDS_UNCHECKABLE":
+      if (preimageUncheckable) {
+        ctx.settlement = "BOUNDS_UNCHECKABLE";
+        return fail(S, "E_SETTLEMENT_BOUNDS_UNCHECKABLE", `no verifiable params preimage, so the settlement bounds were compared to nothing — never a positive (R2)${detail}`);
+      }
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_PARAMS_PREIMAGE_MISMATCH", `a supplied actionParamsPreimage does not hash to the approved parameters, or is not the closed six-member shape (R2)${detail}`);
+    // R3 — the recomputed D7 nonce disagrees with the artifact's correlation.
+    case "SETTLEMENT_CORRELATION_MISMATCH":
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_SETTLEMENT_CORRELATION", `the D7 correlation recomputed from the bundle's own documents does not equal the artifact's correlation (R3)${detail}`);
+    // R3 — an offline coordinate (network/asset/payer/payee/amount) is outside the verified preimage.
+    case "SETTLEMENT_BOUNDS_EXCEEDED":
+    case "SETTLEMENT_ASSET_UNEXPECTED":
+    case "SETTLEMENT_NETWORK_UNEXPECTED":
+    case "SETTLEMENT_PAYER_UNEXPECTED":
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_SETTLEMENT_BOUNDS_EXCEEDED", `a settlement coordinate is outside the approved bounds (R3)${detail}`);
+    // R1 catch-all — the artifact is unbound, mis-referenced, tampered, tenant-split, self-contradicting
+    // or on an unknown rail, AND (fail-closed) any online/positive code that cannot arise without the
+    // chain-facts input this slice never supplies. All are hard rejections.
+    default:
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_SETTLEMENT_BINDING", `settlement artifact is not bound to this approval, or reports a state this offline plane cannot accept (${r.code}, R1)${detail}`);
+  }
+}
+
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // STEP 10 — EXECUTED: grant unexpired-at-consumedAt, consumption bound (grantHash/result/attempt),
 // EXECUTED receipt chains onto ALLOWED (prevHash linkage; full chain verified at step 17).
@@ -896,6 +1027,11 @@ export function step10_executed(ctx: Ctx): StepResult {
   if (asStr(getPath(executed, "chain.prevHash")) !== asStr(getPath(allowed, "chain.hash"))) {
     return fail(S, "E_EXECUTED", "executedReceipt.chain.prevHash != allowedReceipt.chain.hash");
   }
+  // (§5.2 R0) The settlement artifact plane runs LAST, after every shipped EXECUTED check, so a
+  // bundle that is unbound AND carries a bad settlement artifact is attributed to the shipped defect
+  // first. A no-op when the bundle carries no settlement artifact.
+  const settlementErr = checkSettlement(ctx, S);
+  if (settlementErr) return settlementErr;
   return ok(S);
 }
 

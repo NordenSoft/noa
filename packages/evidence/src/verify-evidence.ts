@@ -364,15 +364,30 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     const r = step(ctx);
     steps.push(r);
     if (!r.ok) {
+      // A settlement rejection is set INSIDE step 10 / step 11 and carries its own dimension on ctx.
+      // It is not a "stopped before the settlement question" state — the artifact WAS examined.
+      const settlementFailure = (r.step === "STEP_10_EXECUTED" || r.step === "STEP_11_EXECUTION_FAILED") && ctx.settlement !== undefined;
+      // REVISION 3 — the map is three-way: `E_SETTLEMENT_BOUNDS_UNCHECKABLE` joins the two checkpoint
+      // codes on the INCONCLUSIVE branch (a settlement whose bounds could not be checked is asked-and-
+      // unanswered, not a hard rejection). Every CONTRADICTED settlement code stays on the INVALID
+      // default, alongside every non-settlement failure.
       const verdict: EvidenceVerdict =
-        r.code === "E_INCONCLUSIVE_NO_CHECKPOINT" || r.code === "E_STALE_CHECKPOINT" ? "INCONCLUSIVE" : "INVALID";
-      // A failure BEFORE the chain/checkpoint step leaves integrity genuinely unproven, and a
-      // failure at step 17 means it is broken. Neither is reported as INTACT: this dimension states
-      // what was PROVEN, never what was merely not disproven.
+        r.code === "E_INCONCLUSIVE_NO_CHECKPOINT" || r.code === "E_STALE_CHECKPOINT" || r.code === "E_SETTLEMENT_BOUNDS_UNCHECKABLE"
+          ? "INCONCLUSIVE"
+          : "INVALID";
+      // Integrity states what was PROVEN. On a non-settlement failure the rule is unchanged: a
+      // failure before the checkpoint step leaves integrity unproven, a failure at step 17 means it
+      // is broken. On a SETTLEMENT failure the bundle's bytes are cryptographically perfect — every
+      // shipped EXECUTED check passed before the settlement plane ran — so the checkpoint step is run
+      // OUT OF BAND to establish integrity honestly, WITHOUT changing which step is reported as
+      // failing (§5.4a): a settlement rejection over a broken checkpoint is still a settlement rejection.
+      if (settlementFailure && ctx.checkpointReconciled === undefined) step17_checkpointReconcile(ctx);
       const integrity: VerdictDimensions["integrity"] = ctx.checkpointReconciled === true && r.step !== "STEP_17_CHECKPOINT_RECONCILE" ? "INTACT" : "BROKEN";
-      // The pipeline stopped, so the settlement question was never reached. `UNCHECKED` is the one
-      // value that must never be read as "an artifact was examined and found acceptable".
-      return result(verdict, bundle.outcome, steps, ctx.warnings, { integrity, authorization: ctx.authorization, settlement: "UNCHECKED" }, NOT_EVALUATED, r, [...ctx.rolesAsserted], purpose);
+      // A run that stopped OUTSIDE the settlement rule examined no settlement evidence (UNCHECKED, the
+      // value that must never read as "an artifact was examined and accepted"); a settlement rejection
+      // carries the dimension the rule set (BOUNDS_UNCHECKABLE or CONTRADICTED).
+      const settlement: VerdictDimensions["settlement"] = ctx.settlement ?? "UNCHECKED";
+      return result(verdict, bundle.outcome, steps, ctx.warnings, { integrity, authorization: ctx.authorization, settlement }, NOT_EVALUATED, r, [...ctx.rolesAsserted], purpose);
     }
   }
 
