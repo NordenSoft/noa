@@ -1389,6 +1389,63 @@ const KNOCKOUTS = [
     kind: "gate",
     suite: [".", "npm", ["run", "lint:inert-containers"]],
   },
+  {
+    id: "settlement-exit-six-splits-inconclusive",
+    control:
+      "The settlement ladder — an INCONCLUSIVE result whose settlement question was ASKED AND NOT " +
+      "ANSWERED exits 6, not 3. Collapsing it into 3 is not a cosmetic loss: 3 already means \"stale " +
+      "or absent checkpoint\", and a script that special-cases 3 as \"refresh the anchor and retry\" " +
+      "would retry its way straight past the one state the ladder exists to surface. The mutation " +
+      "makes every INCONCLUSIVE exit 3 — the exact shape of an exit table authored beside its rules " +
+      "instead of derived from them.",
+    file: "packages/evidence/src/exit-codes.ts",
+    find: "  if (verdict === \"INCONCLUSIVE\") return SETTLEMENT_UNRESOLVED.has(settlement) ? 6 : 3;",
+    replace: "  if (verdict === \"INCONCLUSIVE\") return 3;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-completed-run-says-nobody-asked",
+    control:
+      "A run that completes the whole pipeline reports `settlement: NO_EXECUTION_BINDING` — no " +
+      "execution binding was established for this bundle, because nothing asked for one. Reporting " +
+      "`UNCHECKED` there would say \"the rule never ran\", which is true of a pipeline that stopped " +
+      "early and false of one that finished; the two are the difference between an unfinished check " +
+      "and an unasked question, and the result carries exactly one of them.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },",
+    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"UNCHECKED\" },",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-attestation-may-not-ride-a-positive",
+    control:
+      "Only two settlement states may ride a POSITIVE verdict: a re-query by the relying party's own " +
+      "node, and the honest \"nobody asked\". Admitting the offline ceiling — an attestation this " +
+      "verifier did not verify — onto that list is the defect the two-word name exists to prevent: " +
+      "the caveat lives in a field nobody reads while the claim lives in the exit code every payment " +
+      "script reads.",
+    file: "packages/evidence/src/exit-codes.ts",
+    find: "export const SETTLEMENT_ADMISSIBLE_ON_POSITIVE: FrozenSet<SettlementDimension> = frozenSet<SettlementDimension>([\n  \"RECONFIRMED\",\n  \"NO_EXECUTION_BINDING\",\n]);",
+    replace: "export const SETTLEMENT_ADMISSIBLE_ON_POSITIVE: FrozenSet<SettlementDimension> = frozenSet<SettlementDimension>([\n  \"RECONFIRMED\",\n  \"NO_EXECUTION_BINDING\",\n  \"ATTESTED_UNVERIFIED\",\n]);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-unresolved-set-membership",
+    control:
+      "The three states that exit 6 are the ones where the settlement question was ASKED AND NOT " +
+      "ANSWERED — never the state where the rule simply did not run. Widening the set to include " +
+      "\"the rule did not run\" fires 6 on every stopped pipeline, which re-verdicts historical " +
+      "evidence and, worse, makes 6 a code that varies with nothing: a signal that never varies gets " +
+      "`|| true`'d inside a sprint, and then the real state is invisible again.",
+    file: "packages/evidence/src/exit-codes.ts",
+    find: "  \"BOUNDS_UNCHECKABLE\", // no verified preimage, so the money was compared to nothing\n]);",
+    replace: "  \"BOUNDS_UNCHECKABLE\", // no verified preimage, so the money was compared to nothing\n  \"UNCHECKED\",\n]);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment
