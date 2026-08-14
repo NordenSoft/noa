@@ -1601,6 +1601,41 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
+  {
+    id: "settlement-plane-is-checked",
+    control:
+      "The S5 settlement artifact plane (R1/R2/R3) runs inside step 10 and is the only thing between " +
+      "a bundle carrying a bad or unverifiable settlement artifact and a VALID_FULL_CHAIN / exit 0. " +
+      "Remove the call and every settlement rejection fixture — a wrong correlation, a supplied-but- " +
+      "wrong preimage, an out-of-bounds payee, a determinate non-settlement, an artifact with no " +
+      "verifiable preimage — returns to the positive verdict it carried when no step examined it. This " +
+      "is the F1/F2 control at the money boundary: without it, 'the money was compared to nothing' " +
+      "reads as 'verified'.",
+    file: "packages/evidence/src/steps.ts",
+    find:
+      "  const settlementErr = checkSettlement(ctx, S);\n" +
+      "  if (settlementErr) return settlementErr;\n",
+    replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-supplied-wrong-preimage-is-a-rejection",
+    control:
+      "R2 splits ONE reconciler code (SETTLEMENT_BOUNDS_UNCHECKABLE) two ways: an ABSENT or KEYED " +
+      "preimage is INCONCLUSIVE (the producer withheld a checkable preimage — asked and unanswered, " +
+      "exit 6), while a SUPPLIED preimage that does not hash to the approval is a producer LIE and a " +
+      "HARD rejection (INVALID / E_PARAMS_PREIMAGE_MISMATCH, exit 2). Forcing the uncheckable branch " +
+      "always-taken collapses the lie into the honest-withholding case, so the params-preimage-mismatch " +
+      "fixture — and ONLY it — flips from INVALID to INCONCLUSIVE; the two absent/keyed fixtures are " +
+      "unaffected. That single-fixture flip is what makes this an independent pin on the distinction " +
+      "rather than on the rule at large.",
+    file: "packages/evidence/src/steps.ts",
+    find: "      if (preimageUncheckable) {",
+    replace: "      if (true) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment
