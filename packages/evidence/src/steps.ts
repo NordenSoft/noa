@@ -18,7 +18,7 @@ import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type SigningKeyLi
 // evidence pipeline authenticates the artifact FIRST (verifyArtifact, layer 2) and then hands the
 // reconciler the bundle documents; a positive reconciler result over an un-authenticated artifact
 // means nothing (the reconciler's own R-12b), so the verifyArtifact gate below is load-bearing.
-import { reconcileSettlementEvidence } from "noa-rail-x402";
+import { reconcileSettlementEvidence, SETTLEMENT_WARNINGS } from "noa-rail-x402";
 import { encodeDocument } from "./bytes.js";
 
 // PRISTINE DECISIONS (review #6, C1). Every membership/search below is a verdict input; none of them
@@ -927,16 +927,22 @@ export function observerRelationshipOf(value: unknown): VerdictDimensions["settl
  * `SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER` and `SETTLEMENT_OVER_RAW_MODE_HOLD` were until
  * now.
  *
- * Each is shape-checked before it is copied. The registry emits SCREAMING_SNAKE tokens and nothing
- * else; a value that is not one is reported as an unrecognised warning rather than pasted verbatim,
- * so this reporting surface cannot become a channel for text this verifier did not author.
+ * Each is checked against the RECONCILER'S OWN REGISTRY before it is copied — `SETTLEMENT_WARNINGS`,
+ * imported from the module that emits them, so there is one authority and no second list to drift.
+ *
+ * ⚠ THIS WAS A SHAPE CHECK AND THAT WAS NOT A CLOSED SET. It tested `/^[A-Z][A-Z0-9_]{0,63}$/`,
+ * which admits any uppercase token at all, and the header above still called the result closed. An
+ * adversarial reviewer fed the reconciler's warning list `SETTLEMENT_FRAUD_CHECK_PASSED` and this
+ * verifier published it verbatim as its own finding — an invented all-clear, in a field an auditor
+ * reads as something the verifier established. A registry of four tokens is a closed set; a regex
+ * over their SHAPE is not.
  */
 export function settlementWarningsOf(warnings: unknown): string[] {
   const out: string[] = [];
   if (!Array.isArray(warnings)) return out;
   for (const w of warnings) {
     out.push(
-      typeof w === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(w)
+      typeof w === "string" && (SETTLEMENT_WARNINGS as readonly string[]).includes(w)
         ? `settlement: ${w}`
         : "settlement: the reconciler emitted a warning this verifier does not recognise",
     );

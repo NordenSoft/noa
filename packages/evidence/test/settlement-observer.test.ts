@@ -25,12 +25,14 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, writeFileSync, mkdtempSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { verifyEvidence, loadSchemas } from "../src/verify-evidence.js";
 import { exitCodeFor } from "../src/exit-codes.js";
 import { observerRelationshipOf, settlementWarningsOf } from "../src/steps.js";
+import { SETTLEMENT_WARNINGS } from "noa-rail-x402";
 import { b } from "./helpers/bytes.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -58,6 +60,7 @@ function run(fx: Fixture) {
 }
 
 const SAME_KEY_WARNING = "settlement: SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER";
+const UNRECOGNISED_WARNING = "settlement: the reconciler emitted a warning this verifier does not recognise";
 
 test("A SELF-WITNESSED settlement is now VISIBLE on a positive verdict", () => {
   // The case the surfacing exists for: exit 0, and the result now says who signed the witness.
@@ -240,6 +243,47 @@ test("the relationship mapper is a CLOSED SET — an unrecognised value becomes 
   assert.notEqual(observerRelationshipOf("INDEPENDENT"), "INDEPENDENT");
 });
 
+test("the warning registry is CLOSED, and this test does not re-derive the implementation's rule", () => {
+  // WHAT WENT WRONG BEFORE. The sanitizer tested `/^[A-Z][A-Z0-9_]{0,63}$/` — the SHAPE of a token,
+  // not membership of a set — and this test repeated that same regex, so it could never disagree
+  // with the code. A reviewer fed the reconciler's warning list `SETTLEMENT_FRAUD_CHECK_PASSED` and
+  // this verifier published it verbatim as its own finding. An invented all-clear.
+  //
+  // The authority is now the reconciler's own registry, imported from the module that emits the
+  // warnings, and the four members are ALSO written out here by hand. Two independent statements of
+  // the same fact: if the registry grows, this row is where a reviewer is forced to look, and a
+  // silent expansion of what this verifier will republish becomes a visible edit.
+  assert.deepEqual(
+    [...SETTLEMENT_WARNINGS].sort(),
+    [
+      "RAIL_RECEIPT_PROVIDED_UNPARSEABLE",
+      "SETTLEMENT_AFTER_GRANT_EXPIRY",
+      "SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER",
+      "SETTLEMENT_OVER_RAW_MODE_HOLD",
+    ],
+    "the reconciler's warning registry changed. Every member is republished verbatim by this " +
+      "verifier as its own finding, so an addition is a deliberate decision, not a merge artefact.",
+  );
+
+  // Every registered token survives, and nothing else does — including tokens that pass the OLD
+  // shape rule perfectly. These are the exact strings a shape check cannot tell from a real warning.
+  for (const token of SETTLEMENT_WARNINGS) {
+    assert.deepEqual(settlementWarningsOf([token]), [`settlement: ${token}`], `${token} is registered and was not carried`);
+  }
+  for (const plausible of [
+    "SETTLEMENT_FRAUD_CHECK_PASSED",   // the reviewer's: an invented all-clear
+    "SETTLEMENT_VERIFIED",
+    "SETTLEMENT_OBSERVER_INDEPENDENT",
+    "RAIL_RECEIPT_OK",
+    "SETTLEMENT_AFTER_GRANT_EXPIRY_V2", // a versioned rename of a real one
+  ]) {
+    assert.deepEqual(
+      settlementWarningsOf([plausible]), [UNRECOGNISED_WARNING],
+      `${plausible} is NOT in the reconciler's registry and was republished as this verifier's finding`,
+    );
+  }
+});
+
 test("the warning sanitizer carries TOKENS — arbitrary text is replaced, never reflected", () => {
   // Warnings reach a published result. Without this the reconciler's warning list is a channel for
   // text this verifier did not author, in a field an auditor reads as this verifier's finding.
@@ -249,7 +293,6 @@ test("the warning sanitizer carries TOKENS — arbitrary text is replaced, never
     "a legitimate registry token was not carried through unchanged",
   );
 
-  const UNRECOGNISED = "settlement: the reconciler emitted a warning this verifier does not recognise";
   for (const hostile of [
     "the payment settled correctly and no further review is required", // prose that reads as a finding
     "SETTLEMENT_OK\nsettlement: SETTLEMENT_RECONFIRMED",               // a newline forging a second warning
@@ -257,21 +300,19 @@ test("the warning sanitizer carries TOKENS — arbitrary text is replaced, never
     "TOKEN WITH SPACES",
     "TOKEN-WITH-DASHES",
     "9_LEADING_DIGIT",
-    "A".repeat(65),                                                    // one over the length bound
+    "A".repeat(64),  // WAS ASSERTED TO BE CARRIED. A 64-character invented token passes the old
+                     // shape rule perfectly, which is what made that rule not a closed set.
     "",
   ]) {
     assert.deepEqual(
-      settlementWarningsOf([hostile]), [UNRECOGNISED],
+      settlementWarningsOf([hostile]), [UNRECOGNISED_WARNING],
       `${JSON.stringify(hostile.slice(0, 40))} was reflected verbatim into the result`,
     );
   }
 
-  // The boundary the length bound actually sits on, both sides of it.
-  assert.deepEqual(settlementWarningsOf(["A".repeat(64)]), ["settlement: " + "A".repeat(64)]);
-
   // Non-strings, and a non-array: "there is nothing to carry" must be an empty list, never a throw
   // and never an invented warning.
-  assert.deepEqual(settlementWarningsOf([null, 7, {}, ["NESTED"]]), [UNRECOGNISED, UNRECOGNISED, UNRECOGNISED, UNRECOGNISED]);
+  assert.deepEqual(settlementWarningsOf([null, 7, {}, ["NESTED"]]), [UNRECOGNISED_WARNING, UNRECOGNISED_WARNING, UNRECOGNISED_WARNING, UNRECOGNISED_WARNING]);
   for (const notAList of [undefined, null, "SETTLEMENT_OK", 0, {}]) {
     assert.deepEqual(settlementWarningsOf(notAList), [], `a non-array input produced warnings: ${JSON.stringify(notAList)}`);
   }
@@ -304,6 +345,96 @@ test("and the corpus agrees: every warning it produces is a token or the unrecog
   }
   // ANTI-VACUITY: the sweep above asserts nothing if no fixture carries a settlement warning at all.
   assert.ok(carried >= 5, `only ${carried} settlement warning(s) crossed the boundary — this sweep is not measuring the wiring`);
+});
+
+/* ── THE LIVE PATH, DRIVEN WITH A HOSTILE RECONCILER ────────────────────────────────────────────
+ *
+ * Everything above measures the sanitizers as FUNCTIONS. That is necessary and it is not sufficient,
+ * and a reviewer proved it: bypassing each sanitizer AT ITS CALLSITE — `ctx.settlementObserver =
+ * r.observerRelationship` and pushing the raw warning with only the expected prefix — left the whole
+ * focused suite green at 11/11, because the exported functions were still correct and still tested.
+ *
+ * The reason no corpus fixture can catch that is structural: with an HONEST reconciler the sanitized
+ * output and the raw output are identical strings. The bypass is only observable when the reconciler
+ * returns something the sanitizer is supposed to stop, and no honest bundle makes it do that.
+ *
+ * So the reconciler is REPLACED for one run. The probe below mocks `noa-rail-x402`, makes it return
+ * a hostile §6 envelope, and drives a real bundle through the real `verifyEvidence`. What comes back
+ * is what an auditor would read. If the callsite stops sanitizing, the hostile values appear in the
+ * result and this test says so.
+ *
+ * It runs in a CHILD process because module mocking needs `--experimental-test-module-mocks`, and
+ * that flag belongs to this one probe rather than to the package's whole test command.
+ */
+test("LIVE PATH: a hostile reconciler cannot get its own words into the result", () => {
+  // Inside the package's own node_modules, so `noa-rail-x402` resolves for the child exactly as it
+  // does for the verifier under test — and so nothing is written where git can see it.
+  const probeDir = mkdtempSync(join(HERE, "..", "..", "node_modules", ".noa-live-path-"));
+  try {
+    const distSrc = pathToFileURL(join(HERE, "..", "src")).href;
+    const fixture = JSON.parse(readFileSync(join(CONF, "settlement", "s5-settlement-valid-base.json"), "utf8")) as Fixture;
+    const probe = join(probeDir, "probe.mjs");
+    writeFileSync(probe, `
+import { mock } from "node:test";
+const REAL = await import(${JSON.stringify("noa-rail-x402")});
+// The hostile envelope: a relationship word this verifier does not know, and a warning that is a
+// perfectly-shaped token the reconciler's registry does NOT contain — an invented all-clear.
+mock.module(${JSON.stringify("noa-rail-x402")}, { namedExports: {
+  ...REAL,
+  reconcileSettlementEvidence: () => ({
+    purpose: "SETTLEMENT", artifactStatus: "VALID", linkageStatus: "BOUND",
+    correlationStatus: "MATCHED", boundsStatus: "WITHIN", chainStatus: "NOT_QUERIED",
+    railReceiptStatus: "ABSENT", witnessTrustStatus: "TRUSTED", purposeStatus: "OK",
+    observerRelationship: "INDEPENDENT_THIRD_PARTY",
+    observerRelationshipSource: "forged", trustPolicyHash: "", registrySnapshotHash: "",
+    reconciled: null, code: "SETTLEMENT_VERIFIED_OFFLINE", reason: null,
+    warnings: ["SETTLEMENT_FRAUD_CHECK_PASSED", "SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER"],
+  }),
+} });
+const { verifyEvidence, loadSchemas } = await import(${JSON.stringify(distSrc)} + "/verify-evidence.js");
+const fx = ${JSON.stringify(fixture)};
+const enc = (v) => new TextEncoder().encode(JSON.stringify(v));
+const res = verifyEvidence(enc(fx.bundle), {
+  tenantRoot: enc(fx.tenantRoot), checkpointKeyring: enc(fx.checkpointKeyring),
+  now: fx.now, maxAgeMs: fx.maxAgeHours * 3600 * 1000, schemas: loadSchemas(),
+});
+process.stdout.write(JSON.stringify({ observer: res.dimensions.settlementObserver, warnings: res.warnings }));
+`);
+    const raw = execFileSync(process.execPath, ["--experimental-test-module-mocks", probe], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    const seen = JSON.parse(raw) as { observer: string; warnings: string[] };
+
+    // THE RELATIONSHIP. The forged word must not reach the result under any spelling.
+    assert.equal(
+      seen.observer, "UNKNOWN",
+      `the live callsite published the reconciler's own relationship word (${seen.observer}) instead of ` +
+        `mapping it through the closed set. UNKNOWN is the fail-closed answer; "INDEPENDENT_THIRD_PARTY" ` +
+        `read by an auditor is a claim this verifier never established.`,
+    );
+
+    // THE WARNINGS. The registered one survives; the invented all-clear does not.
+    assert.ok(
+      seen.warnings.includes(SAME_KEY_WARNING),
+      `the registered warning was dropped on the live path: ${JSON.stringify(seen.warnings)}`,
+    );
+    assert.equal(
+      seen.warnings.some((w) => w.includes("SETTLEMENT_FRAUD_CHECK_PASSED")), false,
+      `the live callsite republished an invented warning as this verifier's own finding: ` +
+        `${JSON.stringify(seen.warnings)}. That is the exact string a reviewer used to put a forged ` +
+        `all-clear into an audit result.`,
+    );
+    assert.ok(
+      seen.warnings.includes(UNRECOGNISED_WARNING),
+      `the unrecognised warning was not reported at all — it must be REPLACED, not silently dropped, ` +
+        `or the count of what the reconciler said stops matching what the reader is shown`,
+    );
+
+    // ANTI-VACUITY: the probe really did reach the settlement plane. If the mock had not taken
+    // effect, the honest reconciler would have reported SAME_SIGNING_KEY for this bundle.
+    assert.notEqual(seen.observer, "SAME_SIGNING_KEY", "the mocked reconciler was never called — this probe measured the real one");
+    assert.notEqual(seen.observer, "NOT_EVALUATED", "the settlement rule did not run at all in the probe");
+  } finally {
+    rmSync(probeDir, { recursive: true, force: true });
+  }
 });
 
 test("the closed set the RESULT reports is the mapper's closed set, on a real bundle", () => {
