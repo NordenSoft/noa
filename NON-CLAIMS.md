@@ -1098,6 +1098,39 @@ ceiling of an offline verifier — it can establish that a settlement assertion 
 never that it is true — and it is stated here so a green corpus is never read as "the enrolled path
 works".
 
+### NC-S5.9 — A leap-second timestamp passes the released schemas and then reads as no instant at all
+
+**Measured 2026-08-15, and recorded as a known divergence rather than quietly narrowed.** Every
+RELEASED artifact schema writes its seconds field as `\d{2}`, so `2016-12-31T23:59:60Z` — a real UTC
+leap second — **validates**. The exact nanosecond parser those timestamps are then read under refuses
+`:60` outright and returns "not a time":
+
+```
+released decision schema, pattern accepts "2016-12-31T23:59:60Z"  ->  true
+rfc3339Nanos("2016-12-31T23:59:60Z", <that schema>)               ->  null
+rfc3339Nanos("2016-12-31T23:59:59Z", <that schema>)               ->  1483228799000000000n
+```
+
+**What it means in practice.** An artifact stamped on a leap second authenticates — its signature is
+fine and its shape is fine — and then any rule that has to place it in time cannot. Which rule sees
+it first decides how it surfaces: as a window refusal, or an activation refusal, never as "this
+timestamp names no instant this verifier can compute". The direction is fail-closed throughout —
+nothing is ACCEPTED that would otherwise be refused. What is lost is the ability to say plainly why.
+
+**Why it is not fixed here.** Two consistent answers exist and only one is available today. Teaching
+the parser leap seconds means teaching every consumer of these instants an arithmetic none of them
+share, and there is no leap-second table in this codebase to share. Narrowing the released schemas to
+`[0-5]\d` is the other, and it is a **specification event for a future revision**: it changes what a
+published grammar accepts, so a document a counterparty already holds could stop validating. The one
+artifact where the narrowing WAS applied — `noa.action-class-enrolment/0.1` — is unreleased, and its
+schema records that reasoning at the field.
+
+**Scope, stated so nobody over-reads it.** No leap second has been announced since 2016 and the
+practice is scheduled to be discontinued; a signer would have to stamp an artifact inside a
+one-second window that occurs at most twice a year and has not occurred for years. It is written down
+because an undocumented gap between what a schema admits and what a parser accepts is the shape that
+surprises an integrator at the worst possible moment — not because it is likely.
+
 
 ## 7. Changing this document
 
