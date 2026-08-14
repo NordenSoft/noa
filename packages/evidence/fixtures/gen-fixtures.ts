@@ -194,6 +194,13 @@ interface BuildOpts {
    */
   rawHold?: boolean;
   /**
+   * A RAW hold that STILL names a display projection — a self-inconsistent envelope a gate can
+   * genuinely emit. It exists so the "RAW is never enrollable" rule is measurable ON ITS OWN: with
+   * `rawHold` the projection is null too, and the missing-half check refuses first, so a knockout of
+   * the mode check alone would leave the corpus green and score a live control as dead weight.
+   */
+  rawHoldWithProjection?: boolean;
+  /**
    * S5 — the settlement observer's kid. The default (`gate-prod-1`, the execution signer itself) is
    * today's honest deployment and is CAPPED by R-16; a distinct observer key is what lets a bundle
    * reach the offline ceiling for an enrolled class instead of stopping at "not admissible".
@@ -251,7 +258,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
 
   const envelopeCore: J = {
     spec: "noa.hold/0.1", holdId: "hold-001", deferredReceiptId: "rcpt_deferred", deferredReceiptHash: DEF_HASH,
-    mode: opts.rawHold ? "RAW" : "ENFORCED", displayCiphertextHash: "sha256:" + "b".repeat(64),
+    mode: opts.rawHold || opts.rawHoldWithProjection ? "RAW" : "ENFORCED", displayCiphertextHash: "sha256:" + "b".repeat(64),
     actionSchema: { id: "deploy.apply", version: 1, hash: "sha256:" + "c".repeat(64) },
     displayProjection: opts.rawHold ? null : { id: "deploy.display", version: 1, hash: "sha256:" + "d".repeat(64) },
     canonicalization: "JCS-RFC8785", keyManifestVersion: 2, keyManifestHash: MAN_HASH,
@@ -1208,6 +1215,15 @@ function enrolRegistry(over: {
 {
   const raw = buildWorld("EXECUTED", { enrolDelegation: true, rawHold: true });
   emit("enrolment", "s5-enrolment-raw-mode", fixtureFrom(raw, { description: "B.5: a RAW hold (mode RAW, displayProjection null) with a registry claiming its class enrolled. On a RAW hold the display a human approved and the params a grant authorizes are two unrelated fields, so half the class key does not exist and the other half cannot be tied to a rendering — a registry asserting enrolment here is asserting something the gate-signed envelope cannot support. INVALID / E_ENROLMENT_MISMATCH, exit 2. This composes with the ratified rule that RAW must not issue a human-approved grant for a critical action", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_MISMATCH", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+}
+
+// B.5' — the SAME rule, isolated. Measured, and the reason it exists is a knockout that failed:
+// removing the mode check alone left the corpus green, because on a fully RAW envelope the
+// missing-projection check refuses first. Two controls that mask each other are one control with a
+// spare, so the mode rule gets a fixture where it is the ONLY thing that can refuse.
+{
+  const rawWithProjection = buildWorld("EXECUTED", { enrolDelegation: true, rawHoldWithProjection: true });
+  emit("enrolment", "s5-enrolment-raw-mode-with-projection", fixtureFrom(rawWithProjection, { description: "B.5' (ISOLATION): a self-inconsistent envelope a gate can genuinely emit — mode RAW while STILL naming a display projection — with a registry claiming its class enrolled. Both halves of the class key are present and match, so the ONLY rule that can refuse is 'a RAW hold is never enrollable'. Without this fixture that rule is masked by the missing-projection check on a fully RAW envelope, and a knockout of it leaves the whole corpus green — a live control scored as dead weight. INVALID / E_ENROLMENT_MISMATCH, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_MISMATCH", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
 }
 
 // A.3 — THE OFFLINE CEILING. The vector the whole reconfirmation gate exists for.

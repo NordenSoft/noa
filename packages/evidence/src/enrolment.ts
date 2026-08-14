@@ -327,9 +327,14 @@ export function checkEnrolment(ctx: Ctx, S: StepName): StepResult | null {
         if (asStr(env?.mode) !== "ENFORCED") {
           return `holdEnvelope.mode is ${JSON.stringify(env?.mode)}, not "ENFORCED" — a RAW hold is never enrollable`;
         }
-        if (asObj(envProjection) === null) {
-          return "holdEnvelope.displayProjection is absent or not an object — half the class key does not exist";
-        }
+        // NO SEPARATE "displayProjection is null" CHECK, and its absence is a deliberate deletion
+        // rather than an oversight. A null projection cannot equal the row's projection member for
+        // member, so the exactness check below already refuses it with the same code — and a knockout
+        // proved the two could not be told apart: removing either one left the corpus green, because
+        // whichever survived refused first. Two controls that mask each other are one control with a
+        // spare, and a spare that no test can distinguish reads in review as a defence while
+        // measuring nothing.
+        //
         // The `actionId` cross-check. This is what turns the console↔kernel `action.id` question from
         // silent semantic drift into a BLOCKING defect for enrolled classes, and it is why a class
         // must not be enrolled before the console points at the same identifier.
