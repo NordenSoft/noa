@@ -689,6 +689,55 @@ for (const oc of OUTCOMES) {
   bundle.executionConsumption = sign(cons, "noa.execution-consumption/0.1", "gate-prod-1");
   emit("reject", "step11-execution-failed-result", fixtureFrom(w, { description: "STEP_11/NC-2.1: EXECUTION_FAILED but consumption.result == DISPATCHED — the outcome says the tool was never invoked and the consumption says the request was handed off", expectVerdict: "INVALID", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_EXECUTION_FAILED", bundle }));
 }
+
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+// THE F1/G4 CONSUMPTION BINDINGS — the four rules that tie a consumption to the grant it consumed and
+// to the attempt it reports, and which NO vector reached.
+//
+// Found by the cause inventory (test/cause-inventory.test.ts), which enumerates the refusal causes
+// out of the source rather than trusting a list. Measured before the fixtures below existed: deleting
+// the step-11 grant binding
+//
+//     if (asStr(consumption.grantHash) !== refHash(b.executionGrant)) return fail(...)
+//
+// left the whole evidence suite green at 423/423. Every one of the eight step-11 checks reports
+// `E_EXECUTION_FAILED`, so the corpus's code-and-step assertions were satisfied by any one of them —
+// the exact blind spot code-cause-pinning.test.ts was written for, in the family it named.
+//
+// WHAT EACH REFUSES, and it is not a formality. The consumption is the gate's signed statement that
+// it used a grant; the grant is what an approval authorized. Without the binding, a gate-signed
+// consumption naming a DIFFERENT execution grant rides an otherwise perfect bundle: the approval, the
+// grant, the receipt chain and the checkpoint all verify, and the document that says "this authority
+// was spent" points at authority nobody granted for this act. The attempt binding is the same defect
+// one step along — a consumption reporting an attempt receipt that is not the one this outcome
+// carries.
+//
+// All four are ONE re-signed field on an otherwise valid world, so nothing else can explain the
+// refusal. The grant pair is a hash no artifact in the bundle has; the attempt pair points at the
+// SIBLING outcome's receipt hash, which is a document that really exists in this corpus — a
+// substitution rather than a corruption.
+// ══════════════════════════════════════════════════════════════════════════════════════════════════
+const UNRELATED_REF = "sha256:" + "a7".repeat(32);
+for (const isFail of [false, true]) {
+  const outcome = isFail ? "EXECUTION_FAILED" : "EXECUTED";
+  const step = isFail ? "STEP_11_EXECUTION_FAILED" : "STEP_10_EXECUTED";
+  const code = isFail ? "E_EXECUTION_FAILED" : "E_EXECUTED";
+  const tag = isFail ? "step11" : "step10";
+  {
+    const w = buildWorld(outcome as EvidenceOutcome);
+    const bundle = clone(w.bundle);
+    const cons = clone(w.bundle.executionConsumption) as J; delete cons.sig; cons.grantHash = UNRELATED_REF;
+    bundle.executionConsumption = sign(cons, "noa.execution-consumption/0.1", "gate-prod-1");
+    emit("reject", `${tag}-consumption-grant-hash-unbound`, fixtureFrom(w, { description: `${step}/F1: ${outcome} whose gate-signed executionConsumption names a DIFFERENT execution grant (consumption.grantHash != refHash(executionGrant)). Everything else verifies — approval, grant, receipt chain, checkpoint — so the only thing refusing this bundle is the binding between the consumption and the authority it claims to have spent. Deleting that one line left the whole suite green before this vector existed`, expectVerdict: "INVALID", expectStep: step, expectCode: code, bundle }));
+  }
+  {
+    const w = buildWorld(outcome as EvidenceOutcome);
+    const bundle = clone(w.bundle);
+    const cons = clone(w.bundle.executionConsumption) as J; delete cons.sig; cons.attemptReceiptHash = UNRELATED_REF;
+    bundle.executionConsumption = sign(cons, "noa.execution-consumption/0.1", "gate-prod-1");
+    emit("reject", `${tag}-consumption-attempt-hash-unbound`, fixtureFrom(w, { description: `${step}/G4: ${outcome} whose gate-signed executionConsumption reports an attempt receipt this bundle does not carry (consumption.attemptReceiptHash != ${isFail ? "failedReceipt" : "executedReceipt"}.chain.hash). The sibling of the grant binding above: the consumption is bound to its authority and not to its outcome`, expectVerdict: "INVALID", expectStep: step, expectCode: code, bundle }));
+  }
+}
 // STEP 19 (was STEP 11) — EXECUTION_FAILED but the failedReceipt verdict is not FAILED. Re-attributed
 // with step07-denied-verdict above: the role→verdict rule now has exactly one enforcement point.
 {
@@ -725,6 +774,29 @@ for (const oc of OUTCOMES) {
   const bundle = clone(w.bundle);
   bundle.executedReceipt = clone(wExec.bundle.executedReceipt);
   emit("reject", "step14-approved-with-execution", fixtureFrom(w, { description: "STEP_14: APPROVED_NO_EXECUTION_EVIDENCE that smuggles an executedReceipt (absence-claim contradicted)", expectVerdict: "INVALID", expectStep: "STEP_14_APPROVED_NO_EXECUTION_EVIDENCE", expectCode: "E_APPROVED_NO_EXEC", bundle }));
+}
+// ── THE OTHER THREE ABSENCE CLAIMS — the siblings of the fixture above, and they had no vector ──
+//
+// `STEP_OWNED_ABSENCE` (types.ts) deliberately EXEMPTS executionConsumption/executedReceipt/
+// failedReceipt from step 0's union pre-rule for four outcomes, so that each outcome's own step
+// reports the contradiction under its own code rather than as a generic union violation. Exactly one
+// of the four — step 14, above — had a fixture. The cause inventory found the other three, and it
+// found them by refuting the claim this comment's author first wrote: that the union pre-rule
+// already covered them. It does not, on purpose, and that is the whole reason the exemption exists.
+//
+// Each is a bundle whose outcome word ASSERTS that nothing was executed, carrying a gate-signed
+// receipt that says something was. Without these rules the assertion is unpoliced for three of the
+// four outcomes that make it.
+for (const [outcome, step, code, name] of [
+  ["CANCELLED_LOCAL_STATE_LOST", "STEP_9_CANCELLED", "E_CANCELLED", "step09-cancelled-with-execution"],
+  ["UNKNOWN_AFTER_DISPATCH", "STEP_12_UNKNOWN_AFTER_DISPATCH", "E_UNKNOWN", "step12-unknown-with-execution"],
+  ["GRANT_EXPIRED_NO_CONSUMPTION_EVIDENCE", "STEP_13_GRANT_EXPIRED", "E_GRANT_EXPIRED", "step13-grant-expired-with-execution"],
+] as const) {
+  const w = buildWorld(outcome);
+  const wExec = buildWorld("EXECUTED");
+  const bundle = clone(w.bundle);
+  bundle.executedReceipt = clone(wExec.bundle.executedReceipt);
+  emit("reject", name, fixtureFrom(w, { description: `${step}: ${outcome} — an outcome whose whole claim is that nothing was executed — smuggling a gate-signed executedReceipt. Step 0's union pre-rule defers this field to this step by design (STEP_OWNED_ABSENCE), so the step's own rule is the ONLY thing refusing it`, expectVerdict: "INVALID", expectStep: step, expectCode: code, bundle }));
 }
 // STEP 15 — LAUNDERING: a CANCELLED "nothing executed" claim with NO trusted checkpoint anchor.
 {
