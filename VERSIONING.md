@@ -78,15 +78,50 @@ are building a third-party verifier for the JSON format, treat the vectors under
 document's prose. (`conformance/vectors` covers the JSON path only; the COSE `-8`-alg rejection
 is pinned by the separate unit-test suite in `test/cose/cose.test.ts`, not a golden vector.)
 
+### 3.1 The one carve-out, and it is narrow (added 0.8.0, 2026-08-14)
+
+**The paragraph above is not absolute, and pretending otherwise would be the more dishonest
+option.** `0.8.0` makes five kinds of receipt that previously verified `VALID` verify `MALFORMED`,
+under the same `spec: "noa.receipt/0.1"` string and without a `spec`-string bump. Stated plainly so
+nobody has to discover it from a failing pipeline:
+
+- **What stops verifying.** A receipt whose **signed body contradicts itself** — `agent.principal:
+  "SANDBOX_SIM"` with `governance.sandboxed: false`; `governance.verdict: "SIMULATED"` with
+  `sandboxed: false`; `action.reversible: false` carrying a `rollbackRef`; `verdict: "ROLLED_BACK"`
+  on an irreversible action — and a receipt whose `ts` has the *shape* of an RFC 3339 timestamp but
+  **denotes no instant** (`2026-13-45T99:99:99.000Z`). See
+  [receipt-spec.md §2 "Coherence rules"](docs/receipt-spec.md).
+- **Why this is not a wire-format redefinition.** A receipt that says an action both was and was not
+  a simulation was never a well-formed `noa.receipt/0.1` receipt; the field semantics were always
+  mutually exclusive and the verifiers simply failed to enforce them. No field was added, removed,
+  renamed or re-typed, and the canonicalization and hashing rules are byte-identical. A conformant
+  producer could never legitimately emit one — this library's own builder now refuses to sign them.
+- **Why a `spec` bump would have been the worse answer.** `noa.receipt/0.2` would invalidate every
+  *honest* `0.1` receipt in existence — a break for every correct producer — in order to keep
+  honouring a class of receipt that exists only to be argued both ways after the fact. The security
+  correction is the smaller break, and the larger one buys nobody anything.
+- **Measured blast radius, not estimated.** Across all 496 `noa.receipt/0.1` receipts committed in
+  this repository (352 JSON files), exactly **six** changed verdict: the five new attack vectors,
+  deliberately added, and one pre-existing fixture inside `packages/evidence` whose generator asked
+  for `ROLLED_BACK` on an irreversible action. **`conformance/golden/0.3.0` is untouched** — every
+  frozen artifact a real `0.3.0` release produced still verifies exactly as before, and
+  `test/golden-backcompat.test.ts` passes 16/16.
+- **How to tell whether you are affected**, without trusting this list: run `noa verify` from
+  `0.8.0` over your archive. Anything that was `VALID` and is now `MALFORMED` is a receipt whose own
+  contents disagree with each other, and the error message names the two fields that do.
+
 ## 4. Practical rule for consumers
 
 - Pin the **npm package** with a normal semver range for API/CLI stability.
 - Check each receipt's own **`spec` field** for wire-format compatibility — this is a separate
   axis from the package version and is what you actually need to reason about when deciding
   whether your verifier can read a given receipt.
-- A `npm install noa-receipt@latest` upgrade will never silently change how an
+- A `npm install noa-receipt@latest` upgrade will never **silently** change how an
   already-issued `noa.receipt/0.1` receipt verifies; a change that would is a `spec`-string
   bump, documented in [CHANGELOG.md](CHANGELOG.md) and the [receipt-spec.md](docs/receipt-spec.md)
-  roadmap (§7), not a silent redefinition under the same string.
+  roadmap (§7), not a silent redefinition under the same string. **The single exception, and it is
+  not silent:** a receipt whose own signed body contradicts itself (§3.1) stopped verifying in
+  `0.8.0` without a `spec` bump — read §3.1 before upgrading if you archive receipts you did not
+  produce yourself.
 
 See [CHANGELOG.md](CHANGELOG.md) for the full release history.

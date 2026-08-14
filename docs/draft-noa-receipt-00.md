@@ -207,7 +207,27 @@ controls JSON Schema cannot express).
 - **`id`** MUST be a non-empty string of at most 128 Unicode code points (counted
   by code point, not UTF-16 code unit).
 - **`ts`** and **`approval.at`** MUST be RFC 3339 timestamps; lowercase `t` and
-  `z` are permitted per RFC 3339 Section 5.6.
+  `z` are permitted per RFC 3339 Section 5.6. They MUST also DENOTE A REAL
+  INSTANT, not merely match the lexical form: `date-month` 01-12, `date-mday`
+  within the real length of that month in that year (leap years included),
+  `time-hour` 00-23, `time-minute` 00-59, `time-second` 00-60, and a
+  `time-numoffset` of at most 23:59 — the ranges RFC 3339 Section 5.6's own ABNF
+  comments impose. `time-second` 60 MUST be ACCEPTED: a leap second is a real
+  instant, and which UTC days carry one is published by the IERS rather than
+  derivable from the string, so a verifier enforces the range and not a calendar
+  of leap seconds. A value such as `2026-13-45T99:99:99.000Z` matches the lexical
+  pattern and MUST be rejected as `MALFORMED`.
+- **Coherence (cross-field).** Every rule in this section reads one field; a
+  receipt can satisfy all of them and still contradict itself. A verifier MUST
+  reject the following as `MALFORMED`, and a producer MUST NOT emit them:
+  (R1) `agent.principal` `SANDBOX_SIM` REQUIRES `governance.sandboxed` `true`;
+  (R2) `governance.verdict` `SIMULATED` REQUIRES `governance.sandboxed` `true`;
+  (R3) `action.reversible` `false` REQUIRES `action.rollbackRef` absent or
+  `null`; (R4) `governance.verdict` `ROLLED_BACK` REQUIRES `action.reversible`
+  `true`. Each is one-directional: `governance.sandboxed` `true` with any
+  principal, and a reversible action with no `rollbackRef`, are both valid.
+  These are decidable with no key material, so they are part of structural
+  validation (Section 5 step 1) and not of signature verification.
 - **`agent.principal`** MUST be one of `HUMAN`, `SERVICE`, `POLICY`,
   `SANDBOX_SIM`. **`action.riskClass`** MUST be one of `LOW`, `MEDIUM`, `HIGH`,
   `CRITICAL`, `IRREVERSIBLE`. **`governance.mode`** MUST be one of `off`,
