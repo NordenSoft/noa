@@ -51,6 +51,18 @@ outcome may be believed. `--audience` is this verifier's own relying-party ident
 REQUIRED whenever a registry is supplied — a registry that does not know who is reading it cannot be
 scoped, and an unscoped registry is indistinguishable from a policy downgrade.
 
+**Flag discipline, because flags decide answers.** Every flag except `--enrolment-registry` names ONE
+value, and giving it twice is a usage error (exit `5`) rather than last-wins — so appending to a
+command line cannot silently replace a trust root or a reader identity. A flag with no value, whether
+trailing or followed by another flag, is a usage error too, instead of a run that continues with the
+value missing. `--enrolment-registry` is the one repeatable flag and it ACCUMULATES: a reader
+legitimately holds several, and a second one never discards the first.
+
+**The library API is stricter than a type signature.** `enrolmentRegistries` must be a real array;
+anything else that is *supplied* — the bytes on their own, an array-like object, a `Set`, a `Proxy`
+over an array — is `INVALID`, never "no registry supplied". An unrecognised trust-input shape must
+not soften into the unconfigured branch, because that branch is the permissive one.
+
 Two properties, stated plainly because they are what the design is for:
 
 - **Supplying a registry can only ever make a verdict HARDER to reach.** Nothing a registry

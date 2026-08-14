@@ -164,6 +164,29 @@ function publishedTimeSchema(schema: unknown): Record<string, unknown> | null {
   return rfc3339 as Record<string, unknown>;
 }
 
+/**
+ * THE ONE EXACT TIMESTAMP PARSER, PUBLISHED — because a second one is how two verifiers disagree.
+ *
+ * Returns nanoseconds since the epoch as a `bigint`, or `null` for anything the artifact's own
+ * published grammar does not admit. Callers pass the ARTIFACT SCHEMA (the whole document as loaded
+ * from `schema/`), never an internal node: the grammar that ACCEPTED the document is the grammar its
+ * timestamps are read under, so a caller cannot quietly pick a laxer one.
+ *
+ * ⚠ WHY THIS IS EXPORTED RATHER THAN LEFT TO EACH CALLER. `Date.parse` truncates to MILLISECONDS
+ * while every artifact schema here admits 1-9 fractional digits, so two instants a nanosecond apart
+ * compare EQUAL. That is not a rounding nicety at a governance-window boundary: two contiguous,
+ * non-overlapping, correctly-versioned windows collapse into one, both match, and the wrong one can
+ * be selected. Measured during S5 I4's review — an archived bundle stamped `…:30.000000000Z`
+ * selected the SUCCESSOR window starting at `…:30.000000001Z` and reported a hard `INVALID` for an
+ * ordinary, spec-compliant rotation.
+ *
+ * The signature path below calls the same function, so a window comparison and a key-activation
+ * check can never disagree about what an instant is.
+ */
+export function rfc3339Nanos(value: unknown, artifactSchema: unknown): bigint | null {
+  return parseTime(value, publishedTimeSchema(artifactSchema));
+}
+
 function parseTime(v: unknown, timeSchema: Record<string, unknown> | null): bigint | null {
   if (timeSchema === null || !evalSchema(timeSchema, v).ok || typeof v !== "string") return null;
   if (v.length < 20 || v[4] !== "-" || v[7] !== "-"

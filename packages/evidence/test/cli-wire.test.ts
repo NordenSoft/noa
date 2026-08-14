@@ -157,6 +157,63 @@ test("WIRE: the SAME bundle bytes exit 0 without a registry and 4 with one — o
   assert.equal(with_.run.status, 4, `registry omitting the class: exited ${with_.run.status}`);
 });
 
+test("WIRE: a bare trailing singleton flag is a USAGE error — it never runs with the value missing", () => {
+  // Measured: a valid no-registry invocation ending in `--audience` consumed `undefined`, VERIFIED
+  // ANYWAY and exited 0. The operator typed a flag, got a verdict, and nothing said the flag did
+  // nothing. Every singleton is covered rather than only the new one, because the defect was the
+  // argument-parsing SHAPE (`x = args[++i]`) that every flag shared.
+  const f = materialise("valid/executed.json");
+  const base = [f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring];
+  for (const flag of ["--audience", "--tenant-root", "--checkpoint-keyring", "--now", "--max-age-hours", "--purpose"]) {
+    const trailing = runCli([...base, flag]);
+    assert.equal(trailing.status, 5, `${flag} alone at the end exited ${trailing.status}, expected the usage code`);
+    assert.ok(trailing.stderr.includes(flag), `${flag}: the error does not name the flag`);
+    // …and the same flag followed by ANOTHER flag must not swallow it as its value.
+    const swallowing = runCli([...base, flag, "--purpose", "audit"]);
+    assert.equal(swallowing.status, 5, `${flag} followed by --purpose exited ${swallowing.status} — it consumed a flag as a value`);
+  }
+});
+
+test("WIRE: a REPEATED singleton flag is a usage error — last-wins lets the last writer decide", () => {
+  // Measured on the enrolled fixture: `--audience hostile --audience good` exited 6 while
+  // `--audience good --audience hostile` exited 4. Whoever appends to the command line last decided
+  // the answer, silently. That is the shape a wrapper script, a CI template or an injected argument
+  // exploits, and it applied to `--tenant-root` exactly as much as to `--audience`.
+  const f = materialise("enrolment/s5-enrolled-no-settlement.json");
+  const base = [f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring,
+    ...f.registries.flatMap((p) => ["--enrolment-registry", p]),
+    "--now", f.fx.now, "--max-age-hours", String(f.fx.maxAgeHours)];
+
+  for (const [why, extra] of [
+    ["hostile then good", ["--audience", "rp:attacker.example", "--audience", f.fx.audience!]],
+    ["good then hostile", ["--audience", f.fx.audience!, "--audience", "rp:attacker.example"]],
+    ["the same value twice", ["--audience", f.fx.audience!, "--audience", f.fx.audience!]],
+    ["a second trust root", ["--audience", f.fx.audience!, "--tenant-root", f.root]],
+  ] as const) {
+    const run = runCli([...base, ...extra]);
+    assert.equal(run.status, 5, `${why}: exited ${run.status}, expected the usage code`);
+    assert.ok(run.stderr.includes("more than once"), `${why}: the error does not say the flag was repeated`);
+  }
+
+  // ANTI-VACUITY: the same command with ONE audience still works, so the refusal is about repetition
+  // rather than about the flag being present at all.
+  const ok = runCli([...base, "--audience", f.fx.audience!]);
+  assert.equal(ok.status, 6, `the single-audience control exited ${ok.status}, expected 6`);
+});
+
+test("WIRE: the REPEATABLE flag still accumulates — a second registry does not replace the first", () => {
+  // The distinction the singleton rule rests on: a repeatable flag ACCUMULATES, a singleton REFUSES.
+  // Passing the reader's own registry twice must behave exactly like passing it once (the class is
+  // enrolled either way), and never like a usage error.
+  const f = materialise("enrolment/s5-enrolled-no-settlement.json");
+  const twice = runCli([f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring,
+    ...f.registries.flatMap((p) => ["--enrolment-registry", p]),
+    ...f.registries.flatMap((p) => ["--enrolment-registry", p]),
+    "--audience", f.fx.audience!, "--now", f.fx.now, "--max-age-hours", String(f.fx.maxAgeHours)]);
+  assert.equal(twice.status, 6, `two registries exited ${twice.status}, expected 6`);
+  assert.equal((JSON.parse(twice.stdout) as Record<string, unknown>)["enrolment"], "ENROLLED");
+});
+
 test("WIRE: a registry with no reader is a USAGE error, not a verdict", () => {
   // Two different refusals, and they must not be confused: forgetting `--audience` is an OPERATOR
   // mistake (exit 5, with the sentence that fixes it), while a registry that genuinely does not name

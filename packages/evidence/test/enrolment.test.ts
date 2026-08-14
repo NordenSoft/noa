@@ -110,6 +110,91 @@ test("DOWNGRADE: an EMPTY closed registry blesses nothing — it refuses everyth
   }
 });
 
+// ── 1a. THE COLLECTION ITSELF — a supplied registry must never normalize to "none supplied" ──────
+
+/** Verify with a caller-supplied registry collection of an arbitrary shape. */
+function runWithCollection(fx: Fixture, supplied: unknown) {
+  return verifyEvidence(b(fx.bundle), {
+    tenantRoot: b(fx.tenantRoot),
+    checkpointKeyring: b(fx.checkpointKeyring),
+    enrolmentRegistries: supplied as never,
+    audience: fx.audience!,
+    now: fx.now,
+    maxAgeMs: fx.maxAgeHours * 3600 * 1000,
+    schemas,
+  });
+}
+
+test("DOWNGRADE: a SUPPLIED registry collection this verifier cannot read as a list is REFUSED", () => {
+  // THE HIGH FINDING, and the most dangerous shape in the plane because it skips the plane entirely.
+  // The option was normalized as `Array.isArray(x) ? [...x] : undefined`, so ANYTHING not recognised
+  // as an array became `undefined` — the NO-REGISTRY branch — and a reader that DID supply governance
+  // got VALID_FULL_CHAIN / NOT_EVALUATED / exit 0.
+  //
+  // "An unrecognised trust-input shape must never soften to 'not supplied'" is the rule, and it is
+  // the one the tenant root and the checkpoint keyring already follow: an input the verifier cannot
+  // read is a refusal, never a permission. TypeScript does not make malformed JavaScript calls
+  // impossible, and this is a PUBLISHED runtime entry point.
+  const fx = load(ENROLLED);
+  const registry = b(fx.enrolmentRegistries![0]!);
+  for (const [why, supplied] of [
+    ["the registry bytes handed over directly, not wrapped in a list", registry],
+    ["an array-LIKE object", { 0: registry, length: 1 }],
+    ["a string", "not-a-list"],
+    ["a number", 1],
+    ["null", null],
+    ["a Set of registries", new Set([registry])],
+    // FOUND WHILE SELF-REFUTING THE FIX ABOVE, and it is the same defect one layer out: a PROXY over
+    // a real array passes `Array.isArray` (which unwraps to the target) while every read — `length`
+    // included — runs the handler. Trapping `length` to 0 snapshotted an empty list over a full one
+    // and exited 0 with a registry supplied. The "`length` cannot be an accessor" argument is true of
+    // real arrays and of nothing else, so a programmable stand-in is refused rather than read.
+    ["a Proxy whose length trap reports an empty list", new Proxy([registry], { get(t, k, rc) { return k === "length" ? 0 : Reflect.get(t, k, rc); } })],
+    ["a transparent Proxy over a real array", new Proxy([registry], {})],
+  ] as const) {
+    const res = runWithCollection(fx, supplied);
+    assert.equal(
+      res.verdict, "INVALID",
+      `${why}: verdict ${res.verdict} / enrolment ${res.enrolment}. A supplied collection this verifier ` +
+        `cannot read as a list must be REFUSED — softening it into the unconfigured branch returns a ` +
+        `positive verdict to a reader that did supply governance.`,
+    );
+    assert.equal(res.enrolment, "NOT_EVALUATED", `${why}: the plane never ran, so it has nothing to report`);
+    assert.equal(exitOf(res), 2, `${why}: exit ${exitOf(res)}`);
+  }
+});
+
+test("DOWNGRADE: the copy is taken BY INDEX — a poisoned own iterator cannot empty the list", () => {
+  // The second half of the same finding. `[...caller]` runs the CALLER'S iterator, so a genuine array
+  // — one `Array.isArray` calls an array — carrying an own `Symbol.iterator` that yields nothing
+  // copied to `[]`: the no-registry branch and exit 0 again. Snapshotting by index through `length`
+  // closes it, because on a real array `length` is a non-configurable data property — there is no
+  // accessor to lie and no iterator to run.
+  const fx = load(ENROLLED);
+  const hostile: unknown[] = [b(fx.enrolmentRegistries![0]!)];
+  Object.defineProperty(hostile, Symbol.iterator, { value: function* () { /* yields nothing */ }, configurable: true });
+  const res = runWithCollection(fx, hostile);
+  assert.equal(res.enrolment, "ENROLLED", `enrolment ${res.enrolment}: the registry was dropped by its own iterator`);
+  assert.equal(res.code, "E_SETTLEMENT_REQUIRED");
+  assert.equal(exitOf(res), 6, "an array whose iterator yields nothing reached the permissive branch");
+});
+
+test("DOWNGRADE: an index ACCESSOR is read exactly once, and cannot answer two different things", () => {
+  // The remaining caller-owned surface on a real array: element slots CAN be accessors even though
+  // `length` cannot. Read twice, one could authenticate as a valid registry and then be consumed as
+  // something else. The snapshot reads each slot ONCE, and the count is the evidence.
+  const fx = load(ENROLLED);
+  const registry = b(fx.enrolmentRegistries![0]!);
+  let reads = 0;
+  const probing: unknown[] = [];
+  Object.defineProperty(probing, "0", { get() { reads += 1; return registry; }, enumerable: true, configurable: true });
+  probing.length = 1;
+  const res = runWithCollection(fx, probing);
+  assert.equal(reads, 1, `the caller's element accessor fired ${reads} times — it must be read exactly once`);
+  assert.equal(res.enrolment, "ENROLLED");
+  assert.equal(exitOf(res), 6);
+});
+
 test("DOWNGRADE: the BYTE BOUNDARY holds for the registry too — it is a document, not an object", () => {
   // The registry joins the trust root and the checkpoint keyring as a DOCUMENT, so the same boundary
   // rules apply to it: a live object is refused rather than traversed (its getters could answer one

@@ -54,6 +54,11 @@ import {
 } from "./steps.js";
 import { type ReceiptRole } from "./receipt-roles.js";
 
+// PRISTINE DECISIONS (review #6, C1). The registry collection's SHAPE and its COPY are both verdict
+// inputs: a poisoned `Array.isArray` or `Array.prototype.push` would otherwise decide whether a
+// supplied registry counts as supplied at all, and "not supplied" is the permissive branch.
+const { isArray, isProxy, arrayPush } = intrinsics;
+
 export const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // F5 default: 24h
 
 /**
@@ -325,6 +330,12 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
   let rawPurpose: unknown;
   let optEnrolmentRegistries: ReadonlyArray<Uint8Array | string> | undefined;
   let optAudience: string | undefined;
+  /**
+   * A SUPPLIED registry collection this function cannot read as a list. Captured as a reason string
+   * rather than acted on inside the `try`, so the refusal is issued once, below, on the same path as
+   * every other option-shape refusal.
+   */
+  let registryShapeRefusal: string | null = null;
   try {
     suppliedSchemas = opts.schemas;
     optTenantRoot = opts.tenantRoot;
@@ -332,14 +343,54 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     optNow = opts.now;
     optMaxAgeMs = opts.maxAgeMs;
     rawPurpose = opts.purpose ?? "audit";
-    // CAPTURED ONCE, like every other option, and COPIED: the registry list is caller-owned, and an
-    // array read twice is an array whose second read can disagree with the first. The DOCUMENTS
-    // inside it are bytes and are parsed by the kernel's own parser at the point of use.
-    const suppliedRegistries = opts.enrolmentRegistries;
-    optEnrolmentRegistries = Array.isArray(suppliedRegistries) ? [...suppliedRegistries] : undefined;
+    // ── THE REGISTRY COLLECTION: A SHAPE THIS FUNCTION EITHER READS OR REFUSES ────────────────────
+    //
+    // ⚠ THE DEFECT THIS REPLACES, MEASURED. This line read
+    // `Array.isArray(x) ? [...x] : undefined`, and BOTH halves were exploitable at the public API:
+    //
+    //   • ANYTHING NOT AN ARRAY BECAME `undefined` — i.e. the NO-REGISTRY branch. A caller passing
+    //     the registry bytes directly, or an array-LIKE object, supplied a registry and got
+    //     `VALID_FULL_CHAIN` / `NOT_EVALUATED` / exit 0. An unrecognised trust-input shape softening
+    //     to "not supplied" is the downgrade this whole plane exists to prevent, reached through the
+    //     one door that skips it entirely. TypeScript does not make malformed JavaScript calls
+    //     impossible, and this is a PUBLISHED runtime entry point.
+    //   • THE SPREAD RAN THE CALLER'S ITERATOR. A genuine array carrying an own `Symbol.iterator`
+    //     that yields nothing copies to `[]` — again the no-registry branch, again exit 0, from an
+    //     object `Array.isArray` calls an array.
+    //
+    // So: a supplied collection that is not a REAL array is a HARD REJECT, never a downgrade; and a
+    // real array is snapshotted BY INDEX through `length`, which on a genuine array is a
+    // non-configurable data property no caller can turn into an accessor. Each element is read
+    // EXACTLY ONCE into the snapshot, so an index accessor cannot answer one thing to this loop and
+    // another to the rule that consumes it.
+    const suppliedRegistries: unknown = opts.enrolmentRegistries;
+    if (suppliedRegistries === undefined) {
+      optEnrolmentRegistries = undefined;
+    } else if (isProxy(suppliedRegistries)) {
+      // A PROXY IS NOT AN ARRAY, however `Array.isArray` answers. `Array.isArray` unwraps to the
+      // target and says `true`, while EVERY read — including `length` — runs the handler. Found
+      // while self-refuting the fix above: a Proxy over a real one-element array with its `length`
+      // trapped to `0` snapshotted to `[]`, took the no-registry branch, and exited 0 with a registry
+      // supplied. The `length`-is-not-an-accessor argument holds for real arrays and for nothing
+      // else, so a programmable stand-in is refused rather than read.
+      registryShapeRefusal = "enrolmentRegistries was supplied as a Proxy — `Array.isArray` unwraps to the target and answers true while every read, `length` included, runs the handler, so a Proxy can report an empty list over a full one and turn supplied governance into \"no registry supplied\". A trust input must be a real array, not a programmable stand-in for one";
+    } else if (!isArray(suppliedRegistries)) {
+      registryShapeRefusal = `enrolmentRegistries was supplied as ${typeof suppliedRegistries === "object" && suppliedRegistries !== null ? "a non-array object" : JSON.stringify(typeof suppliedRegistries)} — a registry collection this verifier cannot read as a list is REFUSED, never treated as "no registry supplied". Softening an unrecognised trust-input shape into the unconfigured branch would return a positive verdict for a reader that did supply governance`;
+    } else {
+      // PRISTINE `push`, not the prototype's: `Array.prototype.push -> no-op` is in this package's
+      // own poison corpus, and with the shared method the snapshot would come out EMPTY — which is
+      // the no-registry branch and exit 0, reached by poisoning a builtin rather than by any bundle.
+      const snapshot: Array<Uint8Array | string> = [];
+      const len = suppliedRegistries.length;
+      for (let i = 0; i < len; i++) arrayPush(snapshot, suppliedRegistries[i] as Uint8Array | string);
+      optEnrolmentRegistries = snapshot;
+    }
     optAudience = typeof opts.audience === "string" ? opts.audience : undefined;
   } catch {
     return result("INVALID", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "verification options could not be read: an option accessor threw" });
+  }
+  if (registryShapeRefusal !== null) {
+    return result("INVALID", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: registryShapeRefusal });
   }
   const schemas = suppliedSchemas ?? loadSchemas();
 

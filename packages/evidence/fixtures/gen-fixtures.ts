@@ -1217,6 +1217,33 @@ function enrolRegistry(over: {
   emit("enrolment", "s5-enrolment-raw-mode", fixtureFrom(raw, { description: "B.5: a RAW hold (mode RAW, displayProjection null) with a registry claiming its class enrolled. On a RAW hold the display a human approved and the params a grant authorizes are two unrelated fields, so half the class key does not exist and the other half cannot be tied to a rendering — a registry asserting enrolment here is asserting something the gate-signed envelope cannot support. INVALID / E_ENROLMENT_MISMATCH, exit 2. This composes with the ratified rule that RAW must not issue a human-approved grant for a critical action", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_MISMATCH", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
 }
 
+// PANEL R1 #2 — NANOSECOND-EXACT ROTATION. Two contiguous, non-overlapping, strictly-versioned
+// registries whose boundary is ONE NANOSECOND wide, and a bundle stamped exactly on it. Under
+// millisecond arithmetic both windows match the same instant, the SUCCESSOR (carrying the rotated
+// projection hash) is selected too, and an honest archived bundle is reported INVALID for an
+// ordinary governance rotation. Exact arithmetic selects v6 alone, which enrols this class.
+{
+  const w = buildWorld("EXECUTED", { enrolDelegation: true });
+  // T_RECEIVED is 2026-07-14T11:56:30.000Z — written at full nanosecond precision here so the
+  // boundary is visible rather than inferred.
+  const v6 = enrolRegistry({ version: 6, notBefore: "2026-07-01T00:00:00.000000000Z", notAfter: "2026-07-14T11:56:30.000000000Z" });
+  const v7 = enrolRegistry({ version: 7, notBefore: "2026-07-14T11:56:30.000000001Z", notAfter: "2027-07-01T00:00:00.000000000Z", classes: [enrolRow({ projection: { id: "deploy.display", version: 2, hash: "sha256:" + "7".repeat(64) } })] });
+  emit("enrolment", "s5-enrolment-nanosecond-rotation-boundary", fixtureFrom(w, { description: "PANEL R1 #2: a rotation whose boundary is ONE NANOSECOND wide — v6 closes at :30.000000000Z, v7 opens at :30.000000001Z, and the bundle's gate-signed authorization instant is exactly :30.000000000Z. v7 carries the ROTATED projection hash, so selecting it as well reports INVALID / E_ENROLMENT_MISMATCH for an ordinary, spec-compliant rotation — a hard rejection of honest archives produced entirely by the arithmetic. Date.parse truncates to milliseconds and collapses the boundary; the exact bigint/nanosecond parser the artifact layer already runs for key activation selects v6 alone. The class is correctly enrolled, so the bundle stops where an enrolled class stops: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, exit 6", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [v6, v7], audience: ENROL_AUDIENCE }));
+}
+
+// PANEL R1 #3 — A SHARED PROJECTION ID IS NOT A SHARED CLASS.
+{
+  const w = buildWorld("EXECUTED", { enrolDelegation: true });
+  const otherClass = enrolRegistry({ classes: [enrolRow({
+    actionId: "other.action",
+    actionSchema: { id: "other.action", version: 1, hash: "sha256:" + "8".repeat(64) },
+    // THIS bundle's display projection, legitimately: projection identifiers are a shared namespace
+    // and two genuinely different action classes can render through one projection.
+    projection: clone(ENROL_PROJECTION),
+  })] });
+  emit("enrolment", "s5-enrolment-shared-projection-different-class", fixtureFrom(w, { description: "PANEL R1 #3: a registry enrolling `other.action`, whose row names THIS bundle's display projection. Projection identifiers are a shared namespace — two genuinely different action classes can render through one projection — so this row is a statement about a DIFFERENT (actionSchema, projection) pair and is SILENT about this bundle's class. Selecting candidate rows on the projection id alone reported INVALID / E_ENROLMENT_MISMATCH: an accusation aimed at a registry that merely does not mention this class. Only an ACTION-side handle may select a row; the projection half is what the pair is checked AGAINST once the row is known to be about this class. UNVERIFIED / E_ENROLMENT_CLASS_ABSENT, exit 4", expectVerdict: "UNVERIFIED", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_CLASS_ABSENT", enrolmentRegistries: [otherClass], audience: ENROL_AUDIENCE }));
+}
+
 // B.5' — the SAME rule, isolated. Measured, and the reason it exists is a knockout that failed:
 // removing the mode check alone left the corpus green, because on a fully RAW envelope the
 // missing-projection check refuses first. Two controls that mask each other are one control with a

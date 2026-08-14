@@ -45,13 +45,17 @@
  * REJECTED, which is why that outcome is `UNVERIFIED` and not `INVALID`. It costs nothing in
  * permissiveness, because no registry content can buy a positive.
  */
-import { verifyArtifact, type KeyEntry } from "noa-approval-artifacts";
+import { rfc3339Nanos, verifyArtifact, type KeyEntry } from "noa-approval-artifacts";
 import { intrinsics } from "noa-receipt";
 import { parseDocument, encodeDocument } from "./bytes.js";
 import type { Ctx } from "./steps.js";
 import type { StepName, StepResult } from "./types.js";
 
-const pristineDateParse = intrinsics.dateParse;
+// PRISTINE DECISIONS (review #6, C1). Every array operation below is a VERDICT INPUT — which
+// registries were selected, which are in window, which rows were adjudicated — so none of them may
+// dispatch through a globally-mutable prototype slot. `Array.prototype.push -> no-op` alone would
+// empty the selected set and turn a supplied registry into "none authenticates".
+const { isArray, arrayPush, arraySome, arrayFilter, arrayJoin } = intrinsics;
 
 export const ENROLMENT_SPEC = "noa.action-class-enrolment/0.1";
 
@@ -80,7 +84,7 @@ interface SelectedRegistry {
 }
 
 function asObj(v: unknown): Record<string, unknown> | null {
-  return typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+  return typeof v === "object" && v !== null && !isArray(v) ? (v as Record<string, unknown>) : null;
 }
 function asStr(v: unknown): string | null {
   return typeof v === "string" ? v : null;
@@ -88,9 +92,36 @@ function asStr(v: unknown): string | null {
 function fail(step: StepName, code: StepResult["code"], reason: string): StepResult {
   return { step, ok: false, code, reason };
 }
-/** PRISTINE TIME — the same guard every other time comparison in this verifier uses. */
-function parseTime(v: unknown): number {
-  return typeof v === "string" ? pristineDateParse(v) : NaN;
+/**
+ * EXACT TIME, IN NANOSECONDS, THROUGH THE GRAMMAR THAT ACCEPTED THE DOCUMENT.
+ *
+ * NOT `Date.parse`, and the difference is not a rounding nicety. The registry schema admits 1-9
+ * fractional digits, and `Date.parse` truncates to MILLISECONDS — so two instants a nanosecond apart
+ * compare EQUAL. At a governance-window boundary that collapses two contiguous, non-overlapping,
+ * correctly-versioned registries into one: BOTH match the same authorization instant, and the
+ * successor — carrying the rotated projection hash — can be selected for a bundle its window does not
+ * cover. Measured: an archived bundle stamped `…:30.000000000Z` selected the window opening at
+ * `…:30.000000001Z` and was reported `INVALID / E_ENROLMENT_MISMATCH` for an ordinary rotation. A
+ * hard rejection of honest archives, produced entirely by the arithmetic.
+ *
+ * The parser is the one `noa-approval-artifacts` already runs for key activation, so a window
+ * comparison and an activation check cannot disagree about what an instant is. It is fed the
+ * REGISTRY'S OWN published schema — the grammar that admitted the document decides how its
+ * timestamps are read — and it returns `null` for anything that grammar does not admit, which every
+ * caller below treats as "this registry cannot be placed in time", never as a match.
+ */
+function registryNanos(ctx: Ctx, v: unknown): bigint | null {
+  return rfc3339Nanos(v, ctx.schemas[ENROLMENT_SPEC]);
+}
+
+/**
+ * The same parser for the AUTHORIZATION INSTANT, read under the HOLD-RESOLUTION grammar — because
+ * that is the document the value came from. Each timestamp is read under the grammar of the artifact
+ * that carries it; borrowing another artifact's grammar would let a laxer schema admit a value its
+ * own document never would.
+ */
+function receivedAtNanos(ctx: Ctx): bigint | null {
+  return rfc3339Nanos(ctx.receivedAt, ctx.schemas["noa.hold-resolution/0.1"]);
 }
 
 /**
@@ -170,16 +201,16 @@ export function checkEnrolment(ctx: Ctx, S: StepName): StepResult | null {
   for (let i = 0; i < registries.length; i++) {
     const parsed = parseDocument(registries[i]!, `enrolment registry ${i}`);
     if (!parsed.ok) {
-      rejected.push(`#${i}: ${parsed.reason}`);
+      arrayPush(rejected, `#${i}: ${parsed.reason}`);
       continue;
     }
     const doc = asObj(parsed.value);
     if (!doc) {
-      rejected.push(`#${i}: not a JSON object`);
+      arrayPush(rejected, `#${i}: not a JSON object`);
       continue;
     }
     if (doc.spec !== ENROLMENT_SPEC) {
-      rejected.push(`#${i}: spec ${JSON.stringify(doc.spec)} != ${ENROLMENT_SPEC}`);
+      arrayPush(rejected, `#${i}: spec ${JSON.stringify(doc.spec)} != ${ENROLMENT_SPEC}`);
       continue;
     }
     // The registry's authority IS the root delegation. `verifyArtifact` runs the shipped schema, the
@@ -198,7 +229,7 @@ export function checkEnrolment(ctx: Ctx, S: StepName): StepResult | null {
       now: ctx.now,
     }));
     if (!av.ok) {
-      rejected.push(`#${i}: ${av.reason}`);
+      arrayPush(rejected, `#${i}: ${av.reason}`);
       continue;
     }
     // ADDRESSED TO THIS READER? A registry naming a different audience is NOT SELECTED — it is not
@@ -207,17 +238,17 @@ export function checkEnrolment(ctx: Ctx, S: StepName): StepResult | null {
     // readable as "I decided yes". The schema forbids `*` in an identifier; this comparison would
     // not honour one anyway.
     const aud = doc.audience;
-    if (!Array.isArray(aud) || !aud.some((a) => a === audience)) {
-      rejected.push(`#${i}: audience ${JSON.stringify(aud)} does not name ${JSON.stringify(audience)}`);
+    if (!isArray(aud) || !arraySome(aud, (a: unknown) => a === audience)) {
+      arrayPush(rejected, `#${i}: audience ${JSON.stringify(aud)} does not name ${JSON.stringify(audience)}`);
       continue;
     }
-    selected.push({ index: i, doc: doc as RegistryDoc });
+    arrayPush(selected, { index: i, doc: doc as RegistryDoc });
   }
 
   if (selected.length === 0) {
     ctx.enrolment = "UNVERIFIABLE";
     return fail(S, "E_ENROLMENT_UNVERIFIABLE",
-      `no supplied enrolment registry both authenticates under this bundle's root delegation and names the reader ${JSON.stringify(audience)} in its audience — the verifier is configured but its configuration does not answer this question (R5): ${rejected.join("; ")}`);
+      `no supplied enrolment registry both authenticates under this bundle's root delegation and names the reader ${JSON.stringify(audience)} in its audience — the verifier is configured but its configuration does not answer this question (R5): ${arrayJoin(rejected, "; ")}`);
   }
 
   // R5 — WRONG TENANT IS A CONTRADICTION, not an absence. This registry authenticated under THIS
@@ -255,13 +286,19 @@ export function checkEnrolment(ctx: Ctx, S: StepName): StepResult | null {
   // still select which of two spec-compliant registries applies. What it can no longer do is
   // backdate into a window where the class is absent, because absence buys nothing. Closing it needs
   // the registry pinned at hold time, which no shipped artifact carries.
-  const receivedAt = parseTime(ctx.receivedAt);
+  //
+  // The comparison is NANOSECOND-EXACT (see `registryNanos`). A millisecond comparison merges the
+  // boundary of a contiguous rotation, so both the superseded and the current registry match the same
+  // instant — and the successor, carrying the rotated projection hash, turns an honest archived
+  // bundle into a hard INVALID. An unparseable bound is never a match: a registry that cannot be
+  // placed in time does not govern anything.
+  const receivedAt = receivedAtNanos(ctx);
   const inWindow: SelectedRegistry[] = [];
   for (const r of selected) {
-    const nb = parseTime(r.doc.notBefore);
-    const na = parseTime(r.doc.notAfter);
-    if (Number.isNaN(receivedAt) || Number.isNaN(nb) || Number.isNaN(na)) continue;
-    if (receivedAt >= nb && receivedAt <= na) inWindow.push(r);
+    const nb = registryNanos(ctx, r.doc.notBefore);
+    const na = registryNanos(ctx, r.doc.notAfter);
+    if (receivedAt === null || nb === null || na === null) continue;
+    if (receivedAt >= nb && receivedAt <= na) arrayPush(inWindow, r);
   }
   if (inWindow.length === 0) {
     ctx.enrolment = "OUT_OF_WINDOW";
@@ -295,7 +332,7 @@ export function checkEnrolment(ctx: Ctx, S: StepName): StepResult | null {
 
   let enrolled = false;
   for (const r of inWindow) {
-    const classes = Array.isArray(r.doc.classes) ? (r.doc.classes as EnrolledClassRow[]) : [];
+    const classes = isArray(r.doc.classes) ? (r.doc.classes as EnrolledClassRow[]) : [];
     for (let k = 0; k < classes.length; k++) {
       const row = asObj(classes[k]);
       if (!row) continue;
@@ -303,15 +340,25 @@ export function checkEnrolment(ctx: Ctx, S: StepName): StepResult | null {
       const schema = projectionIdEqual(row.actionSchema, envActionSchema);
       const projection = projectionIdEqual(row.projection, envProjection);
 
-      // IS THIS ROW ABOUT THIS CLASS AT ALL? Any of four handles makes it a candidate, and the
-      // breadth is deliberate: a row that names this class by ANY of the identifiers it could
-      // plausibly use must be ADJUDICATED, never silently skipped as "some other class". A rule that
-      // only matched exact rows would turn every near-miss — a drifted hash, a RAW-mode envelope, an
-      // id taken from the display namespace — into `CLASS_ABSENT`, which is a soft refusal for what
-      // is actually two documents contradicting each other about the same object.
+      // IS THIS ROW ABOUT THIS CLASS AT ALL? Only an ACTION-SIDE handle can make it one, and the
+      // restriction is the class key doing its job: the class is the PAIR, and the ACTION half is
+      // what identifies it. The projection half is what the pair is checked AGAINST once the row is
+      // known to be about this class — it can never be what selects the row.
+      //
+      // ⚠ THE PROJECTION ID ALONE USED TO SELECT, AND IT WAS WRONG IN THE ACCUSING DIRECTION.
+      // Projection identifiers are a shared namespace: two genuinely different action classes can
+      // render through the same display projection. A registry enrolling `other.action` under this
+      // bundle's projection id is a statement about a DIFFERENT pair — it is silent about this one —
+      // and selecting on it reported `INVALID / E_ENROLMENT_MISMATCH` for a registry that merely does
+      // not mention this class. The correct answer is `CLASS_ABSENT`: an unanswered question, not an
+      // accusation. Measured during I4's panel with exactly that registry.
+      //
+      // The breadth that remains is still deliberate: a row naming this class by ANY action-side
+      // identifier it could plausibly use — including the display id in the `actionId` slot, which is
+      // the namespace error the pair correction exists to catch — is ADJUDICATED rather than skipped,
+      // so a near-miss about THIS class is a contradiction rather than a soft absence.
       const candidate =
         schema.idMatch
-        || projection.idMatch
         || (rowActionId !== null && (rowActionId === deferredActionId
           || rowActionId === asStr(asObj(envActionSchema)?.id)
           || rowActionId === asStr(asObj(envProjection)?.id)));
@@ -449,9 +496,9 @@ export function checkSettlementRequired(ctx: Ctx, S: StepName, facts: Settlement
   // network cannot be re-derived by any relying party, so it is not evidence anyone can check — and
   // an unfalsifiable assertion is an absence of evidence, not evidence.
   const witness = asObj(asObj(ctx.bundle.settlementEvidence)?.chainWitness);
-  const missing = REQUIRED_WITNESS_COORDINATES.filter((c) => witness === null || witness[c] === undefined || witness[c] === null);
+  const missing = arrayFilter(REQUIRED_WITNESS_COORDINATES as unknown as unknown[], (c: unknown) => witness === null || witness[c as string] === undefined || witness[c as string] === null);
   if (missing.length > 0) {
-    return required(`the settlement artifact omits the coordinates that make it falsifiable by a third party (${missing.join(", ")})`);
+    return required(`the settlement artifact omits the coordinates that make it falsifiable by a third party (${arrayJoin(missing, ", ")})`);
   }
 
   // ── R9. NOBODY RE-QUERIED. ──────────────────────────────────────────────────────────────────

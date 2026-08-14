@@ -1755,8 +1755,8 @@ const KNOCKOUTS = [
       "is the lenient matcher a reviewer would have to squint at: it looks like a scoping check and " +
       "selects every registry that reaches the reader. The audience-mismatch fixture must notice.",
     file: "packages/evidence/src/enrolment.ts",
-    find: "    if (!Array.isArray(aud) || !aud.some((a) => a === audience)) {",
-    replace: "    if (!Array.isArray(aud) || aud.length === 0) {",
+    find: "    if (!isArray(aud) || !arraySome(aud, (a: unknown) => a === audience)) {",
+    replace: "    if (!isArray(aud) || aud.length === 0) {",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
@@ -1784,8 +1784,8 @@ const KNOCKOUTS = [
       "is REJECT-ONLY by construction — every failure on this plane is non-positive — so removing it " +
       "cannot be defended as 'still fail-closed': it changes WHICH governance applies.",
     file: "packages/evidence/src/enrolment.ts",
-    find: "    if (receivedAt >= nb && receivedAt <= na) inWindow.push(r);",
-    replace: "    inWindow.push(r);",
+    find: "    if (receivedAt >= nb && receivedAt <= na) arrayPush(inWindow, r);",
+    replace: "    arrayPush(inWindow, r);",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
@@ -1911,6 +1911,104 @@ const KNOCKOUTS = [
       "  const witnessErr = checkNonDispatchWitnessed(ctx, S);\n" +
       "  if (witnessErr) return witnessErr;\n",
     replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  // ── PANEL ROUND 1 — one arm per finding, each proving the FIX is what the corpus measures ──────
+  {
+    id: "enrolment-supplied-collection-shape-is-refused",
+    control:
+      "THE HIGH FINDING. A SUPPLIED registry collection this verifier cannot read as a list is " +
+      "REFUSED — it never softens into \"no registry supplied\", which is the PERMISSIVE branch. The " +
+      "mutation restores the shipped normalization (anything not an array becomes `undefined`), so a " +
+      "reader that handed over the registry bytes directly, or an array-LIKE object, or a Set, has " +
+      "supplied governance and receives VALID_FULL_CHAIN / NOT_EVALUATED / exit 0. This is the only " +
+      "route in the plane that skips the plane entirely, and it is reachable from the PUBLISHED " +
+      "runtime API — TypeScript does not make malformed JavaScript calls impossible.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "      registryShapeRefusal = `enrolmentRegistries was supplied as ${typeof suppliedRegistries === \"object\" && suppliedRegistries !== null ? \"a non-array object\" : JSON.stringify(typeof suppliedRegistries)} — a registry collection this verifier cannot read as a list is REFUSED, never treated as \"no registry supplied\". Softening an unrecognised trust-input shape into the unconfigured branch would return a positive verdict for a reader that did supply governance`;",
+    replace: "      optEnrolmentRegistries = undefined;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-collection-copied-by-index-not-by-iterator",
+    control:
+      "The registry collection is snapshotted BY INDEX through `length`, never through the caller's " +
+      "iterator. On a genuine array `length` is a non-configurable data property, so there is nothing " +
+      "to lie; `Symbol.iterator` is an ordinary own slot, so there is. The mutation restores the " +
+      "spread, and a REAL array — one `Array.isArray` calls an array — carrying an own iterator that " +
+      "yields nothing copies to `[]`: the no-registry branch and exit 0 again, through a different " +
+      "door than the shape check above. Registered separately for exactly that reason.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "      for (let i = 0; i < len; i++) arrayPush(snapshot, suppliedRegistries[i] as Uint8Array | string);",
+    replace: "      for (const item of [...(suppliedRegistries as unknown[])]) arrayPush(snapshot, item as Uint8Array | string);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-window-arithmetic-is-nanosecond-exact",
+    control:
+      "Registry windows are compared in EXACT nanoseconds, through the grammar that admitted the " +
+      "document. The mutation restores millisecond `Date.parse`, which collapses a one-nanosecond " +
+      "rotation boundary: two contiguous, non-overlapping, strictly-versioned registries both match " +
+      "the same authorization instant, the SUCCESSOR carrying the rotated projection hash is selected " +
+      "too, and an honest archived bundle is reported INVALID / E_ENROLMENT_MISMATCH for an ordinary " +
+      "governance rotation. A hard rejection of good evidence produced entirely by the arithmetic — " +
+      "which is why the fix reuses the parser the artifact layer already runs for key activation " +
+      "rather than a second one that can drift from it.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "  return rfc3339Nanos(v, ctx.schemas[ENROLMENT_SPEC]);",
+    replace: "  const ms = typeof v === \"string\" ? Date.parse(v) : NaN;\n  return Number.isNaN(ms) ? null : BigInt(ms) * 1000000n;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-class-selection-requires-the-action-side",
+    control:
+      "Only an ACTION-side handle may select a registry row for adjudication. The class is the PAIR, " +
+      "the ACTION half identifies it, and the projection half is what the pair is checked AGAINST once " +
+      "the row is known to be about this class. The mutation restores selection on the projection id " +
+      "alone — and projection identifiers are a SHARED namespace, so a registry enrolling a genuinely " +
+      "different action class that renders through the same projection becomes INVALID / " +
+      "E_ENROLMENT_MISMATCH. That is an accusation aimed at a registry which merely does not mention " +
+      "this class, where the honest answer is CLASS_ABSENT. The error runs in the ACCUSING direction, " +
+      "which is why it gets its own arm instead of being folded into the pair check.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "      const candidate =\n        schema.idMatch\n",
+    replace: "      const candidate =\n        schema.idMatch\n        || projection.idMatch\n",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "cli-singleton-flag-refuses-repetition",
+    control:
+      "A singleton flag given twice is a USAGE error, never last-wins. Measured: " +
+      "`--audience hostile --audience good` exited 6 and `--audience good --audience hostile` exited " +
+      "4, so whoever appends to the command line LAST decided the answer, silently. That is the shape " +
+      "a wrapper script, a CI template or an injected argument exploits, and it applied to " +
+      "`--tenant-root` as much as to `--audience`. The mutation restores last-wins.",
+    file: "packages/evidence/src/cli.ts",
+    find: "    if (seen.has(flag)) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "cli-singleton-flag-requires-a-value",
+    control:
+      "A singleton flag with no value is a USAGE error, and the run does not continue. Measured: an " +
+      "otherwise valid invocation ending in a bare `--audience` consumed `undefined`, VERIFIED ANYWAY " +
+      "and exited 0 — the operator typed a flag, got a verdict, and nothing said the flag did nothing. " +
+      "The same check refuses a flag whose \"value\" is the NEXT FLAG, which is how a bare flag in the " +
+      "middle of a command line silently eats its successor. The mutation restores the bare read.",
+    file: "packages/evidence/src/cli.ts",
+    find:
+      "    if (v === undefined || v.startsWith(\"--\")) {\n" +
+      "      usage(`${flag} needs a value${v === undefined ? \"\" : ` (got the next flag ${v})`}`);\n" +
+      "    }\n" +
+      "    return v;\n",
+    replace: "    return v as string;\n",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },

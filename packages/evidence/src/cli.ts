@@ -69,23 +69,56 @@ function main(argv: string[]): void {
   const enrolmentRegistryPaths: string[] = [];
   let audience: string | undefined;
 
+  /**
+   * SINGLETON FLAGS: a MISSING value and a SECOND occurrence are both usage errors.
+   *
+   * ⚠ WHY THIS IS A HELPER RATHER THAN SIX HAND-WRITTEN BRANCHES, MEASURED. Every singleton used to
+   * be `x = args[++i]`, which is wrong twice over:
+   *
+   *   • A BARE TRAILING FLAG consumed `undefined` and the run CONTINUED. An invocation ending in
+   *     `--audience` verified with no reader identity and exited 0 — the operator typed a flag, got a
+   *     verdict, and nothing said the flag did nothing.
+   *   • A REPEATED FLAG was LAST-WINS, silently. Measured: `--audience hostile --audience good`
+   *     exited 6 and `--audience good --audience hostile` exited 4, so whoever appends to the command
+   *     line last decides the answer. That is the shape a wrapper script, a CI template or an
+   *     injected argument exploits, and it applies to `--tenant-root` exactly as much as to
+   *     `--audience`: appending a second trust root would silently replace the first.
+   *
+   * `--enrolment-registry` is deliberately NOT a singleton — a reader legitimately holds several —
+   * and it APPENDS, so a second one can never discard the first. That is the whole distinction: a
+   * repeatable flag accumulates, a singleton refuses.
+   */
+  const seen = new Set<string>();
+  const singleton = (flag: string, i: number): string => {
+    if (seen.has(flag)) {
+      usage(`${flag} was given more than once — it names ONE value, and silently taking the last would let whoever appends to the command line last decide the answer`);
+    }
+    seen.add(flag);
+    const v = args[i];
+    if (v === undefined || v.startsWith("--")) {
+      usage(`${flag} needs a value${v === undefined ? "" : ` (got the next flag ${v})`}`);
+    }
+    return v;
+  };
+
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--tenant-root") tenantRootPath = args[++i];
-    else if (a === "--checkpoint-keyring") checkpointKeyringPath = args[++i];
+    if (a === "--tenant-root") tenantRootPath = singleton(a, ++i);
+    else if (a === "--checkpoint-keyring") checkpointKeyringPath = singleton(a, ++i);
     else if (a === "--enrolment-registry") {
+      // REPEATABLE: appends rather than replaces, so a second one cannot discard the first.
       const p = args[++i];
-      if (p === undefined) usage("--enrolment-registry needs a file path");
+      if (p === undefined || p.startsWith("--")) usage("--enrolment-registry needs a file path");
       enrolmentRegistryPaths.push(p);
-    } else if (a === "--audience") audience = args[++i];
-    else if (a === "--now") now = args[++i];
-    else if (a === "--max-age-hours") maxAgeHours = Number(args[++i]);
+    } else if (a === "--audience") audience = singleton(a, ++i);
+    else if (a === "--now") now = singleton(a, ++i);
+    else if (a === "--max-age-hours") maxAgeHours = Number(singleton(a, ++i));
     else if (a === "--purpose") {
       // Both purposes require authority at verifier-controlled `now`; `authorize` identifies the
       // result as a current authorization decision. Any other value is a usage error here —
       // verifyEvidence ALSO fail-closes on it, but rejecting at the CLI gives the operator a clear
       // message instead of an UNVERIFIED verdict.
-      const p = args[++i];
+      const p = singleton(a, ++i);
       if (p !== "audit" && p !== "authorize") usage(`--purpose must be "audit" or "authorize" (got ${JSON.stringify(p)})`);
       purpose = p;
     } else if (a === "-h" || a === "--help") usage();

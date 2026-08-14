@@ -34,6 +34,19 @@ const schemas = loadSchemas();
 interface Fixture {
   expectVerdict: string; now: string; maxAgeHours: number; bundle: unknown;
   tenantRoot: Record<string, unknown>; checkpointKeyring: Record<string, unknown>;
+  /**
+   * S5 — the enrolment registries this fixture's READER was handed, and the identity it reads as.
+   *
+   * ⚠ PASSED THROUGH TO THE POISON CORPUS DELIBERATELY, and their earlier absence was a HOLE rather
+   * than a gap in coverage. The enrolment plane decides, from a CALLER-OWNED ARRAY, whether a
+   * registry was supplied at all — and "not supplied" is the PERMISSIVE branch. So a poisoned
+   * `Array.isArray`, `Array.prototype.push` or `%ArrayIteratorPrototype%.next` can turn a reader that
+   * DID supply governance into one that supplied none: the only place in this verifier where a
+   * mutable builtin chooses between the strict regime and the permissive one. With the fixtures'
+   * registries dropped on the floor, every poison below ran against the no-registry path and could
+   * not have seen it.
+   */
+  enrolmentRegistries?: unknown[]; audience?: string;
 }
 const fixtures: Array<{ id: string; fx: Fixture }> = [];
 for (const slug of readdirSync(CONF)) {
@@ -44,10 +57,25 @@ for (const slug of readdirSync(CONF)) {
   }
 }
 
+/** Documents → bytes, without touching a poisonable Array method (see the call site). */
+function bytesList(docs: unknown[]): Uint8Array[] {
+  const out: Uint8Array[] = [];
+  for (let i = 0; i < docs.length; i++) out[i] = b(docs[i]);
+  return out;
+}
+
 const run = (fx: Fixture): string => {
   try {
     const r = verifyEvidence(b(fx.bundle), {
       tenantRoot: b(fx.tenantRoot), checkpointKeyring: b(fx.checkpointKeyring),
+      // The registry list is built HERE, inside the poisoned window — but with INDEX ASSIGNMENT
+      // rather than `map`/`push`, deliberately. A harness that built the list with poisonable
+      // prototype methods would hand the verifier an EMPTY array under `Array.prototype.map -> []`
+      // and then blame the verifier for the downgrade, when the list never contained anything: that
+      // is the CALLER's own construction and no verifier can see past it. What must be measured is
+      // what this verifier does with a WELL-FORMED list while the builtins it uses are poisoned.
+      ...(fx.enrolmentRegistries !== undefined ? { enrolmentRegistries: bytesList(fx.enrolmentRegistries) } : {}),
+      ...(fx.audience !== undefined ? { audience: fx.audience } : {}),
       now: fx.now, maxAgeMs: fx.maxAgeHours * 3600 * 1000, schemas,
     });
     return `${r.verdict}/${r.outcome ?? "-"}/${r.code ?? "-"}`;
