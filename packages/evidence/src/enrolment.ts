@@ -476,13 +476,22 @@ export function checkSettlementRequired(ctx: Ctx, S: StepName, facts: Settlement
     return required(`the settlement artifact does not determinately assert a settlement for this approval (reconciler code ${facts.code})`);
   }
 
-  // R8's `claimTier` and `witnessSpec` clauses have NO runtime check here, and the absence is
-  // deliberate rather than an omission: both members are pinned to a single value by the shipped
-  // schema (`claimTier` is a one-member enum, `witnessSpec` a const), and every registry is validated
-  // against that schema before it is selected. A row cannot declare a weaker tier or a different
-  // witness spec and still authenticate. Writing the check anyway would be a control that cannot
-  // fire — worse than none, because it reads in review as a defence. The enum's enforcement is
-  // measured by the `reject-unknown-claim-tier` conformance vector, not by a branch here.
+  // ── `claimTier` AND `witnessSpec`: REFUSED AT THE GRAMMAR, NOT WEIGHED HERE ──────────────────
+  //
+  // There is no runtime check for either, and the absence is a DECISION with a consequence worth
+  // stating exactly, because it is not the one the rule table originally described.
+  //
+  // Both members are pinned to a single value by the shipped schema (`claimTier` is a one-member
+  // enum, `witnessSpec` a const), and every registry is validated against that schema before it can
+  // be selected. So a row declaring a weaker tier does not produce a WEAKER ENROLMENT — it produces
+  // a document that does not authenticate at all. Measured: a re-signed `claimTier: SELF_REPORTED`
+  // registry returns `UNVERIFIED / E_ENROLMENT_UNVERIFIABLE`, the same answer as any other registry
+  // this reader cannot use, and NOT `INCONCLUSIVE / E_SETTLEMENT_REQUIRED`.
+  //
+  // That is the stronger outcome and it is why no branch is written here: a check for a value the
+  // grammar cannot deliver is a control that cannot fire, which is worse than none because it reads
+  // in review as a defence. The enum's enforcement is measured by the `reject-unknown-claim-tier`
+  // conformance vector — at the layer that owns document shape, once.
 
   // R8 — the R-16 relationship cap. A key that says "I dispatched it" saying "and it settled" is one
   // party attesting to its own effect, so the observation is not admissible for an enrolled class.

@@ -55,8 +55,15 @@ scoped, and an unscoped registry is indistinguishable from a policy downgrade.
 value, and giving it twice is a usage error (exit `5`) rather than last-wins — so appending to a
 command line cannot silently replace a trust root or a reader identity. A flag with no value, whether
 trailing or followed by another flag, is a usage error too, instead of a run that continues with the
-value missing. `--enrolment-registry` is the one repeatable flag and it ACCUMULATES: a reader
-legitimately holds several, and a second one never discards the first.
+value missing. `--max-age-hours` must be a finite, non-negative number: a malformed one is REFUSED
+rather than dropped, because dropping it restores the permissive 24-hour default and turns a typo
+into a more permissive run. `--enrolment-registry` is the one repeatable flag and it ACCUMULATES: a
+reader legitimately holds several, and a second one never discards the first.
+
+*Known limitation, filed rather than hidden:* there is no `--flag=value` form and no `--`
+end-of-flags escape, so a value beginning with `--` cannot be expressed. A path has the `./--x`
+workaround; an audience identifier literally named `--reader` does not. It fails closed with exit
+`5`, so this is CLI grammar debt rather than a verdict hazard.
 
 **The library API is stricter than a type signature.** `enrolmentRegistries` must be a real array;
 anything else that is *supplied* — the bytes on their own, an array-like object, a `Set`, a `Proxy`

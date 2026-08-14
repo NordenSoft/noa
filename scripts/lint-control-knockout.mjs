@@ -1981,6 +1981,23 @@ const KNOCKOUTS = [
     suite: ["packages/evidence", "npm", ["test"]],
   },
   {
+    id: "cli-numeric-flag-is-refused-not-dropped",
+    control:
+      "A malformed NUMERIC flag is a usage error, and the run does not continue with the option " +
+      "quietly removed. Measured on a DENIED fixture: `--max-age-hours 0` exits 3 because the " +
+      "freshness rule fires, while `--max-age-hours definitely-not-a-number` exited 0 — `Number()` " +
+      "answered NaN, and a `Number.isFinite` guard at the call site OMITTED maxAgeMs, restoring the " +
+      "permissive 24-hour default. A mistyped SAFETY option produced a positive verdict, across the " +
+      "usage/verdict boundary. The mutation removes the validation so the malformed value flows " +
+      "through again; the wire suite must catch it at the process boundary, which is the only place " +
+      "the exit code is real.",
+    file: "packages/evidence/src/cli.ts",
+    find: "    if (raw.trim() === \"\" || !Number.isFinite(n)) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
     id: "cli-singleton-flag-refuses-repetition",
     control:
       "A singleton flag given twice is a USAGE error, never last-wins. Measured: " +

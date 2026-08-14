@@ -174,6 +174,46 @@ test("WIRE: a bare trailing singleton flag is a USAGE error — it never runs wi
   }
 });
 
+test("WIRE: a MALFORMED numeric flag is refused — never dropped back to the permissive default", () => {
+  // THE ROUND-2 HIGH, and it crossed the usage/verdict boundary. `Number("definitely-not-a-number")`
+  // is `NaN`, and a `Number.isFinite` guard at the call site SILENTLY OMITTED `maxAgeMs` — restoring
+  // the permissive 24-hour default. Measured on this DENIED fixture:
+  //
+  //     --max-age-hours 0                        -> exit 3   (the freshness rule fires)
+  //     --max-age-hours definitely-not-a-number  -> exit 0   (the rule is gone)
+  //
+  // A mistyped SAFETY option produced a positive verdict. The strict control below is what makes the
+  // rest a measurement: the option must demonstrably DO something before "the malformed value was
+  // ignored" is a finding rather than a coincidence.
+  const f = materialise("valid/denied.json");
+  const base = [f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring, "--now", f.fx.now];
+
+  const strict = runCli([...base, "--max-age-hours", "0"]);
+  assert.equal(strict.status, 3, `--max-age-hours 0 exited ${strict.status}: the control proving the option changes the answer`);
+
+  for (const bad of ["definitely-not-a-number", "NaN", "Infinity", "-Infinity", "1e400", "", "   ", "12abc"]) {
+    const run = runCli([...base, "--max-age-hours", bad]);
+    assert.equal(
+      run.status, 5,
+      `--max-age-hours ${JSON.stringify(bad)} exited ${run.status}, expected the usage code. A malformed safety ` +
+        `option must be REFUSED; dropping it restores the permissive default and turns a typo into a positive verdict.`,
+    );
+    assert.ok(run.stderr.includes("--max-age-hours"), `${JSON.stringify(bad)}: the error does not name the flag`);
+  }
+
+  // A NEGATIVE window is refused too. It is not "stricter", it is meaningless — and `Number` takes it.
+  const negative = runCli([...base, "--max-age-hours", "-5"]);
+  assert.equal(negative.status, 5, `a negative max age exited ${negative.status}`);
+
+  // ANTI-VACUITY: ordinary values still work, so the refusal is about malformedness rather than about
+  // the flag being present at all. The empty string is in the refused list above for the mirror
+  // reason: `Number("")` is `0`, so silence would become the STRICTEST setting by accident.
+  for (const good of ["24", "12.5", "0.5"]) {
+    const run = runCli([...base, "--max-age-hours", good]);
+    assert.notEqual(run.status, 5, `--max-age-hours ${good} was refused as malformed`);
+  }
+});
+
 test("WIRE: a REPEATED singleton flag is a usage error — last-wins lets the last writer decide", () => {
   // Measured on the enrolled fixture: `--audience hostile --audience good` exited 6 while
   // `--audience good --audience hostile` exited 4. Whoever appends to the command line last decided

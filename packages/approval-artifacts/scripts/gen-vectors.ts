@@ -670,7 +670,11 @@ function addUnknownProp(signedOrCore: J): J {
   emit("settlement-evidence", "reject-noncanonical-base64.json", { description: "railReceipt.bytes 'AB==' — lexically base64-shaped, non-canonical final quantum (re-signed; the narrowed layer-1 grammar refuses, matching the reconciler's strict round-trip)", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(settlementCore), railReceipt: { disclosure: "FULL", format: "x402-offer-receipt/eip712", encoding: "base64", bytes: "AB==" } }, spec, "gate-observer-2"), context: baseCtx });
 }
 
-// ====================== ACTION-CLASS ENROLMENT (S5 §3.2: 1 valid + 10 rejections) =================
+// ====================== ACTION-CLASS ENROLMENT (S5 §3.2: 1 valid + 13 rejections) =================
+//
+// The count above is PROSE and prose drifts — it said "10" while the folder held 12, which a reviewer
+// caught. `test/conformance.test.ts` now derives the per-folder counts from the corpus itself and
+// asserts them, so the authority is the files on disk and this line is a reader's convenience.
 //
 // The registry is a VERIFIER INPUT, never a bundle member, so these vectors measure exactly the three
 // layers this package owns — the shipped schema, the Ed25519 signature, and the F15 role — and
@@ -734,6 +738,14 @@ function addUnknownProp(signedOrCore: J): J {
   // grammar — which reads as stricter and is actually WEAKER, because the operator would then be told
   // only "this registry does not authenticate", the same sentence an unauthorized signer produces.
   emit("action-class-enrolment", "reject-bad-window-form.json", { description: "notBefore is not an RFC 3339 instant, RE-SIGNED — the window is what binds a registry to a moment in a tenant's governance, and a member that is not a time cannot be compared to a gate-signed authorization instant at all", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(enrolmentCore), notBefore: "2026-07" }, spec, "enrol-signer-4"), context: baseCtx });
+
+  // THE GRAMMAR AND THE PARSER MUST AGREE, and this vector is where that is measured. A registry
+  // whose window opened on a real leap second used to AUTHENTICATE here and then fall OUT_OF_WINDOW
+  // at the evidence verifier: layer 1 admitted any two-digit second, while the exact nanosecond
+  // parser that reads the value refuses `:60`. A correctly signed governance document that cannot
+  // place itself in time, with nothing saying why. The seconds field is now narrowed to 00-59 at the
+  // grammar, so the refusal happens ONCE, at the layer that owns document shape.
+  emit("action-class-enrolment", "reject-leap-second-window.json", { description: "notBefore is 2016-12-31T23:59:60Z — a REAL leap second, and a legitimate RFC 3339 instant. It is refused HERE, at the grammar, because the exact nanosecond parser these timestamps are read with does not implement leap seconds: a grammar that admits what the parser refuses produces a signed registry that authenticates and then silently cannot place itself in time. Narrowed rather than supported, because this artifact is unreleased and the narrowing is fail-closed (it refuses more, never accepts more) — and because teaching the parser leap seconds would mean teaching every consumer of this instant an arithmetic none of them share", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(enrolmentCore), notBefore: "2016-12-31T23:59:60Z" }, spec, "enrol-signer-4"), context: baseCtx });
 
   emit("action-class-enrolment", "reject-audience-wildcard.json", { description: "audience [\"*\"], RE-SIGNED — wildcards are forbidden at the grammar. A value meaning \"I did not decide\" must never be readable as \"I decided yes\", which is the same reason closed:false is refused", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(enrolmentCore), audience: ["*"] }, spec, "enrol-signer-4"), context: baseCtx });
 
