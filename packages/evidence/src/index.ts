@@ -25,7 +25,28 @@ export {
   type VerdictDimensions,
   type VerdictPolicy,
   type VerificationPurpose,
+  // The settlement ladder: the third verdict dimension, and whether the enrolment question was
+  // asked at all.
+  type SettlementDimension,
+  type EnrolmentEvaluation,
 } from "./types.js";
+
+// The exit code a consumer acts on, published so a downstream verifier maps the same result to the
+// same number instead of re-deriving one. Two implementations that disagree here disagree about
+// whether a payment may proceed.
+export {
+  exitCodeFor,
+  USAGE_EXIT_CODE,
+  INTERNAL_INVARIANT_EXIT_CODE,
+  SETTLEMENT_UNRESOLVED,
+  SETTLEMENT_ADMISSIBLE_ON_POSITIVE,
+  POSITIVE_ADMISSIBLE_PAIRS,
+  // The mapper REFUSES a tuple the rules cannot produce rather than answering 0 for it. The class and
+  // its name are exported so a caller can discriminate that refusal from any other failure.
+  InadmissibleVerdictTupleError,
+  INADMISSIBLE_TUPLE_ERROR_NAME,
+  type EvidenceExitCode,
+} from "./exit-codes.js";
 
 export {
   verifyEvidence,

@@ -4,15 +4,30 @@
  *  [--max-age-hours <n>]`
  *
  * Offline, network-free. Prints the tiered verdict + the ordered per-step audit trail as JSON and
- * exits with a verdict-specific code:
- *   0  VALID_FULL_CHAIN | VALID_SEGMENT_ONLY   (verified — full or segment-only)
+ * exits with a code derived from `(verdict, enrolment, dimensions.settlement)`:
+ *   0  VALID_FULL_CHAIN | VALID_SEGMENT_ONLY | VALID_FROM_TRUSTED_ANCHOR  (verified)
  *   2  INVALID                                  (a hard, fail-closed rejection at a named step)
  *   3  INCONCLUSIVE                             (a non-executed outcome with no fresh trusted checkpoint)
  *   4  UNVERIFIED                               (no external trust root / checkpoint keyring supplied, F7a)
  *   5  usage / IO error
+ *   6  INCONCLUSIVE                             (the settlement question was asked and not answered)
+ *      DEFINED, and NOT REACHABLE from this build — no rule here assigns a settlement value that
+ *      produces it. The first rule that can is the one admitting a settlement artifact with no
+ *      verified params preimage. Documented now so the number is reserved and a consumer can wire
+ *      it; not claimed to fire.
+ *   7  internal invariant violation — a (verdict, enrolment, settlement) tuple the rules cannot
+ *      produce reached the exit mapper. A statement about THIS VERIFIER, never about the evidence.
+ *
+ * The JSON result carries two fields beyond the pre-settlement shape, both always present:
+ * `enrolment` (was the enrolment question asked at all) and `dimensions.settlement`.
+ *
+ * The mapping itself lives in `exit-codes.ts`, not here, and it is DERIVED from the dimension rules
+ * rather than authored beside them — see that file for why an exit table written separately from the
+ * rules that feed it produced a branch nothing could reach.
  */
 import { readFileSync } from "node:fs";
 import { verifyEvidence } from "./verify-evidence.js";
+import { exitCodeFor, USAGE_EXIT_CODE, INTERNAL_INVARIANT_EXIT_CODE, INADMISSIBLE_TUPLE_ERROR_NAME, type EvidenceExitCode } from "./exit-codes.js";
 import type { VerificationPurpose } from "./types.js";
 
 function usage(msg?: string): never {
@@ -20,7 +35,7 @@ function usage(msg?: string): never {
   process.stderr.write(
     "usage: noa-verify-evidence <bundle.json> --tenant-root <root.json> --checkpoint-keyring <cp.json> [--now <rfc3339>] [--max-age-hours <n>] [--purpose audit|authorize]\n",
   );
-  process.exit(5);
+  process.exit(USAGE_EXIT_CODE);
 }
 
 /**
@@ -85,14 +100,27 @@ function main(argv: string[]): void {
 
   process.stdout.write(JSON.stringify(res, null, 2) + "\n");
 
-  const code =
-    res.verdict === "VALID_FULL_CHAIN" || res.verdict === "VALID_SEGMENT_ONLY" || res.verdict === "VALID_FROM_TRUSTED_ANCHOR"
-      ? 0
-      : res.verdict === "INVALID"
-        ? 2
-        : res.verdict === "INCONCLUSIVE"
-          ? 3
-          : 4; // UNVERIFIED
+  // The mapper REFUSES a tuple the assignment rules cannot produce, rather than answering 0 for it.
+  //
+  // The catch binds NOTHING. Reading a thrown value's fields runs code the failing party controls,
+  // and a handler whose whole job is to report a failure is the worst place to hand over a turn. The
+  // consequence is that this block cannot inspect WHAT was thrown — so it does not diagnose. It
+  // reports the two things it knows for certain: the mapper did not return, and this is the tuple it
+  // was given. `INADMISSIBLE_TUPLE_ERROR_NAME` is named as the expected cause, not asserted as the
+  // observed one. Every value printed is one this process built from its own constants; none of it
+  // comes from the bundle, so there is nothing here an author of hostile bytes can steer.
+  let code: EvidenceExitCode;
+  try {
+    code = exitCodeFor(res.verdict, res.enrolment, res.dimensions.settlement);
+  } catch {
+    process.stderr.write(
+      `error: the exit mapper refused this result instead of returning a code. Expected cause: ` +
+        `${INADMISSIBLE_TUPLE_ERROR_NAME} — (verdict, enrolment, settlement) = ` +
+        `(${res.verdict}, ${res.enrolment}, ${res.dimensions.settlement}) is a tuple no assignment rule ` +
+        `produces. This is a defect in this verifier, not a statement about the evidence.\n`,
+    );
+    process.exit(INTERNAL_INVARIANT_EXIT_CODE);
+  }
   process.exit(code);
 }
 

@@ -1389,6 +1389,168 @@ const KNOCKOUTS = [
     kind: "gate",
     suite: [".", "npm", ["run", "lint:inert-containers"]],
   },
+  {
+    id: "settlement-exit-six-splits-inconclusive",
+    control:
+      "The settlement ladder — an INCONCLUSIVE result whose settlement question was ASKED AND NOT " +
+      "ANSWERED exits 6, not 3. Collapsing it into 3 is not a cosmetic loss: 3 already means \"stale " +
+      "or absent checkpoint\", and a script that special-cases 3 as \"refresh the anchor and retry\" " +
+      "would retry its way straight past the one state the ladder exists to surface. The mutation " +
+      "makes every INCONCLUSIVE exit 3 — the exact shape of an exit table authored beside its rules " +
+      "instead of derived from them.",
+    file: "packages/evidence/src/exit-codes.ts",
+    find: "  if (verdict === \"INCONCLUSIVE\") return SETTLEMENT_UNRESOLVED.has(settlement) ? 6 : 3;",
+    replace: "  if (verdict === \"INCONCLUSIVE\") return 3;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-completed-run-says-nobody-asked",
+    control:
+      "A run that completes the whole pipeline reports `settlement: NO_EXECUTION_BINDING` — no " +
+      "execution binding was established for this bundle, because nothing asked for one. Reporting " +
+      "`UNCHECKED` there would say \"the rule never ran\", which is true of a pipeline that stopped " +
+      "early and false of one that finished; the two are the difference between an unfinished check " +
+      "and an unasked question, and the result carries exactly one of them.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },",
+    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"UNCHECKED\" },",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-attestation-may-not-ride-a-positive",
+    control:
+      "Only two settlement states may ride a POSITIVE verdict: a re-query by the relying party's own " +
+      "node, and the honest \"nobody asked\". Admitting the offline ceiling — an attestation this " +
+      "verifier did not verify — onto that list is the defect the two-word name exists to prevent: " +
+      "the caveat lives in a field nobody reads while the claim lives in the exit code every payment " +
+      "script reads.",
+    file: "packages/evidence/src/exit-codes.ts",
+    find: "export const SETTLEMENT_ADMISSIBLE_ON_POSITIVE: FrozenSet<SettlementDimension> = frozenSet<SettlementDimension>([\n  \"RECONFIRMED\",\n  \"NO_EXECUTION_BINDING\",\n]);",
+    replace: "export const SETTLEMENT_ADMISSIBLE_ON_POSITIVE: FrozenSet<SettlementDimension> = frozenSet<SettlementDimension>([\n  \"RECONFIRMED\",\n  \"NO_EXECUTION_BINDING\",\n  \"ATTESTED_UNVERIFIED\",\n]);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-unresolved-set-membership",
+    control:
+      "The three states that exit 6 are the ones where the settlement question was ASKED AND NOT " +
+      "ANSWERED — never the state where the rule simply did not run. Widening the set to include " +
+      "\"the rule did not run\" fires 6 on every stopped pipeline, which re-verdicts historical " +
+      "evidence and, worse, makes 6 a code that varies with nothing: a signal that never varies gets " +
+      "`|| true`'d inside a sprint, and then the real state is invisible again.",
+    file: "packages/evidence/src/exit-codes.ts",
+    find: "  \"BOUNDS_UNCHECKABLE\", // no verified preimage, so the money was compared to nothing\n]);",
+    replace: "  \"BOUNDS_UNCHECKABLE\", // no verified preimage, so the money was compared to nothing\n  \"UNCHECKED\",\n]);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-cli-exit-wire-carries-the-verdict",
+    control:
+      "The CLI hands the SHELL the code the mapper computed. This is not a hypothetical: a reviewer " +
+      "replaced this line with `process.exit(0)` and the whole suite stayed green, because every " +
+      "assertion called the mapper and none started the binary. Every rejection would have exited 0 " +
+      "on the exact channel a payment script reads, while the suite reported health. A doctrine that " +
+      "calls the exit code \"the only channel most consumers use\" has to measure the process, not " +
+      "the function one call short of it.",
+    file: "packages/evidence/src/cli.ts",
+    find: "  process.exit(code);",
+    replace: "  process.exit(0);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-cli-usage-error-is-not-success",
+    control:
+      "A usage or IO error exits 5, never 0. \"The arguments were wrong\" and \"the evidence says X\" " +
+      "must not share a number, or a script reads a typo as a verification result — and it reads it " +
+      "in the direction of the claim. Measured: turning this into 0 left the pre-wire suite green.",
+    file: "packages/evidence/src/cli.ts",
+    find: "  process.exit(USAGE_EXIT_CODE);",
+    replace: "  process.exit(0);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-inadmissible-tuple-refused-not-answered",
+    control:
+      "A tuple the assignment rules cannot produce is REFUSED by the mapper, and the CLI turns that " +
+      "refusal into exit 7. Answering by verdict alone — the shape this replaced — returns 0 at the " +
+      "money boundary for exactly the inputs a defective rule delivers. The mutation removes the " +
+      "admissible pair every honest run uses, so a valid bundle now produces a tuple the table does " +
+      "not list: the binary must exit 7 with the error's name on stderr rather than 0. That is the " +
+      "throw-to-exit path proven end to end, without a fixture that lies.",
+    file: "packages/evidence/src/exit-codes.ts",
+    find: "  NOT_EVALUATED: frozenSet<SettlementDimension>([\"NO_EXECUTION_BINDING\"]),",
+    replace: "  NOT_EVALUATED: frozenSet<SettlementDimension>([]),",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-dimensions-are-not-shared-between-results",
+    control:
+      "Each result gets its OWN dimensions object. Handing every early-return result one shared " +
+      "object means a caller that writes to a result it owns silently rewrites the dimensions of " +
+      "every LATER verification in that process, including ones it never saw — measured, it turned a " +
+      "later INVALID result into INTACT / VALID_NOW / RECONFIRMED. Bundle bytes cannot do it; an " +
+      "in-process consumer can, and a verifier whose past answers its own caller can edit is not " +
+      "offering a verdict. The mutation restores the shared object.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "function nothingProven(): VerdictDimensions {\n  return { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\" };\n}",
+    replace: "const SHARED_NOTHING_PROVEN: VerdictDimensions = { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\" };\nfunction nothingProven(): VerdictDimensions {\n  return SHARED_NOTHING_PROVEN;\n}",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-cli-refusal-exits-seven",
+    control:
+      "A refused tuple leaves this process as exit 7, and nothing else. Measured: this line and the " +
+      "stderr write beside it BOTH survived a full green suite, because the only thing exercising " +
+      "the refusal was a knockout — and a knockout scores any new red as a detection, so it could " +
+      "not tell 7 from 2 from 0. The forced-refusal harness asserts the number, so a catch that " +
+      "exits 0 on a verifier contradicting itself is now a failure with a name.",
+    file: "packages/evidence/src/cli.ts",
+    find: "    process.exit(INTERNAL_INVARIANT_EXIT_CODE);",
+    replace: "    process.exit(0);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-cli-refusal-names-its-cause",
+    control:
+      "A refused tuple is EXPLAINED on stderr, not merely signalled. Deleting the message leaves a " +
+      "bare non-zero exit that sends an operator to re-read the evidence when the fault is in the " +
+      "verifier. This is registered separately from the exit-code knockout on purpose: the two " +
+      "defects masked each other while one assertion covered both, so the harness asserts the status " +
+      "and the message in different tests and each mutation breaks exactly one.",
+    file: "packages/evidence/src/cli.ts",
+    find:
+      "    process.stderr.write(\n" +
+      "      `error: the exit mapper refused this result instead of returning a code. Expected cause: ` +\n" +
+      "        `${INADMISSIBLE_TUPLE_ERROR_NAME} — (verdict, enrolment, settlement) = ` +\n" +
+      "        `(${res.verdict}, ${res.enrolment}, ${res.dimensions.settlement}) is a tuple no assignment rule ` +\n" +
+      "        `produces. This is a defect in this verifier, not a statement about the evidence.\\n`,\n" +
+      "    );\n",
+    replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-not-conditioned-on-what-the-caller-asked-for",
+    control:
+      "The settlement value does not depend on `purpose`. An audit run and an authorization run " +
+      "examined the same settlement evidence — none — so a purpose-conditional value would be a " +
+      "verdict that changes with who is asking. The mutation is the one a reviewer chose precisely " +
+      "because the corpus runner never passes `purpose`: it was invisible to every fixture-driven " +
+      "assertion, which is why the behavioural two-run pin exists.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },\n    NOT_EVALUATED,",
+    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\" },\n    NOT_EVALUATED,",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment
@@ -1548,18 +1710,33 @@ if (results.length === 0 && DEPS_MISSING.length > 0) {
   );
 }
 
+/**
+ * Restore build artefacts to the pristine sources — knockout runs left dist/ built from mutated
+ * input, and a later step reading dist/ would be reading the mutation.
+ *
+ * ⚠ THIS MUST RUN ON THE FAILURE PATH TOO, and for a while it did not. The findings block below used
+ * to `process.exit(1)` above this rebuild, so the ONE run that most needs clean artefacts — a red one
+ * — was the one run that left mutant `dist/` on disk. Source restoration is SHA-verified per
+ * experiment and was never in doubt; the compiled output is a second copy of the mutation, ignored by
+ * git and therefore invisible to the residue check right above. Whatever ran next read it.
+ */
+function restorePristineArtifacts() {
+  try {
+    execFileSync("npm", ["run", "build"], { cwd: ROOT, stdio: "ignore", timeout: 600_000 });
+    for (const p of ["packages/gate", "packages/approval-artifacts", "packages/evidence", "packages/relay", "packages/signer-core"]) {
+      try { execFileSync("npm", ["run", "build"], { cwd: path.join(ROOT, p), stdio: "ignore", timeout: 600_000 }); } catch { /* package may have no build */ }
+    }
+  } catch { /* reported by the next CI step if it matters */ }
+}
+
 if (errors.length) {
   console.error(`\n${errors.length} finding(s):`);
   for (const e of errors) console.error(e);
-  if (!WARN_ONLY) process.exit(1);
+  if (!WARN_ONLY) {
+    restorePristineArtifacts();
+    process.exit(1);
+  }
   console.error("(--warn: reported, not blocking)");
 }
 
-// Restore build artefacts to the pristine sources — knockout runs left dist/ built from mutated
-// input, and a later step reading dist/ would be reading the mutation.
-try {
-  execFileSync("npm", ["run", "build"], { cwd: ROOT, stdio: "ignore", timeout: 600_000 });
-  for (const p of ["packages/gate", "packages/approval-artifacts", "packages/evidence", "packages/relay", "packages/signer-core"]) {
-    try { execFileSync("npm", ["run", "build"], { cwd: path.join(ROOT, p), stdio: "ignore", timeout: 600_000 }); } catch { /* package may have no build */ }
-  }
-} catch { /* reported by the next CI step if it matters */ }
+restorePristineArtifacts();

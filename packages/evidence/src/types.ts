@@ -267,7 +267,67 @@ export interface VerdictDimensions {
    *   UNCHECKED              — the pipeline failed before authorization could be evaluated.
    */
   authorization: "VALID_NOW" | "EXPIRED_NOW" | "NOT_YET_VALID_NOW" | "UNCHECKED";
+  /** The THIRD independent question: was the effect settled, and who checked? See `SettlementDimension`. */
+  settlement: SettlementDimension;
 }
+
+/**
+ * THE THIRD DIMENSION — was the approved effect settled, and WHO checked?
+ *
+ * `integrity` and `authorization` are separate because two questions that can legitimately disagree
+ * must not be collapsed into one word. Settlement is a third such question, and it is the one this
+ * verifier is weakest on: a dispatch is the gate's own self-report about its own paperwork, so
+ * "EXECUTED" has never meant "the money moved" — it means the gate says it handed the request off.
+ *
+ * THE LADDER, AND THE ONE PROPERTY THAT MATTERS. This verifier is offline and opens no socket. An
+ * offline verifier can establish that a settlement ASSERTION is authentic, bound to this exact
+ * approval, and inside the approved bounds. It cannot establish that the assertion is TRUE — the
+ * signer of the assertion is not the world. So the offline tier's ceiling is
+ * `ATTESTED_UNVERIFIED`, and the ONLY positive is `RECONFIRMED`, which requires a record of the
+ * relying party's OWN node answering the query — an input the party being judged never holds.
+ *
+ * The word `ATTESTED` on its own is deliberately not in this union. A reader who saw `ATTESTED`
+ * beside a positive verdict read it as "established", which is exactly the confusion the two-word
+ * name refuses: an attestation exists, and this verifier did not verify what it asserts.
+ */
+export type SettlementDimension =
+  /** the relying party's own node re-answered the paired queries and agreed — THE ONLY POSITIVE. */
+  | "RECONFIRMED"
+  /** an artifact asserts settlement and ships the coordinates to check it; nobody checked them. */
+  | "ATTESTED_UNVERIFIED"
+  /** the question was asked and no admissible determinate artifact answered it. */
+  | "NOT_ESTABLISHED"
+  /** no hash-verified params preimage, so no bound was compared to anything. NOT "passed". */
+  | "BOUNDS_UNCHECKABLE"
+  /** an artifact, or the relying party's own node, contradicts the claim. */
+  | "CONTRADICTED"
+  /** nobody asked: the verifier was not configured to evaluate enrolment, so no settlement rule ran. */
+  | "NO_EXECUTION_BINDING"
+  /** the pipeline stopped before the settlement rule could run. Never "an artifact was examined". */
+  | "UNCHECKED";
+
+/**
+ * Whether the verifier was configured to ask the enrolment question at all, and what it found.
+ *
+ * `NOT_EVALUATED` is the value on every run that supplies no enrolment registry — which is every
+ * run today. It is a REAL, reportable state, distinct from "evaluated and found wanting": a verifier
+ * that was not handed the input does not ask the question, and therefore does not change its answer.
+ * That distinction is what makes "no historical bundle changes verdict" constructible rather than
+ * merely promised.
+ */
+export type EnrolmentEvaluation =
+  /** no enrolment registry was supplied — the question was not asked. */
+  | "NOT_EVALUATED"
+  /** registries were supplied but none authenticates, is closed, or is addressed to this reader. */
+  | "UNVERIFIABLE"
+  /** a selected registry's window excludes this bundle's authorization instant. */
+  | "OUT_OF_WINDOW"
+  /** the class is positively absent from every selected registry — which buys nothing. */
+  | "CLASS_ABSENT"
+  /** a selected registry structurally contradicts the bundle. */
+  | "CONTRADICTED"
+  /** the class is enrolled: settlement evidence is REQUIRED for a positive. */
+  | "ENROLLED";
 
 /**
  * What the caller is asking the verifier FOR.
@@ -317,6 +377,14 @@ export interface VerifyEvidenceResult {
   rolesAsserted: string[];
   /** DESIGN 2: integrity and authorization, reported separately (they can legitimately disagree). */
   dimensions: VerdictDimensions;
+  /**
+   * Whether the enrolment question was asked, and what it found. It sits on the RESULT rather than
+   * inside `dimensions` because it is a statement about the VERIFIER'S CONFIGURATION — what it was
+   * handed — not about the bundle's evidence. There is no such thing as "UNVERIFIED for one
+   * dimension": a result carries ONE top-level verdict, so "the verifier was not configured to ask"
+   * has to be reportable without touching that verdict.
+   */
+  enrolment: EnrolmentEvaluation;
   /** DESIGN 2: the rule-set + purpose this verdict was produced under. */
   policy: VerdictPolicy;
   /** Non-fatal, honest caveats (e.g. F6 opener-scoped residual, tail-truncation caveat). */

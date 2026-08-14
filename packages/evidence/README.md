@@ -56,7 +56,34 @@ nothing executed*.
 | `INVALID` | a hard, fail-closed rejection at a named step |
 | `VALID_FROM_TRUSTED_ANCHOR` | non-genesis segment — **P2, not built**; never returned in alpha |
 
-Exit codes: `0` valid · `2` INVALID · `3` INCONCLUSIVE · `4` UNVERIFIED · `5` usage/IO.
+### The result also says what it did NOT check
+
+Two fields are present on every result, and both describe what the verifier was *asked*, not only
+what it found:
+
+| Field | Meaning |
+|---|---|
+| `enrolment` | whether the enrolment question was asked at all. No enrolment registry is supplied to this verifier, so it is always `NOT_EVALUATED`: the question was not put, so the answer did not change. |
+| `dimensions.settlement` | the settlement question, reported beside `integrity` and `authorization` because the three can legitimately disagree. `NO_EXECUTION_BINDING` on a completed run (nobody asked, so no execution binding was established for this bundle); `UNCHECKED` on a run that stopped earlier. |
+
+`EXECUTED` has never meant the money moved — it means the gate signed that it handed the request
+off. `dimensions.settlement` is where the result says so, instead of leaving it to be inferred.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| `0` | `VALID_FULL_CHAIN` · `VALID_SEGMENT_ONLY` · `VALID_FROM_TRUSTED_ANCHOR` |
+| `2` | `INVALID` — a hard, fail-closed rejection at a named step |
+| `3` | `INCONCLUSIVE` — a non-executed outcome with no fresh trusted checkpoint |
+| `4` | `UNVERIFIED` — no external trust root / checkpoint keyring supplied |
+| `5` | usage / IO error |
+| `6` | `INCONCLUSIVE` — the settlement question was asked and not answered. **Defined and reserved; not reachable from this build**, because no rule here assigns a settlement value that produces it. It is documented so a consumer can wire it before the rule that fires it exists. |
+| `7` | internal invariant violation — a `(verdict, enrolment, settlement)` tuple the rules cannot produce reached the exit mapper. A statement about the verifier, never about the evidence. |
+
+The mapping is a function of `(verdict, enrolment, dimensions.settlement)` and is exported as
+`exitCodeFor`, so a downstream verifier maps the same result to the same number instead of deriving
+its own. It refuses — rather than answering `0` — for a tuple no rule produces.
 
 ## Reuse, not re-implementation
 

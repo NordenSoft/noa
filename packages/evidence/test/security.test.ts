@@ -173,6 +173,14 @@ const REGISTRY: Record<string, "ingests" | "dataless"> = {
   buildResolvedKeyring: "ingests",
   buildReceiptKeyring: "ingests",
   assertReceiptRole: "ingests",
+  // Three string enum members in, a small integer out — or a refusal. There is no caller-owned
+  // object to flip; an unrecognised verdict falls through to a NON-ZERO code and an inadmissible
+  // positive tuple throws, so both fail directions are refusal.
+  exitCodeFor: "dataless",
+  // The error class the mapper throws. A class is a function, so it lands in this reconciliation
+  // too — deliberately: an export that hides behind an `Error` suffix is still a new entry point.
+  // Its constructor takes this package's own three strings.
+  InadmissibleVerdictTupleError: "dataless",
 };
 
 test("C2: every exported function is classified — a NEW export cannot appear unrouted", () => {
