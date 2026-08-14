@@ -653,34 +653,61 @@ export function unsupportedArtifactRoots(root, projectDirs) {
 }
 
 /**
- * The FALLBACK store's private root, for trees with no `node_modules` to hide a cache in.
- *
- * ── CodeQL js/insecure-temporary-file, 3×HIGH ──────────────────────────────────────────────────
- * The fallback wrote pristine sources, mutant hashes and the lock under `os.tmpdir()` at a path
- * derived only from the repository path — deterministic by design, because crash recovery has to be
- * able to FIND it, and therefore predictable by anyone else on the machine. On a shared box another
- * user could pre-create those paths, or plant symlinks at them, before this process ever looked.
- *
- * `O_NOFOLLOW` and the `wx` lock already refuse the symlink and the pre-created-file halves of that,
- * but the class fix is the DIRECTORY: per-user, `0700`, and verified to be exactly that before a
- * single byte goes near it. Determinism is kept — the path is still findable by the next run —
- * while everything under it stops being world-reachable.
- *
- * The primary store (`node_modules/.cache/noa-knockout`) is untouched by any of this: it lives
- * inside the repository, under the operator's own tree, and was never shared.
+ * The user's cache home: `$XDG_CACHE_HOME` when it is set to an absolute path, `~/.cache` otherwise.
+ * Per-user by CONSTRUCTION — there is no shared directory in the path at all.
  */
-export function privateFallbackRoot(base = os.tmpdir()) {
-  const uid = typeof process.getuid === "function" ? process.getuid() : null;
-  let scope;
-  if (uid !== null) scope = String(uid);
-  else {
-    // No `getuid` (Windows): scope by the account name instead, so two accounts on one machine
-    // still never share a directory.
-    let name = "u";
-    try { name = os.userInfo().username || "u"; } catch { /* keep the placeholder */ }
-    scope = name.replace(/[^A-Za-z0-9_.-]/g, "_");
+export function userCacheHome() {
+  const xdg = process.env.XDG_CACHE_HOME;
+  if (typeof xdg === "string" && xdg.length > 0 && path.isAbsolute(xdg)) return xdg;
+  return path.join(os.homedir(), ".cache");
+}
+
+/**
+ * The FALLBACK store's root, for trees with no `node_modules` to hide a cache in.
+ *
+ * ── CodeQL js/insecure-temporary-file, and why the answer is NOT a safer temp path ─────────────
+ * This store holds a run's pristine SOURCES, the mutant hashes recovery compares against, and the
+ * lock that decides whether another run may touch the tree. It was written under the machine-wide
+ * temporary directory at a path derived from the repository path alone — deterministic by design,
+ * because crash recovery has to FIND it again, and therefore predictable to every other account.
+ *
+ * The first repair made that directory per-user and `0700`. It closed the hole, and the scanner
+ * kept flagging every `open` underneath it, which turned out to be the right instinct rather than a
+ * false positive: an argument that a shared directory is safe THIS time is exactly the kind of
+ * reasoning this file exists to distrust. So the store leaves the shared directory entirely. Under
+ * the user's own cache home it is private by construction rather than by argument, there is no
+ * pre-creation or symlink window for anyone to race, and it also stops being wiped on reboot —
+ * which matters here, because the thing it holds is the record of an interrupted run.
+ *
+ * The refusal discipline below stays anyway. The surface shrank; the standard did not.
+ *
+ * `base` exists so the selftest can exercise all of that inside its own workspace instead of the
+ * developer's real home directory. Nothing in the product passes it.
+ */
+export function privateFallbackRoot(base = userCacheHome()) {
+  return path.join(base, "noa-knockout");
+}
+
+/**
+ * The cache home itself: created if missing, and proven to be a real directory belonging to this
+ * user. Its MODE is not policed — `~/.cache` is a shared-by-design directory on most systems and
+ * demanding `0700` of it would refuse to run on a perfectly ordinary machine. What must be private
+ * is the leaf this guard writes into, and `ensurePrivateDir` proves that.
+ */
+function ensureOwnedDir(dir) {
+  try { fs.mkdirSync(dir, { recursive: true }); }
+  catch (e) { throw new IncompleteSnapshotError(`cannot create ${dir}: ${String(e && e.message)}`); }
+  let st;
+  try { st = fs.lstatSync(dir); }
+  catch (e) { throw new IncompleteSnapshotError(`cannot inspect ${dir}: ${String(e && e.message)}`); }
+  if (st.isSymbolicLink() || !st.isDirectory()) {
+    throw new IncompleteSnapshotError(`${dir} is not a real directory; refusing to build this run's store under it`);
   }
-  return path.join(base, `noa-knockout-${scope}`);
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  if (uid !== null && st.uid !== uid) {
+    throw new IncompleteSnapshotError(`${dir} is owned by uid ${st.uid}, not by this user (${uid}); refusing to use it`);
+  }
+  return dir;
 }
 
 /**
@@ -691,6 +718,7 @@ export function privateFallbackRoot(base = os.tmpdir()) {
  * `chmod` into acceptability — it is something whose history nobody here can account for.
  */
 export function ensurePrivateDir(dir) {
+  ensureOwnedDir(path.dirname(dir));
   try {
     fs.mkdirSync(dir, { mode: 0o700 });
     return dir;
@@ -725,8 +753,9 @@ export function ensurePrivateDir(dir) {
 function defaultArtifactCacheDir(root) {
   const nodeModules = path.join(root, "node_modules");
   if (fs.existsSync(nodeModules)) return path.join(nodeModules, ".cache", "noa-knockout");
-  // No `node_modules` (a selftest fixture, a bare checkout): a deterministic directory inside the
-  // per-user private root above, so a crashed run is still recoverable by the next one.
+  // No `node_modules` (a bare checkout): a deterministic directory inside the user's own cache
+  // home, so a crashed run is still recoverable by the next one — and, unlike a temp directory,
+  // still there after a reboot.
   return path.join(privateFallbackRoot(), sha(path.resolve(root)).slice(0, 16));
 }
 
@@ -807,7 +836,7 @@ export function createBuildStateGuard({ root, cacheDir } = {}) {
   const repoRoot = path.resolve(root);
   // Only the DEFAULTED fallback store needs its shared parent proving private. A caller-supplied
   // directory is the caller's to place, and the primary store lives inside the repository.
-  const usesSharedFallback = cacheDir === undefined && !fs.existsSync(path.join(repoRoot, "node_modules"));
+  const usesHomeFallback = cacheDir === undefined && !fs.existsSync(path.join(repoRoot, "node_modules"));
   cacheDir = cacheDir ?? defaultArtifactCacheDir(repoRoot);
   const lockPath = path.join(cacheDir, "lock.json");
 
@@ -1208,14 +1237,14 @@ export function createBuildStateGuard({ root, cacheDir } = {}) {
     // describing a window it was not covering.
     // The primary store is left exactly as it was: it lives inside the repository, under the
     // operator's own tree, and CodeQL's finding is about the shared one.
-    if (usesSharedFallback) {
+    if (usesHomeFallback) {
       ensurePrivateDir(privateFallbackRoot());
       fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
     } else {
       fs.mkdirSync(cacheDir, { recursive: true });
     }
     let fd;
-    try { fd = fs.openSync(lockPath, "wx", usesSharedFallback ? 0o600 : 0o644); }
+    try { fd = fs.openSync(lockPath, "wx", usesHomeFallback ? 0o600 : 0o644); }
     catch (e) {
       if (e && e.code === "EEXIST") return null;
       throw new IncompleteSnapshotError(`cannot create the knockout lock at ${lockPath}: ${String(e && e.message)}`);

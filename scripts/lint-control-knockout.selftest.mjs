@@ -32,9 +32,34 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, privateFallbackRoot, ensurePrivateDir, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs } from "./lib/knockout-runner.mjs";
+import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, privateFallbackRoot, ensurePrivateDir, userCacheHome, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs } from "./lib/knockout-runner.mjs";
 
-const root = fs.mkdtempSync(path.join(os.tmpdir(), "ko-selftest-"));
+/**
+ * EVERY fixture this file writes lives under one private workspace, and that workspace is NOT the
+ * machine-wide temporary directory.
+ *
+ * Two of this file's own paths were flagged by CodeQL (insecure-temporary-file, file-system-race)
+ * for the same reason the runner's fallback store was: a scratch path under a directory every
+ * account on the machine can write to is a race somebody else can enter, and `mkdtemp` only
+ * randomises the LEAF. A test that plants symlinks and chmods directories to prove a guard refuses
+ * them should not be doing that where anyone else can reach in.
+ *
+ * So the workspace is the user's own cache home — private by construction, no shared parent for
+ * anyone to race, and the whole alert class goes away by construction rather than by argument. It
+ * is deliberately NOT inside the repository: several arms below need a directory that is not in any
+ * git work tree, and a fixture under `node_modules/` is still inside this one.
+ */
+const REPO = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const WORKSPACE_HOME = path.join(userCacheHome(), "noa-knockout-selftest");
+fs.mkdirSync(WORKSPACE_HOME, { recursive: true, mode: 0o700 });
+/** A fresh, private scratch directory. Replaces every shared-temp `mkdtempSync` this file had. */
+const scratch = (prefix) => fs.mkdtempSync(path.join(WORKSPACE_HOME, prefix));
+
+const root = scratch("ko-selftest-");
+// The original arms below hand `runKnockout` no guard, so it builds the default one for this root.
+// Giving the fixture a `node_modules` keeps that default on the PRIMARY store — the selftest then
+// never writes into the developer's real cache home for a run it did not explicitly ask for.
+fs.mkdirSync(path.join(root, "node_modules"), { recursive: true });
 let failures = 0;
 const check = (name, fn) => {
   try {
@@ -245,7 +270,7 @@ check("requires must be a NON-EMPTY array — an empty one declares nothing whil
  * fixture from it (what a generator does). Both directions are measured, because a guard that is
  * silently doing nothing looks exactly like a guard that is working. */
 const buildFixture = ({ stageGenerated = false, stageSubject = false } = {}) => {
-  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-derived-"));
+  const r = scratch("ko-derived-");
   fs.mkdirSync(path.join(r, "dist"), { recursive: true });
   fs.writeFileSync(path.join(r, "subject.js"), `${MARKER}\nexport default guard;\n`);
   fs.writeFileSync(path.join(r, "dist", "subject.js"), `COMPILED FROM: ${MARKER}\n`);
@@ -948,7 +973,7 @@ check("an artifact root this guard cannot see REFUSES the arm, by name", () => {
 });
 
 check("EVERY TypeScript project is checked, not only the arm's own package", () => {
-  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-projects-"));
+  const r = scratch("ko-projects-");
   derivedRoots.push(r);
   for (const d of ["", "packages/a", "packages/b", "packages/b/node_modules/dep", "dist/nested"]) {
     fs.mkdirSync(path.join(r, d), { recursive: true });
@@ -968,23 +993,32 @@ check("the real repository's own TypeScript projects all satisfy the artifact-ro
       "report a clean restore over a leaked build");
 });
 
-/* ─── CodeQL js/insecure-temporary-file, 3×HIGH ────────────────────────────────────────────────
- * The fallback store — used for a tree with no `node_modules` to hide a cache in — wrote this run's
- * pristine sources, mutant hashes and lock under `os.tmpdir()` at a path derived only from the
- * repository path. Deterministic on purpose, because crash recovery has to FIND it, and therefore
- * predictable to everyone else on a shared machine. The `O_NOFOLLOW` reads and the `wx` lock refuse
- * the symlink and pre-created-file halves; the class fix is the DIRECTORY itself. */
-check("the fallback store's root is per-user, 0700, and REFUSES anything it did not make", () => {
-  const base = fs.mkdtempSync(path.join(os.tmpdir(), "ko-fallback-"));
+/* ─── CodeQL js/insecure-temporary-file + file-system-race ─────────────────────────────────────
+ * The fallback store — used for a tree with no `node_modules` to hide a cache in — held this run's
+ * pristine sources, the mutant hashes recovery compares against, and the lock that decides whether
+ * another run may touch the tree. It lived under the machine-wide temporary directory at a path
+ * derived from the repository path alone: deterministic on purpose, because crash recovery has to
+ * FIND it, and therefore predictable to every other account.
+ *
+ * Making that directory 0700 closed the hole and the scanner kept flagging it, which was the right
+ * instinct: "a shared directory is safe THIS time" is the kind of argument this file exists to
+ * distrust. The store now lives under the user's own cache home, private by construction, with no
+ * shared parent for anyone to race — and the refusals below are kept anyway, because the surface
+ * shrank and the standard did not. */
+check("the fallback store is under the USER'S CACHE HOME, never a shared directory", () => {
+  const base = scratch("ko-fallback-");
   derivedRoots.push(base);
   const root = privateFallbackRoot(base);
 
-  const uid = typeof process.getuid === "function" ? process.getuid() : null;
-  assert.ok(path.basename(root).startsWith("noa-knockout-"), "the fallback root is not namespaced at all");
-  if (uid !== null) {
-    assert.equal(path.basename(root), `noa-knockout-${uid}`,
-      "two accounts on one machine would share a directory holding each other's pristine sources");
-  }
+  assert.equal(privateFallbackRoot(), path.join(userCacheHome(), "noa-knockout"),
+    "the default fallback root is not the user's own cache home");
+  assert.ok(!privateFallbackRoot().startsWith(`${os.tmpdir()}${path.sep}`),
+    "the fallback store is still inside the machine-wide temporary directory — this is the finding");
+  assert.equal(userCacheHome(), process.env.XDG_CACHE_HOME && path.isAbsolute(process.env.XDG_CACHE_HOME)
+    ? process.env.XDG_CACHE_HOME : path.join(os.homedir(), ".cache"),
+    "XDG_CACHE_HOME is not honoured, so a machine that relocates its caches would be ignored");
+  assert.equal(root, path.join(base, "noa-knockout"),
+    "the base parameter the selftest relies on stopped being honoured");
 
   ensurePrivateDir(root);
   const made = fs.lstatSync(root);
@@ -1018,13 +1052,29 @@ check("the fallback store's root is per-user, 0700, and REFUSES anything it did 
   fs.rmSync(root, { force: true });
 });
 
-check("the PRIMARY store is untouched: a tree with node_modules never reaches the shared fallback", () => {
-  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-primary-"));
+/**
+ * The structural claim, kept structural. Everything else in this section tests BEHAVIOUR, and
+ * behaviour can be re-introduced by one convenient `mkdtempSync` in a future patch. This reads the
+ * runner's own source: no product path may name the machine-wide temporary directory at all.
+ */
+check("the runner never reaches for the machine-wide temporary directory, in any line", () => {
+  const src = fs.readFileSync(path.join(REPO, "scripts", "lib", "knockout-runner.mjs"), "utf8");
+  const hits = src.split("\n")
+    .map((line, i) => [i + 1, line])
+    .filter(([, line]) => /\bos\s*\.\s*tmpdir\b|\bTMPDIR\b|(^|[^\w/])\/tmp\//.test(line));
+  assert.deepEqual(hits, [],
+    `the runner is back in the shared temporary directory at ${hits.map(([n]) => n).join(", ")} — ` +
+      "its store holds this run's pristine sources and its lock, and a directory every account can " +
+      "write to is a race somebody else can enter");
+});
+
+check("the PRIMARY store is untouched: a tree with node_modules never reaches the fallback at all", () => {
+  const r = scratch("ko-primary-");
   derivedRoots.push(r);
   fs.mkdirSync(path.join(r, "node_modules"), { recursive: true });
   const guard = createBuildStateGuard({ root: r });
   assert.equal(guard.cacheDir, path.join(r, "node_modules", ".cache", "noa-knockout"),
-    "a tree with node_modules was pushed out to the shared temp store");
+    "a tree with node_modules was pushed out to the fallback store");
   assert.equal(guard.start().ok, true);
   assert.ok(fs.existsSync(guard.lockPath), "the primary store did not take its lock where it always did");
   assert.equal(fs.lstatSync(guard.cacheDir).mode & 0o777, 0o755,
@@ -1038,19 +1088,19 @@ check("the PRIMARY store is untouched: a tree with node_modules never reaches th
 });
 
 check("a tree with NO node_modules lands inside the private root, and still deterministically", () => {
-  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-nonm-"));
+  const r = scratch("ko-nonm-");
   derivedRoots.push(r);
   const a = createBuildStateGuard({ root: r }).cacheDir;
   const b = createBuildStateGuard({ root: r }).cacheDir;
   assert.equal(a, b, "the fallback path is not deterministic, so a crashed run could never be found again");
   assert.ok(a.startsWith(`${privateFallbackRoot()}${path.sep}`),
     `the fallback store is not under the per-user private root: ${a}`);
-  assert.notEqual(path.dirname(a), os.tmpdir(),
-    "the store sits directly in the world-shared temp directory, which is the finding");
+  assert.ok(!a.startsWith(`${os.tmpdir()}${path.sep}`),
+    "the store is under the machine-wide temporary directory, which is the whole finding");
 });
 
 check("listBuildArtifacts takes every dist/ tree and never enters node_modules", () => {
-  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-walk-"));
+  const r = scratch("ko-walk-");
   derivedRoots.push(r);
   fs.mkdirSync(path.join(r, "dist", "src"), { recursive: true });
   fs.mkdirSync(path.join(r, "packages", "a", "dist"), { recursive: true });
@@ -1071,9 +1121,11 @@ check("listBuildArtifacts takes every dist/ tree and never enters node_modules",
  * returning `false` — so a git that failed for any other reason read as "nothing is tracked", and
  * every generated file an arm rewrote was then left alone. */
 check("gitWorkTreeState is THREE-valued; only a probe that RAN may answer 'no'", () => {
-  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-nogit-"));
+  const r = scratch("ko-nogit-");
   derivedRoots.push(r);
-  assert.equal(gitWorkTreeState(r), "no");
+  assert.equal(gitWorkTreeState(r), "no",
+    `${r} reports as a git work tree — is the selftest workspace inside a repository? ` +
+      "(a repository initialised over your home directory would do it.) This arm measures nothing from in there.");
   assert.equal(isGitWorkTree(r), false);
   assert.equal(gitDirtyPaths(r), null,
     "a proven non-work-tree is the one place where 'nothing is tracked' is a complete answer");
@@ -1084,7 +1136,7 @@ check("gitWorkTreeState is THREE-valued; only a probe that RAN may answer 'no'",
   assert.throws(() => isGitWorkTree(gone), /cannot determine/);
   assert.throws(() => gitDirtyPaths(gone), /IncompleteSnapshot|git status failed|cannot determine/);
 
-  const g = fs.mkdtempSync(path.join(os.tmpdir(), "ko-git-"));
+  const g = scratch("ko-git-");
   derivedRoots.push(g);
   fs.writeFileSync(path.join(g, "a.txt"), "a\n");
   const cfg = ["-c", "user.email=s@e.invalid", "-c", "user.name=s", "-c", "commit.gpgsign=false"];
@@ -1114,6 +1166,5 @@ check("gitWorkTreeState is THREE-valued; only a probe that RAN may answer 'no'",
 for (const r of derivedRoots) fs.rmSync(r, { recursive: true, force: true });
 for (const d of cacheDirs) fs.rmSync(d, { recursive: true, force: true });
 fs.rmSync(root, { recursive: true, force: true });
-fs.rmSync(path.join(os.tmpdir(), `noa-knockout-${crypto.createHash("sha256").update(path.resolve(root)).digest("hex").slice(0, 16)}`), { recursive: true, force: true });
 console.log(`\n${failures === 0 ? "knockout runner classifies correctly" : `${failures} FAILURE(S) — the framework that judges every control is wrong`}`);
 process.exit(failures === 0 ? 0 : 1);
