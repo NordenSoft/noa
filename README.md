@@ -11,6 +11,31 @@ implementations, and the conformance suite that holds each of them to the identi
 vector it is run against — which is not every vector for every implementation, and the matrix says
 per class exactly which.
 
+**One concrete case.** An agent wired to a payments tool decides to send 7,000 — pick whichever
+currency you like; the rule is written against the amount, not the symbol. The call never reaches the
+payments tool: the proxy in front of it holds the call and writes a signed `DEFERRED` receipt
+instead. A request goes to whoever your organization put behind the approver key — a phone, if that
+is where you route it — and the session stays blocked apart from the one exact retry, which goes
+through only after a holder of that key has signed. If nobody signs, the call is never forwarded.
+When someone does sign, the chain reads `DEFERRED → ALLOWED → EXECUTED`, each link signed and
+hash-chained onto the one before it. Six months later, when someone disputes that the transfer was
+ever authorized at all, the other side can check that chain offline — no account, no network, nothing
+to ask us for — and it states which agent, which action, the hash of the exact parameters, which
+approver identifier signed, and in which order.
+
+**The ceiling on that case, in plain words.** What the chain establishes is that a key holder
+approved *this exact intent* before the call was allowed through. It does not establish what the
+payments tool then did: this system never watches the executor, and the remote system of record is
+the only witness to a side effect (NC-1.3). So the code emits a reason code that says as much,
+rather than a friendlier one — `HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND`, approval of an intent,
+without binding to the execution that follows (NC-6.6). The plain `HUMAN_APPROVED` token stays
+reserved in the union, is emitted by nothing, and a test fails if anything starts emitting it. Two
+further edges belong in the same breath: the approver identifier is an opaque string, and binding it
+to a real person is your identity system's job rather than ours (NC-3.2); and what is gated is the
+path through the proxy, so an agent that can reach the payments tool by another route was never
+inside this boundary (NC-6.6). Every one of those codes is a numbered, normative entry in
+[NON-CLAIMS.md](NON-CLAIMS.md).
+
 [![CI](https://github.com/NordenSoft/noa/actions/workflows/ci.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/ci.yml)
 [![doc-truth](https://github.com/NordenSoft/noa/actions/workflows/doc-truth.yml/badge.svg)](https://github.com/NordenSoft/noa/actions/workflows/doc-truth.yml)
 [![npm noa-receipt](https://img.shields.io/npm/v/noa-receipt?label=noa-receipt)](https://www.npmjs.com/package/noa-receipt)
