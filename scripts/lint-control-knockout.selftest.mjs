@@ -55,6 +55,20 @@ fs.mkdirSync(WORKSPACE_HOME, { recursive: true, mode: 0o700 });
 /** A fresh, private scratch directory. Replaces every shared-temp `mkdtempSync` this file had. */
 const scratch = (prefix) => fs.mkdtempSync(path.join(WORKSPACE_HOME, prefix));
 
+const NOFOLLOW = fs.constants.O_NOFOLLOW ?? 0;
+/**
+ * Do one thing to a path, through the descriptor the open returned, and close it afterwards.
+ *
+ * Every path-based call is a fresh lookup, so a `stat` here and a `write` there are two lookups
+ * with a window between them that somebody else can step into — CodeQL js/file-system-race, and
+ * precisely the attack the arms below exist to prove the guard refuses. Holding the fd asks about
+ * one object, once; `wx` makes taking a name atomic instead of checking then taking.
+ */
+const withFd = (p, flags, fn, mode) => {
+  const fd = mode === undefined ? fs.openSync(p, flags) : fs.openSync(p, flags, mode);
+  try { return fn(fd); } finally { fs.closeSync(fd); }
+};
+
 const root = scratch("ko-selftest-");
 // The original arms below hand `runKnockout` no guard, so it builds the default one for this root.
 // Giving the fixture a `node_modules` keeps that default on the PRIMARY store — the selftest then
@@ -1021,7 +1035,12 @@ check("the fallback store is under the USER'S CACHE HOME, never a shared directo
     "the base parameter the selftest relies on stopped being honoured");
 
   ensurePrivateDir(root);
-  const made = fs.lstatSync(root);
+  // Inspected through a descriptor this arm HOLDS, not by a second path lookup: opening
+  // no-follow-and-must-be-a-directory and then `fstat`-ing that fd asks about one object, once.
+  // A `lstat` here and an act on the same path later is a check-then-act pair, and a test that
+  // plants symlinks to prove a guard refuses them should not leave one of its own lying around.
+  const made = withFd(root, fs.constants.O_RDONLY | (fs.constants.O_DIRECTORY ?? 0) | NOFOLLOW,
+    (fd) => fs.fstatSync(fd));
   assert.ok(made.isDirectory());
   assert.equal(made.mode & 0o777, 0o700,
     "the store other accounts must not read was created world-readable");
@@ -1045,9 +1064,12 @@ check("the fallback store is under the USER'S CACHE HOME, never a shared directo
       "and its lock would have been written wherever it pointed");
   assert.deepEqual(fs.readdirSync(elsewhere), [], "something was written through the planted symlink");
 
-  // ...and a plain file at that path is refused for the same reason.
+  // ...and a plain file at that path is refused for the same reason. Created with an ATOMIC
+  // exclusive open — `wx` either takes the name or fails with EEXIST — rather than deciding the
+  // path is free and then writing to it. The second shape is the race itself, and it would also
+  // follow a symlink somebody slipped in between the two steps.
   fs.unlinkSync(root);            // unlink, not rm: the symlink itself goes, never what it points at
-  fs.writeFileSync(root, "not a directory at all\n");
+  withFd(root, "wx", (fd) => fs.writeSync(fd, "not a directory at all\n"), 0o600);
   assert.throws(() => ensurePrivateDir(root), /not a real directory/);
   fs.rmSync(root, { force: true });
 });
