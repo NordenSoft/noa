@@ -135,6 +135,11 @@ jobs:
         run: cd packages/adapter-core && npm ci
       - name: approval-artifacts tests
         run: cd packages/approval-artifacts && npm ci && npm test
+      - name: Install rail-x402 deps for evidence's local package dependency
+        # evidence depends on noa-rail-x402 via file:../rail-x402, which npm installs as a SYMLINK —
+        # imports inside rail-x402 resolve from its REAL path, so its own node_modules (carrying
+        # noa-receipt) must exist BEFORE evidence's suite runs, not at its later test step.
+        run: cd packages/rail-x402 && npm ci
       - name: evidence tests
         run: cd packages/evidence && npm ci && npm test
       - name: gate tests
@@ -400,6 +405,10 @@ jobs:
         with:
           python-version: "3.12"
       - run: npm ci
+      - name: Install rail-x402 deps for the settlement plane
+        # The golden path now crosses evidence's settlement bridge into rail-x402 (symlinked file:
+        # dep), whose imports resolve from its real path — its node_modules must exist here too.
+        run: cd packages/rail-x402 && npm ci
       - name: Build + generate vectors + test
         # `id` so every INDEPENDENT gate below can condition on the BUILD succeeding rather than on
         # whichever gate happens to sit above it in this list. See the ORDERING note below.
