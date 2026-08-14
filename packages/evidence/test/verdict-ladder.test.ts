@@ -447,6 +447,24 @@ test("MIGRATION: every fixture's exit code is byte-for-byte the one it had befor
   }
 });
 
+/**
+ * ── THE ONE NAMED EXCEPTION TO THE SENTENCE BELOW, written as an exception rather than as a
+ *    softening of it: a guarantee with an unlisted exception is worse than a narrower guarantee.
+ *
+ * The enrolment rules have zero exceptions and are structurally incapable of one — no registry is
+ * supplied to this corpus, so no enrolment rule runs and nothing about these fixtures can move.
+ *
+ * The consumption-result rule is different, and it is the only rule in this design that is NOT
+ * enrolment-scoped: it fires with or without a registry, so no verifier configuration avoids it.
+ *   • `valid/execution_failed.json` keeps its VERDICT, its STEP and its CODE. Its BYTES do not: it is
+ *     re-minted from the generator carrying `FAILED_BEFORE_DISPATCH`. The assertions below compare
+ *     each fixture to its OWN expectations, so they measure the re-minted fixture, not the old one —
+ *     `test/consumption-result.test.ts` is where the exception itself is pinned.
+ *   • A historical bundle of the old shape — `EXECUTION_FAILED` over a `DISPATCHED` consumption —
+ *     verified before this rule and is `INVALID` after it. That is a genuine retroactive change to a
+ *     class of evidence, sized against zero production tenants and recorded here rather than
+ *     discovered later, and it is why `VERIFIER_POLICY_VERSION` moved in the same commit.
+ */
 test("MIGRATION: every fixture keeps its verdict, and the exact presence or ABSENCE of a step and code", () => {
   for (const { id, fx } of fixtures) {
     const res = run(fx);
