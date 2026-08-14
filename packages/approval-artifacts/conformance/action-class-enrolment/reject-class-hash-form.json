@@ -1,0 +1,64 @@
+{
+  "description": "classes[0].actionSchema.hash is not a sha256:<64hex>, RE-SIGNED — the class key is a hash PAIR, and a member that is not a hash cannot be compared to a gate-signed envelope at all",
+  "spec": "noa.action-class-enrolment/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "structural",
+  "artifact": {
+    "spec": "noa.action-class-enrolment/0.1",
+    "tenant": "tenant-acme",
+    "version": 7,
+    "audience": [
+      "rp:vendor.example",
+      "rp:acquirer.example"
+    ],
+    "notBefore": "2026-07-01T00:00:00.000Z",
+    "notAfter": "2027-07-01T00:00:00.000Z",
+    "closed": true,
+    "classes": [
+      {
+        "actionId": "deploy.apply",
+        "actionSchema": {
+          "id": "deploy.apply",
+          "version": 1,
+          "hash": "sha256:short"
+        },
+        "projection": {
+          "id": "deploy.display",
+          "version": 1,
+          "hash": "sha256:4fd0b3e137ba0c0436890e079f10229767c17741b83c1fded54532aac711c07e"
+        },
+        "witnessSpec": "noa.settlement-evidence/0.1",
+        "claimTier": "SETTLEMENT_CORRELATED",
+        "declaredExecutableFields": [
+          "chainId",
+          "token",
+          "from",
+          "to",
+          "value"
+        ],
+        "declaredWitnessedFields": [
+          "chainId",
+          "token",
+          "from",
+          "to",
+          "value",
+          "nonce"
+        ]
+      }
+    ],
+    "sig": {
+      "alg": "ed25519",
+      "kid": "enrol-signer-4",
+      "value": "WkgBQMagyqlnSdLDwT3HGnUKxAEKPLIkM/GCQuGXa6xQOWxdVCoaN4iJEk7l2Bzl9S+y9La30Alt/5Yra7j5CQ=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "tenant",
+        "value": "tenant-acme"
+      }
+    ]
+  }
+}

@@ -1546,8 +1546,8 @@ const KNOCKOUTS = [
       "because the corpus runner never passes `purpose`: it was invisible to every fixture-driven " +
       "assertion, which is why the behavioural two-run pin exists.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },\n    NOT_EVALUATED,",
-    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\" },\n    NOT_EVALUATED,",
+    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },\n    // REPORTED, not hardcoded",
+    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\" },\n    // REPORTED, not hardcoded",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
@@ -1683,7 +1683,7 @@ const KNOCKOUTS = [
       "the settlement members already returned exit 2, which is what makes it a boundary crossing " +
       "rather than a difference of opinion. Must red the uncheckable-over-tampered-checkpoint vector.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "        if (!cp.ok && r.code === \"E_SETTLEMENT_BOUNDS_UNCHECKABLE\") failing = cp;",
+    find: "        if (!cp.ok && isSoftS5Failure(r.code)) failing = cp;",
     replace: "        if (false) failing = cp;",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
@@ -1701,6 +1701,347 @@ const KNOCKOUTS = [
     file: "packages/evidence/src/steps.ts",
     find: "      ctx.settlement = \"NO_EXECUTION_BINDING\";\n      return null;",
     replace: "      return null;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+
+  // ── S5 SLICE I4 — THE ENROLMENT PLANE ─────────────────────────────────────────────────────────
+  //
+  // Every entry below removes ONE rule and requires the corpus to notice. The set is organised
+  // around one sentence: SUPPLYING A REGISTRY MAY ONLY EVER MAKE A VERDICT HARDER TO REACH. Each
+  // mutation is a different way of making that false, and the design's own predecessor failed the
+  // first one — an absent class bought the legacy positive, so narrowing a registry was a bypass.
+  {
+    id: "enrolment-absence-buys-nothing",
+    control:
+      "A class positively ABSENT from a selected, in-window, closed registry is UNVERIFIED — never a " +
+      "blessing. This is the single most important rule in the plane, because the design it replaced " +
+      "got it backwards: there, an absent class received the legacy VALID_FULL_CHAIN with no " +
+      "settlement evidence at all, so a registry NARROWED to omit the payment class was MORE " +
+      "permissive for that class than one that enrolled it — and the same document recommended " +
+      "narrowing, shipping a recommended practice that doubled as the bypass. The mutation restores " +
+      "exactly that behaviour: absence falls through to 'nobody asked'. The class-absent and " +
+      "empty-registry fixtures must go from UNVERIFIED / exit 4 back to VALID_FULL_CHAIN / exit 0.",
+    file: "packages/evidence/src/enrolment.ts",
+    find:
+      "  if (!enrolled) {\n" +
+      "    ctx.enrolment = \"CLASS_ABSENT\";\n" +
+      "    return fail(S, \"E_ENROLMENT_CLASS_ABSENT\",\n" +
+      "      \"this bundle's action class is absent from every selected, in-window enrolment registry — an omission is an unanswered question, never a statement that the class is unenrolled (R7)\");\n" +
+      "  }\n",
+    replace: "  if (!enrolled) return null;\n",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-requires-a-reader-identity",
+    control:
+      "Registries supplied with no `--audience` are REFUSED, not consulted. An unscoped registry is " +
+      "the hole the audience field exists to close: without a reader identity, 'a registry scoped to " +
+      "one relying party' and 'a policy downgrade' are the same bytes and no verifier can tell them " +
+      "apart. The mutation makes a missing identity harmless, so a document written for somebody " +
+      "else applies here silently — which is the whole attack.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "  if (audience === undefined || audience === \"\") {",
+    replace: "  if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-audience-match-is-exact",
+    control:
+      "A registry is consulted only when it NAMES this reader — exact string membership, no wildcard, " +
+      "no prefix, no case folding. The mutation accepts any registry with a non-empty audience, which " +
+      "is the lenient matcher a reviewer would have to squint at: it looks like a scoping check and " +
+      "selects every registry that reaches the reader. The audience-mismatch fixture must notice.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "    if (!isArray(aud) || !arraySome(aud, (a: unknown) => a === audience)) {",
+    replace: "    if (!isArray(aud) || aud.length === 0) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-open-registry-is-never-consulted",
+    control:
+      "`closed: false` is a refusal, not a weaker statement. An open registry makes no complete claim " +
+      "for its audience and window, so every omission in it is ambiguous between 'not enrolled' and " +
+      "'not mentioned' — and this design refuses to read either as a permission. The mutation " +
+      "consults it anyway. Registered separately from the schema, DELIBERATELY: the schema types " +
+      "`closed` as a boolean precisely so this rule is the refuser and the operator is told WHICH " +
+      "thing is wrong instead of the generic 'does not authenticate'.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "    if (r.doc.closed !== true) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-window-must-contain-the-authorization-instant",
+    control:
+      "A registry governs a bundle only when its window contains the bundle's gate-signed " +
+      "authorization instant. The mutation treats every selected registry as in-window, which is how " +
+      "a stale or not-yet-live registry silently governs traffic it was never issued for. The window " +
+      "is REJECT-ONLY by construction — every failure on this plane is non-positive — so removing it " +
+      "cannot be defended as 'still fail-closed': it changes WHICH governance applies.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "    if (receivedAt >= nb && receivedAt <= na) arrayPush(inWindow, r);",
+    replace: "    arrayPush(inWindow, r);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-wrong-tenant-is-a-contradiction",
+    control:
+      "A registry that AUTHENTICATES under this bundle's own root delegation while declaring a " +
+      "different tenant is a CONTRADICTION — our own governance making a statement about somebody " +
+      "else, handed over as if it governed this bundle. The mutation lets it govern. Note the " +
+      "asymmetry this pins: a registry that does not authenticate is merely unusable (UNVERIFIED), " +
+      "while one that does and disagrees is an accusation (INVALID), and the two must not collapse.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "    if (t !== ctx.tenant) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-class-key-is-a-pair",
+    control:
+      "The class key is the PAIR (actionSchema, displayProjection), and the projection half is what " +
+      "makes enrolment fall out on a rendering change — fail-closed on drift, by construction. The " +
+      "mutation drops the projection comparison, so a row that names this class while pinning a " +
+      "DIFFERENT renderer hash enrols it anyway. That is the de-enrolment attack in reverse: an " +
+      "attacker who can substitute the projection hash keeps the class enrolled under a renderer " +
+      "nobody approved.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "        if (!projection.exact) {",
+    replace: "        if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-actionid-crosscheck-binds-the-namespace",
+    control:
+      "The row's `actionId` must equal `deferredReceipt.action.id` — the ACTION-SCHEMA namespace, not " +
+      "the display-projection one. This is what turns a known console↔kernel identifier drift from " +
+      "silent semantic divergence into a blocking defect for enrolled classes, and it is the " +
+      "regression pin for a correction an earlier design got wrong in the other direction: it keyed " +
+      "the whole class on the projection alone, i.e. on a namespace that never equals `action.id`. " +
+      "The mutation removes the cross-check; the id-drift and namespace fixtures must both notice.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "        if (rowActionId !== deferredActionId) {",
+    replace: "        if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-raw-mode-is-never-enrollable",
+    control:
+      "A RAW hold is never enrollable: on a RAW hold the display a human approved and the params a " +
+      "grant authorizes are two unrelated fields, so half the class key does not exist and the other " +
+      "half cannot be tied to a rendering. A registry claiming the class enrolled there is asserting " +
+      "something the gate-signed envelope cannot support. The mutation admits it, which would let a " +
+      "RAW flow acquire the appearance of an enrolled, human-approved class.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "        if (asStr(env?.mode) !== \"ENFORCED\") {",
+    replace: "        if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolled-class-requires-settlement-evidence",
+    control:
+      "THE RULE THE WHOLE SLICE EXISTS FOR. For an ENROLLED class an EXECUTED claim owes settlement " +
+      "evidence, and a dispatch — the gate's own self-report about its own paperwork — is no longer " +
+      "enough. The mutation removes the requirement, so an enrolled class with NO witness at all " +
+      "returns to VALID_FULL_CHAIN and exit 0, which is the exact sentence this design was built to " +
+      "stop being true. The headline fixture must go red.",
+    file: "packages/evidence/src/steps.ts",
+    find:
+      "  if (ctx.enrolment === \"ENROLLED\") {\n" +
+      "    const requiredErr = checkSettlementRequired(ctx, S, ctx.settlementFacts ?? null);\n" +
+      "    if (requiredErr) return requiredErr;\n" +
+      "  }\n",
+    replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-attestation-is-not-a-settlement",
+    control:
+      "THE CEILING. An authentic, bound, in-bounds, determinate settlement artifact that NOBODY " +
+      "RE-QUERIED is INCONCLUSIVE, never a positive: an offline verifier can establish that an " +
+      "assertion is well-formed and bound to this approval, and can never establish that it is TRUE, " +
+      "because the signer of the assertion is not the world. The mutation returns the offline tier as " +
+      "a pass — which is precisely the shipped defect this ladder replaced, where a self-consistent " +
+      "forged SETTLED artifact signed by any authorized observer produced VALID_FULL_CHAIN and exit 0 " +
+      "with nothing queried.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "  ctx.settlement = \"ATTESTED_UNVERIFIED\";\n  return fail(S, \"E_SETTLEMENT_UNRECONFIRMED\",",
+    replace: "  ctx.settlement = \"ATTESTED_UNVERIFIED\";\n  if (true) return null;\n  return fail(S, \"E_SETTLEMENT_UNRECONFIRMED\",",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-self-witnessed-settlement-is-not-admissible",
+    control:
+      "A key that says 'I dispatched it' saying 'and it settled' is one party attesting to its own " +
+      "effect, and for an enrolled class that observation is not admissible. It is CAPPED rather than " +
+      "REJECTED on purpose — this is today's honest deployment shape, and refusing it outright would " +
+      "refuse the only shape that currently exists. The mutation admits it, which would let the " +
+      "executing party supply its own settlement witness. The two fixtures differ by ONE key, so this " +
+      "arm is independent of the requirement rule above.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "  if (facts.observerRelationship === \"SAME_SIGNING_KEY\") {",
+    replace: "  if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolled-failure-may-not-ride-the-gates-word",
+    control:
+      "THE CARRY-FORWARD. `EXECUTION_FAILED` is a POSITIVE outcome that pays no step-15 " +
+      "fresh-checkpoint tax, so the moment enrolment gives EXECUTED a price it becomes the ONLY " +
+      "outcome that is both step-15-exempt AND settlement-free — the cheap relabelling path for a " +
+      "gate hiding a spend. The mutation removes the rule, so an enrolled class relabelled as a " +
+      "failure returns to VALID_FULL_CHAIN and exit 0 on the gate's own word. The rule is scoped to " +
+      "enrolled classes, so its CONTROL fixture — the same bundle with no registry — must stay green " +
+      "under the mutation, which is what makes this an arm on the asymmetry rather than on step 11.",
+    file: "packages/evidence/src/steps.ts",
+    find:
+      "  const witnessErr = checkNonDispatchWitnessed(ctx, S);\n" +
+      "  if (witnessErr) return witnessErr;\n",
+    replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  // ── PANEL ROUND 1 — one arm per finding, each proving the FIX is what the corpus measures ──────
+  {
+    id: "enrolment-supplied-collection-shape-is-refused",
+    control:
+      "THE HIGH FINDING. A SUPPLIED registry collection this verifier cannot read as a list is " +
+      "REFUSED — it never softens into \"no registry supplied\", which is the PERMISSIVE branch. The " +
+      "mutation restores the shipped normalization (anything not an array becomes `undefined`), so a " +
+      "reader that handed over the registry bytes directly, or an array-LIKE object, or a Set, has " +
+      "supplied governance and receives VALID_FULL_CHAIN / NOT_EVALUATED / exit 0. This is the only " +
+      "route in the plane that skips the plane entirely, and it is reachable from the PUBLISHED " +
+      "runtime API — TypeScript does not make malformed JavaScript calls impossible.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "      registryShapeRefusal = `enrolmentRegistries was supplied as ${typeof suppliedRegistries === \"object\" && suppliedRegistries !== null ? \"a non-array object\" : JSON.stringify(typeof suppliedRegistries)} — a registry collection this verifier cannot read as a list is REFUSED, never treated as \"no registry supplied\". Softening an unrecognised trust-input shape into the unconfigured branch would return a positive verdict for a reader that did supply governance`;",
+    replace: "      optEnrolmentRegistries = undefined;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-collection-copied-by-index-not-by-iterator",
+    control:
+      "The registry collection is snapshotted BY INDEX through `length`, never through the caller's " +
+      "iterator. On a genuine array `length` is a non-configurable data property, so there is nothing " +
+      "to lie; `Symbol.iterator` is an ordinary own slot, so there is. The mutation restores the " +
+      "spread, and a REAL array — one `Array.isArray` calls an array — carrying an own iterator that " +
+      "yields nothing copies to `[]`: the no-registry branch and exit 0 again, through a different " +
+      "door than the shape check above. Registered separately for exactly that reason.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "      for (let i = 0; i < len; i++) arrayPush(snapshot, suppliedRegistries[i] as Uint8Array | string);",
+    replace: "      for (const item of [...(suppliedRegistries as unknown[])]) arrayPush(snapshot, item as Uint8Array | string);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-window-arithmetic-is-nanosecond-exact",
+    control:
+      "Registry windows are compared in EXACT nanoseconds, through the grammar that admitted the " +
+      "document. The mutation restores millisecond `Date.parse`, which collapses a one-nanosecond " +
+      "rotation boundary: two contiguous, non-overlapping, strictly-versioned registries both match " +
+      "the same authorization instant, the SUCCESSOR carrying the rotated projection hash is selected " +
+      "too, and an honest archived bundle is reported INVALID / E_ENROLMENT_MISMATCH for an ordinary " +
+      "governance rotation. A hard rejection of good evidence produced entirely by the arithmetic — " +
+      "which is why the fix reuses the parser the artifact layer already runs for key activation " +
+      "rather than a second one that can drift from it.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "  return rfc3339Nanos(v, ctx.schemas[ENROLMENT_SPEC]);",
+    replace: "  const ms = typeof v === \"string\" ? Date.parse(v) : NaN;\n  return Number.isNaN(ms) ? null : BigInt(ms) * 1000000n;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-class-selection-requires-the-action-side",
+    control:
+      "Only an ACTION-side handle may select a registry row for adjudication. The class is the PAIR, " +
+      "the ACTION half identifies it, and the projection half is what the pair is checked AGAINST once " +
+      "the row is known to be about this class. The mutation restores selection on the projection id " +
+      "alone — and projection identifiers are a SHARED namespace, so a registry enrolling a genuinely " +
+      "different action class that renders through the same projection becomes INVALID / " +
+      "E_ENROLMENT_MISMATCH. That is an accusation aimed at a registry which merely does not mention " +
+      "this class, where the honest answer is CLASS_ABSENT. The error runs in the ACCUSING direction, " +
+      "which is why it gets its own arm instead of being folded into the pair check.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "      const candidate =\n        schema.idMatch\n",
+    replace: "      const candidate =\n        schema.idMatch\n        || projection.idMatch\n",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "cli-numeric-flag-is-refused-not-dropped",
+    control:
+      "A malformed NUMERIC flag is a usage error, and the run does not continue with the option " +
+      "quietly removed. Measured on a DENIED fixture: `--max-age-hours 0` exits 3 because the " +
+      "freshness rule fires, while `--max-age-hours definitely-not-a-number` exited 0 — `Number()` " +
+      "answered NaN, and a `Number.isFinite` guard at the call site OMITTED maxAgeMs, restoring the " +
+      "permissive 24-hour default. A mistyped SAFETY option produced a positive verdict, across the " +
+      "usage/verdict boundary. The mutation removes the validation so the malformed value flows " +
+      "through again; the wire suite must catch it at the process boundary, which is the only place " +
+      "the exit code is real.",
+    file: "packages/evidence/src/cli.ts",
+    find: "    if (raw.trim() === \"\" || !Number.isFinite(n)) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "cli-singleton-flag-refuses-repetition",
+    control:
+      "A singleton flag given twice is a USAGE error, never last-wins. Measured: " +
+      "`--audience hostile --audience good` exited 6 and `--audience good --audience hostile` exited " +
+      "4, so whoever appends to the command line LAST decided the answer, silently. That is the shape " +
+      "a wrapper script, a CI template or an injected argument exploits, and it applied to " +
+      "`--tenant-root` as much as to `--audience`. The mutation restores last-wins.",
+    file: "packages/evidence/src/cli.ts",
+    find: "    if (seen.has(flag)) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "cli-singleton-flag-requires-a-value",
+    control:
+      "A singleton flag with no value is a USAGE error, and the run does not continue. Measured: an " +
+      "otherwise valid invocation ending in a bare `--audience` consumed `undefined`, VERIFIED ANYWAY " +
+      "and exited 0 — the operator typed a flag, got a verdict, and nothing said the flag did nothing. " +
+      "The same check refuses a flag whose \"value\" is the NEXT FLAG, which is how a bare flag in the " +
+      "middle of a command line silently eats its successor. The mutation restores the bare read.",
+    file: "packages/evidence/src/cli.ts",
+    find:
+      "    if (v === undefined || v.startsWith(\"--\")) {\n" +
+      "      usage(`${flag} needs a value${v === undefined ? \"\" : ` (got the next flag ${v})`}`);\n" +
+      "    }\n" +
+      "    return v;\n",
+    replace: "    return v as string;\n",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-refusals-are-not-all-hard-rejections",
+    control:
+      "The verdict map is THREE-way. An unconfigured or unaddressed reader is UNVERIFIED — a " +
+      "statement about THIS VERIFIER — while missing evidence is INCONCLUSIVE and only a " +
+      "contradiction is INVALID. The mutation collapses the UNVERIFIED branch onto the INVALID " +
+      "default, which is SAFE (it does not over-claim) and WRONG: it accuses cryptographically " +
+      "perfect evidence of being broken because the reader's own configuration could not answer, and " +
+      "an auditor who learns the verdict word lies stops reading it. This is the exact mistake an " +
+      "implementer makes by adding one code to one ternary.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "        UNVERIFIED_CODES.has(failing.code ?? \"\")\n          ? \"UNVERIFIED\"",
+    replace: "        false\n          ? \"UNVERIFIED\"",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },

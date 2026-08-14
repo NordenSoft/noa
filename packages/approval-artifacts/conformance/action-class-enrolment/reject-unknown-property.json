@@ -1,0 +1,65 @@
+{
+  "description": "smuggled extra ROOT field, RE-SIGNED so layer 1 (additionalProperties:false) is the only refuser",
+  "spec": "noa.action-class-enrolment/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "unknown-property",
+  "artifact": {
+    "spec": "noa.action-class-enrolment/0.1",
+    "tenant": "tenant-acme",
+    "version": 7,
+    "audience": [
+      "rp:vendor.example",
+      "rp:acquirer.example"
+    ],
+    "notBefore": "2026-07-01T00:00:00.000Z",
+    "notAfter": "2027-07-01T00:00:00.000Z",
+    "closed": true,
+    "classes": [
+      {
+        "actionId": "deploy.apply",
+        "actionSchema": {
+          "id": "deploy.apply",
+          "version": 1,
+          "hash": "sha256:b14a2efd8a0fda96358a7fc47b022209225c1ee156469b83553b283d82aca05a"
+        },
+        "projection": {
+          "id": "deploy.display",
+          "version": 1,
+          "hash": "sha256:4fd0b3e137ba0c0436890e079f10229767c17741b83c1fded54532aac711c07e"
+        },
+        "witnessSpec": "noa.settlement-evidence/0.1",
+        "claimTier": "SETTLEMENT_CORRELATED",
+        "declaredExecutableFields": [
+          "chainId",
+          "token",
+          "from",
+          "to",
+          "value"
+        ],
+        "declaredWitnessedFields": [
+          "chainId",
+          "token",
+          "from",
+          "to",
+          "value",
+          "nonce"
+        ]
+      }
+    ],
+    "_smuggled": "x",
+    "sig": {
+      "alg": "ed25519",
+      "kid": "enrol-signer-4",
+      "value": "yceePP2Prg25QlAow0zZEAs5lNdzMx9FNqug+sQ9QR0sqVDsrqQgRpIgGNLW3GJ8GagFcy486Jzn1mvh7hkZAg=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "tenant",
+        "value": "tenant-acme"
+      }
+    ]
+  }
+}

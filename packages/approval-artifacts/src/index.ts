@@ -19,6 +19,10 @@ export type { SchemaEvalResult } from "./schema-eval.js";
 export { signArtifact } from "./sign.js";
 export type { Signer } from "./sign.js";
 export { verifyArtifact } from "./verify.js";
+// The EXACT (nanosecond, bigint) timestamp parser this package already runs for key activation,
+// published so a consumer comparing artifact times uses the same arithmetic instead of `Date.parse`,
+// which truncates to milliseconds and collapses adjacent governance windows into one.
+export { rfc3339Nanos } from "./verify.js";
 export type { VerifyContext, VerifyOutcome, KeyEntry } from "./verify.js";
 export { parseDocument } from "./parse-document.js";
 export { frozenTable } from "./inert-core/inert.js";

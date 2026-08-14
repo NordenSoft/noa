@@ -122,16 +122,25 @@ const RULE_ROWS: readonly RuleRow[] = [
   { rule: "the artifact's network, asset, payer, payee or amount is outside the approved bounds", verdict: "INVALID", enrolment: "NOT_EVALUATED", settlement: "CONTRADICTED", exit: 2, wired: true },
 
   // ── the enrolment plane: a verifier input, and it can only make the verdict harder ────────────
-  { rule: "registries supplied and the verifier was given no relying-party identity", verdict: "UNVERIFIED", enrolment: "UNVERIFIABLE", settlement: "UNCHECKED", exit: 4, wired: false },
-  { rule: "no supplied registry authenticates and is addressed to this reader", verdict: "UNVERIFIED", enrolment: "UNVERIFIABLE", settlement: "UNCHECKED", exit: 4, wired: false },
-  { rule: "a selected registry does not claim to be complete", verdict: "UNVERIFIED", enrolment: "UNVERIFIABLE", settlement: "UNCHECKED", exit: 4, wired: false },
-  { rule: "a selected registry structurally contradicts the bundle", verdict: "INVALID", enrolment: "CONTRADICTED", settlement: "UNCHECKED", exit: 2, wired: false },
-  { rule: "no selected registry's window contains this bundle's authorization instant", verdict: "UNVERIFIED", enrolment: "OUT_OF_WINDOW", settlement: "UNCHECKED", exit: 4, wired: false },
-  { rule: "the class is absent from every selected registry — absence buys nothing", verdict: "UNVERIFIED", enrolment: "CLASS_ABSENT", settlement: "UNCHECKED", exit: 4, wired: false },
+  { rule: "registries supplied and the verifier was given no relying-party identity", verdict: "UNVERIFIED", enrolment: "UNVERIFIABLE", settlement: "UNCHECKED", exit: 4, wired: true },
+  { rule: "no supplied registry authenticates and is addressed to this reader", verdict: "UNVERIFIED", enrolment: "UNVERIFIABLE", settlement: "UNCHECKED", exit: 4, wired: true },
+  { rule: "a selected registry does not claim to be complete", verdict: "UNVERIFIED", enrolment: "UNVERIFIABLE", settlement: "UNCHECKED", exit: 4, wired: true },
+  { rule: "a selected registry structurally contradicts the bundle", verdict: "INVALID", enrolment: "CONTRADICTED", settlement: "UNCHECKED", exit: 2, wired: true },
+  { rule: "no selected registry's window contains this bundle's authorization instant", verdict: "UNVERIFIED", enrolment: "OUT_OF_WINDOW", settlement: "UNCHECKED", exit: 4, wired: true },
+  { rule: "the class is absent from every selected registry — absence buys nothing", verdict: "UNVERIFIED", enrolment: "CLASS_ABSENT", settlement: "UNCHECKED", exit: 4, wired: true },
+  // The artifact plane runs BEFORE the enrolment plane — deliberately, so "present ⇒ always checked"
+  // never depends on a verifier input — so a bundle whose artifact was examined and ACCEPTED can
+  // still be refused on the enrolment plane. The settlement label then reports what the artifact rule
+  // actually found rather than being reset, and the exit code is the enrolment refusal's.
+  { rule: "an accepted settlement artifact, and the enrolment question is then refused", verdict: "UNVERIFIED", enrolment: "CLASS_ABSENT", settlement: "NO_EXECUTION_BINDING", exit: 4, wired: true },
 
   // ── the settlement requirement, for an enrolled class ─────────────────────────────────────────
-  { rule: "enrolled, and no admissible determinate artifact answers", verdict: "INCONCLUSIVE", enrolment: "ENROLLED", settlement: "NOT_ESTABLISHED", exit: 6, wired: false },
-  { rule: "enrolled and attested, and nobody re-queried — THE LADDER'S CEILING OFFLINE", verdict: "INCONCLUSIVE", enrolment: "ENROLLED", settlement: "ATTESTED_UNVERIFIED", exit: 6, wired: false },
+  { rule: "enrolled, and no admissible determinate artifact answers", verdict: "INCONCLUSIVE", enrolment: "ENROLLED", settlement: "NOT_ESTABLISHED", exit: 6, wired: true },
+  { rule: "enrolled and attested, and nobody re-queried — THE LADDER'S CEILING OFFLINE", verdict: "INCONCLUSIVE", enrolment: "ENROLLED", settlement: "ATTESTED_UNVERIFIED", exit: 6, wired: true },
+  // The I3 carry-forward. Same TUPLE as "enrolled, and no admissible determinate artifact answers",
+  // and a separate ROW because it is a separate rule on a separate step: the failure outcome is
+  // step-15-exempt and settlement-free, so without it an enrolled class has a free relabelling exit.
+  { rule: "enrolled, and the only witness to the non-dispatch is the party that would have executed", verdict: "INCONCLUSIVE", enrolment: "ENROLLED", settlement: "NOT_ESTABLISHED", exit: 6, wired: true },
   { rule: "chain facts supplied that did not come from the relying party's own node", verdict: "UNVERIFIED", enrolment: "ENROLLED", settlement: "ATTESTED_UNVERIFIED", exit: 4, wired: false },
   { rule: "the relying party's own node contradicts the artifact", verdict: "INVALID", enrolment: "ENROLLED", settlement: "CONTRADICTED", exit: 2, wired: false },
   { rule: "the relying party's own node re-answered and agreed — THE ONLY POSITIVE SETTLEMENT", verdict: "VALID_FULL_CHAIN", enrolment: "ENROLLED", settlement: "RECONFIRMED", exit: 0, wired: false },
@@ -271,8 +280,10 @@ test("every member of all three unions is claimed by at least one rule", () => {
 });
 
 test("which rules are WIRED in this verifier is stated, not assumed", () => {
-  // The settlement and enrolment rules are not built here. Saying so mechanically is the difference
-  // between a contract written ahead of its rules and a claim that the rules exist.
+  // Which rules are BUILT is a fact about this verifier and is asserted rather than assumed. Three
+  // rows remain unwired, and all three are the ONLINE tier: they need a record of the relying party's
+  // own node answering the chain queries, an input this verifier does not take. That is why an
+  // enrolled class cannot reach a positive here at all — the ceiling is the honest answer.
   assert.deepEqual(
     RULE_ROWS.filter((r) => r.wired).map((r) => r.rule),
     [
@@ -283,11 +294,23 @@ test("which rules are WIRED in this verifier is stated, not assumed", () => {
       "no enrolment registry supplied and everything else green — nobody asked",
       "the same, on a bundle whose tail has no authenticated anchor",
       // Slice I2 wired the settlement ARTIFACT plane (R1/R2/R3): present ⇒ always checked, even with
-      // no enrolment registry. The enrolment plane and the R8/R9 requirement remain unwired below.
+      // no enrolment registry.
       "the settlement artifact is unbound, mis-referenced, or asserts a negative under a positive outcome",
       "a supplied params preimage does not hash to the approved parameters",
       "a settlement artifact with no verified params preimage — the money was compared to nothing",
       "the artifact's network, asset, payer, payee or amount is outside the approved bounds",
+      // Slice I4 wired the ENROLMENT plane (R4-R7) and the requirement it unlocks (R8, and R9's
+      // offline terminal). What is NOT wired is R9's online half — the three rows below this list.
+      "registries supplied and the verifier was given no relying-party identity",
+      "no supplied registry authenticates and is addressed to this reader",
+      "a selected registry does not claim to be complete",
+      "a selected registry structurally contradicts the bundle",
+      "no selected registry's window contains this bundle's authorization instant",
+      "the class is absent from every selected registry — absence buys nothing",
+      "an accepted settlement artifact, and the enrolment question is then refused",
+      "enrolled, and no admissible determinate artifact answers",
+      "enrolled and attested, and nobody re-queried — THE LADDER'S CEILING OFFLINE",
+      "enrolled, and the only witness to the non-dispatch is the party that would have executed",
     ],
     "the set of rules this table says are built changed. That is a real change to what a verdict " +
       "means — make it deliberately, and move the corpus assertions below with it.",
@@ -386,6 +409,8 @@ interface Fixture {
   expectVerdict: string; expectStep: string | null; expectCode: string | null;
   now: string; maxAgeHours: number; bundle: unknown;
   tenantRoot: Record<string, unknown>; checkpointKeyring: Record<string, unknown>;
+  /** S5 — present only on the fixtures whose READER was handed an enrolment registry. */
+  enrolmentRegistries?: unknown[]; audience?: string;
 }
 const fixtures: Array<{ id: string; fx: Fixture }> = [];
 for (const slug of readdirSync(CONF)) {
@@ -398,9 +423,14 @@ for (const slug of readdirSync(CONF)) {
 
 const run = (fx: Fixture, purpose?: "audit" | "authorize") => verifyEvidence(b(fx.bundle), {
   tenantRoot: b(fx.tenantRoot), checkpointKeyring: b(fx.checkpointKeyring),
+  ...(fx.enrolmentRegistries !== undefined ? { enrolmentRegistries: fx.enrolmentRegistries.map((r) => b(r)) } : {}),
+  ...(fx.audience !== undefined ? { audience: fx.audience } : {}),
   now: fx.now, maxAgeMs: fx.maxAgeHours * 3600 * 1000, schemas,
   ...(purpose !== undefined ? { purpose } : {}),
 });
+
+/** Was this fixture's READER handed an enrolment registry at all? */
+const asksEnrolment = (fx: Fixture): boolean => fx.enrolmentRegistries !== undefined && fx.enrolmentRegistries.length > 0;
 
 /**
  * The exit mapping EXACTLY as it stood before the settlement dimension existed, copied out rather
@@ -417,15 +447,62 @@ function exitCodeBeforeTheLadder(verdict: string): number {
         : 4;
 }
 
-test("no enrolment input exists, so EVERY fixture reports that the question was not asked", () => {
+test("a fixture that supplies NO registry reports that the question was not asked — every one of them", () => {
+  // The migration guarantee's first half, over the WHOLE corpus rather than a sample: a verifier
+  // handed no registry did not ask, so the only honest answer is that it did not ask. Anything else
+  // is a verdict about a question nobody put to it.
+  let checked = 0;
   for (const { id, fx } of fixtures) {
+    if (asksEnrolment(fx)) continue;
+    checked += 1;
+    const res = run(fx);
+    assert.equal(res.enrolment, "NOT_EVALUATED", `${id}: reported enrolment ${res.enrolment} with no registry supplied`);
+  }
+  assert.ok(checked >= 40, `expected the no-registry corpus to be large, got ${checked}`);
+});
+
+test("ANTI-VACUITY: the registry argument CHANGES the answer, and only ever in the harder direction", () => {
+  // Without this, every assertion above is satisfied by a verifier that ignores the input entirely.
+  // The pair is the same BUNDLE BYTES read by two differently-configured readers, so nothing but the
+  // configuration can explain the difference — and the difference runs one way only.
+  const withoutRegistry = fixtures.find((f) => f.id === "enrolment/s5-enrolment-no-registry.json");
+  const withRegistry = fixtures.find((f) => f.id === "enrolment/s5-enrolment-class-absent.json");
+  assert.ok(withoutRegistry && withRegistry, "the anti-vacuity pair is missing from the corpus");
+  assert.deepEqual(
+    withRegistry!.fx.bundle, withoutRegistry!.fx.bundle,
+    "the pair must differ ONLY in what the READER was handed — identical bundle bytes are what makes " +
+      "this a measurement of the verifier's configuration rather than of two different bundles",
+  );
+
+  const a = run(withoutRegistry!.fx);
+  const bRes = run(withRegistry!.fx);
+  assert.equal(a.verdict, "VALID_FULL_CHAIN");
+  assert.equal(a.enrolment, "NOT_EVALUATED");
+  assert.equal(exitCodeFor(a.verdict, a.enrolment, a.dimensions.settlement), 0);
+  assert.equal(bRes.verdict, "UNVERIFIED");
+  assert.equal(bRes.enrolment, "CLASS_ABSENT");
+  assert.equal(exitCodeFor(bRes.verdict, bRes.enrolment, bRes.dimensions.settlement), 4);
+  assert.notEqual(a.verdict, bRes.verdict, "supplying a registry changed nothing — the input is inert");
+});
+
+test("NOTHING A SIGNER OMITS MAKES A VERDICT EASIER: every registry-bearing fixture is non-positive", () => {
+  // The governing property of the whole plane, asserted over the corpus rather than argued in a
+  // comment. A registry may refuse, cap or require; it may never bless. If a registry-bearing fixture
+  // ever reaches a positive verdict, the only admissible way is the ENROLLED+RECONFIRMED pair — which
+  // needs a chain re-query this verifier does not perform — so a positive here would mean a rule
+  // leaked a blessing into registry CONTENT, which is the exact defect this design replaced.
+  let seen = 0;
+  for (const { id, fx } of fixtures) {
+    if (!asksEnrolment(fx)) continue;
+    seen += 1;
     const res = run(fx);
     assert.equal(
-      res.enrolment, "NOT_EVALUATED",
-      `${id}: reported enrolment ${res.enrolment}. This verifier is handed no registry, so the only ` +
-        `honest answer is that it did not ask — anything else is a verdict about a question nobody put to it`,
+      isPositive(res.verdict), false,
+      `${id}: a supplied registry produced the POSITIVE verdict ${res.verdict}. Supplying a registry may ` +
+        `only ever make a verdict harder to reach; a registry that buys one is the bypass, not the control.`,
     );
   }
+  assert.ok(seen >= 12, `expected ≥12 registry-bearing fixtures, got ${seen}`);
 });
 
 /**
@@ -445,7 +522,9 @@ test("the settlement dimension states which of the two happened: the rule never 
     // The settlement RULE runs when a bundle carries either settlement member; those fixtures set a
     // settlement value (BOUNDS_UNCHECKABLE / CONTRADICTED) and are the subject of the conformance +
     // cli-wire suites, not of this "nobody asked, so nothing moved" invariant over the prior corpus.
-    if (carriesSettlementMember(fx)) continue;
+    // A fixture whose READER was handed a registry is out of scope for the same reason and a
+    // stronger one: somebody DID ask, so "nobody asked" is not the sentence being tested.
+    if (carriesSettlementMember(fx) || asksEnrolment(fx)) continue;
     const res = run(fx);
     const want: SettlementDimension = res.failedStep === undefined ? "NO_EXECUTION_BINDING" : "UNCHECKED";
     assert.equal(
@@ -464,7 +543,13 @@ test("MIGRATION: every fixture's exit code is byte-for-byte the one it had befor
     // preserve. The migration guarantee is about the bundles that DID exist: every one carrying
     // NEITHER member, which is 100% of prior traffic. Those must still map byte-for-byte to their
     // pre-ladder code.
-    if (carriesSettlementMember(fx)) continue;
+    //
+    // A fixture whose reader was handed a REGISTRY is excluded for the same reason and it is the
+    // stronger case: no reader could supply one before this slice, so there is no "before" exit code
+    // to preserve. What the migration guarantee promises about those bundles is that verifying them
+    // WITHOUT the registry is unchanged — which the corpus proves directly, because the anti-vacuity
+    // pair above holds the bundle bytes constant across exactly that difference.
+    if (carriesSettlementMember(fx) || asksEnrolment(fx)) continue;
     const res = run(fx);
     assert.equal(
       exitCodeFor(res.verdict, res.enrolment, res.dimensions.settlement),

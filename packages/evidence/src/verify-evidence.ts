@@ -54,6 +54,11 @@ import {
 } from "./steps.js";
 import { type ReceiptRole } from "./receipt-roles.js";
 
+// PRISTINE DECISIONS (review #6, C1). The registry collection's SHAPE and its COPY are both verdict
+// inputs: a poisoned `Array.isArray` or `Array.prototype.push` would otherwise decide whether a
+// supplied registry counts as supplied at all, and "not supplied" is the permissive branch.
+const { isArray, isProxy, arrayPush } = intrinsics;
+
 export const DEFAULT_MAX_AGE_MS = 24 * 60 * 60 * 1000; // F5 default: 24h
 
 /**
@@ -141,6 +146,25 @@ export interface VerifyEvidenceOptions {
    * establish historical authority.
    */
   purpose?: VerificationPurpose;
+  /**
+   * S5 — THE THIRD EXTERNAL TRUST INPUT, and it is OPTIONAL on purpose.
+   *
+   * Action-class enrolment registries (`noa.action-class-enrolment/0.1`), as DOCUMENTS — bytes or
+   * their JSON text — exactly like the two inputs above. Supplying none is not a degraded mode: it
+   * is the statement "do not ask the enrolment question", and it returns byte-for-byte the verdict,
+   * failing step, code and exit code this verifier returned before the enrolment plane existed.
+   *
+   * Supplying one can only ever make a verdict HARDER to reach. Nothing a registry contains — and
+   * nothing it omits — buys a positive that supplying no registry would not also have given.
+   */
+  enrolmentRegistries?: ReadonlyArray<Uint8Array | string>;
+  /**
+   * S5 — this verifier's OWN relying-party identity, matched against each registry's SIGNED
+   * `audience`. REQUIRED whenever a registry is supplied: a registry that does not know who is
+   * reading it cannot be scoped, and consulting an unscoped one is how a document written for
+   * somebody else silently becomes this reader's policy.
+   */
+  audience?: string;
 }
 
 /**
@@ -157,10 +181,9 @@ export interface VerifyEvidenceOptions {
  * `result()`, positioned before every optional one: a return point that forgets does not compile.
  * The discipline is a type error rather than a paragraph.
  *
- * TODAY THERE IS NO ENROLMENT INPUT, and that is not an omission — it is the migration mechanism.
- * The verifier is not configured to ask whether this action's class requires settlement evidence, so
- * it does not ask, and it does not change its answer. Every run therefore reports
- * `enrolment: NOT_EVALUATED`, and:
+ * WITH NO ENROLMENT REGISTRY SUPPLIED — which is every run that does not opt in — the verifier is
+ * not configured to ask whether this action's class requires settlement evidence, so it does not
+ * ask, and it does not change its answer. Those runs report `enrolment: NOT_EVALUATED`, and:
  *
  *   • every path that STOPS before the end of the pipeline  → `settlement: UNCHECKED`
  *     (including the pre-pipeline returns: nothing about settlement was examined);
@@ -173,8 +196,60 @@ export interface VerifyEvidenceOptions {
  * actual state is "no execution binding exists for this class; EXECUTED here still means the gate
  * said it dispatched" — a statement about EVIDENCE, not about policy, in the one place this design
  * is weakest.
+ *
+ * WITH A REGISTRY SUPPLIED, the enrolment plane inside steps 10/11 writes `ctx.enrolment`, and this
+ * file reports whatever it wrote — it never re-derives it. `NOT_EVALUATED` remains the value the
+ * context is BORN with, so a path that never reaches the plane (a pre-pipeline refusal, a failure at
+ * an earlier step, an outcome that asserts no execution effect) reports the honest "nobody asked".
  */
 const NOT_EVALUATED: EnrolmentEvaluation = "NOT_EVALUATED";
+
+/**
+ * THE THREE-WAY VERDICT MAP FOR S5 FAILURES, and why it is three-way rather than a widened ternary.
+ *
+ * The two shipped external inputs (`--tenant-root`, `--checkpoint-keyring`) return `UNVERIFIED`
+ * BEFORE the pipeline runs, so they carry no failing step from inside it. The enrolment refusals
+ * arise INSIDE step 10 or 11, and the branch they land in hard-coded `INVALID` for everything except
+ * two checkpoint codes. An implementer adding one code to one ternary ships `INVALID` for five of
+ * the six — which is safe (it does not over-claim) but wrong: it accuses honest evidence of being
+ * broken, and an auditor who learns the verdict word lies stops reading it.
+ *
+ * The split is the rule's whole point:
+ *   UNVERIFIED   the reader is unconfigured or unaddressed — a statement about THIS VERIFIER;
+ *   INCONCLUSIVE evidence is missing or unreconfirmed     — a statement about THE EVIDENCE;
+ *   INVALID      evidence CONTRADICTS itself              — an accusation, and the default.
+ */
+const UNVERIFIED_CODES: ReadonlySet<string> = new Set<string>([
+  "E_ENROLMENT_AUDIENCE",
+  "E_ENROLMENT_UNVERIFIABLE",
+  "E_ENROLMENT_NOT_CLOSED",
+  "E_ENROLMENT_OUT_OF_WINDOW",
+  "E_ENROLMENT_CLASS_ABSENT",
+]);
+
+const INCONCLUSIVE_CODES: ReadonlySet<string> = new Set<string>([
+  // The two shipped checkpoint codes, unchanged.
+  "E_INCONCLUSIVE_NO_CHECKPOINT",
+  "E_STALE_CHECKPOINT",
+  // The settlement question, ASKED AND NOT ANSWERED. None of these is a contradiction: a bound that
+  // could not be compared, a witness that is absent or inadmissible, an attestation nobody
+  // re-queried, and a non-dispatch nobody but the executing party observed.
+  "E_SETTLEMENT_BOUNDS_UNCHECKABLE",
+  "E_SETTLEMENT_REQUIRED",
+  "E_SETTLEMENT_UNRECONFIRMED",
+  "E_NON_DISPATCH_UNWITNESSED",
+]);
+
+/**
+ * The S5 failures that are NOT hard rejections — the ones a tampered checkpoint must dominate.
+ * Derived from the two sets above rather than listed a third time, because a fourth hand-written
+ * list is a fourth thing to forget.
+ */
+function isSoftS5Failure(code: string | undefined): boolean {
+  if (code === undefined) return false;
+  if (code === "E_INCONCLUSIVE_NO_CHECKPOINT" || code === "E_STALE_CHECKPOINT") return false;
+  return UNVERIFIED_CODES.has(code) || INCONCLUSIVE_CODES.has(code);
+}
 
 /**
  * The dimensions of a run that never reached the settlement question — every early return and every
@@ -253,6 +328,14 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
   let optNow: string | undefined;
   let optMaxAgeMs: number | undefined;
   let rawPurpose: unknown;
+  let optEnrolmentRegistries: ReadonlyArray<Uint8Array | string> | undefined;
+  let optAudience: string | undefined;
+  /**
+   * A SUPPLIED registry collection this function cannot read as a list. Captured as a reason string
+   * rather than acted on inside the `try`, so the refusal is issued once, below, on the same path as
+   * every other option-shape refusal.
+   */
+  let registryShapeRefusal: string | null = null;
   try {
     suppliedSchemas = opts.schemas;
     optTenantRoot = opts.tenantRoot;
@@ -260,8 +343,54 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     optNow = opts.now;
     optMaxAgeMs = opts.maxAgeMs;
     rawPurpose = opts.purpose ?? "audit";
+    // ── THE REGISTRY COLLECTION: A SHAPE THIS FUNCTION EITHER READS OR REFUSES ────────────────────
+    //
+    // ⚠ THE DEFECT THIS REPLACES, MEASURED. This line read
+    // `Array.isArray(x) ? [...x] : undefined`, and BOTH halves were exploitable at the public API:
+    //
+    //   • ANYTHING NOT AN ARRAY BECAME `undefined` — i.e. the NO-REGISTRY branch. A caller passing
+    //     the registry bytes directly, or an array-LIKE object, supplied a registry and got
+    //     `VALID_FULL_CHAIN` / `NOT_EVALUATED` / exit 0. An unrecognised trust-input shape softening
+    //     to "not supplied" is the downgrade this whole plane exists to prevent, reached through the
+    //     one door that skips it entirely. TypeScript does not make malformed JavaScript calls
+    //     impossible, and this is a PUBLISHED runtime entry point.
+    //   • THE SPREAD RAN THE CALLER'S ITERATOR. A genuine array carrying an own `Symbol.iterator`
+    //     that yields nothing copies to `[]` — again the no-registry branch, again exit 0, from an
+    //     object `Array.isArray` calls an array.
+    //
+    // So: a supplied collection that is not a REAL array is a HARD REJECT, never a downgrade; and a
+    // real array is snapshotted BY INDEX through `length`, which on a genuine array is a
+    // non-configurable data property no caller can turn into an accessor. Each element is read
+    // EXACTLY ONCE into the snapshot, so an index accessor cannot answer one thing to this loop and
+    // another to the rule that consumes it.
+    const suppliedRegistries: unknown = opts.enrolmentRegistries;
+    if (suppliedRegistries === undefined) {
+      optEnrolmentRegistries = undefined;
+    } else if (isProxy(suppliedRegistries)) {
+      // A PROXY IS NOT AN ARRAY, however `Array.isArray` answers. `Array.isArray` unwraps to the
+      // target and says `true`, while EVERY read — including `length` — runs the handler. Found
+      // while self-refuting the fix above: a Proxy over a real one-element array with its `length`
+      // trapped to `0` snapshotted to `[]`, took the no-registry branch, and exited 0 with a registry
+      // supplied. The `length`-is-not-an-accessor argument holds for real arrays and for nothing
+      // else, so a programmable stand-in is refused rather than read.
+      registryShapeRefusal = "enrolmentRegistries was supplied as a Proxy — `Array.isArray` unwraps to the target and answers true while every read, `length` included, runs the handler, so a Proxy can report an empty list over a full one and turn supplied governance into \"no registry supplied\". A trust input must be a real array, not a programmable stand-in for one";
+    } else if (!isArray(suppliedRegistries)) {
+      registryShapeRefusal = `enrolmentRegistries was supplied as ${typeof suppliedRegistries === "object" && suppliedRegistries !== null ? "a non-array object" : JSON.stringify(typeof suppliedRegistries)} — a registry collection this verifier cannot read as a list is REFUSED, never treated as "no registry supplied". Softening an unrecognised trust-input shape into the unconfigured branch would return a positive verdict for a reader that did supply governance`;
+    } else {
+      // PRISTINE `push`, not the prototype's: `Array.prototype.push -> no-op` is in this package's
+      // own poison corpus, and with the shared method the snapshot would come out EMPTY — which is
+      // the no-registry branch and exit 0, reached by poisoning a builtin rather than by any bundle.
+      const snapshot: Array<Uint8Array | string> = [];
+      const len = suppliedRegistries.length;
+      for (let i = 0; i < len; i++) arrayPush(snapshot, suppliedRegistries[i] as Uint8Array | string);
+      optEnrolmentRegistries = snapshot;
+    }
+    optAudience = typeof opts.audience === "string" ? opts.audience : undefined;
   } catch {
     return result("INVALID", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "verification options could not be read: an option accessor threw" });
+  }
+  if (registryShapeRefusal !== null) {
+    return result("INVALID", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: registryShapeRefusal });
   }
   const schemas = suppliedSchemas ?? loadSchemas();
 
@@ -352,6 +481,11 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     rolesAsserted: new Set<ReceiptRole>(),
     purpose,
     authorization: "UNCHECKED",
+    // S5 — the enrolment question is BORN unasked. Only the enrolment plane may change this, and it
+    // only runs when a registry was actually supplied.
+    enrolment: NOT_EVALUATED,
+    ...(optEnrolmentRegistries !== undefined ? { enrolmentRegistries: optEnrolmentRegistries } : {}),
+    ...(optAudience !== undefined ? { audience: optAudience } : {}),
     ...(receivedAtRaw !== undefined ? { receivedAt: receivedAtRaw } : {}),
     ...(riskClassRaw !== undefined ? { riskClass: riskClassRaw } : {}),
     orderedChain,
@@ -374,7 +508,16 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
       // settlement plane that does not exist. Whoever builds one — S4-OPEN-1's owner-gated widening of
       // the union to `EXECUTION_FAILED` — adds it back deliberately, with the union change that makes
       // it reachable and a vector that proves it.
-      const settlementFailure = r.step === "STEP_10_EXECUTED" && ctx.settlement !== undefined;
+      //
+      // WIDENED BY THE ENROLMENT SLICE, and the widening is what makes the §5.4 integrity repair
+      // apply to the new rules too. The trigger used to key on `ctx.settlement !== undefined`, which
+      // is set only when an ARTIFACT was examined — so an enrolment refusal on a bundle carrying no
+      // artifact (the common case: "this class owes a witness and there is none") would have skipped
+      // the out-of-band checkpoint run and reported `integrity: BROKEN` for a cryptographically
+      // perfect bundle. It now keys on the CODE, which is what actually says "an S5 rule refused
+      // this", and covers step 11 as well because the carry-forward rule lives there.
+      const settlementFailure = (r.step === "STEP_10_EXECUTED" || r.step === "STEP_11_EXECUTION_FAILED")
+        && (ctx.settlement !== undefined || UNVERIFIED_CODES.has(r.code ?? "") || INCONCLUSIVE_CODES.has(r.code ?? ""));
       // On a SETTLEMENT failure the pipeline stops at step 10/11, which is BEFORE the chain and
       // checkpoint step. So the checkpoint step is run OUT OF BAND — otherwise a bundle whose bytes
       // are cryptographically perfect would be reported `integrity: BROKEN` merely because a later
@@ -408,17 +551,26 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
         const cp = step17_checkpointReconcile(ctx);
         // Recorded in the audit trail because it genuinely ran, in the order it ran.
         steps.push(cp);
-        if (!cp.ok && r.code === "E_SETTLEMENT_BOUNDS_UNCHECKABLE") failing = cp;
+        // SCOPE, WIDENED WITH THE RULES RATHER THAN AFTER THEM: dominance covers every SOFT S5
+        // refusal, not only the bounds one. The argument is identical in each case — an
+        // "asked and unanswered" (exit 6) or an "unconfigured reader" (exit 4) must never be the
+        // reported truth about a bundle whose checkpoint signature does not verify (exit 2), because
+        // both numbers tell an automation to come back later about forged bytes. Where the S5
+        // failure is itself HARD the verdict is already INVALID / exit 2, nothing crosses a boundary,
+        // and first-failure-in-pipeline-order keeps attribution at the step that ran first.
+        if (!cp.ok && isSoftS5Failure(r.code)) failing = cp;
       }
-      // REVISION 3 — the map is three-way: `E_SETTLEMENT_BOUNDS_UNCHECKABLE` joins the two checkpoint
-      // codes on the INCONCLUSIVE branch (a settlement whose bounds could not be checked is asked-and-
-      // unanswered, not a hard rejection). Every CONTRADICTED settlement code stays on the INVALID
-      // default, alongside every non-settlement failure — including a dominating step-17 failure,
-      // whose `E_CHECKPOINT_RECONCILE` is absent from this list precisely so it lands on INVALID.
+      // The map is THREE-WAY, and the third branch is the enrolment plane's: an unconfigured or
+      // unaddressed reader is `UNVERIFIED` — a statement about this verifier — while missing or
+      // unreconfirmed evidence is `INCONCLUSIVE` and contradictory evidence stays on the `INVALID`
+      // default. A dominating step-17 failure's `E_CHECKPOINT_RECONCILE` is in neither set, precisely
+      // so it lands on INVALID.
       const verdict: EvidenceVerdict =
-        failing.code === "E_INCONCLUSIVE_NO_CHECKPOINT" || failing.code === "E_STALE_CHECKPOINT" || failing.code === "E_SETTLEMENT_BOUNDS_UNCHECKABLE"
-          ? "INCONCLUSIVE"
-          : "INVALID";
+        UNVERIFIED_CODES.has(failing.code ?? "")
+          ? "UNVERIFIED"
+          : INCONCLUSIVE_CODES.has(failing.code ?? "")
+            ? "INCONCLUSIVE"
+            : "INVALID";
       // Integrity states what was PROVEN: a failure before the checkpoint step leaves it unproven, and
       // a failure AT step 17 — reached in the pipeline or out of band — means it is broken.
       const integrity: VerdictDimensions["integrity"] = ctx.checkpointReconciled === true && failing.step !== "STEP_17_CHECKPOINT_RECONCILE" ? "INTACT" : "BROKEN";
@@ -428,7 +580,10 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
       // reported even when the checkpoint failure dominates the VERDICT: the artifact really was
       // examined, and suppressing it would hide half of what is wrong with the bundle.
       const settlement: VerdictDimensions["settlement"] = ctx.settlement ?? "UNCHECKED";
-      return result(verdict, bundle.outcome, steps, ctx.warnings, { integrity, authorization: ctx.authorization, settlement }, NOT_EVALUATED, failing, [...ctx.rolesAsserted], purpose);
+      // `ctx.enrolment` is REPORTED, never re-derived: the plane that asked the question is the only
+      // thing that knows what it found, and a second derivation here could disagree with the rule
+      // that produced the failing step.
+      return result(verdict, bundle.outcome, steps, ctx.warnings, { integrity, authorization: ctx.authorization, settlement }, ctx.enrolment, failing, [...ctx.rolesAsserted], purpose);
     }
   }
 
@@ -448,13 +603,18 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     bundle.outcome,
     steps,
     ctx.warnings,
-    // The whole pipeline ran and nobody asked the settlement question, because no enrolment input
-    // was supplied. `NO_EXECUTION_BINDING` says the true thing about what this verdict rests on:
-    // for this bundle no execution binding was established, and the verdict word means exactly what
-    // it meant before this field existed. This value does NOT depend on `purpose` — an audit run and
-    // an authorization run examine the same settlement evidence, namely none.
+    // The whole pipeline ran and no execution binding was established for this bundle.
+    // `NO_EXECUTION_BINDING` says the true thing about what this verdict rests on, and the verdict
+    // word means exactly what it meant before this field existed. This value does NOT depend on
+    // `purpose` — an audit run and an authorization run examine the same settlement evidence.
     { integrity: "INTACT", authorization: ctx.authorization, settlement: "NO_EXECUTION_BINDING" },
-    NOT_EVALUATED,
+    // REPORTED, not hardcoded, and the difference is a safety property rather than tidiness. Every
+    // ENROLLED path terminates inside step 10 or 11 today, so a completed run genuinely did not ask
+    // — but writing `NOT_EVALUATED` here would state "nobody asked" for ANY future rule that let an
+    // enrolled class through, which is the one sentence that must never be false. Reporting what the
+    // plane found instead hands the exit mapper an (ENROLLED, NO_EXECUTION_BINDING) pair it REFUSES
+    // by name: a loud defect report rather than a silent exit 0.
+    ctx.enrolment,
     undefined,
     [...ctx.rolesAsserted],
     purpose,

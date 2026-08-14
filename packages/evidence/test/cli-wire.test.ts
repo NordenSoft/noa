@@ -56,17 +56,27 @@ const WORK = mkdtempSync(join(tmpdir(), "noa-cli-wire-"));
 interface Fixture {
   expectVerdict: string; now: string; maxAgeHours: number;
   bundle: unknown; tenantRoot: unknown; checkpointKeyring: unknown;
+  /** S5 — the third external input, present only on the fixtures whose reader was handed one. */
+  enrolmentRegistries?: unknown[]; audience?: string;
 }
 
-/** Split a bundled fixture into the three files the CLI takes, exactly as an operator would hold them. */
-function materialise(id: string): { bundle: string; root: string; keyring: string; fx: Fixture } {
+/** Split a bundled fixture into the files the CLI takes, exactly as an operator would hold them. */
+function materialise(id: string): { bundle: string; root: string; keyring: string; registries: string[]; fx: Fixture } {
   const fx = JSON.parse(readFileSync(join(CONF, id), "utf8")) as Fixture;
   const stem = join(WORK, id.replace(/[/.]/g, "_"));
   const files = { bundle: `${stem}.bundle.json`, root: `${stem}.root.json`, keyring: `${stem}.cp.json` };
   writeFileSync(files.bundle, JSON.stringify(fx.bundle));
   writeFileSync(files.root, JSON.stringify(fx.tenantRoot));
   writeFileSync(files.keyring, JSON.stringify(fx.checkpointKeyring));
-  return { ...files, fx };
+  // Each registry is its OWN file on disk, because that is how an operator holds it and because the
+  // flag is repeatable: a reader legitimately has several — one per tenant, and successive windows
+  // across a rotation.
+  const registries = (fx.enrolmentRegistries ?? []).map((r, i) => {
+    const p = `${stem}.enrol${i}.json`;
+    writeFileSync(p, JSON.stringify(r));
+    return p;
+  });
+  return { ...files, registries, fx };
 }
 
 interface Run { status: number; stdout: string; stderr: string }
@@ -84,6 +94,8 @@ function verify(id: string): { run: Run; result: Record<string, unknown> } {
   const f = materialise(id);
   const run = runCli([
     f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring,
+    ...f.registries.flatMap((p) => ["--enrolment-registry", p]),
+    ...(f.fx.audience !== undefined ? ["--audience", f.fx.audience] : []),
     "--now", f.fx.now, "--max-age-hours", String(f.fx.maxAgeHours),
   ]);
   return { run, result: JSON.parse(run.stdout) as Record<string, unknown> };
@@ -93,16 +105,25 @@ function verify(id: string): { run: Run; result: Record<string, unknown> } {
  * One fixture per exit code this build can reach, chosen so the four classes are structurally
  * different bundles rather than four spellings of one.
  */
-const WIRE_CASES: ReadonlyArray<{ id: string; verdict: string; settlement: string; exit: number; why: string }> = [
-  { id: "valid/executed.json", verdict: "VALID_FULL_CHAIN", settlement: "NO_EXECUTION_BINDING", exit: 0, why: "a fully verified bundle" },
-  { id: "reject/step10-executed-result.json", verdict: "INVALID", settlement: "UNCHECKED", exit: 2, why: "a hard rejection at a named step" },
-  { id: "reject/step16-stale-checkpoint.json", verdict: "INCONCLUSIVE", settlement: "UNCHECKED", exit: 3, why: "a stale checkpoint — the pre-existing meaning of 3" },
-  { id: "verdict/unverified-no-tenant-root.json", verdict: "UNVERIFIED", settlement: "UNCHECKED", exit: 4, why: "no external trust root supplied" },
+const WIRE_CASES: ReadonlyArray<{ id: string; verdict: string; enrolment: string; settlement: string; exit: number; why: string }> = [
+  { id: "valid/executed.json", verdict: "VALID_FULL_CHAIN", enrolment: "NOT_EVALUATED", settlement: "NO_EXECUTION_BINDING", exit: 0, why: "a fully verified bundle" },
+  { id: "reject/step10-executed-result.json", verdict: "INVALID", enrolment: "NOT_EVALUATED", settlement: "UNCHECKED", exit: 2, why: "a hard rejection at a named step" },
+  { id: "reject/step16-stale-checkpoint.json", verdict: "INCONCLUSIVE", enrolment: "NOT_EVALUATED", settlement: "UNCHECKED", exit: 3, why: "a stale checkpoint — the pre-existing meaning of 3" },
+  { id: "verdict/unverified-no-tenant-root.json", verdict: "UNVERIFIED", enrolment: "NOT_EVALUATED", settlement: "UNCHECKED", exit: 4, why: "no external trust root supplied" },
   // Slice I2 — the FIRST bundle that makes the shipped binary exit 6 end to end: a valid EXECUTED
   // bundle whose settlement artifact ships no verifiable params preimage, so the money was compared to
   // nothing. INCONCLUSIVE with settlement BOUNDS_UNCHECKABLE ⇒ exit 6, which the mapper keeps DISTINCT
   // from the stale-checkpoint 3 above so a "refresh and retry" script cannot pass this state.
-  { id: "settlement/s5-settlement-no-params-preimage.json", verdict: "INCONCLUSIVE", settlement: "BOUNDS_UNCHECKABLE", exit: 6, why: "a settlement asked-and-unanswered — no verifiable params preimage" },
+  { id: "settlement/s5-settlement-no-params-preimage.json", verdict: "INCONCLUSIVE", enrolment: "NOT_EVALUATED", settlement: "BOUNDS_UNCHECKABLE", exit: 6, why: "a settlement asked-and-unanswered — no verifiable params preimage" },
+  // Slice I4 — the enrolment plane AT THE PROCESS BOUNDARY. Registry files really are written to
+  // disk, really are passed on the command line, and the real status is read: a rule that refuses in
+  // a unit test and never reaches the shell has changed nothing a payment script can see.
+  { id: "enrolment/s5-enrolled-no-settlement.json", verdict: "INCONCLUSIVE", enrolment: "ENROLLED", settlement: "NOT_ESTABLISHED", exit: 6, why: "an enrolled class with no settlement evidence at all" },
+  { id: "enrolment/s5-enrolled-attested-but-unqueried.json", verdict: "INCONCLUSIVE", enrolment: "ENROLLED", settlement: "ATTESTED_UNVERIFIED", exit: 6, why: "an enrolled class whose settlement nobody re-queried — the offline ceiling" },
+  { id: "enrolment/s5-enrolment-class-absent.json", verdict: "UNVERIFIED", enrolment: "CLASS_ABSENT", settlement: "UNCHECKED", exit: 4, why: "a registry that omits the class — absence buys nothing" },
+  { id: "enrolment/s5-enrolment-wrong-tenant.json", verdict: "INVALID", enrolment: "CONTRADICTED", settlement: "UNCHECKED", exit: 2, why: "a registry contradicting the bundle it was handed with" },
+  { id: "enrolment/s5-enrolled-failure-unwitnessed.json", verdict: "INCONCLUSIVE", enrolment: "ENROLLED", settlement: "NOT_ESTABLISHED", exit: 6, why: "an enrolled class relabelled as a failure, on the gate's word alone" },
+  { id: "enrolment/s5-enrolment-no-registry.json", verdict: "VALID_FULL_CHAIN", enrolment: "NOT_EVALUATED", settlement: "NO_EXECUTION_BINDING", exit: 0, why: "the same enrolment-capable bundle with no registry supplied" },
 ];
 
 for (const c of WIRE_CASES) {
@@ -115,13 +136,140 @@ for (const c of WIRE_CASES) {
         `the same defect as computing the wrong answer.`,
     );
     assert.equal(result["verdict"], c.verdict, `${c.id}: verdict in the printed result`);
-    assert.equal(result["enrolment"], "NOT_EVALUATED", `${c.id}: the result must state that the enrolment question was not asked`);
+    assert.equal(result["enrolment"], c.enrolment, `${c.id}: the result must state what the enrolment question found`);
     const dims = result["dimensions"] as Record<string, unknown>;
     assert.equal(dims["settlement"], c.settlement, `${c.id}: settlement in the printed result`);
   });
 }
 
-test("WIRE ANTI-VACUITY: the five cases produce five DIFFERENT exit codes", () => {
+test("WIRE: the SAME bundle bytes exit 0 without a registry and 4 with one — one flag, two answers", () => {
+  // The governing property of the enrolment plane, measured where a consumer actually reads it. The
+  // two runs differ ONLY in what the READER was handed, and the difference runs one way: supplying a
+  // registry made the verdict harder to reach. A verifier that ignored the flag would print two
+  // zeroes here and satisfy nothing.
+  const without = verify("enrolment/s5-enrolment-no-registry.json");
+  const with_ = verify("enrolment/s5-enrolment-class-absent.json");
+  assert.deepEqual(
+    (with_.result["outcome"]), (without.result["outcome"]),
+    "the pair is only a measurement if both runs are about the same bundle",
+  );
+  assert.equal(without.run.status, 0, `no registry: exited ${without.run.status}`);
+  assert.equal(with_.run.status, 4, `registry omitting the class: exited ${with_.run.status}`);
+});
+
+test("WIRE: a bare trailing singleton flag is a USAGE error — it never runs with the value missing", () => {
+  // Measured: a valid no-registry invocation ending in `--audience` consumed `undefined`, VERIFIED
+  // ANYWAY and exited 0. The operator typed a flag, got a verdict, and nothing said the flag did
+  // nothing. Every singleton is covered rather than only the new one, because the defect was the
+  // argument-parsing SHAPE (`x = args[++i]`) that every flag shared.
+  const f = materialise("valid/executed.json");
+  const base = [f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring];
+  for (const flag of ["--audience", "--tenant-root", "--checkpoint-keyring", "--now", "--max-age-hours", "--purpose"]) {
+    const trailing = runCli([...base, flag]);
+    assert.equal(trailing.status, 5, `${flag} alone at the end exited ${trailing.status}, expected the usage code`);
+    assert.ok(trailing.stderr.includes(flag), `${flag}: the error does not name the flag`);
+    // …and the same flag followed by ANOTHER flag must not swallow it as its value.
+    const swallowing = runCli([...base, flag, "--purpose", "audit"]);
+    assert.equal(swallowing.status, 5, `${flag} followed by --purpose exited ${swallowing.status} — it consumed a flag as a value`);
+  }
+});
+
+test("WIRE: a MALFORMED numeric flag is refused — never dropped back to the permissive default", () => {
+  // THE ROUND-2 HIGH, and it crossed the usage/verdict boundary. `Number("definitely-not-a-number")`
+  // is `NaN`, and a `Number.isFinite` guard at the call site SILENTLY OMITTED `maxAgeMs` — restoring
+  // the permissive 24-hour default. Measured on this DENIED fixture:
+  //
+  //     --max-age-hours 0                        -> exit 3   (the freshness rule fires)
+  //     --max-age-hours definitely-not-a-number  -> exit 0   (the rule is gone)
+  //
+  // A mistyped SAFETY option produced a positive verdict. The strict control below is what makes the
+  // rest a measurement: the option must demonstrably DO something before "the malformed value was
+  // ignored" is a finding rather than a coincidence.
+  const f = materialise("valid/denied.json");
+  const base = [f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring, "--now", f.fx.now];
+
+  const strict = runCli([...base, "--max-age-hours", "0"]);
+  assert.equal(strict.status, 3, `--max-age-hours 0 exited ${strict.status}: the control proving the option changes the answer`);
+
+  for (const bad of ["definitely-not-a-number", "NaN", "Infinity", "-Infinity", "1e400", "", "   ", "12abc"]) {
+    const run = runCli([...base, "--max-age-hours", bad]);
+    assert.equal(
+      run.status, 5,
+      `--max-age-hours ${JSON.stringify(bad)} exited ${run.status}, expected the usage code. A malformed safety ` +
+        `option must be REFUSED; dropping it restores the permissive default and turns a typo into a positive verdict.`,
+    );
+    assert.ok(run.stderr.includes("--max-age-hours"), `${JSON.stringify(bad)}: the error does not name the flag`);
+  }
+
+  // A NEGATIVE window is refused too. It is not "stricter", it is meaningless — and `Number` takes it.
+  const negative = runCli([...base, "--max-age-hours", "-5"]);
+  assert.equal(negative.status, 5, `a negative max age exited ${negative.status}`);
+
+  // ANTI-VACUITY: ordinary values still work, so the refusal is about malformedness rather than about
+  // the flag being present at all. The empty string is in the refused list above for the mirror
+  // reason: `Number("")` is `0`, so silence would become the STRICTEST setting by accident.
+  for (const good of ["24", "12.5", "0.5"]) {
+    const run = runCli([...base, "--max-age-hours", good]);
+    assert.notEqual(run.status, 5, `--max-age-hours ${good} was refused as malformed`);
+  }
+});
+
+test("WIRE: a REPEATED singleton flag is a usage error — last-wins lets the last writer decide", () => {
+  // Measured on the enrolled fixture: `--audience hostile --audience good` exited 6 while
+  // `--audience good --audience hostile` exited 4. Whoever appends to the command line last decided
+  // the answer, silently. That is the shape a wrapper script, a CI template or an injected argument
+  // exploits, and it applied to `--tenant-root` exactly as much as to `--audience`.
+  const f = materialise("enrolment/s5-enrolled-no-settlement.json");
+  const base = [f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring,
+    ...f.registries.flatMap((p) => ["--enrolment-registry", p]),
+    "--now", f.fx.now, "--max-age-hours", String(f.fx.maxAgeHours)];
+
+  for (const [why, extra] of [
+    ["hostile then good", ["--audience", "rp:attacker.example", "--audience", f.fx.audience!]],
+    ["good then hostile", ["--audience", f.fx.audience!, "--audience", "rp:attacker.example"]],
+    ["the same value twice", ["--audience", f.fx.audience!, "--audience", f.fx.audience!]],
+    ["a second trust root", ["--audience", f.fx.audience!, "--tenant-root", f.root]],
+  ] as const) {
+    const run = runCli([...base, ...extra]);
+    assert.equal(run.status, 5, `${why}: exited ${run.status}, expected the usage code`);
+    assert.ok(run.stderr.includes("more than once"), `${why}: the error does not say the flag was repeated`);
+  }
+
+  // ANTI-VACUITY: the same command with ONE audience still works, so the refusal is about repetition
+  // rather than about the flag being present at all.
+  const ok = runCli([...base, "--audience", f.fx.audience!]);
+  assert.equal(ok.status, 6, `the single-audience control exited ${ok.status}, expected 6`);
+});
+
+test("WIRE: the REPEATABLE flag still accumulates — a second registry does not replace the first", () => {
+  // The distinction the singleton rule rests on: a repeatable flag ACCUMULATES, a singleton REFUSES.
+  // Passing the reader's own registry twice must behave exactly like passing it once (the class is
+  // enrolled either way), and never like a usage error.
+  const f = materialise("enrolment/s5-enrolled-no-settlement.json");
+  const twice = runCli([f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring,
+    ...f.registries.flatMap((p) => ["--enrolment-registry", p]),
+    ...f.registries.flatMap((p) => ["--enrolment-registry", p]),
+    "--audience", f.fx.audience!, "--now", f.fx.now, "--max-age-hours", String(f.fx.maxAgeHours)]);
+  assert.equal(twice.status, 6, `two registries exited ${twice.status}, expected 6`);
+  assert.equal((JSON.parse(twice.stdout) as Record<string, unknown>)["enrolment"], "ENROLLED");
+});
+
+test("WIRE: a registry with no reader is a USAGE error, not a verdict", () => {
+  // Two different refusals, and they must not be confused: forgetting `--audience` is an OPERATOR
+  // mistake (exit 5, with the sentence that fixes it), while a registry that genuinely does not name
+  // this reader is a VERDICT (exit 4). A CLI that let the first through would hand the verifier an
+  // unscoped registry and turn a typo into a statement about the evidence.
+  const f = materialise("enrolment/s5-enrolled-no-settlement.json");
+  const run = runCli([
+    f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring,
+    ...f.registries.flatMap((p) => ["--enrolment-registry", p]),
+    "--now", f.fx.now, "--max-age-hours", String(f.fx.maxAgeHours),
+  ]);
+  assert.equal(run.status, 5, `exited ${run.status}, expected the usage code`);
+  assert.ok(run.stderr.includes("--audience"), "the error does not name the flag that is missing");
+});
+
+test("WIRE ANTI-VACUITY: the cases produce five DIFFERENT exit codes", () => {
   // Without this, `process.exit(2)` for everything would satisfy the assertions above written
   // separately — and a constant exit code is precisely the mutation this file exists to catch. The
   // presence of 6 here is the load-bearing addition: it is the number the whole S5 ladder exists to

@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://noatrust.com/schema/noa-key-delegation-0.1.schema.json",
   "title": "NOA Manifest-Signer Delegation",
-  "description": "Offline Tenant Root Authority-signed delegation (D16-v2, §9): grants a delegated key the key-manifest-sign permission. Domain NOA-KeyDelegation-v0.1-sig. Signed by the tenant root (e.g. tenant-authority-1), never the gate. Alpha requires ≥1 static root-signed delegation (F11/F21).",
+  "description": "Offline Tenant Root Authority-signed delegation (D16-v2, §9): grants a delegated key the key-manifest-sign permission and, since S5, optionally the action-class-enrol permission that authorizes it to sign the action-class enrolment registry. Domain NOA-KeyDelegation-v0.1-sig. Signed by the tenant root (e.g. tenant-authority-1), never the gate. Alpha requires ≥1 static root-signed delegation (F11/F21). FORWARD COMPATIBILITY, stated rather than discovered: old delegations keep validating everywhere, but a delegation carrying the NEW permission does NOT validate against a pre-S5 verifier, whose enum has one member. The permission is therefore added only to the delegations that need it.",
   "type": "object",
   "additionalProperties": false,
   "required": ["spec", "tenant", "delegatedKid", "delegatedPublicKey", "permissions", "validFrom", "expiresAt", "sig"],
@@ -14,7 +14,7 @@
     "permissions": {
       "type": "array",
       "minItems": 1,
-      "items": { "enum": ["key-manifest-sign"] }
+      "items": { "enum": ["key-manifest-sign", "action-class-enrol"] }
     },
     "validFrom": { "$ref": "#/$defs/rfc3339" },
     "expiresAt": { "$ref": "#/$defs/rfc3339" },
