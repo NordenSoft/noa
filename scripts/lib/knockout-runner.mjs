@@ -138,7 +138,18 @@ export function selectControls({ registry, repoRoot, probes, only = null, requir
   const selected = shard ? chosen.filter((k) => shardOf(k.id, shard.total) === shard.index) : chosen;
 
   let empty = null;
-  if (shard && selected.length === 0) {
+  if (only && chosen.length === 0) {
+    // A RENAMED OR DELETED CONTROL MUST FAIL LOUDLY. `--only some-id-that-no-longer-exists` used to
+    // select nothing, run nothing, and exit 0 printing `proven load-bearing 0/0` — a targeted gate
+    // reporting success for an experiment that did not happen. This is the shape a control rename
+    // takes in CI: the workflow still names the old id, nothing runs, and the job is green.
+    const known = registry.some((k) => k.id === only);
+    empty = known
+      ? `--only ${only}: that control EXISTS but was excluded before selection (absent dependency). ` +
+        `The experiment did not happen; refusing to report a pass.`
+      : `--only ${only}: NO control with that id exists in the registry of ${registry.length}. ` +
+        `A renamed or deleted control must fail loudly, not report a pass over zero work.`;
+  } else if (shard && selected.length === 0) {
     empty =
       `--shard ${shard.index}/${shard.total}: this slice is EMPTY (${chosen.length} control(s) selected ` +
       `in total). A shard that measures nothing is not green — reduce the shard count.`;

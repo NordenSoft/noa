@@ -1322,6 +1322,79 @@ check("EVERY control the runner would run: the union over the real shards IS the
   assert.ok(union.size >= 100, `only ${union.size} control(s) are armed across all four shards`);
 });
 
+/* ─── ZERO WORK IS NEVER SUCCESS ────────────────────────────────────────────────────────────────
+ * Three ways this gate reported a pass over an experiment that did not happen. All three were found
+ * by an adversarial reviewer, and all three exited 0 while printing `proven load-bearing 0/0`.
+ *
+ * The shared law: "the check could not run" and "the check passed" must never share an exit code. */
+
+/** Run the real gate and return `{ status, out }` without throwing on a non-zero exit. */
+function realGate(...args) {
+  try {
+    const out = execFileSync(process.execPath, [path.join(REPO, "scripts", "lint-control-knockout.mjs"), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return { status: 0, out };
+  } catch (e) {
+    return { status: e.status ?? 1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+  }
+}
+
+check("an --only id that matches NO control is a hard refusal, not a pass over zero work", () => {
+  // The rename case, and it is the realistic one: a workflow keeps naming a control that was
+  // renamed, nothing runs, and the job stays green forever.
+  const r = realGate("--only", "definitely-not-a-real-control-xyz");
+  assert.notEqual(r.status, 0, `an unknown --only id exited ${r.status}. Output:\n${r.out.slice(0, 400)}`);
+  assert.match(r.out, /NO control with that id exists/, "the refusal does not say WHY, so the operator cannot tell a typo from a deletion");
+
+  // ANTI-VACUITY: a REAL id still runs and still passes, so the guard refuses the right thing.
+  const known = fs.readFileSync(path.join(REPO, "scripts", "knockout-control-manifest.txt"), "utf8")
+    .split("\n").filter((l) => l && !l.startsWith("#"));
+  assert.ok(known.length >= 100, `the control manifest looks wrong: ${known.length} ids`);
+  const ok = realGate("--only", known.find((id) => id.startsWith("settlement-observer")) ?? known[0]);
+  assert.equal(ok.status, 0, `a REAL control id failed: ${ok.out.slice(0, 400)}`);
+  assert.match(ok.out, /proven load-bearing 1\/1/, "a real single-control run no longer reports one measured control");
+});
+
+check("the REGISTRY itself is pinned — deleting a control is red and names it", () => {
+  // The self-test used to derive its expectation FROM the runner and guard it with `length >= 100`.
+  // That is a floor, not a check: deleting a control left this file completely green. The
+  // expectation now lives in a committed manifest, so a deletion cannot be invisible.
+  const manifest = fs.readFileSync(path.join(REPO, "scripts", "knockout-control-manifest.txt"), "utf8")
+    .split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  const live = realSelection().registry;
+
+  const missing = manifest.filter((id) => !live.includes(id));
+  const added = live.filter((id) => !manifest.includes(id));
+  assert.deepEqual(
+    missing, [],
+    `these controls are in the committed manifest and NOT in the registry — they were deleted or ` +
+      `renamed: ${missing.join(", ")}. A control that disappears must be a visible edit to ` +
+      `scripts/knockout-control-manifest.txt, never a silent shrink.`,
+  );
+  assert.deepEqual(
+    added, [],
+    `these controls are in the registry and not in the manifest: ${added.join(", ")}. ` +
+      `Run: node scripts/lint-control-knockout.mjs --write-control-manifest`,
+  );
+  assert.equal(manifest.length, new Set(manifest).size, "the manifest has duplicate ids");
+});
+
+check("SELECTED must equal EXECUTED — a skipped control cannot hide behind the ratio", () => {
+  // The reviewer added one `continue` to the execution loop and the targeted gate printed
+  // `L4 control knockout: 0 controls`, `proven load-bearing 0/0`, exit 0. The runner now audits the
+  // executed ids against the selected ids, so a control that is chosen and then skipped is named.
+  //
+  // Asserted here on the runner's own source, because executing a full sharded sweep to observe it
+  // would cost forty minutes: the guard must exist, compare the two sets, and be part of `errors`.
+  const src = fs.readFileSync(path.join(REPO, "scripts", "lint-control-knockout.mjs"), "utf8");
+  assert.match(src, /const executedIds = new Set\(results\.map\(\(r\) => r\.id\)\)/, "the executed-id audit is gone");
+  assert.match(src, /SELECTED BUT NOT RUN/, "the selected-vs-executed mismatch no longer produces an error");
+  assert.match(
+    src, /if \(results\.length === 0\) \{/,
+    "the zero-work guard is conditional again — it must fire on ANY empty result set, not only when " +
+      "dependency exclusions happen to explain it",
+  );
+});
+
 check("shard assignment refuses inputs it cannot partition", () => {
   // A total that is not a positive integer, or a missing id, must THROW rather than answer 1 — an
   // answer here is a control quietly assigned to the first job on every run.

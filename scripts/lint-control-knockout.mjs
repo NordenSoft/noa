@@ -59,6 +59,8 @@ import {
 import { DEPENDENCY_PROBES } from "./lib/phone-core-probe.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** The committed expectation of what the registry contains — see --write-control-manifest. */
+const CONTROL_MANIFEST = path.join(ROOT, "scripts", "knockout-control-manifest.txt");
 const WARN_ONLY = process.argv.includes("--warn");
 const onlyIdx = process.argv.indexOf("--only");
 const ONLY = onlyIdx > -1 ? process.argv[onlyIdx + 1] : null;
@@ -2170,6 +2172,15 @@ if (EMPTY_SELECTION) {
 //
 // It exits BEFORE the state guard and before any baseline: this must be answerable without owning
 // the tree or running a suite, or the check it exists for would cost forty minutes.
+// `--write-control-manifest` regenerates the committed expectation the self-test compares against.
+// Adding or removing a control is a visible edit to that file, which is the whole mechanism.
+if (process.argv.includes("--write-control-manifest")) {
+  const header = fs.readFileSync(CONTROL_MANIFEST, "utf8").split("\n").filter((l) => l.startsWith("#")).join("\n");
+  fs.writeFileSync(CONTROL_MANIFEST, `${header}\n${KNOCKOUTS.map((k) => k.id).sort().join("\n")}\n`);
+  console.log(`wrote ${KNOCKOUTS.length} control id(s) to ${path.relative(ROOT, CONTROL_MANIFEST)}`);
+  process.exit(0);
+}
+
 if (process.argv.includes("--print-selection")) {
   process.stdout.write(JSON.stringify({
     registry: KNOCKOUTS.map((k) => k.id),
@@ -2469,14 +2480,38 @@ if (residue) {
 }
 for (const [key] of unmeasurable) errors.push(`  BASELINE UNMEASURABLE      ${JSON.parse(key)[0]}`);
 
-// NO VERDICT IS NOT A PASS. Excusing an unmeasurable control is only honest while the rest of the
-// gate still measures something; a run where EVERY entry was excluded has produced no security
-// result at all, and exiting 0 there would report the strongest possible coverage from the weakest
-// possible run. "The check could not run" and "the check passed" must never share an exit code.
-if (results.length === 0 && DEPS_MISSING_HERE.length > 0) {
+// ── SELECTED MUST EQUAL EXECUTED ───────────────────────────────────────────────────────────────
+//
+// NO VERDICT IS NOT A PASS, and the two guards below are the general form of it. The first version
+// of this block only fired when `results.length === 0 && DEPS_MISSING_HERE.length > 0` — a
+// zero-work check that required a specific EXPLANATION for the zero work. An adversarial reviewer
+// walked straight through it: adding one `continue` to the execution loop above dropped a selected
+// control, and the targeted gate printed `L4 control knockout: 0 controls`, `proven load-bearing
+// 0/0`, and exited 0.
+//
+// So the ratio is now audited against the SELECTION, not merely against itself. Everything the
+// selector chose must appear in the results, by id; anything missing is named. A control that is
+// selected and then silently skipped is the same defect as a control dropped from a shard, one
+// stage later, and it gets the same answer.
+const executedIds = new Set(results.map((r) => r.id));
+const skipped = selected.filter((k) => !executedIds.has(k.id)).map((k) => k.id);
+if (skipped.length > 0 && !aborted) {
   errors.push(
-    `  NOTHING MEASURED           all ${DEPS_MISSING_HERE.length} control(s) were excluded for absent ` +
-    `dependencies, so this run proves nothing. A gate that measures zero controls is not green.`,
+    `  SELECTED BUT NOT RUN       ${skipped.length} of ${selected.length} selected control(s) produced no ` +
+    `verdict:\n` + skipped.map((id) => `      ${id}`).join("\n") +
+    `\n      Selection and execution must agree. A control that is chosen and then skipped is ` +
+    `unmeasured while the ratio above still reads as full coverage.`,
+  );
+}
+// And zero work is never success, whatever the reason for it — an empty registry, a filtered-out
+// selection, dependency exclusions, or a loop that ran no arms.
+if (results.length === 0) {
+  const why = DEPS_MISSING_HERE.length > 0
+    ? `all ${DEPS_MISSING_HERE.length} control(s) were excluded for absent dependencies`
+    : `the execution loop produced no verdicts at all (${selected.length} control(s) were selected)`;
+  errors.push(
+    `  NOTHING MEASURED           ${why}, so this run proves nothing. A gate that measures zero ` +
+    `controls is not green: "the check could not run" and "the check passed" must never share an exit code.`,
   );
 }
 
