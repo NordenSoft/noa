@@ -957,6 +957,41 @@ emit("settlement", "s5-settlement-not-observed-polarity", fixtureFrom(settlement
 // R1 binding — the artifact's own tenant is not the verifier's (R-11), a hard rejection caught offline.
 emit("settlement", "s5-settlement-tenant-mismatch", fixtureFrom(settlementWorld({ artifactTenant: "tenant-globex" }), { description: "R1 binding: the settlement artifact's own tenant is not the verifier's expected tenant (R-11), so it is a replay of another tenant's evidence. INVALID / E_SETTLEMENT_BINDING, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BINDING" }));
 
+// C.13 — a preimage that HASHES CORRECTLY but carries a seventh member. Not a tolerance: an accepted
+// extra member lets two honest parties holding "the same" params compute two different paramsHash
+// values. It is SUPPLIED under a sha256 hash, so it takes the producer-lie branch, not the withheld one.
+{
+  const preimage7Text = canonicalize({ ...S_PREIMAGE, memo: "extra" });
+  emit("settlement", "s5-params-preimage-unknown-member", fixtureFrom(settlementWorld({ paramsHash: "sha256:" + sha256Hex(preimage7Text), preimage: preimage7Text }), { description: "C.13 (F2): the preimage hashes correctly to action.paramsHash but carries a seventh member. R-HASH-2 refuses an unknown member rather than tolerating it — an accepted extra member lets two honest parties holding 'the same' params compute two different paramsHash values. INVALID / E_PARAMS_PREIMAGE_MISMATCH, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_PARAMS_PREIMAGE_MISMATCH" }));
+}
+
+// C.16 — THE VECTOR THAT PROVES THE DERIVATION INPUTS CAME FROM THE PREIMAGE, NOT THE ARTIFACT.
+// The artifact is UNIFORMLY testnet — network, asset, and a correlation genuinely derived from those
+// testnet coordinates — while the verified preimage says mainnet. An implementation that lifted
+// chainId/token/payer from the artifact would derive exactly this nonce, find it matching, and pass.
+// B1 against the preimage runs BEFORE the correlation compare and refuses.
+{
+  const S_NETWORK_TESTNET = "eip155:84532";
+  const S_TOKEN_TESTNET = "0x036cbd53842c5426634e7929541ec2318f3dcf7e"; // Base Sepolia USDC
+  const wT = buildWorld("EXECUTED", { paramsHash: S_PARAMS_HASH, gateSettlementObserver: true });
+  const bdT = buildActionDigest(encodeDocument(wT.bundle.allowedReceipt), encodeDocument(wT.bundle.executionGrant));
+  if (!bdT.ok) throw new Error(`C.16 fixture: action digest failed — ${bdT.reason}`);
+  const testnetNonce = deriveCorrelationNonce({
+    chainId: 84532, tokenAddress: S_TOKEN_TESTNET, payerAddress: S_PAYER, dispatchId: bdT.digest, seed: Buffer.from(S_GRANT_NONCE, "hex"),
+  }).nonce;
+  emit("settlement", "s5-settlement-network-substituted", fixtureFrom(settlementWorld({ witness: { network: S_NETWORK_TESTNET, asset: `${S_NETWORK_TESTNET}/erc20:${S_TOKEN_TESTNET}` }, correlation: testnetNonce }), { description: "C.16 (F2): the artifact's chainWitness is UNIFORMLY testnet and its correlation is genuinely derived from those testnet coordinates, while the verified preimage says mainnet. An implementation that lifted the derivation inputs from the artifact would derive this same nonce and PASS — B1 against the verified preimage runs first and refuses. INVALID / E_SETTLEMENT_BOUNDS_EXCEEDED, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_EXCEEDED" }));
+}
+
+// E.5 — the preimage IS a container member, so it IS in OPTIONAL_ARTIFACT_FIELDS and the step-0 union
+// pre-rule owns it. Without this vector the §7.3 touch point the spec calls "necessary and missed" is
+// untested, and a preimage rides an unrelated outcome completely unlooked-at.
+{
+  const w = buildWorld("EXPIRED");
+  const bundle = clone(w.bundle);
+  (bundle as unknown as Record<string, unknown>).actionParamsPreimage = S_PREIMAGE_TEXT;
+  emit("settlement", "s5-params-preimage-on-expired", fixtureFrom(w, { description: "E.5 (F2): an EXPIRED bundle carrying actionParamsPreimage, which the EXPIRED union does not define. The preimage is a container member, so OPTIONAL_ARTIFACT_FIELDS + the step-0 union pre-rule own it — a name listed in the union alone would ride this bundle unverified. INVALID / STEP_0 / E_OUTCOME_ARTIFACT_SET, exit 2", expectVerdict: "INVALID", expectStep: "STEP_0_TENANT_EQUALITY", expectCode: "E_OUTCOME_ARTIFACT_SET", bundle }));
+}
+
 // ─── write ───────────────────────────────────────────────────────────────────────────────────────
 rmSync(OUT, { recursive: true, force: true });
 for (const { path, fx } of files) {
