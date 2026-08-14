@@ -13,6 +13,20 @@
  * Re-running produces byte-identical files (fixed keys + fixed clock). The private keys below are
  * TEST-ONLY fixtures (intentionally public), NEVER real keys — the same set the approval-artifacts
  * generator uses, so the whole ecosystem's fixtures share one key world.
+ *
+ * ⚠ "BYTE-IDENTICAL" IS A CLAIM ABOUT THE INPUTS, AND ONE OF THOSE INPUTS IS A BUILD. This generator
+ * calls into the kernel (`buildReceipt`, `buildCheckpoint`, `buildActionDigest`,
+ * `deriveCorrelationNonce`), so it emits whatever the kernel's COMPILED `dist/` currently says — not
+ * whatever the kernel's SOURCE says. A stale or half-built kernel silently rewrites committed
+ * fixtures, and the diff then reads as a corpus change rather than as a build accident.
+ *
+ * Measured 2026-08-14 (CI run 31810814725): the L4 knockout runner restores mutated SOURCE after each
+ * experiment but never rebuilds, so a kernel mutant survived in `dist/` into this generator's next run
+ * and rewrote TWELVE fixtures across `settlement/` and `enrolment/`. Reproduced by hand and closed by
+ * `build:deps` in this package's `test` and `gen:fixtures` scripts: the kernel and the artifact layer
+ * are rebuilt from whatever source is ON DISK before any fixture is emitted, so a stale build cannot
+ * reach the corpus. The runner's own restore-without-rebuild defect is filed separately and is NOT
+ * fixed here — this stops it reaching these files, and nothing more.
  */
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
