@@ -1489,6 +1489,55 @@ const KNOCKOUTS = [
     suite: ["packages/evidence", "npm", ["test"]],
   },
   {
+    id: "settlement-dimensions-are-not-shared-between-results",
+    control:
+      "Each result gets its OWN dimensions object. Handing every early-return result one shared " +
+      "object means a caller that writes to a result it owns silently rewrites the dimensions of " +
+      "every LATER verification in that process, including ones it never saw — measured, it turned a " +
+      "later INVALID result into INTACT / VALID_NOW / RECONFIRMED. Bundle bytes cannot do it; an " +
+      "in-process consumer can, and a verifier whose past answers its own caller can edit is not " +
+      "offering a verdict. The mutation restores the shared object.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "function nothingProven(): VerdictDimensions {\n  return { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\" };\n}",
+    replace: "const SHARED_NOTHING_PROVEN: VerdictDimensions = { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\" };\nfunction nothingProven(): VerdictDimensions {\n  return SHARED_NOTHING_PROVEN;\n}",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-cli-refusal-exits-seven",
+    control:
+      "A refused tuple leaves this process as exit 7, and nothing else. Measured: this line and the " +
+      "stderr write beside it BOTH survived a full green suite, because the only thing exercising " +
+      "the refusal was a knockout — and a knockout scores any new red as a detection, so it could " +
+      "not tell 7 from 2 from 0. The forced-refusal harness asserts the number, so a catch that " +
+      "exits 0 on a verifier contradicting itself is now a failure with a name.",
+    file: "packages/evidence/src/cli.ts",
+    find: "    process.exit(INTERNAL_INVARIANT_EXIT_CODE);",
+    replace: "    process.exit(0);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-cli-refusal-names-its-cause",
+    control:
+      "A refused tuple is EXPLAINED on stderr, not merely signalled. Deleting the message leaves a " +
+      "bare non-zero exit that sends an operator to re-read the evidence when the fault is in the " +
+      "verifier. This is registered separately from the exit-code knockout on purpose: the two " +
+      "defects masked each other while one assertion covered both, so the harness asserts the status " +
+      "and the message in different tests and each mutation breaks exactly one.",
+    file: "packages/evidence/src/cli.ts",
+    find:
+      "    process.stderr.write(\n" +
+      "      `error: the exit mapper refused this result instead of returning a code. Expected cause: ` +\n" +
+      "        `${INADMISSIBLE_TUPLE_ERROR_NAME} — (verdict, enrolment, settlement) = ` +\n" +
+      "        `(${res.verdict}, ${res.enrolment}, ${res.dimensions.settlement}) is a tuple no assignment rule ` +\n" +
+      "        `produces. This is a defect in this verifier, not a statement about the evidence.\\n`,\n" +
+      "    );\n",
+    replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
     id: "settlement-not-conditioned-on-what-the-caller-asked-for",
     control:
       "The settlement value does not depend on `purpose`. An audit run and an authorization run " +
@@ -1661,18 +1710,33 @@ if (results.length === 0 && DEPS_MISSING.length > 0) {
   );
 }
 
+/**
+ * Restore build artefacts to the pristine sources — knockout runs left dist/ built from mutated
+ * input, and a later step reading dist/ would be reading the mutation.
+ *
+ * ⚠ THIS MUST RUN ON THE FAILURE PATH TOO, and for a while it did not. The findings block below used
+ * to `process.exit(1)` above this rebuild, so the ONE run that most needs clean artefacts — a red one
+ * — was the one run that left mutant `dist/` on disk. Source restoration is SHA-verified per
+ * experiment and was never in doubt; the compiled output is a second copy of the mutation, ignored by
+ * git and therefore invisible to the residue check right above. Whatever ran next read it.
+ */
+function restorePristineArtifacts() {
+  try {
+    execFileSync("npm", ["run", "build"], { cwd: ROOT, stdio: "ignore", timeout: 600_000 });
+    for (const p of ["packages/gate", "packages/approval-artifacts", "packages/evidence", "packages/relay", "packages/signer-core"]) {
+      try { execFileSync("npm", ["run", "build"], { cwd: path.join(ROOT, p), stdio: "ignore", timeout: 600_000 }); } catch { /* package may have no build */ }
+    }
+  } catch { /* reported by the next CI step if it matters */ }
+}
+
 if (errors.length) {
   console.error(`\n${errors.length} finding(s):`);
   for (const e of errors) console.error(e);
-  if (!WARN_ONLY) process.exit(1);
+  if (!WARN_ONLY) {
+    restorePristineArtifacts();
+    process.exit(1);
+  }
   console.error("(--warn: reported, not blocking)");
 }
 
-// Restore build artefacts to the pristine sources — knockout runs left dist/ built from mutated
-// input, and a later step reading dist/ would be reading the mutation.
-try {
-  execFileSync("npm", ["run", "build"], { cwd: ROOT, stdio: "ignore", timeout: 600_000 });
-  for (const p of ["packages/gate", "packages/approval-artifacts", "packages/evidence", "packages/relay", "packages/signer-core"]) {
-    try { execFileSync("npm", ["run", "build"], { cwd: path.join(ROOT, p), stdio: "ignore", timeout: 600_000 }); } catch { /* package may have no build */ }
-  }
-} catch { /* reported by the next CI step if it matters */ }
+restorePristineArtifacts();
