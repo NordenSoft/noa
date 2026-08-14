@@ -1,0 +1,41 @@
+[
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "rcpt_leap_second",
+    "ts": "2026-06-30T23:59:60.000Z",
+    "scope": {
+      "tenant": "store_demo",
+      "chain": "leap_second_chain"
+    },
+    "agent": {
+      "id": "agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "email.send",
+      "canonical": "email.send",
+      "riskClass": "LOW",
+      "paramsHash": "sha256:1039f4444937bfcc44d6a6635039cd09db195ebe0b618146280cb8ff107d4329",
+      "reversible": true,
+      "rollbackRef": null
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "EXECUTED",
+      "ruleId": "low-risk-auto",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 0,
+      "prevHash": null,
+      "hash": "sha256:46e15e03db1164055831bee1bac6fe08091b36a823ac4af1951d5c126023f462"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "CGcSB4bohnCNr5J1FFULWALPXR/3SHMfByT8BN9EhAwzmZb3xNFyBmFRrAFD4ZW9DrW9qi7lantIq2Em0kgvAQ=="
+    }
+  }
+]

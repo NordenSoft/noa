@@ -235,6 +235,99 @@ const forgedCheckpoint = buildCheckpoint(forgedCpChain[1]!, "2026-06-20T07:50:00
 write("attack/forged-checkpoint-chain.json", forgedCpChain);
 write("attack/forged-checkpoint-cp.json", forgedCheckpoint);
 
+// 10. CROSS-FIELD COHERENCE — A SIGNED RECEIPT THAT CONTRADICTS ITSELF (2026-08-14).
+//     Every one of these is cryptographically PERFECT: hash recomputed, signature genuine under the
+//     pinned key, linkage intact. Five of them, run through all five shipped verifiers on identical
+//     bytes, came back VALID 25 times out of 25 before the coherence rules landed — signed,
+//     chain-valid, fully-verifying receipts for a CRITICAL action that can be argued BOTH WAYS
+//     after the fact. Each mutates the HEAD (seq 2) and re-seals, so nothing downstream is
+//     disturbed and ONLY the intended rule can reject: the vector proves the rule, not the linkage.
+//
+//     The paired "must STAY VALID" vectors are written at top level below — a rule that refuses
+//     every receipt is not a rule, it is an outage.
+function coherenceVector(name: string, mutate: (r: Receipt) => void): void {
+  const c = clone(chain);
+  mutate(c[2]!);
+  reseal(c[2]!, PRIVATE_KEY);
+  write(`attack/${name}.json`, c);
+}
+// R1: the receipt names the SANDBOX SIMULATOR as the actor while denying it was a simulation.
+coherenceVector("coherence-sandbox-principal", (r) => {
+  r.agent.principal = "SANDBOX_SIM";
+});
+// R2: the receipt records a SIMULATED outcome while denying it was a simulation.
+coherenceVector("coherence-simulated-not-sandboxed", (r) => {
+  r.governance.verdict = "SIMULATED";
+});
+// R3: an action declared impossible to undo, carrying the reference used to undo it.
+coherenceVector("coherence-irreversible-with-rollbackref", (r) => {
+  r.action.reversible = false;
+  r.action.rollbackRef = "snap_1";
+});
+// R4: the receipt says the action WAS undone while declaring it could not be.
+coherenceVector("coherence-rolled-back-irreversible", (r) => {
+  r.governance.verdict = "ROLLED_BACK";
+  r.action.reversible = false;
+});
+// R5: a `ts` with the SHAPE of an RFC 3339 timestamp that denotes no instant — month 13, day 45,
+//     hour 99. Unorderable against its neighbours, so the non-monotonic-ts warning is blind to it.
+coherenceVector("coherence-ts-not-an-instant", (r) => {
+  r.ts = "2026-13-45T99:99:99.000Z";
+});
+
+// 10b. THE OTHER HALF OF THE COHERENCE RULES — these MUST STAY VALID.
+//      A verifier that "fixed" the vectors above by refusing sandboxes, rollbacks or leap seconds
+//      would fail here. Written at top level (not under attack/) exactly like the tenant-relaxation
+//      companions in 5d.
+//      Every field agrees: SANDBOX_SIM acting, sandboxed true, a SIMULATED outcome, and a
+//      reversible action that legitimately carries its rollback reference.
+write("coherence-consistent-sandbox.json", [
+  buildReceipt(
+    {
+      id: "rcpt_coherence_sandbox_ok",
+      ts: "2026-06-20T08:00:00.000Z",
+      scope: { tenant: "store_demo", chain: "coherence_ok_chain" },
+      agent: { id: "agent-rehearsal", model: EXAMPLE_MODEL, principal: "SANDBOX_SIM" },
+      action: { id: "payment.refund", canonical: "payment.refund", riskClass: "CRITICAL", paramsHash: ph("amount=1000000;currency=DKK"), reversible: true, rollbackRef: "snap_rehearsal" },
+      governance: { mode: "on", verdict: "SIMULATED", ruleId: "critical-rehearsal", approval: null, sandboxed: true },
+    },
+    null,
+    signer,
+  ),
+]);
+//      A rollback that really happened: ROLLED_BACK on an action that really was reversible.
+write("coherence-rolled-back-consistent.json", [
+  buildReceipt(
+    {
+      id: "rcpt_coherence_rollback_ok",
+      ts: "2026-06-20T08:01:00.000Z",
+      scope: { tenant: "store_demo", chain: "coherence_ok_chain_2" },
+      agent: { id: "agent-refunds", model: EXAMPLE_MODEL, principal: "SERVICE" },
+      action: { id: "payment.refund", canonical: "payment.refund", riskClass: "HIGH", paramsHash: ph("amount=4200;currency=DKK"), reversible: true, rollbackRef: "snap_before_refund" },
+      governance: { mode: "on", verdict: "ROLLED_BACK", ruleId: "auto-rollback", approval: null, sandboxed: false },
+    },
+    null,
+    signer,
+  ),
+]);
+//      THE LEAP SECOND IS A REAL INSTANT. 23:59:60 has really occurred 27 times; a verifier that
+//      rejects it refuses a truthful receipt, which is its own bug. Pinned here so a later
+//      "tightening" of the R5 rule cannot quietly remove the acceptance.
+write("ts-leap-second.json", [
+  buildReceipt(
+    {
+      id: "rcpt_leap_second",
+      ts: "2026-06-30T23:59:60.000Z",
+      scope: { tenant: "store_demo", chain: "leap_second_chain" },
+      agent: { id: "agent-refunds", model: EXAMPLE_MODEL, principal: "SERVICE" },
+      action: { id: "email.send", canonical: "email.send", riskClass: "LOW", paramsHash: ph("template=refund_confirm"), reversible: true, rollbackRef: null },
+      governance: { mode: "on", verdict: "EXECUTED", ruleId: "low-risk-auto", approval: null, sandboxed: false },
+    },
+    null,
+    signer,
+  ),
+]);
+
 // --- malformed (raw text / structural rejects) ---
 
 // duplicate object key (cannot be expressed with JS objects → raw text)

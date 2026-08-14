@@ -75,6 +75,18 @@ run_case "attack tenant-splice-via-absent (TAMPERED)"      "conformance/vectors/
 run_case "attack tenant-splice-via-absent-long (TAMPERED)" "conformance/vectors/attack/tenant-splice-via-absent-long.json" "$KR"
 run_case "tenant-omission-then-same-tenant (VALID)"        "conformance/vectors/tenant-omission-then-same-tenant.json" "$KR"
 run_case "tenant-enrichment-absent-first (VALID)"          "conformance/vectors/tenant-enrichment-absent-first.json" "$KR"
+# CROSS-FIELD COHERENCE (2026-08-14): cryptographically PERFECT receipts whose SIGNED BODY
+# contradicts itself — VALID in all five verifiers before these rules landed. MALFORMED, decided
+# with no key material at all. The three companions pin the other half: a rule that refuses every
+# receipt is an outage, and the leap second (23:59:60) is a real instant.
+run_case "attack coherence-sandbox-principal (MALFORMED)"    "conformance/vectors/attack/coherence-sandbox-principal.json" "$KR"
+run_case "attack coherence-simulated-not-sandboxed (MALFORMED)" "conformance/vectors/attack/coherence-simulated-not-sandboxed.json" "$KR"
+run_case "attack coherence-irreversible-with-rollbackref (MALFORMED)" "conformance/vectors/attack/coherence-irreversible-with-rollbackref.json" "$KR"
+run_case "attack coherence-rolled-back-irreversible (MALFORMED)" "conformance/vectors/attack/coherence-rolled-back-irreversible.json" "$KR"
+run_case "attack coherence-ts-not-an-instant (MALFORMED)"    "conformance/vectors/attack/coherence-ts-not-an-instant.json" "$KR"
+run_case "coherence-consistent-sandbox (VALID)"              "conformance/vectors/coherence-consistent-sandbox.json" "$KR"
+run_case "coherence-rolled-back-consistent (VALID)"          "conformance/vectors/coherence-rolled-back-consistent.json" "$KR"
+run_case "ts-leap-second (VALID)"                            "conformance/vectors/ts-leap-second.json" "$KR"
 run_case "attack dup-seq (TAMPERED)"                        "conformance/vectors/attack/dup-seq.json" "$KR"
 run_case "attack wrong-signature (TAMPERED)"                "conformance/vectors/attack/wrong-signature.json" "$KR"
 run_case "attack relinked (TAMPERED)"                        "conformance/vectors/attack/relinked.json" "$KR"

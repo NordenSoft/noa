@@ -80,6 +80,19 @@ run_case "attack/tenant-splice-via-absent + keyring"     "$V/attack/tenant-splic
 run_case "attack/tenant-splice-via-absent-long + kr"     "$V/attack/tenant-splice-via-absent-long.json" "$V/keyring.json"
 run_case "tenant-omission-then-same-tenant + keyring"    "$V/tenant-omission-then-same-tenant.json" "$V/keyring.json"
 run_case "tenant-enrichment-absent-first + keyring"      "$V/tenant-enrichment-absent-first.json" "$V/keyring.json"
+# CROSS-FIELD COHERENCE (2026-08-14): five cryptographically PERFECT receipts — hash recomputed,
+# signature genuine, linkage intact — whose SIGNED BODY contradicts itself. All five verified VALID
+# in all five implementations before these rules landed. MALFORMED (exit 3), decided with no key
+# material at all. The three companions below must STAY VALID: a rule that refuses every receipt is
+# an outage, and the leap second (23:59:60) is a real instant.
+run_case "attack/coherence-sandbox-principal + kr"      "$V/attack/coherence-sandbox-principal.json" "$V/keyring.json"
+run_case "attack/coherence-simulated-not-sandboxed"     "$V/attack/coherence-simulated-not-sandboxed.json" "$V/keyring.json"
+run_case "attack/coherence-irreversible-w-rollbackref"  "$V/attack/coherence-irreversible-with-rollbackref.json" "$V/keyring.json"
+run_case "attack/coherence-rolled-back-irreversible"    "$V/attack/coherence-rolled-back-irreversible.json" "$V/keyring.json"
+run_case "attack/coherence-ts-not-an-instant"           "$V/attack/coherence-ts-not-an-instant.json" "$V/keyring.json"
+run_case "coherence-consistent-sandbox + keyring"       "$V/coherence-consistent-sandbox.json" "$V/keyring.json"
+run_case "coherence-rolled-back-consistent + keyring"   "$V/coherence-rolled-back-consistent.json" "$V/keyring.json"
+run_case "ts-leap-second + keyring"                     "$V/ts-leap-second.json" "$V/keyring.json"
 run_case "attack/dup-seq + keyring"                      "$V/attack/dup-seq.json" "$V/keyring.json"
 run_case "attack/wrong-signature + keyring"              "$V/attack/wrong-signature.json" "$V/keyring.json"
 run_case "attack/wrong-signature (no keyring)"           "$V/attack/wrong-signature.json"

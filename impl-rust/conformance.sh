@@ -81,6 +81,18 @@ run_case attack      "tenant-splice-via-absent"                  "$V/attack/tena
 run_case attack      "tenant-splice-via-absent-long"             "$V/attack/tenant-splice-via-absent-long.json" "$KR"
 run_case valid       "tenant-omission-then-same-tenant"          "$V/tenant-omission-then-same-tenant.json" "$KR"
 run_case valid       "tenant-enrichment-absent-first"            "$V/tenant-enrichment-absent-first.json" "$KR"
+# CROSS-FIELD COHERENCE (2026-08-14): cryptographically PERFECT receipts whose SIGNED BODY
+# contradicts itself — VALID in all five verifiers before these rules landed. MALFORMED, decided
+# with no key material. The three `valid` companions pin the other half: a rule that refuses every
+# receipt is an outage, and the leap second (23:59:60) is a real instant.
+run_case attack      "coherence-sandbox-principal"               "$V/attack/coherence-sandbox-principal.json" "$KR"
+run_case attack      "coherence-simulated-not-sandboxed"         "$V/attack/coherence-simulated-not-sandboxed.json" "$KR"
+run_case attack      "coherence-irreversible-with-rollbackref"   "$V/attack/coherence-irreversible-with-rollbackref.json" "$KR"
+run_case attack      "coherence-rolled-back-irreversible"        "$V/attack/coherence-rolled-back-irreversible.json" "$KR"
+run_case attack      "coherence-ts-not-an-instant"               "$V/attack/coherence-ts-not-an-instant.json" "$KR"
+run_case valid       "coherence-consistent-sandbox"              "$V/coherence-consistent-sandbox.json" "$KR"
+run_case valid       "coherence-rolled-back-consistent"          "$V/coherence-rolled-back-consistent.json" "$KR"
+run_case valid       "ts-leap-second (23:59:60 is a real instant)" "$V/ts-leap-second.json" "$KR"
 run_case attack      "relinked"                                  "$V/attack/relinked.json" "$KR"
 run_case attack      "forged-genesis"                            "$V/attack/forged-genesis.json" "$KR"
 run_case attack      "tail-truncated (+ checkpoint)"             "$V/attack/tail-truncated.json" "$KR" --checkpoint "$V/checkpoint.json"

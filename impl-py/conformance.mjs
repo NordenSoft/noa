@@ -231,6 +231,46 @@ structParity("MALFORMED (wrong spec)", (m) => { m.spec = "noa.receipt/9.9"; });
 structParity("MALFORMED (trailing-newline paramsHash, regex fullmatch)", (m) => { m.action.paramsHash = sha256Prefixed("z") + "\n"; });
 structParity("MALFORMED (trailing-newline ts, regex fullmatch)", (m) => { m.ts = "2026-06-21T10:00:00.000Z\n"; });
 
+// ── 13. CROSS-FIELD COHERENCE: a signed receipt that contradicts ITSELF (2026-08-14) ──
+// Every check in the shape validator used to read ONE field, so a receipt could pass all of them and
+// still be a statement that argues both ways. Five such receipts — signed, chain-valid, hash-genuine
+// — verified VALID 25 times out of 25 across all five shipped verifiers. They are decidable with NO
+// KEY MATERIAL AT ALL, so they belong exactly here, beside the smuggled-field vector.
+// A structParityValid twin follows each rule: a rule that refuses every receipt is an outage.
+function structParityValid(label, mutate) {
+  const m = JSON.parse(JSON.stringify(r0));
+  mutate(m);
+  reseal(m);
+  const p = join(dir, `structok-${label.replace(/[^a-z0-9]+/gi, "-")}.json`);
+  writeFileSync(p, JSON.stringify([m]));
+  const tsStatus = verifyChain(b([m]), { keyring: b(keyring) }).status;
+  const tsOk = tsStatus === "VALID";
+  console.log(`${tsOk ? "✓" : "✗"} ${label} [TS verifyChain]: ${tsStatus} (want VALID)`);
+  if (!tsOk) failures++;
+  expect(`${label} [PY verifier]`, pyVerify([p, keyringPath]).code, 0);
+}
+// R1 — the actor is named as the sandbox simulator while the receipt denies it was a simulation.
+structParity("MALFORMED (coherence: SANDBOX_SIM principal, sandboxed false)", (m) => { m.agent.principal = "SANDBOX_SIM"; });
+// R2 — a SIMULATED outcome while the receipt denies it was a simulation.
+structParity("MALFORMED (coherence: SIMULATED verdict, sandboxed false)", (m) => { m.governance.verdict = "SIMULATED"; });
+// R3 — an action declared impossible to undo, carrying the reference used to undo it.
+structParity("MALFORMED (coherence: irreversible action with a rollbackRef)", (m) => { m.action.rollbackRef = "snap_1"; });
+// R4 — the receipt says the action WAS undone while declaring it could not be.
+structParity("MALFORMED (coherence: ROLLED_BACK verdict on an irreversible action)", (m) => { m.governance.verdict = "ROLLED_BACK"; });
+// R5 — a `ts` with the SHAPE of RFC 3339 that denotes no instant: month 13, day 45, hour 99.
+structParity("MALFORMED (coherence: ts is not a real instant, month 13 day 45 hour 99)", (m) => { m.ts = "2026-13-45T99:99:99.000Z"; });
+// R1+R2 twin — an HONEST rehearsal: the simulator acting, sandboxed true, a SIMULATED outcome.
+structParityValid("VALID (coherence: SANDBOX_SIM principal with sandboxed true, SIMULATED)", (m) => {
+  m.agent.principal = "SANDBOX_SIM"; m.governance.sandboxed = true; m.governance.verdict = "SIMULATED";
+});
+// R3+R4 twin — a rollback that really happened, on an action that really was reversible.
+structParityValid("VALID (coherence: ROLLED_BACK on a reversible action carrying its rollbackRef)", (m) => {
+  m.action.reversible = true; m.action.rollbackRef = "snap_1"; m.governance.verdict = "ROLLED_BACK";
+});
+// R5 twin — THE LEAP SECOND IS A REAL INSTANT. 23:59:60 has really occurred 27 times; refusing it
+// would refuse a truthful receipt. Pinned so a later "tightening" cannot quietly remove it.
+structParityValid("VALID (coherence: leap second 23:59:60 is a real instant)", (m) => { m.ts = "2026-06-30T23:59:60.000Z"; });
+
 // ── B4 on-receipt compliance WITH verdict: a receipt carrying governance.compliance
 // (incl. the optional `verdict`) is NOA's OWN B4 output. Both verifiers MUST accept it. Before the port fix
 // the Python validator omitted `verdict` from the optional-key list, so an authentic NOA B4 receipt verified

@@ -1,0 +1,41 @@
+[
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "rcpt_coherence_sandbox_ok",
+    "ts": "2026-06-20T08:00:00.000Z",
+    "scope": {
+      "tenant": "store_demo",
+      "chain": "coherence_ok_chain"
+    },
+    "agent": {
+      "id": "agent-rehearsal",
+      "model": "example-provider/llm-v1",
+      "principal": "SANDBOX_SIM"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "CRITICAL",
+      "paramsHash": "sha256:10e82c3308749936386acc66edc105381ef23e23f134aff38f95c19f86d95794",
+      "reversible": true,
+      "rollbackRef": "snap_rehearsal"
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "SIMULATED",
+      "ruleId": "critical-rehearsal",
+      "approval": null,
+      "sandboxed": true
+    },
+    "chain": {
+      "seq": 0,
+      "prevHash": null,
+      "hash": "sha256:79994ecbf4ea7bd87fc288bc875b9db966130becf118179a8654fc6e4fdaeaf2"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "bDZ+sQuIW+7Aen8FePZoW7VFRhGWnvhXgj4+F4tzb7pE1Wfs/gVkw/+x5mzZHn/IPb/V5EJVNBtc2buUMBxYAA=="
+    }
+  }
+]
