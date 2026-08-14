@@ -1,70 +1,56 @@
 /**
- * THE CAUSE INVENTORY — read out of the IMPLEMENTATION, not out of a list somebody keeps.
+ * THE CAUSE INVENTORY — what the verifier CAN refuse, measured against what it DID refuse.
  *
- * ── THE DEFECT THIS FILE MEASURES, AND WHY ITS SIBLING WAS NOT ENOUGH ────────────────────────────
+ * ── WHAT THE FIRST VERSION OF THIS FILE GOT WRONG ────────────────────────────────────────────────
  *
- * `code-cause-pinning.test.ts` promises "one vector per cause" in its header and enforces something
- * much weaker in its property 3: every member of the `StepCode` UNION appears in some fixture's
- * metadata. A code is not a cause. `E_EXECUTION_FAILED` is produced by eight different rules, so one
- * fixture satisfies the union check for all eight, and the other seven are unmeasured while reading
- * in review as covered.
+ * It scanned two files for the literal token `fail(`, treated each call site as a cause, and let a
+ * cause be excused by a hand-written `UNREACHABLE` row. An adversarial reviewer took it apart in
+ * four moves, and every one of them is now a test below:
  *
- * That is not a hypothetical. It was measured on this branch: deleting the step-11 line
+ *   1. `const hiddenRefusal = fail; hiddenRefusal(...)` — an ALIAS. Invisible to a text scan.
+ *   2. A new cause routed through a HELPER that returns `fail(...)`. Invisible for the same reason,
+ *      and not hypothetical: four distinct R8 causes already flow through one `required(reason)`
+ *      call at `enrolment.ts`, so the old scan saw one cause where there are four.
+ *   3. A refusal in a file that does not declare its own `fail` helper. Outside the scan entirely.
+ *   4. The one that mattered. Step 14's missing-ALLOWED-receipt check was DECLARED unreachable by
+ *      this file — falsely; the role chokepoint returns `receipt: null` rather than refusing, so a
+ *      bundle without `allowedReceipt` reaches it. The reviewer kept the literal `fail(...)` inside
+ *      an `if (false)` branch and returned ok. Cause inventory GREEN 7/7, evidence suite GREEN
+ *      446/446, and a bundle missing its approval receipt verified as VALID_FULL_CHAIN.
  *
- *     if (asStr(consumption.grantHash) !== refHash(b.executionGrant)) return fail(...)
+ * The root cause of all four is one mistake: coverage was decided from SOURCE TEXT. Text cannot tell
+ * a live branch from a dead one, cannot follow a helper, and cannot see through a rename.
  *
- * — the rule that ties an execution consumption to the grant it actually consumed — left the whole
- * evidence suite GREEN at 423/423, including all 116 process-boundary fixtures. A verifier that
- * accepts a gate-signed `EXECUTION_FAILED` consumption naming a DIFFERENT execution grant passed
- * every test in this repository.
+ * ── WHAT IT DOES NOW ─────────────────────────────────────────────────────────────────────────────
  *
- * Adding one fixture for that line closes that line. It closes nothing else: the next binding
- * written without a vector is invisible in exactly the same way. So this file measures the CLASS.
+ * COVERAGE IS DECIDED BY BEHAVIOUR. Every fixture in the corpus is run and every reason the verifier
+ * ACTUALLY EMITTED is recorded. A cause is covered when the running verifier produced it. Nothing
+ * else counts — a `fail(...)` no fixture can reach is ABSENT, not covered, whatever the source says
+ * and whatever anyone declared about it.
  *
- * ── WHAT IT DOES ─────────────────────────────────────────────────────────────────────────────────
+ * The source scan survives only to answer the other half of the question — WHAT COULD have been
+ * emitted — and it is now written to be hard to hide from:
  *
- * The refusal causes are ENUMERATED FROM THE SOURCE with the TypeScript parser — every `fail(...)`
- * call site in the two files that hold this verifier's step rules, with the literal segments of its
- * reason string. Then every conformance fixture is run and its reason recorded. A cause is COVERED
- * when some fixture's reason carries that site's literal segments, in order, under that site's code.
+ *   • every `src/*.ts` file, not a two-file allowlist;
+ *   • REFUSAL PRODUCERS are found by fixed point, not by name: `fail`, anything aliased to it, and
+ *     any function that returns a call to one. `required` is a producer, so its four call sites are
+ *     four causes;
+ *   • a producer call whose reason is its own caller's parameter is a FORWARD, not a cause — the
+ *     causes are that wrapper's call sites, which is what makes the four R8 rows four rows;
+ *   • and a refusal that cannot execute is a hard failure of its own, so the `if (false)` move is
+ *     red before coverage is even considered.
  *
- * Every cause must then be one of three things, and there is no fourth:
+ * ── THE LEDGER IS DEBT, AND IT IS NOT AN EXCUSE ──────────────────────────────────────────────────
  *
- *   COVERED     a fixture in the corpus produces it.
- *   UNREACHABLE declared below, with the earlier rule that makes it unreachable named. If a fixture
- *               ever DOES reach it, this file goes red — "I thought that was dead" is a claim, and
- *               it is measured like any other.
- *   NO_VECTOR   declared below: reachable, and no vector exercises it. This is DEBT, written down in
- *               the repository instead of hiding behind a green suite.
+ * There is no longer an `UNREACHABLE` category, because "I reasoned that this cannot happen" is
+ * exactly the claim that was false. Every cause the corpus does not produce is ABSENT: it is written
+ * down, it is counted, and the set must match EXACTLY — a new one is red, and one that gains a
+ * fixture must be deleted from the list. The list can only shrink.
  *
- * A cause that is none of the three fails this test AND NAMES ITSELF. That is the property that was
- * missing: adding a security binding with no fixture is now red on the commit that adds it.
- *
- * ── THE RATCHET, WHICH IS WHAT KEEPS THE DECLARATIONS HONEST ─────────────────────────────────────
- *
- * A declaration list that only ever grows is the hand-kept list this file exists to replace. Three
- * rules stop that:
- *
- *   1. A declared row whose cause IS covered is RED. Debt that has been paid must be deleted from
- *      the ledger, so the ledger can only shrink through real work — it cannot go stale downward.
- *   2. A declared row that matches NO site, or more than one, is RED. A rule that is deleted or
- *      reworded takes its declaration with it instead of leaving a row that excuses a different one.
- *   3. The declarations are keyed on the REASON TEXT, not on a line number, so they survive a move
- *      and break on a rewrite — which is the direction that matters.
- *
- * ── KNOWN LIMITS, stated rather than glossed ─────────────────────────────────────────────────────
- *
- *   • SHARED HELPERS ARE CREDITED ONCE. `checkGrantBinding` and friends take the code as a
- *     parameter and are called from several steps, so a site reached from step 10 counts as covered
- *     for step 11 too. The per-CALLER matrix is finer than this file measures; what it does close is
- *     the site's existence.
- *   • THE DENOMINATOR IS THE `fail(...)` HELPER. The ingest boundary in `verify-evidence.ts` builds
- *     its refusals as object literals and is measured by `immutable-ingest-boundary.test.ts`
- *     instead. To stop a THIRD rule file appearing outside this scan, the last test below asserts
- *     that exactly the two scanned files declare a `fail(` helper.
- *   • A SITE WHOSE TEXT IS A SUBSTRING of a sibling's under the same code could be credited by the
- *     sibling's fixture. The last property below refuses that: no single fixture may be the only
- *     evidence for two different sites.
+ * KNOWN LIMIT, stated plainly: a cause on the ABSENT list can still be deleted or disabled without
+ * turning anything red, because nothing exercises it. That is what being unmeasured MEANS. The list
+ * is the honest count of it, and the dead-refusal rule below at least stops it being disabled in
+ * place while still reading like a control.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -80,9 +66,6 @@ const CONF = join(HERE, "..", "..", "conformance");
 const SRC = join(HERE, "..", "..", "src");
 const schemas = loadSchemas();
 
-/** The two files that hold this verifier's step rules. Pinned, and the last test guards the pin. */
-const RULE_FILES = ["steps.ts", "enrolment.ts"] as const;
-
 interface Fixture {
   expectVerdict: string; expectStep: string | null; expectCode: string | null;
   now: string; maxAgeHours: number; bundle: unknown;
@@ -90,73 +73,206 @@ interface Fixture {
   enrolmentRegistries?: unknown[]; audience?: string; purpose?: "audit" | "authorize";
 }
 
-/** One `fail(...)` call site. `segments` is null when the reason is not a literal — see RELAYS. */
-interface Site {
+/** A call site that supplies the REASON TEXT of a refusal. */
+interface Cause {
   file: string;
   line: number;
-  /** The static code, or `<dynamic>` when the enclosing helper takes it as a parameter. */
+  /** The static code where one is known (directly, or from the wrapper that carries it). */
   code: string;
+  /** Literal fragments of the reason, in order. `null` when the reason carries no literal at all. */
   segments: string[] | null;
-  /** The reason expression as written, for the RELAYS declaration and for error messages. */
   expr: string;
+  /** The producer this call went through — `fail` directly, or the wrapper's name. */
+  via: string;
 }
+
+const srcFiles = (): string[] =>
+  readdirSync(SRC).filter((f) => f.endsWith(".ts") && !f.endsWith(".d.ts")).sort();
 
 // ── ENUMERATION ─────────────────────────────────────────────────────────────────────────────────
 
-/**
- * The literal parts of a reason expression, in order. `${…}` holes are dropped: what survives is
- * the text the rule ALWAYS emits, which is what a produced reason can be matched against.
- * Returns null for an expression that carries no literal of its own (a relayed reason).
- */
 function literalSegments(node: ts.Node): string[] | null {
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return [node.text];
   if (ts.isTemplateExpression(node)) {
     return [node.head.text, ...node.templateSpans.map((s) => s.literal.text)].filter((s) => s.length > 0);
   }
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const left = literalSegments(node.left);
-    const right = literalSegments(node.right);
-    if (left === null || right === null) return null;
-    if (left.length === 0 || right.length === 0) return [...left, ...right];
-    // The join is CONTIGUOUS text, so the two halves either side of the `+` become one segment.
-    return [...left.slice(0, -1), left[left.length - 1]! + right[0]!, ...right.slice(1)];
+    const l = literalSegments(node.left);
+    const r = literalSegments(node.right);
+    if (l === null || r === null) return null;
+    if (l.length === 0 || r.length === 0) return [...l, ...r];
+    return [...l.slice(0, -1), l[l.length - 1]! + r[0]!, ...r.slice(1)];
   }
   if (ts.isParenthesizedExpression(node)) return literalSegments(node.expression);
   return null;
 }
 
-function enumerateSites(): Site[] {
-  const sites: Site[] = [];
-  for (const file of RULE_FILES) {
-    const text = readFileSync(join(SRC, file), "utf8");
-    const sf = ts.createSourceFile(file, text, ts.ScriptTarget.ES2022, true);
+/** The function-like node that lexically encloses a node, if any. */
+function enclosingFunction(node: ts.Node): ts.SignatureDeclaration | null {
+  for (let p: ts.Node | undefined = node.parent; p; p = p.parent) {
+    if (ts.isFunctionDeclaration(p) || ts.isArrowFunction(p) || ts.isFunctionExpression(p) || ts.isMethodDeclaration(p)) return p;
+  }
+  return null;
+}
+
+/** The name a function-like node is bound to (`function f()` or `const f = () => …`). */
+function boundName(fn: ts.Node): string | null {
+  if (ts.isFunctionDeclaration(fn) && fn.name) return fn.name.text;
+  const p = fn.parent;
+  if (p && ts.isVariableDeclaration(p) && ts.isIdentifier(p.name)) return p.name.text;
+  return null;
+}
+
+interface Producer {
+  /** Which argument carries the reason text. */
+  reasonArg: number;
+  /** The static code every call through this producer reports, when there is one. */
+  code: string | null;
+}
+
+interface Parsed { file: string; sf: ts.SourceFile }
+
+/** Is this call the direct value of a `return`, or of a concise arrow body? */
+function isDirectlyReturned(call: ts.CallExpression): boolean {
+  const p = call.parent;
+  if (!p) return false;
+  if (ts.isReturnStatement(p)) return true;
+  if (ts.isArrowFunction(p) && p.body === call) return true;
+  return false;
+}
+
+/**
+ * Which parameter, if any, CARRIES the reason — as opposed to merely decorating it.
+ *
+ * Deliberately narrow, and the narrowness is the point. `required` builds its reason as
+ * `` `${reason} (R8)` `` — the parameter IS the reason, with a suffix. `roleReceipt` builds
+ * `` `${r.reason} [consumed by ${consumer}]` `` — `consumer` appears, but the reason comes from
+ * somewhere else entirely and `consumer` is a label inside it. An "any parameter mentioned" rule
+ * made every `roleReceipt(ctx, "allowedReceipt", S)` call look like a refusal cause whose reason was
+ * the identifier `S`, which is how this scan first reported seventeen unreadable causes that are not
+ * causes at all.
+ */
+function reasonCarrierParam(reasonExpr: ts.Expression, params: readonly (string | null)[]): number {
+  if (ts.isIdentifier(reasonExpr)) return params.indexOf(reasonExpr.text);
+  if (ts.isTemplateExpression(reasonExpr) && reasonExpr.head.text === "") {
+    const first = reasonExpr.templateSpans[0]?.expression;
+    if (first && ts.isIdentifier(first)) return params.indexOf(first.text);
+  }
+  return -1;
+}
+
+/**
+ * REFUSAL PRODUCERS, by fixed point.
+ *
+ * Seeded with any function named `fail`, then repeatedly extended with (a) identifiers aliased to a
+ * producer and (b) any function whose body returns a call to a producer. The reason argument index
+ * is DERIVED, not assumed: it is the position of the parameter that the inner call passes into the
+ * producer's own reason slot, so a wrapper that renames or reorders its parameters is still tracked.
+ */
+function findProducers(parsed: Parsed[]): Map<string, Producer> {
+  const producers = new Map<string, Producer>();
+  for (const { sf } of parsed) {
     const walk = (n: ts.Node): void => {
-      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && n.expression.text === "fail" && n.arguments.length >= 3) {
-        const codeNode = n.arguments[1]!;
-        const reasonNode = n.arguments[2]!;
-        sites.push({
-          file,
-          line: sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1,
-          code: ts.isStringLiteral(codeNode) ? codeNode.text : "<dynamic>",
-          segments: literalSegments(reasonNode),
-          expr: reasonNode.getText(sf).replace(/\s+/g, " ").slice(0, 100),
-        });
+      if (ts.isFunctionDeclaration(n) && n.name?.text === "fail") {
+        const idx = n.parameters.findIndex((p) => ts.isIdentifier(p.name) && p.name.text === "reason");
+        producers.set("fail", { reasonArg: idx >= 0 ? idx : n.parameters.length - 1, code: null });
       }
       ts.forEachChild(n, walk);
     };
     walk(sf);
   }
-  return sites;
+  assert.ok(producers.has("fail"), "no `fail` refusal helper was found in src/ — this scan is measuring nothing");
+
+  for (let pass = 0; pass < 8; pass += 1) {
+    const before = producers.size;
+    for (const { sf } of parsed) {
+      const walk = (n: ts.Node): void => {
+        // (a) ALIAS — `const hiddenRefusal = fail;`
+        if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer && ts.isIdentifier(n.initializer)) {
+          const target = producers.get(n.initializer.text);
+          if (target && !producers.has(n.name.text)) producers.set(n.name.text, { ...target });
+        }
+        // (b) WRAPPER — a function that RETURNS a producer call and passes its own parameter in as
+        //     the reason. Both halves are required: `roleReceipt` mentions a parameter inside a
+        //     reason it did not author and returns an object, and it is not a reason-forwarder.
+        if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && producers.has(n.expression.text) && isDirectlyReturned(n)) {
+          const inner = producers.get(n.expression.text)!;
+          const fn = enclosingFunction(n);
+          const name = fn ? boundName(fn) : null;
+          if (fn && name && !producers.has(name)) {
+            const reasonExpr = n.arguments[inner.reasonArg];
+            if (reasonExpr) {
+              const params = fn.parameters.map((p) => (ts.isIdentifier(p.name) ? p.name.text : null));
+              const carried = reasonCarrierParam(reasonExpr, params);
+              if (carried >= 0) {
+                const codeArg = n.arguments[1];
+                producers.set(name, {
+                  reasonArg: carried,
+                  code: codeArg && ts.isStringLiteral(codeArg) ? codeArg.text : inner.code,
+                });
+              }
+            }
+          }
+        }
+        ts.forEachChild(n, walk);
+      };
+      walk(sf);
+    }
+    if (producers.size === before) break;
+  }
+  return producers;
 }
 
-const SITES = enumerateSites();
-const at = (s: Site) => `src/${s.file}:${s.line}`;
+function enumerateCauses(parsed: Parsed[], producers: Map<string, Producer>): Cause[] {
+  const causes: Cause[] = [];
+  for (const { file, sf } of parsed) {
+    const walk = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && producers.has(n.expression.text)) {
+        const prod = producers.get(n.expression.text)!;
+        const reasonExpr = n.arguments[prod.reasonArg];
+        if (reasonExpr) {
+          // A FORWARD, not a cause: this call is inside a wrapper and is passing that wrapper's own
+          // parameter through. The causes are the wrapper's call sites, counted separately.
+          const fn = enclosingFunction(n);
+          const enclosingName = fn ? boundName(fn) : null;
+          const isForward =
+            !!enclosingName && producers.has(enclosingName) && enclosingName !== n.expression.text &&
+            reasonCarrierParam(reasonExpr, fn!.parameters.map((p) => (ts.isIdentifier(p.name) ? p.name.text : null))) >= 0;
+          if (!isForward) {
+            const codeArg = n.arguments[1];
+            causes.push({
+              file,
+              line: sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1,
+              code: n.expression.text === "fail" && codeArg && ts.isStringLiteral(codeArg)
+                ? codeArg.text
+                : (prod.code ?? "<dynamic>"),
+              segments: literalSegments(reasonExpr),
+              expr: reasonExpr.getText(sf).replace(/\s+/g, " ").slice(0, 100),
+              via: n.expression.text,
+            });
+          }
+        }
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(sf);
+  }
+  return causes;
+}
 
-// ── THE CORPUS, RUN ONCE ────────────────────────────────────────────────────────────────────────
+const PARSED: Parsed[] = srcFiles().map((file) => ({
+  file,
+  sf: ts.createSourceFile(file, readFileSync(join(SRC, file), "utf8"), ts.ScriptTarget.ES2022, true),
+}));
+const PRODUCERS = findProducers(PARSED);
+const CAUSES = enumerateCauses(PARSED, PRODUCERS);
+const at = (c: Cause) => `src/${c.file}:${c.line}`;
+
+// ── THE CORPUS, RUN ONCE — THIS IS WHAT DECIDES COVERAGE ────────────────────────────────────────
 
 interface Produced { fixture: string; code: string | undefined; reason: string }
 
-function runCorpus(): Produced[] {
+const PRODUCED: Produced[] = (() => {
   const out: Produced[] = [];
   for (const slug of readdirSync(CONF)) {
     const abs = join(CONF, slug);
@@ -170,19 +286,14 @@ function runCorpus(): Produced[] {
         ...(fx.enrolmentRegistries !== undefined ? { enrolmentRegistries: fx.enrolmentRegistries.map((r) => b(r)) } : {}),
         ...(fx.audience !== undefined ? { audience: fx.audience } : {}),
         ...(fx.purpose !== undefined ? { purpose: fx.purpose } : {}),
-        now: fx.now,
-        maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
-        schemas,
+        now: fx.now, maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000, schemas,
       });
       if (res.reason) out.push({ fixture: `${slug}/${f}`, code: res.code, reason: res.reason });
     }
   }
   return out;
-}
+})();
 
-const PRODUCED = runCorpus();
-
-/** Every literal segment appears, in order, in the produced reason. */
 function carries(segments: readonly string[], reason: string): boolean {
   let from = 0;
   for (const seg of segments) {
@@ -193,447 +304,221 @@ function carries(segments: readonly string[], reason: string): boolean {
   return true;
 }
 
-/**
- * The fixtures that evidence a site. The CODE must agree too where the site names one statically —
- * without it `"consumption.grantHash != refHash(grant)"` (step 11) is credited by step 10's
- * `"consumption.grantHash != refHash(grant) (F1)"`, which is a different rule on a different path.
- */
-function evidenceFor(site: Site): Produced[] {
-  if (site.segments === null) return [];
+/** The fixtures that actually made the verifier emit this cause. Behaviour, not text. */
+function evidenceFor(c: Cause): Produced[] {
+  if (c.segments === null) return [];
   return PRODUCED.filter(
-    (p) => (site.code === "<dynamic>" || p.code === site.code) && carries(site.segments!, p.reason),
+    (p) => (c.code === "<dynamic>" || p.code === c.code) && carries(c.segments!, p.reason),
   );
 }
 
-// ── THE DECLARATIONS ────────────────────────────────────────────────────────────────────────────
+// ── THE LEDGER: causes the corpus does not produce. DEBT, not permission. ───────────────────────
 
-/**
- * A cause with no vector. `kind` says WHICH claim is being made, because they are different claims
- * and only one of them is debt.
- *
- *   UNREACHABLE — an earlier rule refuses every bundle that would reach this one. `why` names that
- *                 rule. The guard is a REFUSAL rather than a `null`, which is correct defensive
- *                 practice; it is unmeasurable precisely because it is unreachable.
- *   NO_VECTOR   — reachable, and no fixture exercises it. Debt. It is written here so a reader of
- *                 this repository can count it, which is the whole difference from where this
- *                 branch started.
- *
- * `fragment` identifies the site by its own text. It must match exactly one site.
- */
-interface Declared {
-  code: string;
-  fragment: string;
-  kind: "UNREACHABLE" | "NO_VECTOR";
-  why: string;
-}
+interface Absent { code: string; fragment: string; why: string }
 
-const DECLARED: readonly Declared[] = [
-  // NOTE, and it is the first thing this file proved. Four rows stood here declaring the per-outcome
-  // absence rules UNREACHABLE "because step 0's union pre-rule refuses them first". That is FALSE:
-  // `STEP_OWNED_ABSENCE` exempts exactly those three fields for exactly those four outcomes so the
-  // owning step reports the contradiction under its own code. The ratchet below refuted the claim on
-  // the one of the four that had a fixture, and the other three got the fixtures they were missing.
-  // The rows are gone rather than reworded — which is what a ledger is for.
+const ABSENT: readonly Absent[] = [
+  // Bundle/artifact presence guards. The container schema makes most of these members mandatory, so
+  // reaching them needs a bundle the ingest boundary already refuses — but "needs" is a claim, and
+  // the Step 14 row that used to sit here was FALSE, so none of them is written as a fact any more.
+  { code: "E_BUNDLE_SHAPE", fragment: "a mandatory artifact is missing or not an object", why: "step 0 re-reads members the container schema requires" },
+  { code: "E_BUNDLE_SHAPE", fragment: "delegation/manifest/envelope missing", why: "step 1 re-reads members the container schema requires" },
+  { code: "E_ENVELOPE_BINDING", fragment: "holdEnvelope missing", why: "step 2 re-reads a mandatory member" },
+  { code: "E_HOLD_RESOLUTION", fragment: "holdResolution/holdEnvelope missing", why: "step 3 re-reads members its outcomes require" },
+  { code: "E_VERDICT_BINDING", fragment: "deferredReceipt missing", why: "step 6 re-reads the genesis receipt" },
+  { code: "E_TENANT_MISMATCH", fragment: "holdEnvelope.tenant missing", why: "the holdEnvelope schema requires tenant" },
+  { code: "E_HOLD_ENVELOPE", fragment: "keyManifest.keys is not an array", why: "the keyManifest schema requires an array" },
+  { code: "E_EXECUTED", fragment: "EXECUTED requires grant+consumption+executedReceipt+allowedReceipt", why: "the EXECUTED row of the container schema plus the role chokepoint" },
+  { code: "E_EXECUTION_FAILED", fragment: "EXECUTION_FAILED requires grant+consumption+failedReceipt+allowedReceipt", why: "the EXECUTION_FAILED row of the same schema" },
+  { code: "E_UNKNOWN", fragment: "UNKNOWN_AFTER_DISPATCH requires grant+executionUncertainty", why: "the UNKNOWN_AFTER_DISPATCH row of the same schema" },
+  { code: "E_GRANT_EXPIRED", fragment: "GRANT_EXPIRED requires grant+allowedReceipt", why: "the GRANT_EXPIRED row of the same schema" },
+  { code: "E_APPROVED_NO_EXEC", fragment: "APPROVED_NO_EXECUTION_EVIDENCE requires the Hold Resolution", why: "the APPROVED_NO_EXECUTION_EVIDENCE row of the same schema" },
+  { code: "<dynamic>", fragment: "no executionConsumption to read a result from", why: "both callers prove the consumption present first" },
+  { code: "<dynamic>", fragment: "grant/consumption missing for the G5 expiry check", why: "both callers prove both present first" },
+  { code: "<dynamic>", fragment: "outcome carries no executionGrant to bind", why: "every caller proves the grant present first" },
+  { code: "E_APPROVER_ROLE", fragment: "no authenticated decisionArtifact snapshot", why: "step 5 runs only after step 4 stored the snapshot; the pipeline-order test owns this" },
+  { code: "E_SETTLEMENT_BINDING", fragment: "cannot read the verifier's own tenant/chain", why: "step 0 establishes both before any settlement artifact is read" },
+  { code: "E_TEMPORAL_AUTH", fragment: "verifier-owned now is unparseable", why: "the ingest boundary refuses an unparseable now; immutable-ingest-boundary.test.ts owns it" },
 
-  // ── UNREACHABLE: the container schema (step 0, E_BUNDLE_SHAPE) already requires these members, so
-  //    a bundle missing one never reaches the step that re-checks it. The re-check stays because a
-  //    step function is exported and a downstream caller may drive it directly.
-  {
-    code: "E_BUNDLE_SHAPE", fragment: "a mandatory artifact is missing or not an object",
-    kind: "UNREACHABLE",
-    why: "the container schema refuses a bundle missing holdEnvelope/keyManifest/keyDelegation/deferredReceipt before step 0's body runs",
-  },
-  {
-    code: "E_BUNDLE_SHAPE", fragment: "delegation/manifest/envelope missing",
-    kind: "UNREACHABLE", why: "same container schema — step 1 re-reads members step 0 proved present",
-  },
-  {
-    code: "E_ENVELOPE_BINDING", fragment: "holdEnvelope missing",
-    kind: "UNREACHABLE", why: "same container schema; step 2 re-reads a mandatory member",
-  },
-  {
-    code: "E_HOLD_RESOLUTION", fragment: "holdResolution/holdEnvelope missing",
-    kind: "UNREACHABLE", why: "step 3 runs only for outcomes whose union includes holdResolution, and the envelope is mandatory",
-  },
-  {
-    code: "E_VERDICT_BINDING", fragment: "deferredReceipt missing",
-    kind: "UNREACHABLE", why: "same container schema; the deferred receipt is the genesis of the chain and mandatory",
-  },
-  {
-    code: "E_TENANT_MISMATCH", fragment: "holdEnvelope.tenant missing",
-    kind: "UNREACHABLE", why: "the holdEnvelope schema requires tenant, and the artifact is schema-checked at step 1",
-  },
-  {
-    code: "E_HOLD_ENVELOPE", fragment: "keyManifest.keys is not an array",
-    kind: "UNREACHABLE", why: "the keyManifest schema requires keys to be an array",
-  },
-  {
-    code: "<dynamic>", fragment: "no executionConsumption to read a result from",
-    kind: "UNREACHABLE",
-    why: "both callers of checkConsumptionResult prove the consumption present first (steps.ts:1141, :1202); the source comment says so and this row is the measurement of that claim",
-  },
-  {
-    code: "<dynamic>", fragment: "grant/consumption missing for the G5 expiry check",
-    kind: "UNREACHABLE", why: "both callers of checkGrantUnexpiredAtConsumption prove both present first",
-  },
-  {
-    code: "<dynamic>", fragment: "outcome carries no executionGrant to bind",
-    kind: "UNREACHABLE", why: "every caller of checkGrantBinding proves the grant present first",
-  },
-  {
-    code: "E_EXECUTED", fragment: "EXECUTED requires grant+consumption+executedReceipt+allowedReceipt",
-    kind: "UNREACHABLE",
-    why: "the EXECUTED row of the container schema makes all four mandatory, and the two receipts are resolved through the role chokepoint above, which refuses first",
-  },
-  {
-    code: "E_EXECUTION_FAILED", fragment: "EXECUTION_FAILED requires grant+consumption+failedReceipt+allowedReceipt",
-    kind: "UNREACHABLE", why: "the EXECUTION_FAILED row of the same schema, same chokepoint",
-  },
-  {
-    code: "E_UNKNOWN", fragment: "UNKNOWN_AFTER_DISPATCH requires grant+executionUncertainty",
-    kind: "UNREACHABLE", why: "the UNKNOWN_AFTER_DISPATCH row of the same schema",
-  },
-  {
-    code: "E_GRANT_EXPIRED", fragment: "GRANT_EXPIRED requires grant+allowedReceipt",
-    kind: "UNREACHABLE", why: "the GRANT_EXPIRED row of the same schema, plus the role chokepoint for the receipt",
-  },
-  {
-    code: "E_APPROVED_NO_EXEC", fragment: "APPROVED_NO_EXECUTION_EVIDENCE requires the ALLOWED receipt",
-    kind: "UNREACHABLE", why: "the role chokepoint resolves allowedReceipt and refuses before this line",
-  },
-  {
-    code: "E_APPROVED_NO_EXEC", fragment: "APPROVED_NO_EXECUTION_EVIDENCE requires the Hold Resolution",
-    kind: "UNREACHABLE", why: "the APPROVED_NO_EXECUTION_EVIDENCE row of the container schema makes holdResolution mandatory",
-  },
-  {
-    code: "E_APPROVER_ROLE", fragment: "no authenticated decisionArtifact snapshot",
-    kind: "UNREACHABLE",
-    why: "step 5 runs only after step 4 authenticated the decision and stored the snapshot; the refusal is the fail-closed answer to a step-ordering bug, which the pipeline order test owns",
-  },
-  {
-    code: "E_SETTLEMENT_BINDING", fragment: "cannot read the verifier's own tenant/chain",
-    kind: "UNREACHABLE",
-    why: "step 0 established the tenant and the genesis receipt's scope.chain before any settlement artifact is looked at; R-11's guard exists so the artifact can never supply them",
-  },
-  {
-    code: "E_TEMPORAL_AUTH", fragment: "verifier-owned now is unparseable",
-    kind: "UNREACHABLE",
-    why: "verify-evidence.ts refuses an unparseable now at the ingest boundary, which immutable-ingest-boundary.test.ts measures",
-  },
-
-  // ── NO_VECTOR: reachable and unmeasured. DEBT. Every row here is a rule that can be deleted today
-  //    without turning this corpus red, and that is exactly why it is written down.
-  {
-    code: "E_TENANT_MISMATCH", fragment: "checkpoint.chain (", kind: "NO_VECTOR",
-    why: "a checkpoint whose chain differs from the deferred receipt's scope.chain",
-  },
-  {
-    code: "E_HOLD_RESOLUTION", fragment: "holdResolution.receivedAt unreadable", kind: "NO_VECTOR",
-    why: "an unreadable receivedAt on the resolution",
-  },
-  {
-    code: "E_DELEGATION_CHAIN", fragment: "keyDelegation.permissions lacks key-manifest-sign", kind: "NO_VECTOR",
-    why: "a delegation that authenticates but does not carry the permission it is being used for",
-  },
-  {
-    code: "E_DELEGATION_CHAIN", fragment: "keyDelegation not valid at holdResolution.receivedAt", kind: "NO_VECTOR",
-    why: "the delegation's window does not contain the decision instant",
-  },
-  {
-    code: "E_DELEGATION_CHAIN", fragment: "cannot evaluate verifier-controlled now", kind: "NO_VECTOR",
-    why: "an unparseable verifier now on the delegated-signer path",
-  },
-  {
-    code: "E_DELEGATION_CHAIN", fragment: "delegated manifest signer is not authorized at verifier-controlled now", kind: "NO_VECTOR",
-    why: "the delegated signer's authority has lapsed by the verifier's own clock",
-  },
-  {
-    code: "E_DELEGATION_CHAIN", fragment: "is AFTER keyDelegation.expiresAt", kind: "NO_VECTOR",
-    why: "a manifest stamped after the delegation that authorizes its signer had lapsed",
-  },
-  {
-    code: "E_HOLD_ENVELOPE", fragment: "keyManifest not current at receivedAt", kind: "NO_VECTOR",
-    why: "a manifest whose own window does not contain the decision instant",
-  },
-  {
-    code: "E_HOLD_ENVELOPE", fragment: "reject-only window", kind: "NO_VECTOR",
-    why: "the reject-only manifest window against the verifier's now",
-  },
-  {
-    code: "E_HOLD_ENVELOPE", fragment: "holdEnvelope.keyManifestVersion", kind: "NO_VECTOR",
-    why: "an envelope naming a manifest version other than the one supplied",
-  },
-  {
-    code: "E_HOLD_ENVELOPE", fragment: "holdEnvelope.keyManifestHash != refHash(keyManifest)", kind: "NO_VECTOR",
-    why: "an envelope bound to a different manifest by hash",
-  },
-  {
-    code: "E_ENVELOPE_BINDING", fragment: "holdEnvelope.deferredReceiptId != deferredReceipt.id", kind: "NO_VECTOR",
-    why: "the id half of F1 rule-a; the hash half is covered",
-  },
-  {
-    code: "E_HOLD_RESOLUTION", fragment: "holdResolution invalid: ", kind: "NO_VECTOR",
-    why: "a resolution that fails its own artifact verification",
-  },
-  {
-    code: "E_HOLD_RESOLUTION", fragment: "holdResolution.holdEnvelopeHash != refHash(holdEnvelope)", kind: "NO_VECTOR",
-    why: "a resolution bound to a different envelope",
-  },
-  {
-    code: "E_HOLD_RESOLUTION", fragment: "holdResolution manifest version/hash != envelope's", kind: "NO_VECTOR",
-    why: "a resolution disagreeing with the envelope about the manifest",
-  },
-  {
-    code: "E_HOLD_RESOLUTION", fragment: "holdResolution.decisionArtifactHash != refHash(decisionArtifact)", kind: "NO_VECTOR",
-    why: "a resolution bound to a different decision artifact",
-  },
-  {
-    code: "E_HOLD_RESOLUTION", fragment: "but no decisionArtifact is present in the bundle", kind: "NO_VECTOR",
-    why: "a resolution naming a decision the bundle does not carry",
-  },
-  {
-    code: "E_HOLD_RESOLUTION", fragment: "holdResolution.verdictReceiptHash != verdict receipt chain.hash (G4)", kind: "NO_VECTOR",
-    why: "the G4 resolution-to-verdict-receipt binding",
-  },
-  {
-    code: "E_HOLD_RESOLUTION", fragment: "CANCELLED with no pre-crash ALLOWED receipt requires verdictReceiptHash == null", kind: "NO_VECTOR",
-    why: "a CANCELLED resolution naming a verdict receipt it does not carry",
-  },
-  {
-    code: "E_DECISION", fragment: "decisionArtifact is not a JSON object", kind: "NO_VECTOR",
-    why: "a decision artifact that parses to a non-object",
-  },
-  {
-    code: "E_DECISION", fragment: "DENIED outcome requires decision=DENY, got ", kind: "NO_VECTOR",
-    why: "the DENIED half of the decision-polarity rule; the non-DENIED half is covered",
-  },
-  {
-    code: "E_APPROVER_ROLE", fragment: "decision.approverKid != decision.sig.kid", kind: "NO_VECTOR",
-    why: "a decision signed by a key other than the approver it names",
-  },
-  {
-    code: "E_APPROVER_ROLE", fragment: "!= decision approverKid", kind: "NO_VECTOR",
-    why: "a verdict receipt signed by a key other than the approver",
-  },
-  {
-    code: "E_APPROVER_ROLE", fragment: "not an APPROVER in the manifest", kind: "NO_VECTOR",
-    why: "an approver kid absent from the manifest's approver set",
-  },
-  {
-    code: "E_APPROVER_ROLE", fragment: "action HIGH needs approve-high|approve-critical", kind: "NO_VECTOR",
-    why: "the HIGH tier of the approver-role ladder; the CRITICAL tier is covered",
-  },
-  {
-    code: "E_VERDICT_BINDING", fragment: "verdict receipt scope.chain != deferred scope.chain", kind: "NO_VECTOR",
-    why: "a verdict receipt from another chain",
-  },
-  {
-    code: "E_DENIED", fragment: "DENIED requires a bound DENY Decision Artifact", kind: "NO_VECTOR",
-    why: "a DENIED outcome whose decision is not bound",
-  },
-  {
-    code: "E_EXPIRED", fragment: "EXPIRED outcome requires timeoutReceipt", kind: "NO_VECTOR",
-    why: "an EXPIRED outcome with no timeout receipt",
-  },
-  {
-    code: "E_EXPIRED", fragment: "timeoutReceipt.agent.principal != POLICY", kind: "NO_VECTOR",
-    why: "a timeout receipt not attributed to the policy signer",
-  },
-  {
-    code: "E_EXPIRED", fragment: "holdResolution.status != EXPIRED", kind: "NO_VECTOR",
-    why: "an EXPIRED outcome whose resolution says otherwise",
-  },
-  {
-    code: "E_CANCELLED", fragment: "holdResolution.status != CANCELLED", kind: "NO_VECTOR",
-    why: "a CANCELLED outcome whose resolution says otherwise",
-  },
-  {
-    code: "<dynamic>", fragment: "carries an executionGrant but no allowedReceipt", kind: "NO_VECTOR",
-    why: "a grant with no approval receipt to trace it to",
-  },
-  {
-    code: "E_EXECUTED", fragment: "executionConsumption invalid: ", kind: "NO_VECTOR",
-    why: "a consumption that fails its own artifact verification, on the EXECUTED path",
-  },
-  {
-    code: "E_EXECUTION_FAILED", fragment: "executionConsumption invalid: ", kind: "NO_VECTOR",
-    why: "the same, on the EXECUTION_FAILED path",
-  },
-  {
-    code: "E_EXECUTED", fragment: "executedReceipt.chain.prevHash != allowedReceipt.chain.hash", kind: "NO_VECTOR",
-    why: "an executed receipt that does not chain onto the approval",
-  },
-  {
-    code: "E_EXECUTION_FAILED", fragment: "failedReceipt.chain.prevHash != allowedReceipt.chain.hash", kind: "NO_VECTOR",
-    why: "a failed receipt that does not chain onto the approval",
-  },
-  {
-    code: "E_EXECUTION_FAILED", fragment: "grant not issued before the failure", kind: "NO_VECTOR",
-    why: "a grant issued after the failure it is supposed to have authorized",
-  },
-  {
-    code: "E_UNKNOWN", fragment: "executionUncertainty invalid: ", kind: "NO_VECTOR",
-    why: "an uncertainty artifact that fails its own verification",
-  },
-  {
-    code: "E_UNKNOWN", fragment: "uncertainty.grantHash != refHash(grant)", kind: "NO_VECTOR",
-    why: "the UNKNOWN_AFTER_DISPATCH sibling of the step-10/11 grant binding",
-  },
-  {
-    code: "E_UNKNOWN", fragment: "uncertainty.lastKnownState != DISPATCH_STARTED", kind: "NO_VECTOR",
-    why: "an uncertainty claiming a state other than the one this outcome is about",
-  },
-  {
-    code: "E_UNKNOWN", fragment: "uncertainty.reason != PROCESS_CRASH_BEFORE_RECEIPT_COMMIT", kind: "NO_VECTOR",
-    why: "an uncertainty claiming a cause other than the crash this outcome is about",
-  },
-  {
-    code: "E_UNKNOWN", fragment: "uncertainty missing required bootId/uptimeResetAt (G3)", kind: "NO_VECTOR",
-    why: "the G3 liveness fields absent; the inconsistent-order case IS covered",
-  },
-  {
-    code: "E_CHECKPOINT_RECONCILE", fragment: "chain is not genesis-rooted", kind: "NO_VECTOR",
-    why: "a chain whose first receipt is not seq 0 / prevHash null",
-  },
-  {
-    code: "E_CHECKPOINT_RECONCILE", fragment: "checkpoint structurally invalid: ", kind: "NO_VECTOR",
-    why: "a checkpoint that fails its own structural check",
-  },
-  {
-    code: "E_CHECKPOINT_RECONCILE", fragment: "checkpoint signing key is retired", kind: "NO_VECTOR",
-    why: "a checkpoint signed by a retired key",
-  },
-  {
-    code: "E_RECEIPT_ROLE", fragment: "but no step routed it through the receipt-role chokepoint", kind: "NO_VECTOR",
-    why: "the step-19 sweep's unrouted-receipt branch",
-  },
+  // Reachable and simply unmeasured. Every row is a rule that can be deleted today without turning
+  // this corpus red.
+  { code: "E_TENANT_MISMATCH", fragment: "checkpoint.chain (", why: "a checkpoint whose chain differs from the deferred receipt's scope.chain" },
+  { code: "E_HOLD_RESOLUTION", fragment: "holdResolution.receivedAt unreadable", why: "an unreadable receivedAt on the resolution" },
+  { code: "E_DELEGATION_CHAIN", fragment: "keyDelegation.permissions lacks key-manifest-sign", why: "a delegation used for a permission it does not carry" },
+  { code: "E_DELEGATION_CHAIN", fragment: "keyDelegation not valid at holdResolution.receivedAt", why: "the delegation window does not contain the decision instant" },
+  { code: "E_DELEGATION_CHAIN", fragment: "cannot evaluate verifier-controlled now", why: "an unparseable verifier now on the delegated-signer path" },
+  { code: "E_DELEGATION_CHAIN", fragment: "delegated manifest signer is not authorized at verifier-controlled now", why: "the delegated signer's authority has lapsed by the verifier's clock" },
+  { code: "E_DELEGATION_CHAIN", fragment: "is AFTER keyDelegation.expiresAt", why: "a manifest stamped after its delegation lapsed" },
+  { code: "E_HOLD_ENVELOPE", fragment: "keyManifest not current at receivedAt", why: "a manifest whose window excludes the decision instant" },
+  { code: "E_HOLD_ENVELOPE", fragment: "reject-only window", why: "the reject-only manifest window against the verifier's now" },
+  { code: "E_HOLD_ENVELOPE", fragment: "holdEnvelope.keyManifestVersion", why: "an envelope naming another manifest version" },
+  { code: "E_HOLD_ENVELOPE", fragment: "holdEnvelope.keyManifestHash != refHash(keyManifest)", why: "an envelope bound to a different manifest by hash" },
+  { code: "E_ENVELOPE_BINDING", fragment: "holdEnvelope.deferredReceiptId != deferredReceipt.id", why: "the id half of F1 rule-a" },
+  { code: "E_HOLD_RESOLUTION", fragment: "holdResolution invalid: ", why: "a resolution failing its own artifact verification" },
+  { code: "E_HOLD_RESOLUTION", fragment: "holdResolution.holdEnvelopeHash != refHash(holdEnvelope)", why: "a resolution bound to a different envelope" },
+  { code: "E_HOLD_RESOLUTION", fragment: "holdResolution manifest version/hash != envelope's", why: "a resolution disagreeing with the envelope" },
+  { code: "E_HOLD_RESOLUTION", fragment: "holdResolution.decisionArtifactHash != refHash(decisionArtifact)", why: "a resolution bound to a different decision" },
+  { code: "E_HOLD_RESOLUTION", fragment: "but no decisionArtifact is present in the bundle", why: "a resolution naming a decision the bundle lacks" },
+  { code: "E_HOLD_RESOLUTION", fragment: "holdResolution.verdictReceiptHash != verdict receipt chain.hash (G4)", why: "the G4 resolution-to-verdict binding" },
+  { code: "E_HOLD_RESOLUTION", fragment: "CANCELLED with no pre-crash ALLOWED receipt requires verdictReceiptHash == null", why: "a CANCELLED resolution naming a verdict receipt" },
+  { code: "E_DECISION", fragment: "decisionArtifact is not a JSON object", why: "a decision artifact parsing to a non-object" },
+  { code: "E_DECISION", fragment: "DENIED outcome requires decision=DENY, got ", why: "the DENIED half of decision polarity" },
+  { code: "E_APPROVER_ROLE", fragment: "decision.approverKid != decision.sig.kid", why: "a decision signed by a key other than the approver it names" },
+  { code: "E_APPROVER_ROLE", fragment: "!= decision approverKid", why: "a verdict receipt signed by a non-approver" },
+  { code: "E_APPROVER_ROLE", fragment: "not an APPROVER in the manifest", why: "an approver kid absent from the manifest" },
+  { code: "E_APPROVER_ROLE", fragment: "action HIGH needs approve-high|approve-critical", why: "the HIGH tier of the approver ladder" },
+  { code: "E_VERDICT_BINDING", fragment: "verdict receipt scope.chain != deferred scope.chain", why: "a verdict receipt from another chain" },
+  { code: "E_DENIED", fragment: "DENIED requires a bound DENY Decision Artifact", why: "a DENIED outcome whose decision is not bound" },
+  { code: "E_EXPIRED", fragment: "EXPIRED outcome requires timeoutReceipt", why: "an EXPIRED outcome with no timeout receipt" },
+  { code: "E_EXPIRED", fragment: "timeoutReceipt.agent.principal != POLICY", why: "a timeout receipt not attributed to the policy signer" },
+  { code: "E_EXPIRED", fragment: "holdResolution.status != EXPIRED", why: "an EXPIRED outcome whose resolution disagrees" },
+  { code: "E_CANCELLED", fragment: "holdResolution.status != CANCELLED", why: "a CANCELLED outcome whose resolution disagrees" },
+  { code: "<dynamic>", fragment: "carries an executionGrant but no allowedReceipt", why: "a grant with no approval receipt to trace to" },
+  { code: "E_EXECUTED", fragment: "executionConsumption invalid: ", why: "a consumption failing its own verification, EXECUTED path" },
+  { code: "E_EXECUTION_FAILED", fragment: "executionConsumption invalid: ", why: "the same, EXECUTION_FAILED path" },
+  { code: "E_EXECUTED", fragment: "executedReceipt.chain.prevHash != allowedReceipt.chain.hash", why: "an executed receipt not chained onto the approval" },
+  { code: "E_EXECUTION_FAILED", fragment: "failedReceipt.chain.prevHash != allowedReceipt.chain.hash", why: "a failed receipt not chained onto the approval" },
+  { code: "E_EXECUTION_FAILED", fragment: "grant not issued before the failure", why: "a grant issued after the failure it authorized" },
+  { code: "E_UNKNOWN", fragment: "executionUncertainty invalid: ", why: "an uncertainty artifact failing its own verification" },
+  { code: "E_UNKNOWN", fragment: "uncertainty.grantHash != refHash(grant)", why: "the UNKNOWN sibling of the step-10/11 grant binding" },
+  { code: "E_UNKNOWN", fragment: "uncertainty.lastKnownState != DISPATCH_STARTED", why: "an uncertainty claiming another state" },
+  { code: "E_UNKNOWN", fragment: "uncertainty.reason != PROCESS_CRASH_BEFORE_RECEIPT_COMMIT", why: "an uncertainty claiming another cause" },
+  { code: "E_UNKNOWN", fragment: "uncertainty missing required bootId/uptimeResetAt (G3)", why: "the G3 liveness fields absent" },
+  { code: "E_CHECKPOINT_RECONCILE", fragment: "chain is not genesis-rooted", why: "a chain whose first receipt is not seq 0" },
+  { code: "E_CHECKPOINT_RECONCILE", fragment: "checkpoint structurally invalid: ", why: "a checkpoint failing its structural check" },
+  { code: "E_CHECKPOINT_RECONCILE", fragment: "checkpoint signing key is retired", why: "a checkpoint signed by a retired key" },
+  { code: "E_RECEIPT_ROLE", fragment: "but no step routed it through the receipt-role chokepoint", why: "the step-19 unrouted-receipt sweep" },
+  // FOUND BY THE HELPER-AWARE SCAN, and invisible to every earlier version of this file: the four R8
+  // causes share one `required(...)` callsite, so a scan that counted `fail(` sites saw one cause and
+  // credited all four to whichever fixture reached any of them.
+  { code: "E_SETTLEMENT_REQUIRED", fragment: "does not determinately assert a settlement for this approval", why: "R8 with an artifact whose reconciler code is non-determinate under an enrolled class — the one of the four R8 branches with no vector" },
 ];
 
-/**
- * A `fail(...)` whose reason is relayed from elsewhere and carries no literal of its own. There is
- * nothing here for this file to match, so each is DECLARED with the upstream that owns its causes.
- * The set is asserted to be exactly this — a new unreadable reason expression is red.
- */
+/** A refusal whose reason carries no literal of its own. Declared, with where its causes ARE measured. */
 const RELAYS: readonly { code: string; expr: string; why: string }[] = [
-  {
-    code: "E_DECISION", expr: "dParsed.reason",
-    why: "the decision artifact's own byte-boundary parse refusal; its causes belong to the parser and are measured where it is",
-  },
-  {
-    code: "E_TEMPORAL_AUTH", expr: "err",
-    why: "the temporal-authorization sub-check builds its own reason; its branches are pinned by test/authorization-window.test.ts",
-  },
+  { code: "E_DECISION", expr: "dParsed.reason", why: "the decision artifact's own parse refusal; its causes belong to the parser" },
+  { code: "E_TEMPORAL_AUTH", expr: "err", why: "the temporal sub-check builds its own reason; branches pinned by test/authorization-window.test.ts" },
 ];
 
 // ── THE PROPERTIES ──────────────────────────────────────────────────────────────────────────────
 
-test("the enumeration actually found the rules — a scan that reads nothing proves nothing", () => {
-  // Without this, a parser change that silently matched zero call sites would make every property
-  // below vacuously true, which is the failure mode this whole file exists to prevent.
-  assert.ok(SITES.length >= 120, `expected the rule files to hold many fail() sites, enumerated ${SITES.length}`);
-  assert.ok(
-    SITES.some((s) => s.file === "enrolment.ts"), "no sites were enumerated from enrolment.ts",
-  );
+test("the scan sees the whole verifier — every src file, and refusals reached through helpers", () => {
+  assert.ok(PARSED.length >= 8, `expected the verifier to span several files, parsed ${PARSED.length}`);
+  assert.ok(CAUSES.length >= 120, `expected many refusal causes, enumerated ${CAUSES.length}`);
   assert.ok(PRODUCED.length >= 90, `expected most of the corpus to produce a reason, collected ${PRODUCED.length}`);
-  // The corpus really does discriminate: the produced reasons are not one string repeated.
-  assert.ok(new Set(PRODUCED.map((p) => p.reason)).size >= 60, "the corpus produces too few distinct reasons to measure anything");
+  assert.ok(new Set(PRODUCED.map((p) => p.reason)).size >= 60, "too few distinct reasons to measure anything");
+
+  // THE HELPER CASE, pinned by name because it is the one that got past the old scan. `required` is
+  // reached only through `fail`, and four separate R8 causes go through it — so a scan that counted
+  // call sites of `fail` saw ONE cause where there are FOUR.
+  assert.ok(PRODUCERS.has("required"), "the `required` wrapper in enrolment.ts is not recognised as a refusal producer");
+  const viaRequired = CAUSES.filter((c) => c.via === "required");
+  assert.equal(
+    viaRequired.length, 4,
+    `expected four R8 causes through the required() helper, found ${viaRequired.length}. If a branch was ` +
+      `added or removed this number moves, and the ledger below moves with it.`,
+  );
 });
 
-test("EVERY refusal cause is covered by a fixture, declared unreachable, or declared as debt", () => {
-  const undeclared: string[] = [];
-  for (const site of SITES) {
-    if (site.segments === null) continue; // RELAYS owns these; the next test pins that set exactly.
-    if (evidenceFor(site).length > 0) continue;
-    const rows = DECLARED.filter((d) => d.code === site.code && site.segments!.join(" ").includes(d.fragment));
-    if (rows.length === 0) {
-      undeclared.push(`${at(site)}  ${site.code}  ${JSON.stringify(site.segments!.join(" … ").slice(0, 120))}`);
+test("NO REFUSAL IS DEAD CODE — a control that cannot execute is not a control", () => {
+  // THE REVIEWER'S BYPASS, closed at the root. The move was to keep the literal `fail(...)` in the
+  // source, inside `if (false)`, and return ok — so a text scan still saw a refusal that could never
+  // run, and a bundle missing its approval receipt verified as VALID_FULL_CHAIN.
+  //
+  // Any statically-false guard is refused, anywhere in the verifier, whether or not it wraps a
+  // refusal. There is no legitimate reason for one to exist in this code, and treating it as a
+  // whole-file rule means the next variant does not need to be anticipated.
+  const dead: string[] = [];
+  const isConstFalse = (e: ts.Expression): boolean => {
+    if (e.kind === ts.SyntaxKind.FalseKeyword) return true;
+    if (ts.isNumericLiteral(e) && Number(e.text) === 0) return true;
+    if (ts.isStringLiteral(e) && e.text === "") return true;
+    if (ts.isPrefixUnaryExpression(e) && e.operator === ts.SyntaxKind.ExclamationToken) {
+      return e.operand.kind === ts.SyntaxKind.TrueKeyword;
     }
+    if (ts.isParenthesizedExpression(e)) return isConstFalse(e.expression);
+    if (ts.isBinaryExpression(e) && e.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+      return isConstFalse(e.left) || isConstFalse(e.right);
+    }
+    return false;
+  };
+  for (const { file, sf } of PARSED) {
+    const walk = (n: ts.Node): void => {
+      const cond =
+        ts.isIfStatement(n) ? n.expression
+          : ts.isWhileStatement(n) ? n.expression
+            : ts.isConditionalExpression(n) ? n.condition
+              : null;
+      if (cond && isConstFalse(cond)) {
+        dead.push(`src/${file}:${sf.getLineAndCharacterOfPosition(n.getStart(sf)).line + 1}  ${n.getText(sf).replace(/\s+/g, " ").slice(0, 100)}`);
+      }
+      ts.forEachChild(n, walk);
+    };
+    walk(sf);
+  }
+  assert.deepEqual(
+    dead, [],
+    `these branches can never execute:\n  ${dead.join("\n  ")}\n` +
+      `A refusal behind a constant-false guard reads in review as a control and enforces nothing. This ` +
+      `is the exact shape an adversarial reviewer used to make Step 14 accept a bundle with no ALLOWED ` +
+      `receipt while every gate stayed green.`,
+  );
+});
+
+test("EVERY refusal cause the corpus does not produce is declared ABSENT — and the set matches exactly", () => {
+  // COVERAGE IS BEHAVIOUR. `evidenceFor` reports the fixtures that made the verifier actually emit
+  // this reason; source text decides nothing here.
+  const uncovered = CAUSES.filter((c) => c.segments !== null && evidenceFor(c).length === 0);
+
+  const undeclared: string[] = [];
+  for (const c of uncovered) {
+    const rows = ABSENT.filter((d) => d.code === c.code && c.segments!.join(" ").includes(d.fragment));
+    if (rows.length === 0) undeclared.push(`${at(c)}  ${c.code}  via ${c.via}  ${JSON.stringify(c.segments!.join(" … ").slice(0, 110))}`);
   }
   assert.deepEqual(
     undeclared, [],
-    `these refusal causes are produced by NO conformance fixture and are declared nowhere:\n  ${undeclared.join("\n  ")}\n` +
-      `Each is a rule that can be DELETED today without turning this suite red. Give it a vector, or ` +
-      `declare it in DECLARED with the kind and the reason. Do not widen a fragment to make an existing ` +
-      `row absorb it — a row that covers two rules measures neither.`,
+    `these refusal causes are produced by NO fixture and are declared nowhere:\n  ${undeclared.join("\n  ")}\n` +
+      `Each can be deleted today without turning this suite red. Give it a vector, or add it to ABSENT ` +
+      `— which is a DEBT list, not permission. Do not widen an existing fragment to absorb it.`,
   );
-});
 
-test("RATCHET: a declared row whose cause IS covered must be deleted", () => {
-  // The direction that keeps the ledger honest. Debt that has been paid may not stay on the books,
-  // so the list can only shrink through real work — it can never quietly excuse a rule that a
-  // fixture already reaches.
+  // THE RATCHET, the other way. Debt that has been paid may not stay on the books, so the list can
+  // only shrink through real work and can never quietly excuse a rule a fixture already reaches.
   const paid: string[] = [];
-  for (const d of DECLARED) {
-    const matched = SITES.filter((s) => s.segments !== null && s.code === d.code && s.segments.join(" ").includes(d.fragment));
-    for (const site of matched) {
-      const ev = evidenceFor(site);
-      if (ev.length > 0) paid.push(`${d.kind} ${d.code} ${JSON.stringify(d.fragment)} → now covered by ${ev[0]!.fixture} (${at(site)})`);
-    }
+  for (const d of ABSENT) {
+    const matched = CAUSES.filter((c) => c.segments !== null && c.code === d.code && c.segments.join(" ").includes(d.fragment));
+    assert.equal(
+      matched.length, 1,
+      `ABSENT row ${d.code} ${JSON.stringify(d.fragment)} matches ${matched.length} cause(s) — a row must name ` +
+        `exactly one, or it is excusing a rule nobody considered (or describing one that is gone).`,
+    );
+    if (evidenceFor(matched[0]!).length > 0) paid.push(`${d.code} ${JSON.stringify(d.fragment)} → now produced by ${evidenceFor(matched[0]!)[0]!.fixture}`);
   }
-  assert.deepEqual(
-    paid, [],
-    `these declarations are stale — the cause now HAS a vector:\n  ${paid.join("\n  ")}\n` +
-      `Delete the row. A ledger that keeps paid debt stops being a count of what is unmeasured.` +
-      (paid.some((p) => p.startsWith("UNREACHABLE"))
-        ? `\nAn UNREACHABLE row appearing here is the stronger finding: a rule believed dead was reached ` +
-          `by a real bundle, so the reasoning that declared it unreachable is wrong.`
-        : ""),
-  );
-});
-
-test("RATCHET: every declared row names exactly one live rule", () => {
-  // A row matching nothing is a rule that was deleted or reworded and left its excuse behind. A row
-  // matching several is a fragment wide enough to cover a rule nobody considered.
-  const bad: string[] = [];
-  for (const d of DECLARED) {
-    const matched = SITES.filter((s) => s.segments !== null && s.code === d.code && s.segments.join(" ").includes(d.fragment));
-    if (matched.length !== 1) bad.push(`${d.code} ${JSON.stringify(d.fragment)} matches ${matched.length} site(s)${matched.length > 1 ? `: ${matched.map(at).join(", ")}` : ""}`);
-  }
-  assert.deepEqual(bad, [], `declared rows that do not name exactly one rule:\n  ${bad.join("\n  ")}`);
+  assert.deepEqual(paid, [], `these ABSENT rows are stale — the cause now HAS a vector:\n  ${paid.join("\n  ")}\nDelete the row.`);
 });
 
 test("every reason this scan cannot read is a DECLARED relay", () => {
-  const unreadable = SITES.filter((s) => s.segments === null).map((s) => ({ code: s.code, expr: s.expr, at: at(s) }));
+  const unreadable = CAUSES.filter((c) => c.segments === null).map((c) => ({ code: c.code, expr: c.expr, at: at(c) }));
   const undeclared = unreadable.filter((u) => !RELAYS.some((r) => r.code === u.code && r.expr === u.expr));
   assert.deepEqual(
     undeclared, [],
-    `these fail() sites pass a reason this scan cannot read, and are not declared relays: ` +
-      `${undeclared.map((u) => `${u.at} ${u.code} ${u.expr}`).join("; ")}. Either write the reason as a ` +
-      `literal so its causes can be enumerated, or declare it in RELAYS naming where its causes ARE measured.`,
+    `refusals whose reason this scan cannot read, and which are not declared relays: ` +
+      `${undeclared.map((u) => `${u.at} ${u.code} ${u.expr}`).join("; ")}`,
   );
   const stale = RELAYS.filter((r) => !unreadable.some((u) => u.code === r.code && u.expr === r.expr));
-  assert.deepEqual(stale, [], `RELAYS rows that match no site: ${stale.map((r) => `${r.code} ${r.expr}`).join("; ")}`);
+  assert.deepEqual(stale, [], `RELAYS rows matching no site: ${stale.map((r) => `${r.code} ${r.expr}`).join("; ")}`);
 });
 
 test("no single fixture is the only evidence for two different rules", () => {
-  // The substring hazard, closed. Two sites under one code where one's text is contained in the
-  // other's would both be credited by the longer one's fixture, and the shorter rule would read as
-  // measured while nothing exercises it.
-  const soleEvidence = new Map<string, Site[]>();
-  for (const site of SITES) {
-    const ev = evidenceFor(site);
+  const sole = new Map<string, Cause[]>();
+  for (const c of CAUSES) {
+    const ev = evidenceFor(c);
     if (ev.length !== 1) continue;
-    const key = ev[0]!.fixture;
-    soleEvidence.set(key, [...(soleEvidence.get(key) ?? []), site]);
+    sole.set(ev[0]!.fixture, [...(sole.get(ev[0]!.fixture) ?? []), c]);
   }
-  const doubled = [...soleEvidence].filter(([, sites]) => sites.length > 1);
+  const doubled = [...sole].filter(([, cs]) => cs.length > 1);
   assert.deepEqual(
-    doubled.map(([f, sites]) => `${f} → ${sites.map(at).join(" + ")}`), [],
-    `one fixture is the sole evidence for more than one rule. Either the two rules are one cause ` +
-      `wearing two messages, or one rule's text is a substring of the other's and is being credited ` +
-      `for a bundle it never refused.`,
-  );
-});
-
-test("the scanned files are ALL the files that hold step rules", () => {
-  // The scope guard. `fail(` is this verifier's refusal helper; a third file declaring one would
-  // hold rules no property above can see, which is the same invisibility in a new place.
-  const declaring = readdirSync(SRC)
-    .filter((f) => f.endsWith(".ts"))
-    .filter((f) => /\bfunction fail\(/.test(readFileSync(join(SRC, f), "utf8")));
-  assert.deepEqual(
-    declaring.sort(), [...RULE_FILES].sort(),
-    `the set of files declaring a fail() helper changed. Add the new file to RULE_FILES — its rules ` +
-      `are currently outside this inventory, which is exactly the blind spot this file closes.`,
+    doubled.map(([f, cs]) => `${f} → ${cs.map(at).join(" + ")}`), [],
+    "one fixture is the sole evidence for more than one rule — either they are one cause with two " +
+      "messages, or one rule's text is a substring of the other's and is credited for a bundle it never refused.",
   );
 });

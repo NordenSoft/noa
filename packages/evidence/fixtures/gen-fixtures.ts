@@ -775,6 +775,27 @@ for (const isFail of [false, true]) {
   bundle.executedReceipt = clone(wExec.bundle.executedReceipt);
   emit("reject", "step14-approved-with-execution", fixtureFrom(w, { description: "STEP_14: APPROVED_NO_EXECUTION_EVIDENCE that smuggles an executedReceipt (absence-claim contradicted)", expectVerdict: "INVALID", expectStep: "STEP_14_APPROVED_NO_EXECUTION_EVIDENCE", expectCode: "E_APPROVED_NO_EXEC", bundle }));
 }
+// STEP 14 — THE APPROVAL RECEIPT ITSELF IS MISSING, and this is the vector whose ABSENCE let an
+// adversarial reviewer accept an incomplete approval chain as VALID_FULL_CHAIN.
+//
+// The cause inventory had DECLARED this rule unreachable, reasoning that the receipt-role chokepoint
+// refuses an absent allowedReceipt first. It does not: `roleReceipt` returns `{ receipt: null }` for
+// a role that is absent-but-not-malformed (steps.ts), and the container schema's common required
+// list does not include `allowedReceipt` — it is assigned to its owning step on purpose. So step 14's
+// own `!allowedRole.receipt` check is the ONLY thing standing between a bundle with no approval
+// receipt and a positive verdict.
+//
+// The reviewer kept the literal `fail(...)` inside `if (false)`, returned ok, and every gate stayed
+// green: cause inventory 7/7, evidence suite 446/446, and the crafted bundle verified. Measured
+// directly here: with the rule live this bundle is INVALID / STEP_14 / E_APPROVED_NO_EXEC; with the
+// rule dead it reaches the checkpoint step instead, which is a different failure for a different
+// reason and proves nothing about the approval.
+{
+  const w = buildWorld("APPROVED_NO_EXECUTION_EVIDENCE");
+  const bundle = clone(w.bundle);
+  delete (bundle as unknown as Record<string, unknown>).allowedReceipt;
+  emit("reject", "step14-approved-no-allowed-receipt", fixtureFrom(w, { description: "STEP_14: APPROVED_NO_EXECUTION_EVIDENCE with NO allowedReceipt at all — the outcome asserts an approval was granted and carries no receipt of it. The role chokepoint reports an absent role as null rather than refusing, and the container schema assigns this member to its owning step, so this rule is the only one that refuses the bundle. It had no vector, and a reviewer used that to disable it and verify a bundle with no approval receipt", expectVerdict: "INVALID", expectStep: "STEP_14_APPROVED_NO_EXECUTION_EVIDENCE", expectCode: "E_APPROVED_NO_EXEC", bundle }));
+}
 // ── THE OTHER THREE ABSENCE CLAIMS — the siblings of the fixture above, and they had no vector ──
 //
 // `STEP_OWNED_ABSENCE` (types.ts) deliberately EXEMPTS executionConsumption/executedReceipt/
