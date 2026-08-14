@@ -112,7 +112,9 @@ Other gates:
   sites and 145 vocabulary files (the previous edition said 0 findings over 55 sites and 128 files).
   All three are `PROOF_UNRESOLVED` on `packages/e2e-demo/test/keyring-resolver-parity.test.ts`: the
   gate treats the runner as ground truth, that suite never runs without the private phone core, so
-  its three proofs are recorded as never observed. On a machine that has the core this is 0.
+  its three proofs are recorded as never observed. **Not measured here with the core present** — the
+  previous edition recorded 0 findings on 2026-08-12, which is the evidence that these three clear
+  when the suite can run, but this run cannot confirm it and does not claim to.
 - `test:r7-exploits` — **closed 13 / open 1** over a 14-exploit corpus. The open one is
   `o01_preload_includes.mjs` and it is **pinned OPEN on purpose**: see `NON-CLAIMS.md` NC-6.4 and
   ADR-0002 §3, which withdrew the in-realm intrinsic-immunity claim rather than re-scoping it.
