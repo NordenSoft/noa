@@ -52,11 +52,14 @@ that, and it goes green by RELEASING, never by relaxing the check. It is deliber
 
 ## Measured totals, 2026-08-15
 
-Re-measured in full on 2026-08-15. **Every number in the previous edition of this section was
-stale**, some of them by a factor of three: it claimed 585 kernel tests against 589, 133 evidence
-tests against 446, and 82 knockout controls against 144. A document that calls itself the measured
-current state and reports a third of the real coverage is worse than one that reports nothing, so
-what follows is a fresh run of each command, and the command is named beside the number.
+Re-measured in full on 2026-08-15. **Most numbers in the previous edition of this section were
+stale**, some by a factor of three: it claimed 585 kernel tests against 589, 133 evidence tests
+against 446, and 82 knockout controls against 144, and it omitted two packages that have test
+scripts. Five rows were still correct (`relay`, `tsa-anchor`, `signer-core`, `e2e-demo`, and
+`signer-sidecar`'s "no tally"), and they are marked as such rather than presented as new work. A
+document that calls itself the measured current state and reports a third of the real coverage is
+worse than one that reports nothing, so what follows is a fresh run of each command, and the command
+is named beside the number.
 
 Kernel `npm test` at the repository root: **589 pass / 0 fail / 0 skipped**, exit 0.
 
@@ -75,7 +78,7 @@ share the root `dist/` and would race on it):
 | `packages/tsa-anchor` | 120 pass / 0 fail | 120 |
 | `packages/rail-x402` | 113 pass / 0 fail | *(absent from the table)* |
 | `packages/signer-core` | 79 pass / 0 fail | 79 |
-| `packages/e2e-demo` | **not measurable here** — see below | 15 pass / 0 fail |
+| `packages/e2e-demo` | 15 pass / 0 fail | 15 pass / 0 fail |
 | `packages/signer-sidecar` | no numeric tally — see below | no numeric tally |
 
 Three corrections to how this table used to read:
@@ -86,35 +89,40 @@ Three corrections to how this table used to read:
   invented here.** No failure appears anywhere in its log.
 - `packages/framework-adapters` and `packages/rail-x402` have test scripts and were simply missing
   from the table. Both are green.
-- `packages/e2e-demo` **cannot be measured on a machine without the private phone core.** Its suites
-  fail at import with `ERR_MODULE_NOT_FOUND: Cannot find package 'noa-mobile'`, which is an absent
-  dependency, not a defect in this tree. Reported here as unmeasured rather than as a number, and it
-  is the same absence that leaves three `lint:resolver-parity` proofs red below. CI, which checks the
-  private core out, is the place that number comes from.
+- `packages/e2e-demo` is unchanged at 15 / 0, and it is the one row where the previous edition was
+  already right.
+
+**If you run any of this from a `git worktree`, read this first.** `packages/e2e-demo/tsconfig.json`
+maps `noa-mobile/*` to the RELATIVE paths `../../../noa-mobile/src/*` and `../../noa-mobile/src/*`.
+The private phone core is a SIBLING checkout, so that resolves from a normal clone
+(`~/noa-receipt/packages/e2e-demo/../../..` → `~/`) and does NOT resolve from a worktree created
+somewhere else — the core is present on the machine and the relative path simply does not reach it.
+The symptoms are `TS2307: Cannot find module 'noa-mobile/…'` from `typecheck:all` and three
+`PROOF_UNRESOLVED` findings from `lint:resolver-parity`, neither of which is a defect in this tree
+and neither of which means the core is missing. Put the worktree beside the core, or symlink
+`noa-mobile` next to it, and both go green. This was mis-diagnosed once as an absent dependency,
+which is why it is written down here.
 
 Other gates:
 
-- `lint:knockout` — **144 controls in the registry** (`--print-selection`, which reports the
-  validated registry without running the sweep). The previous edition said 82. On a machine without
-  the private phone core, 10 are DECLARED `SETUP_FAILED` and 134 would run. **The full sweep was not
-  run for this edition** — it deletes each control in turn and re-runs that package's whole suite,
-  about forty minutes across four CI shards — so this is a count of controls, *not* a claim that all
-  144 are currently proven load-bearing. That claim belongs to a sweep, and the sweep is CI's.
-- `typecheck:all` — **13 projects; 0 errors in 12 of them, and `packages/e2e-demo` FAILS here** with
-  four `TS2307: Cannot find module 'noa-mobile/…'`. Same absent private core as above, not a type
-  error in this tree. Five (`framework-adapters`, `mcp-proxy`, `rail-x402`, `signer-sidecar`,
-  `tsa-anchor`) report `skip — no TypeScript (plain .mjs)`, which is a stated skip, not a silent
-  pass. The previous edition said 12 projects and four skips.
+- `lint:knockout` — **144 controls in the registry, 0 `SETUP_FAILED`, all 144 selectable**
+  (`--print-selection`, which reports the validated registry without running the sweep). The previous
+  edition said 82. **The full sweep was NOT run for this edition** — it deletes each control in turn
+  and re-runs that package's whole suite, about forty minutes across four CI shards — so this is a
+  count of controls, *not* a claim that all 144 are currently proven load-bearing. That claim belongs
+  to a sweep, and the sweep is CI's. (Where the phone core does not resolve, 10 of the 144 are
+  DECLARED `SETUP_FAILED` and 134 are selectable; see the worktree note above.)
+- `typecheck:all` — **13 projects, 0 errors, exit 0**, `packages/e2e-demo` included. Five
+  (`framework-adapters`, `mcp-proxy`, `rail-x402`, `signer-sidecar`, `tsa-anchor`) report
+  `skip — no TypeScript (plain .mjs)`, which is a stated skip, not a silent pass. The previous
+  edition said 12 projects and four skips.
 - `lint:security-gates` — **zero blocking findings**; **367** warn-mode findings, all within
   ratcheted budgets (the previous edition said 362). Budgets may only fall: a regression fails the
   build even though the absolute number is non-zero.
-- `lint:resolver-parity` — **3 findings here, all of them the same absent dependency**, over 65
-  sites and 145 vocabulary files (the previous edition said 0 findings over 55 sites and 128 files).
-  All three are `PROOF_UNRESOLVED` on `packages/e2e-demo/test/keyring-resolver-parity.test.ts`: the
-  gate treats the runner as ground truth, that suite never runs without the private phone core, so
-  its three proofs are recorded as never observed. **Not measured here with the core present** — the
-  previous edition recorded 0 findings on 2026-08-12, which is the evidence that these three clear
-  when the suite can run, but this run cannot confirm it and does not claim to.
+- `lint:resolver-parity` — **OK, 0 findings, exit 0**, over 65 sites and 145 vocabulary files, with
+  8/8 knockout bindings registered (the previous edition said 0 findings over 55 sites and 128
+  files). The gate treats the runner as ground truth, so all three
+  `packages/e2e-demo/test/keyring-resolver-parity.test.ts` proofs are observed executing.
 - `test:r7-exploits` — **closed 13 / open 1** over a 14-exploit corpus. The open one is
   `o01_preload_includes.mjs` and it is **pinned OPEN on purpose**: see `NON-CLAIMS.md` NC-6.4 and
   ADR-0002 §3, which withdrew the in-realm intrinsic-immunity claim rather than re-scoping it.
