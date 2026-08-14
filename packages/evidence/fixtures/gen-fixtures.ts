@@ -1065,6 +1065,16 @@ function settlementWorld(over: {
 // artifact, which is what keeps the migration guarantee true.
 emit("settlement", "s5-settlement-valid-base", fixtureFrom(settlementWorld(), { description: "S5: a VALID EXECUTED bundle carrying a bound, in-bounds SETTLED settlement artifact + its params preimage. No enrolment registry exists, so the class is not ENROLLED and the artifact buys no upgrade — VALID_FULL_CHAIN, dimensions.settlement NO_EXECUTION_BINDING, exit 0 (R-DIM-1's unenrolled-valid-artifact row)", expectVerdict: "VALID_FULL_CHAIN" }));
 
+// THE OBSERVER PAIR, and it is the anti-vacuity control for the relationship surfacing. The bundle
+// above is signed by the EXECUTION SIGNER'S OWN KEY and still reaches VALID_FULL_CHAIN / exit 0,
+// because the class is not enrolled and the R-16 cap only bites for an enrolled class. That is
+// correct, and it was also INVISIBLE: nothing in the result said who witnessed the payment. This
+// fixture is the same bundle observed by a DIFFERENT key, so the two differ in exactly one thing —
+// who signed the settlement artifact — and the reported relationship is the only field that moves.
+// Without it, "the verifier reports the relationship" is satisfied by one that reports the same word
+// for everything.
+emit("settlement", "s5-settlement-valid-independent-observer", fixtureFrom(settlementWorld({ observerKid: "gate-observer-2" }), { description: "THE OBSERVER CONTROL: the same valid, bound, in-bounds settlement artifact as s5-settlement-valid-base, signed by a settlement-observer key that is NOT the execution signer. Verdict, step, code and exit are IDENTICAL to that fixture's — VALID_FULL_CHAIN, exit 0 — because the class is unenrolled and the relationship decides nothing here. What differs is the one field that used to be reported nowhere: dimensions.settlementObserver is SAME_ADMINISTRATIVE_PARTY rather than SAME_SIGNING_KEY, and the same-key warning is absent. Two distinct keys in one tenant's manifest are one administrative party, never independence — separate keys prove only separate keys", expectVerdict: "VALID_FULL_CHAIN" }));
+
 // C.14 — no actionParamsPreimage ⇒ the money was compared to nothing ⇒ INCONCLUSIVE / exit 6.
 emit("settlement", "s5-settlement-no-params-preimage", fixtureFrom(settlementWorld({ preimage: null }), { description: "C.14 (F2): a perfect SETTLED artifact with NO actionParamsPreimage — the shipped reconciler's own 'not supplied, so no positive is reachable'. INCONCLUSIVE / E_SETTLEMENT_BOUNDS_UNCHECKABLE, dimensions.settlement BOUNDS_UNCHECKABLE, exit 6 — the first end-to-end exit 6 in the program", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_UNCHECKABLE" }));
 

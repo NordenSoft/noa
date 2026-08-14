@@ -112,6 +112,16 @@ export interface Ctx {
    */
   settlementFacts?: SettlementFacts;
   /**
+   * S5 — the observer↔execution-signer relationship the reconciler derived, recorded for REPORTING
+   * on every path the settlement rule ran, including the ones that reject. Left unset when the rule
+   * did not run at all, which the result reads as `NOT_EVALUATED`.
+   *
+   * Separate from `settlementFacts` on purpose: that field is consumed by R8 to decide an answer and
+   * is set only for an ACCEPTED artifact, so a rejected artifact's relationship — the case where an
+   * auditor most wants to know who signed what — would never be reported through it.
+   */
+  settlementObserver?: VerdictDimensions["settlementObserver"];
+  /**
    * S5 — THE THIRD EXTERNAL INPUT. The enrolment registries the operator supplied, as DOCUMENTS
    * (bytes), never bundle members: enrolment states a tenant's governance, and a producer that held
    * the document saying "this class owes a witness" could simply delete it.
@@ -919,6 +929,45 @@ function checkGrantUnexpiredAtConsumption(ctx: Ctx, S: StepName, code: StepResul
  * or an unbound/tampered artifact are all rejected, and a witness with no verifiable params preimage
  * is INCONCLUSIVE / `BOUNDS_UNCHECKABLE`, never a positive.
  */
+/**
+ * The reconciler's relationship value, mapped through a CLOSED set.
+ *
+ * The bridge types this as `string`, and a value this verifier does not recognise must not be echoed
+ * into a result an auditor reads as a finding. `UNKNOWN` is the fail-closed answer for anything
+ * unrecognised, because `UNKNOWN` already means "this could not be established" — never
+ * "independent". Mapping rather than passing through also means a new reconciler value shows up as a
+ * conservative report instead of as an unexplained string in a published surface.
+ */
+function observerRelationshipOf(value: unknown): VerdictDimensions["settlementObserver"] {
+  return value === "SAME_SIGNING_KEY" || value === "SAME_ADMINISTRATIVE_PARTY" ? value : "UNKNOWN";
+}
+
+/**
+ * The reconciler's warnings, carried into this verifier's own warning list.
+ *
+ * Warnings NEVER become failures — that is the reconciler's own rule (its §6, "Warnings (never
+ * rejections)") and it stays true here: nothing in the verdict, dimension or exit-code path reads
+ * this list. What changes is that they are no longer discarded, which is what
+ * `SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER` and `SETTLEMENT_OVER_RAW_MODE_HOLD` were until
+ * now.
+ *
+ * Each is shape-checked before it is copied. The registry emits SCREAMING_SNAKE tokens and nothing
+ * else; a value that is not one is reported as an unrecognised warning rather than pasted verbatim,
+ * so this reporting surface cannot become a channel for text this verifier did not author.
+ */
+function settlementWarningsOf(warnings: unknown): string[] {
+  const out: string[] = [];
+  if (!Array.isArray(warnings)) return out;
+  for (const w of warnings) {
+    out.push(
+      typeof w === "string" && /^[A-Z][A-Z0-9_]{0,63}$/.test(w)
+        ? `settlement: ${w}`
+        : "settlement: the reconciler emitted a warning this verifier does not recognise",
+    );
+  }
+  return out;
+}
+
 function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
   const b = ctx.bundle;
   if (b.settlementEvidence === undefined) {
@@ -989,6 +1038,24 @@ function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
     expect: { tenant: ctx.tenant, chain },
     now: ctx.now,
   });
+
+  // ── WHAT THE RECONCILER SAW, CARRIED OUT — before the switch, so it is reported on EVERY path ──
+  //
+  // The reconciler derives an observer↔execution-signer relationship and a warning list on every
+  // call, and this package read neither. Measured: `observerRelationship` had ZERO read sites here,
+  // so `SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER` — the single most load-bearing fact about a
+  // witness — reached a bundle verdict only through the R8 cap, which runs for an ENROLLED class and
+  // nowhere else. For every unenrolled artifact the relationship decided nothing AND was reported
+  // nowhere, so an auditor reading VALID_FULL_CHAIN over a settlement artifact could not tell a
+  // self-witnessed settlement from an independently witnessed one.
+  //
+  // It is carried here, ahead of the switch, because the REJECTING paths are where it matters most:
+  // `settlementFacts` is set only for an accepted artifact, so a rejected one's relationship would
+  // never surface. And it is REPORTING ONLY — no verdict, dimension or exit code reads it. The rule
+  // that does change an answer (R8's cap) is untouched, and the corpus proves the point: every
+  // fixture's verdict, step, code and exit are byte-identical with this propagation in place.
+  ctx.settlementObserver = observerRelationshipOf(r.observerRelationship);
+  for (const w of settlementWarningsOf(r.warnings)) ctx.warnings.push(w);
 
   const detail = r.reason === null ? "" : ` — ${r.reason}`;
   switch (r.code) {

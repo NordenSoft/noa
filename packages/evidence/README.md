@@ -116,16 +116,23 @@ nothing executed*.
 
 ### The result also says what it did NOT check
 
-Two fields are present on every result, and both describe what the verifier was *asked*, not only
-what it found:
+Three fields are present on every result, and all three describe what the verifier was *asked*, not
+only what it found:
 
 | Field | Meaning |
 |---|---|
 | `enrolment` | whether the enrolment question was asked at all, and what it found. `NOT_EVALUATED` — nobody asked: either no registry was supplied, or the outcome asserts no execution effect for a class to be enrolled in. `UNVERIFIABLE` — registries were supplied and none authenticates, is closed, or is addressed to this reader. `OUT_OF_WINDOW` — no selected registry's window contains this bundle's authorization instant. `CLASS_ABSENT` — the class is positively absent, which buys nothing. `CONTRADICTED` — a selected registry contradicts the bundle. `ENROLLED` — settlement evidence is required for a positive. |
 | `dimensions.settlement` | the settlement question, reported beside `integrity` and `authorization` because the three can legitimately disagree. `NO_EXECUTION_BINDING` on a completed run (no execution binding was established for this bundle); `UNCHECKED` on a run that stopped before the settlement rule; `BOUNDS_UNCHECKABLE` when a settlement artifact arrived with no verifiable params preimage, so nothing about the money was compared to anything — this is **not** "passed"; `NOT_ESTABLISHED` when the class is enrolled and no admissible determinate witness answered; `ATTESTED_UNVERIFIED` when an artifact asserts settlement, ships the coordinates to check it, and **nobody checked them** — the offline ceiling, and deliberately two words so it is never read as "established"; `CONTRADICTED` when the artifact is unbound, out of bounds, mis-correlated, or asserts a non-settlement under an executed outcome. `RECONFIRMED` is declared and **not reachable in this build**: it needs a record of the relying party's own node re-answering the chain queries, an input this verifier does not take yet. **Reported independently of the failing step:** a bundle whose settlement bounds were unanswered *and* whose checkpoint is tampered is reported as the tampering (`INVALID`, exit `2`, at the checkpoint step) while still carrying `settlement: BOUNDS_UNCHECKABLE`, because the artifact really was examined and suppressing that would hide half of what is wrong. |
+| `dimensions.settlementObserver` | **who witnessed the payment, relative to the party that signed the execution grant.** `NOT_EVALUATED` — the settlement rule did not run (no artifact, an artifact refused by the outcome union, or one whose own signature did not verify). `SAME_SIGNING_KEY` — the observer's key **is** the execution signer's key, by kid or by the underlying key material under a second kid: one party attesting to its own effect. `SAME_ADMINISTRATIVE_PARTY` — two distinct keys, both in this tenant's own root-anchored manifest; reported, never suppressed, and **not independence** — separate keys prove only separate keys. `UNKNOWN` — the relationship was not established, because the artifact was refused before the check reached it. `UNKNOWN` is a statement about how far the check got, never a statement that the observer is independent. **Reporting only:** no verdict, dimension or exit code is derived from this field. The rule that *does* act on the relationship is the enrolment plane's admissibility cap, and it is unchanged — for an enrolled class a self-witnessed settlement is `INCONCLUSIVE` / exit `6`, while for an unenrolled one the verdict is whatever it always was and this field is the only place the fact appears. |
 
 `EXECUTED` has never meant the money moved — it means the gate signed that it handed the request
 off. `dimensions.settlement` is where the result says so, instead of leaving it to be inferred.
+
+A settlement artifact signed by the execution signer's own key can still ride a `VALID_FULL_CHAIN` —
+correctly, because for an unenrolled class nobody asked for a witness and none is owed. Until
+`dimensions.settlementObserver` existed, an auditor reading that verdict had no way to tell it apart
+from the same bundle witnessed by a different party. The reconciler had always derived the
+relationship; the result simply never carried it.
 
 #### Container compatibility, stated rather than assumed
 

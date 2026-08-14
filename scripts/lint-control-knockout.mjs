@@ -1507,8 +1507,37 @@ const KNOCKOUTS = [
       "in-process consumer can, and a verifier whose past answers its own caller can edit is not " +
       "offering a verdict. The mutation restores the shared object.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "function nothingProven(): VerdictDimensions {\n  return { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\" };\n}",
-    replace: "const SHARED_NOTHING_PROVEN: VerdictDimensions = { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\" };\nfunction nothingProven(): VerdictDimensions {\n  return SHARED_NOTHING_PROVEN;\n}",
+    find: "  return { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\", settlementObserver: \"NOT_EVALUATED\" };\n}",
+    replace: "  return SHARED_NOTHING_PROVEN;\n}\nconst SHARED_NOTHING_PROVEN: VerdictDimensions = { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\", settlementObserver: \"NOT_EVALUATED\" };",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-observer-relationship-is-carried-out",
+    control:
+      "The reconciler's observer-to-execution-signer relationship reaches the RESULT. It was derived " +
+      "on every call and read NOWHERE in packages/evidence, so a settlement witnessed by the " +
+      "execution signer's own key rode a VALID_FULL_CHAIN with nothing in the result saying so — the " +
+      "one fact about a witness an auditor most needs, and the one the verdict did not carry. The " +
+      "mutation hardcodes the relationship to UNKNOWN, which is the shape the defect had: a field " +
+      "that is present, plausible, and constant.",
+    file: "packages/evidence/src/steps.ts",
+    find: "  ctx.settlementObserver = observerRelationshipOf(r.observerRelationship);",
+    replace: "  ctx.settlementObserver = \"UNKNOWN\";",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-reconciler-warnings-are-not-discarded",
+    control:
+      "The reconciler's warnings are carried into the result instead of dropped. " +
+      "SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER and SETTLEMENT_OVER_RAW_MODE_HOLD were both " +
+      "computed and both thrown away. They never become failures — that is the reconciler's own rule " +
+      "and it still holds — but a warning nobody can read is a warning that was not issued. The " +
+      "mutation drops them again.",
+    file: "packages/evidence/src/steps.ts",
+    find: "  for (const w of settlementWarningsOf(r.warnings)) ctx.warnings.push(w);",
+    replace: "",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
@@ -1555,8 +1584,8 @@ const KNOCKOUTS = [
       "because the corpus runner never passes `purpose`: it was invisible to every fixture-driven " +
       "assertion, which is why the behavioural two-run pin exists.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },\n    // REPORTED, not hardcoded",
-    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\" },\n    // REPORTED, not hardcoded",
+    find: "settlement: \"NO_EXECUTION_BINDING\", settlementObserver: ctx.settlementObserver ?? \"NOT_EVALUATED\" },",
+    replace: "settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\", settlementObserver: ctx.settlementObserver ?? \"NOT_EVALUATED\" },",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },

@@ -331,6 +331,33 @@ export interface VerdictDimensions {
   authorization: "VALID_NOW" | "EXPIRED_NOW" | "NOT_YET_VALID_NOW" | "UNCHECKED";
   /** The THIRD independent question: was the effect settled, and who checked? See `SettlementDimension`. */
   settlement: SettlementDimension;
+  /**
+   * WHO the settlement observer was, RELATIVE TO the party that signed the execution grant.
+   *
+   * The reconciler has always derived this and this package never read it, so a settlement observed
+   * by the execution signer's own key was invisible in a bundle verdict unless the class happened to
+   * be enrolled — the one path where the R-16 cap turns it into a refusal. For every other bundle the
+   * relationship decided nothing and was reported nowhere, which means an auditor reading a
+   * `VALID_FULL_CHAIN` over an unenrolled artifact could not tell a self-witnessed settlement from an
+   * independently witnessed one. That is the single most load-bearing fact about a witness and it was
+   * the one fact the result did not carry.
+   *
+   *   NOT_EVALUATED           — the settlement rule did not run: no artifact, or the pipeline
+   *                             stopped first. Never "no relationship was found".
+   *   SAME_SIGNING_KEY        — the observer's key IS the execution signer's key, by kid or by the
+   *                             underlying key material under a second kid. One party attesting to
+   *                             its own effect.
+   *   SAME_ADMINISTRATIVE_PARTY — two distinct keys, both in this tenant's own root-anchored
+   *                             manifest. Reported, never suppressed, and NOT independence: separate
+   *                             keys prove only separate keys.
+   *   UNKNOWN                 — the relationship could not be established from what this verifier
+   *                             holds. Not a statement that they are independent.
+   *
+   * REPORTING ONLY. No verdict, exit code or dimension is derived from this field; the R-16 cap that
+   * DOES change an answer lives in the enrolment plane's R8 and is unchanged. A field that both
+   * reports and decides would make "warnings never become failures" untestable.
+   */
+  settlementObserver: "NOT_EVALUATED" | "SAME_SIGNING_KEY" | "SAME_ADMINISTRATIVE_PARTY" | "UNKNOWN";
 }
 
 /**
