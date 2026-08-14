@@ -1,5 +1,5 @@
 {
-  "description": "B.9: a perfectly valid registry is supplied and the verifier is given NO --audience. A registry that does not know who is reading it cannot be scoped, and an unscoped registry is indistinguishable from a policy downgrade — so it is refused rather than consulted. UNVERIFIED / E_ENROLMENT_AUDIENCE, enrolment UNVERIFIABLE, exit 4",
+  "description": "B.9: a perfectly valid registry is supplied and the verifier is given NO --audience. A registry that does not know who is reading it cannot be scoped, and an unscoped registry is indistinguishable from a policy downgrade — so it is refused rather than consulted. UNVERIFIED / E_ENROLMENT_AUDIENCE, enrolment UNVERIFIABLE, exit 4. NOTE, so nobody looks for it and concludes the rule is untested: this fixture is unreachable THROUGH THE CLI, which refuses the same combination earlier as a USAGE error (exit 5) with the sentence that fixes it. Both refusals exist deliberately — the verifier must never depend on a caller having checked, and an operator who forgot a flag deserves a message rather than a verdict about the evidence. The library path is measured here; the CLI path is measured in the wire suite",
   "expectVerdict": "UNVERIFIED",
   "expectStep": "STEP_10_EXECUTED",
   "expectCode": "E_ENROLMENT_AUDIENCE",
