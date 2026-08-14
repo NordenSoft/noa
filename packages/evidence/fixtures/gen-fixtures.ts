@@ -277,7 +277,11 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     );
     const decision = opts.omitDecision ? null : makeDecision("APPROVE", approverKid);
     const g = grant(opts.grantExpiresAt ?? T_GRANT_EXP, opts.grantApprovalReceiptHash ?? allowed.chain.hash);
-    const cons = consumption(g, terminal.chain.hash, "DISPATCHED");
+    // (R10) The consumption result an outcome admits is the outcome's own claim, and the two are
+    // OPPOSITE: EXECUTED says the request was handed off, EXECUTION_FAILED says the tool was never
+    // invoked (NON-CLAIMS.md NC-2.1). This was hard-coded `DISPATCHED` for both worlds, so the
+    // shipped valid EXECUTION_FAILED bundle asserted a dispatch and a non-dispatch at once.
+    const cons = consumption(g, terminal.chain.hash, isFail ? "FAILED_BEFORE_DISPATCH" : "DISPATCHED");
     const hr = holdResolution("APPROVED", { decisionHash: decision ? refHash(decision) : null, verdictHash: allowed.chain.hash });
     bundle = {
       ...(base as EvidenceBundle), holdResolution: hr, allowedReceipt: allowed,
@@ -543,6 +547,18 @@ for (const oc of OUTCOMES) {
   const cons = clone(w.bundle.executionConsumption) as J; delete cons.sig; cons.result = "FAILED_BEFORE_DISPATCH";
   bundle.executionConsumption = sign(cons, "noa.execution-consumption/0.1", "gate-prod-1");
   emit("reject", "step10-executed-result", fixtureFrom(w, { description: "STEP_10: EXECUTED but consumption.result != DISPATCHED", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_EXECUTED", bundle }));
+}
+// STEP 11 — the MIRROR of the fixture above, and the one this corpus was missing: step 11 constrained
+// consumption.result NOWHERE, so a bundle could claim the tool was never invoked while carrying a
+// gate-signed consumption saying the request was dispatched. Both statements, one document, VALID.
+// A determinate negative is claimable only on a non-executing party's observation (NON-CLAIMS.md
+// NC-2.1), and FAILED_BEFORE_DISPATCH is the value that carries it.
+{
+  const w = buildWorld("EXECUTION_FAILED");
+  const bundle = clone(w.bundle);
+  const cons = clone(w.bundle.executionConsumption) as J; delete cons.sig; cons.result = "DISPATCHED";
+  bundle.executionConsumption = sign(cons, "noa.execution-consumption/0.1", "gate-prod-1");
+  emit("reject", "step11-execution-failed-result", fixtureFrom(w, { description: "STEP_11/NC-2.1: EXECUTION_FAILED but consumption.result == DISPATCHED — the outcome says the tool was never invoked and the consumption says the request was handed off", expectVerdict: "INVALID", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_EXECUTION_FAILED", bundle }));
 }
 // STEP 19 (was STEP 11) — EXECUTION_FAILED but the failedReceipt verdict is not FAILED. Re-attributed
 // with step07-denied-verdict above: the role→verdict rule now has exactly one enforcement point.
