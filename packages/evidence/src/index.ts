@@ -37,8 +37,14 @@ export {
 export {
   exitCodeFor,
   USAGE_EXIT_CODE,
+  INTERNAL_INVARIANT_EXIT_CODE,
   SETTLEMENT_UNRESOLVED,
   SETTLEMENT_ADMISSIBLE_ON_POSITIVE,
+  POSITIVE_ADMISSIBLE_PAIRS,
+  // The mapper REFUSES a tuple the rules cannot produce rather than answering 0 for it. The class and
+  // its name are exported so a caller can discriminate that refusal from any other failure.
+  InadmissibleVerdictTupleError,
+  INADMISSIBLE_TUPLE_ERROR_NAME,
   type EvidenceExitCode,
 } from "./exit-codes.js";
 

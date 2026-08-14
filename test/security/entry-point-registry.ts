@@ -193,4 +193,7 @@ export const NOA_APPROVAL_EVIDENCE: EntryPoint[] = [
   { name: "buildReceiptKeyring", cls: "bytes-in", why: "snapshots the manifest" },
   { name: "assertReceiptRole", cls: "bytes-in", why: "snapshots the bundle; index.ts advertises it for direct downstream reuse, so it cannot rely on verifyEvidence having ingested" },
   { name: "exitCodeFor", cls: "dataless" },
+  // `InadmissibleVerdictTupleError` is exported too. Error CLASSES sit outside this reconciliation by
+  // the coverage test's own filter — they exist for `catch` discrimination and their constructors
+  // take our own strings — so it is named here rather than listed.
 ];
