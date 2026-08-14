@@ -325,7 +325,7 @@ to carry the same ten values still digests differently.
 
 ## 8. Attack coverage
 
-The committed corpus is 1 ACCEPT + 31 REJECT vectors, generated from fixed seeded Ed25519 keys so
+The committed corpus is 1 ACCEPT + 33 REJECT vectors, generated from fixed seeded Ed25519 keys so
 every rejection is a cryptographically well-formed pair of documents failing a **semantic** rule.
 Each vector pins the substring of the refusal reason it measures.
 
@@ -355,12 +355,13 @@ Eight of the module's controls are registered in the repository's own L4 knockou
 | a `/0.2` value compared as `/0.1` | `reject-claim-spec-version` | §5.2 |
 | grant bound to a different authorization | `reject-grant-for-another-receipt` | §4.8 |
 | grant for different parameters | `reject-grant-params-mismatch` | §4.9 |
-| tenant-less receipt | `reject-tenant-absent` | §4.5 |
+| tenant-less receipt | `reject-tenant-absent` | §4.6 |
 | receipt edited after hashing | `reject-receipt-edited-after-hashing` | §4.7 |
 | grant with an extra member | `reject-grant-extra-property` | §4.3 |
 | multi-use grant | `reject-grant-multi-use` | §4.4 |
 | verifier with no stated tenant/chain | `reject-expectation-absent` | §5.4 |
 | **a signed human DENIAL used as authorization** | `reject-blocked-receipt`, `reject-deferred-receipt` | §4.5 |
+| **a signed OUTCOME record used as authorization** | `attribution_substituted_for_authorization` | §4.5 |
 | **blank / whitespace tenant** | `reject-blank-tenant` | §4.6 |
 | **padded tenant that aliases downstream** | `reject-padded-tenant` | §4.6 |
 | over-long tenant reported honestly | `reject-oversized-tenant-names-its-own-reason` | §5a |

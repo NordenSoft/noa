@@ -258,6 +258,89 @@
       }
     },
     {
+      "name": "attribution_substituted_for_authorization",
+      "note": "THE NAMED SCITT CONFORMANCE CASE. A validly signed POST-EXECUTION outcome record (verdict EXECUTED) presented in the PRE-EXECUTION authorization slot. It is cryptographically perfect: verifyChain returns VALID, the grant's signature verifies under the gate's key, the grant is bound to this very receipt by approvalReceiptHash, and the claimed digest is the honest digest of these two documents — so the ONLY thing that refuses it is the verdict gate. The attack is attribution standing in for authorization: an outcome record carries the same approver, rule id and signature as the decision it descends from, so every check that asks WHO signed still answers correctly. Accepting it would let 'this already ran' be replayed as 'you may run this' — an after-the-fact record minting a fresh permission for a repeat of itself.",
+      "claim": {
+        "spec": "noa.action-digest/0.1",
+        "digest": "sha256:f5c3624d5710e2a766abe81692734c25d6f26d8ae31a4ebfdc9f64d56a515980"
+      },
+      "context": {
+        "chain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_executed",
+            "ts": "2026-07-14T11:55:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "deploy.apply",
+              "canonical": "deploy.apply:prod/api",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "EXECUTED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1-device-2",
+                "at": "2026-07-14T11:55:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:047bf39c9a5586724ac5aebec13b0f7021939413cbe09b7a5f90467312e34cc2"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "R5d8xetcrMatzPHYTtZqkZZttlKSLUDwi2RunkJKVohua7Q0J+XzFVMS2sZLLdjPO5tA75LHsZ3zI6v32ySQCQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "holdEnvelopeHash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "approvalReceiptHash": "sha256:047bf39c9a5586724ac5aebec13b0f7021939413cbe09b7a5f90467312e34cc2",
+          "issuedAt": "2026-07-14T11:55:00.000Z",
+          "expiresAt": "2026-07-14T12:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "Nh5aXuz1gZa+hYunMBwodOnwQk0EbLyMEJA0zBUk2hzmTQa/IBu8Ln73/8gzVayi6vc2qVvYnNMBNiPYjCIbDQ=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEATypZ7cg2fetABHzoPuf1znEaV9k6u9qdHOhYjFajzog=",
+          "approver-1-device-2": "MCowBQYDK2VwAyEAalqPukhEXt00RPZU+CC9cfF+bDlGaTOcigAEuk7Sw8w="
+        },
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        }
+      },
+      "expect": {
+        "ok": false,
+        "reasonContains": "receipt.governance.verdict: is \"EXECUTED\", must be \"ALLOWED\""
+      }
+    },
+    {
       "name": "reject-blank-tenant",
       "note": "HIGH-2 REGRESSION (round-2 QA). A whitespace-only tenant. The old emptiness test was `length === 0`, which refused \"\" and accepted \"   \" — the semantic \"unknown tenant\", spelled so a length check cannot see it.",
       "claim": {

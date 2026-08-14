@@ -73,7 +73,7 @@ function authorizationReceipt(args: {
   actionId: string;
   actionCanonical: string;
   paramsHash: string;
-  verdict?: "ALLOWED" | "BLOCKED" | "DEFERRED" | "SIMULATED";
+  verdict?: "ALLOWED" | "BLOCKED" | "DEFERRED" | "EXECUTED" | "SIMULATED";
   signer?: { kid: string; privateKey: string };
 }): Receipt {
   return buildReceipt(
@@ -292,6 +292,18 @@ const receiptDeferred = authorizationReceipt({
 });
 const grantDeferred = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptDeferred });
 
+// The third face of the same gate, and the one the SCITT list named
+// `attribution_substituted_for_authorization`: a POST-EXECUTION OUTCOME record moved into the
+// PRE-EXECUTION authorization slot. Every attribution field an authorization carries is present and
+// genuine — the same human approver, the same rule id, the same signature — so everything that reads
+// WHO decided still answers correctly. Only `governance.verdict` says this document records what
+// already happened rather than what may happen next.
+const receiptExecuted = authorizationReceipt({
+  id: "rcpt_executed", tenant: "tenant-acme", chain: "chain-acme-1",
+  actionId: "deploy.apply", actionCanonical: "deploy.apply:prod/api", paramsHash: PARAMS_A, verdict: "EXECUTED",
+});
+const grantExecuted = issueGrant({ grantId: "grant-001", holdId: "hold-001", nonce: NONCE_01, receipt: receiptExecuted });
+
 const receiptBlankTenant = authorizationReceipt({
   id: "rcpt_allowed_a", tenant: "   ", chain: "chain-acme-1",
   actionId: "deploy.apply", actionCanonical: "deploy.apply:prod/api", paramsHash: PARAMS_A,
@@ -393,6 +405,25 @@ const vectors: Vector[] = [
     claim: claimOf(rawDigest(receiptDeferred, grantDeferred)),
     context: { chain: [receiptDeferred], grant: grantDeferred, keyring: KEYRING, expect: ACME },
     expect: { ok: false, reasonContains: "receipt.governance.verdict" },
+  },
+  {
+    name: "attribution_substituted_for_authorization",
+    note:
+      "THE NAMED SCITT CONFORMANCE CASE. A validly signed POST-EXECUTION outcome record (verdict " +
+      "EXECUTED) presented in the PRE-EXECUTION authorization slot. It is cryptographically perfect: " +
+      "verifyChain returns VALID, the grant's signature verifies under the gate's key, the grant is " +
+      "bound to this very receipt by approvalReceiptHash, and the claimed digest is the honest digest " +
+      "of these two documents — so the ONLY thing that refuses it is the verdict gate. The attack is " +
+      "attribution standing in for authorization: an outcome record carries the same approver, rule " +
+      "id and signature as the decision it descends from, so every check that asks WHO signed still " +
+      "answers correctly. Accepting it would let 'this already ran' be replayed as 'you may run this' " +
+      "— an after-the-fact record minting a fresh permission for a repeat of itself.",
+    claim: claimOf(rawDigest(receiptExecuted, grantExecuted)),
+    context: { chain: [receiptExecuted], grant: grantExecuted, keyring: KEYRING, expect: ACME },
+    // Pinned to the VALUE as well as the field: a bare `receipt.governance.verdict` would also match
+    // the BLOCKED and DEFERRED vectors, so this vector would still pass if the outcome verdicts were
+    // quietly re-admitted and only the denial verdicts stayed refused.
+    expect: { ok: false, reasonContains: 'receipt.governance.verdict: is "EXECUTED", must be "ALLOWED"' },
   },
   {
     name: "reject-blank-tenant",
