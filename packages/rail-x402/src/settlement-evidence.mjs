@@ -70,13 +70,48 @@ import { deriveCorrelationNonce } from "./correlation-nonce.mjs";
 // The warnings buffer is filled on the decision path; an ordinary [] would take [[Set]] writes
 // that walk to the mutable Object.prototype, where a planted accessor can swallow a warning while
 // length still advances — a silently de-fanged cap. Re-rooted while EMPTY, written through the
-// captured arrayPush, copied out by Array.from (CreateDataProperty, not [[Set]]).
-// `bufferFrom`/`bufEquals` are captured at kernel load: a byte compare or a base64 decode on a
-// decision path must dispatch through nothing a post-load `Buffer.prototype.equals = …` / `Buffer.from
-// = …` can rewrite (the same discipline settlement-proof.mjs and the L11 gate already follow).
-const { INERT_ARRAY_PROTOTYPE, objectSetPrototypeOf, arrayPush, bufferFrom, bufEquals } = intrinsics;
+// captured arrayPush, copied out through the kernel's publication boundary (an index walk with a
+// captured push — never the iterator protocol).
+//
+// ── EVERY COMPUTATION THAT CAN MOVE A VERDICT DISPATCHES THROUGH A LOAD-TIME CAPTURE ────────────
+// The bindings below are read ONCE, when the kernel module is evaluated, before any caller-supplied
+// value has been read and therefore before any hostile code could have run. After that, rewriting
+// `Buffer.from`, `RegExp.prototype.exec`, `String.prototype.toLowerCase`, `Date.UTC` or any other
+// shared slot is inert against this file: the poisoned property is simply never consulted again.
+//
+// Each of the following was REPRODUCED flipping a real verdict on the committed corpus before the
+// call site was routed through a capture, which is why the list is this long rather than this
+// short:
+//   • the RFC 3339 grammar match and the epoch arithmetic — a fabricated in-window match, or a
+//     constant epoch, turned a two-hour-stale settlement into a positive; one poison neutralises
+//     freshness, the ordering arm and the instant-comparison arm at once;
+//   • the correlation derivation's byte conversions — a stateful poison records one settlement's
+//     derivation inputs during an ordinary verification and replays them into the next, so a second
+//     genuinely signed bundle earns the first one's verdict;
+//   • the address/hash normalisation used by every chain binding — a rewritten `toLowerCase`
+//     made a foreign nonce, a foreign authorizer, a foreign transaction and a decoy token all
+//     compare equal to ours;
+//   • the byte compare behind the same-signing-key cap and the decode behind the params preimage.
+// ⚠ THE CEILING: a poison installed BEFORE the kernel loads is snapshotted, not defeated. That is
+// stated as a non-claim (NON-CLAIMS.md §S4) and no in-process defence can close it.
+const {
+  INERT_ARRAY_PROTOTYPE, objectSetPrototypeOf, arrayPush, publishArray,
+  bufferFrom, bufEquals, bufToString,
+  regexpExec, strToLowerCase, strSlice, strStartsWith, strIndexOf, strCharCodeAt,
+  hasOwn, objectGetOwnPropertyNames, isArray, arrayIncludes, arrayFind, arrayJoin,
+  toNumber, toBigInt, isSafeInteger, jsonStringify,
+} = intrinsics;
 const inertBuffer = () => objectSetPrototypeOf([], INERT_ARRAY_PROTOTYPE);
-const arrayFrom = Array.from;
+/**
+ * A grammar match, with nothing looked up at call time.
+ *
+ * `RegExp.prototype.test` is NOT the captured form of this: `test` performs a dynamic
+ * `Get(re, "exec")` on its receiver, so a rewritten `RegExp.prototype.exec` reaches straight
+ * through a captured `test`. For a non-global, non-sticky pattern — every pattern in this file —
+ * `exec(...) !== null` is exactly the predicate `test` computes, and it goes through the kernel's
+ * captured `exec` instead.
+ */
+const matches = (re, s) => regexpExec(re, s) !== null;
 
 /** The artifact spec this reconciler adjudicates. */
 export const SETTLEMENT_EVIDENCE_SPEC = "noa.settlement-evidence/0.1";
@@ -128,6 +163,12 @@ export const SETTLEMENT_WARNINGS = frozenTable([
   "SETTLEMENT_OVER_RAW_MODE_HOLD",
 ]);
 
+/** The two closed value sets the structural gate admits, hoisted out of the expressions that read
+ *  them so they are built ONCE, frozen and inert-rooted, rather than manufactured on a live
+ *  `Array.prototype` on every call and then membership-tested through a rewritable slot. */
+const WITNESS_STATUSES = frozenTable(["SETTLED", "NOT_SETTLED_AT_OBSERVATION", "NOT_OBSERVED"]);
+const RAIL_RECEIPT_FORMATS = frozenTable(["x402-offer-receipt/eip712", "x402-offer-receipt/jws", "opaque"]);
+
 const RE_HEX64 = /^[0-9a-f]{64}$/;
 const RE_0X64 = /^0x[0-9a-f]{64}$/;
 const RE_ADDR = /^0x[0-9a-f]{40}$/;
@@ -141,11 +182,13 @@ const RE_BASE64_STRICT = /^([A-Za-z0-9+/]{4})*([A-Za-z0-9+/]{4}|[A-Za-z0-9+/]{2}
 
 const UINT256_MAX = (1n << 256n) - 1n;
 
-const isObj = (v) => typeof v === "object" && v !== null && !Array.isArray(v);
+const isObj = (v) => typeof v === "object" && v !== null && !isArray(v);
 const isStr = (v, min = 1, max = Infinity) => typeof v === "string" && v.length >= min && v.length <= max;
-const isInt = (v, min) => Number.isSafeInteger(v) && v >= min;
-const lc = (v) => (typeof v === "string" ? v.toLowerCase() : v);
-const ownKeys = (o) => Object.getOwnPropertyNames(o);
+const isInt = (v, min) => isSafeInteger(v) && v >= min;
+const lc = (v) => (typeof v === "string" ? strToLowerCase(v) : v);
+/** Own property names, returned on the kernel's INERT array prototype so the index walks below
+ *  cannot be shortened by a rewritten iterator or array method. */
+const ownKeys = (o) => objectGetOwnPropertyNames(o);
 
 /** Proleptic-Gregorian calendar validity — the strict checks `parseTime` in
  *  packages/approval-artifacts/src/verify.ts ships (P0-6: "Date.parse IS NOT A SECURITY PARSER"),
@@ -162,53 +205,96 @@ function daysInMonth(y, m) {
 }
 
 /**
+ * Floor division for integers, written out because `Math.floor` is a property read on a mutable
+ * global — the same class as everything else this file captures, and there is no captured wrapper
+ * for it. `%` and `/` are operators: they dispatch through nothing.
+ */
+function floorDiv(a, b) {
+  const r = ((a % b) + b) % b;
+  return (a - r) / b;
+}
+
+/**
+ * Days from 1970-01-01 to a proleptic-Gregorian civil date, by arithmetic alone.
+ *
+ * This is the standard era-based civil-date algorithm, and it replaces the `Date` family on this
+ * path outright. Two reasons, both measured:
+ *   • `Date.UTC(year, …)` and `new Date(year, …)` map a two-digit `year` 0..99 onto 1900..1999, so
+ *     "0099-…" and "1999-…" — instants 1900 years apart — parsed to the SAME value. The repair for
+ *     that was an explicit `setUTCFullYear`, which is itself an ordinary, rewritable prototype
+ *     method sitting on the positive path.
+ *   • `Date.UTC` NORMALIZES impossible dates, which is why the strict calendar checks above run
+ *     first and this function is only ever handed a date that exists.
+ * Integer arithmetic has neither problem and looks nothing up at call time.
+ */
+function daysFromCivil(y, m, d) {
+  const yy = y - (m <= 2 ? 1 : 0);
+  const era = floorDiv(yy, 400);
+  const yoe = yy - era * 400;                                          // [0, 399]
+  const doy = floorDiv(153 * (m + (m > 2 ? -3 : 9)) + 2, 5) + d - 1;   // [0, 365]
+  const doe = yoe * 365 + floorDiv(yoe, 4) - floorDiv(yoe, 100) + doy; // [0, 146096]
+  return era * 146097 + doe - 719468;
+}
+
+/**
  * RFC3339 → epoch nanoseconds as BigInt, or null. Instants compare as PARSED TIME (R-20): the
  * grammar admits 1–9 fractional digits and any numeric offset, so "…04.000Z" and "…04Z" are the
  * same instant and different strings — a naive string equality manufactures rejections.
  * STRICT calendar: a string naming no real instant is null, never a normalized neighbour.
+ *
+ * This is the ONLY staleness control on the positive path, so every operation in it is captured:
+ * the grammar match through the kernel's captured `exec`, the field conversions through the
+ * captured `Number`, the epoch through integer arithmetic. Reproduced before that: a match object
+ * fabricated by a rewritten `exec`, or a constant epoch from a rewritten `Date.UTC`, each turned a
+ * two-hour-stale settlement into a fully reconfirmed one.
  */
 function parseInstant(s) {
   if (typeof s !== "string") return null;
-  const m = RE_RFC3339.exec(s);
+  const m = regexpExec(RE_RFC3339, s);
   if (m === null) return null;
-  const [, y, mo, d, h, mi, se, frac, off] = m;
-  const year = Number(y);
-  const month = Number(mo);
-  const day = Number(d);
-  const hour = Number(h);
-  const minute = Number(mi);
-  const second = Number(se);
+  // Index reads, not destructuring: `const [, y, …] = m` invokes the match array's ITERATOR, which
+  // is one more shared slot for no benefit.
+  const frac = m[7];
+  const off = m[8];
+  const year = toNumber(m[1]);
+  const month = toNumber(m[2]);
+  const day = toNumber(m[3]);
+  const hour = toNumber(m[4]);
+  const minute = toNumber(m[5]);
+  const second = toNumber(m[6]);
+  if (!isSafeInteger(year) || !isSafeInteger(month) || !isSafeInteger(day)
+    || !isSafeInteger(hour) || !isSafeInteger(minute) || !isSafeInteger(second)) return null;
   if (month < 1 || month > 12) return null;
   if (day < 1 || day > daysInMonth(year, month)) return null;
   // Leap seconds (`:60`) are refused — the same contract as the kernel's strict parseTime.
   if (hour > 23 || minute > 59 || second > 59) return null;
-  // `Date.UTC(year, …)` / `new Date(year, …)` map a two-digit `year` 0..99 onto 1900..1999, so
-  // "0099-…" and "1999-…" would parse to the SAME instant (measured 2026-08-13). Set the true year
-  // back EXPLICITLY — `setUTCFullYear` takes the literal year with no offset — so two RFC3339 strings
-  // naming instants 1900 years apart never compare equal.
-  const dt = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
-  dt.setUTCFullYear(year);
-  const ms = dt.getTime();
-  if (!Number.isFinite(ms)) return null;
-  let nanos = BigInt(ms) * 1000000n;
+  const days = daysFromCivil(year, month, day);
+  let nanos = (toBigInt(days) * 86400n + toBigInt(hour * 3600 + minute * 60 + second)) * 1000000000n;
   if (frac !== undefined) {
-    const digits = frac.slice(1).padEnd(9, "0");
-    nanos += BigInt(digits);
+    // Right-pad to nanosecond precision by ARITHMETIC. `padEnd` is a prototype method and there is
+    // no captured wrapper for it; a nine-step scale is the same value with nothing dispatched.
+    const digits = strSlice(frac, 1);
+    let scaled = 0;
+    for (let i = 0; i < 9; i++) {
+      const c = i < digits.length ? strCharCodeAt(digits, i) - 48 : 0;
+      scaled = scaled * 10 + c;
+    }
+    nanos += toBigInt(scaled);
   }
   if (off !== "Z" && off !== "z") {
-    const oh = Number(off.slice(1, 3));
-    const om = Number(off.slice(4, 6));
-    if (oh > 23 || om > 59) return null;
+    const oh = toNumber(strSlice(off, 1, 3));
+    const om = toNumber(strSlice(off, 4, 6));
+    if (!isSafeInteger(oh) || !isSafeInteger(om) || oh > 23 || om > 59) return null;
     const sign = off[0] === "-" ? -1n : 1n;
-    nanos -= sign * (BigInt(oh) * 60n + BigInt(om)) * 60n * 1000000000n;
+    nanos -= sign * (toBigInt(oh) * 60n + toBigInt(om)) * 60n * 1000000000n;
   }
   return nanos;
 }
 
 /** Decimal minor-units string → BigInt within uint256, or null. Never a JS number (uint256 > 2^53). */
 function parseAmount(s) {
-  if (typeof s !== "string" || !RE_MINOR_UNITS.test(s)) return null;
-  const v = BigInt(s);
+  if (typeof s !== "string" || !matches(RE_MINOR_UNITS, s)) return null;
+  const v = toBigInt(s);
   return v <= UINT256_MAX ? v : null;
 }
 
@@ -223,11 +309,11 @@ export function validateChainFacts(v) {
   if (!isObj(v)) return bad("not a JSON object");
   const required = ["spec", "network", "asset", "authorizationState", "authorizationUsedLogs",
     "authorizationCanceledLogs", "transfer", "headBlockNumber", "queriedAt"];
-  for (const k of ownKeys(v)) if (!required.includes(k)) return bad(`unknown property "${k}"`);
-  for (const k of required) if (!Object.hasOwn(v, k)) return bad(`missing required property "${k}"`);
+  for (let i = 0, ks = ownKeys(v); i < ks.length; i++) { const k = ks[i]; if (!arrayIncludes(required, k)) return bad(`unknown property "${k}"`); }
+  for (let i = 0, ks = required; i < ks.length; i++) { const k = ks[i]; if (!hasOwn(v, k)) return bad(`missing required property "${k}"`); }
   if (v.spec !== CHAIN_FACTS_SPEC) return bad(`spec must be "${CHAIN_FACTS_SPEC}"`);
-  if (typeof v.network !== "string" || !RE_NETWORK.test(v.network)) return bad("network: must match ^eip155:[1-9][0-9]{0,18}$");
-  if (typeof v.asset !== "string" || !RE_ASSET.test(v.asset)) return bad("asset: must be a lowercase eip155/erc20 CAIP-19");
+  if (typeof v.network !== "string" || !matches(RE_NETWORK, v.network)) return bad("network: must match ^eip155:[1-9][0-9]{0,18}$");
+  if (typeof v.asset !== "string" || !matches(RE_ASSET, v.asset)) return bad("asset: must be a lowercase eip155/erc20 CAIP-19");
   if (typeof v.authorizationState !== "boolean") return bad("authorizationState: must be a boolean");
   // BOTH used and canceled logs carry the (nonce, authorizer) pair they were emitted for: a cancel
   // drives the TERMINAL burn verdict, so the record must be able to prove the cancel belongs to the
@@ -237,25 +323,25 @@ export function validateChainFacts(v) {
     const lk = withBinding
       ? ["txHash", "blockNumber", "logIndex", "blockTimestamp", "txStatus", "nonce", "authorizer"]
       : ["txHash", "blockNumber", "logIndex", "blockTimestamp", "txStatus"];
-    for (const k of ownKeys(log)) if (!lk.includes(k)) return `${where}: unknown property "${k}"`;
-    for (const k of lk) if (!Object.hasOwn(log, k)) return `${where}: missing required property "${k}"`;
-    if (typeof log.txHash !== "string" || !RE_0X64.test(log.txHash)) return `${where}.txHash: must be 0x + 64 lowercase hex`;
+    for (let i = 0, ks = ownKeys(log); i < ks.length; i++) { const k = ks[i]; if (!arrayIncludes(lk, k)) return `${where}: unknown property "${k}"`; }
+    for (let i = 0, ks = lk; i < ks.length; i++) { const k = ks[i]; if (!hasOwn(log, k)) return `${where}: missing required property "${k}"`; }
+    if (typeof log.txHash !== "string" || !matches(RE_0X64, log.txHash)) return `${where}.txHash: must be 0x + 64 lowercase hex`;
     if (!isInt(log.blockNumber, 0)) return `${where}.blockNumber: must be an integer >= 0`;
     if (!isInt(log.logIndex, 0)) return `${where}.logIndex: must be an integer >= 0`;
     if (parseInstant(log.blockTimestamp) === null) return `${where}.blockTimestamp: must be RFC 3339`;
     if (log.txStatus !== "SUCCESS" && log.txStatus !== "REVERTED") return `${where}.txStatus: must be SUCCESS or REVERTED`;
     if (withBinding) {
-      if (typeof log.nonce !== "string" || !RE_0X64.test(log.nonce)) return `${where}.nonce: must be 0x + 64 lowercase hex`;
-      if (typeof log.authorizer !== "string" || !RE_ADDR.test(log.authorizer)) return `${where}.authorizer: must be a lowercase 0x address`;
+      if (typeof log.nonce !== "string" || !matches(RE_0X64, log.nonce)) return `${where}.nonce: must be 0x + 64 lowercase hex`;
+      if (typeof log.authorizer !== "string" || !matches(RE_ADDR, log.authorizer)) return `${where}.authorizer: must be a lowercase 0x address`;
     }
     return null;
   };
-  if (!Array.isArray(v.authorizationUsedLogs)) return bad("authorizationUsedLogs: must be an array");
+  if (!isArray(v.authorizationUsedLogs)) return bad("authorizationUsedLogs: must be an array");
   for (let i = 0; i < v.authorizationUsedLogs.length; i++) {
     const r = logCheck(v.authorizationUsedLogs[i], `authorizationUsedLogs[${i}]`, true);
     if (r !== null) return bad(r);
   }
-  if (!Array.isArray(v.authorizationCanceledLogs)) return bad("authorizationCanceledLogs: must be an array");
+  if (!isArray(v.authorizationCanceledLogs)) return bad("authorizationCanceledLogs: must be an array");
   for (let i = 0; i < v.authorizationCanceledLogs.length; i++) {
     const r = logCheck(v.authorizationCanceledLogs[i], `authorizationCanceledLogs[${i}]`, true);
     if (r !== null) return bad(r);
@@ -264,16 +350,16 @@ export function validateChainFacts(v) {
   if (t !== null) {
     if (!isObj(t)) return bad("transfer: must be null or an object (a record carrying more than one recovered transfer is not expressible — the single-transfer shape IS R-19(b)'s uniqueness rule at the record boundary)");
     const tk = ["source", "address", "logIndex", "from", "to", "value", "txHash", "blockNumber"];
-    for (const k of ownKeys(t)) if (!tk.includes(k)) return bad(`transfer: unknown property "${k}"`);
-    for (const k of tk) if (!Object.hasOwn(t, k)) return bad(`transfer: missing required property "${k}"`);
+    for (let i = 0, ks = ownKeys(t); i < ks.length; i++) { const k = ks[i]; if (!arrayIncludes(tk, k)) return bad(`transfer: unknown property "${k}"`); }
+    for (let i = 0, ks = tk; i < ks.length; i++) { const k = ks[i]; if (!hasOwn(t, k)) return bad(`transfer: missing required property "${k}"`); }
     if (t.source !== "CALLDATA" && t.source !== "TRANSFER_LOG") return bad("transfer.source: must be CALLDATA or TRANSFER_LOG");
-    if (typeof t.address !== "string" || !RE_ADDR.test(t.address)) return bad("transfer.address: must be a lowercase 0x address");
+    if (typeof t.address !== "string" || !matches(RE_ADDR, t.address)) return bad("transfer.address: must be a lowercase 0x address");
     if (!isInt(t.logIndex, 0)) return bad("transfer.logIndex: must be an integer >= 0");
-    if (typeof t.from !== "string" || !RE_ADDR.test(t.from)) return bad("transfer.from: must be a lowercase 0x address");
-    if (typeof t.to !== "string" || !RE_ADDR.test(t.to)) return bad("transfer.to: must be a lowercase 0x address");
-    if (typeof t.value !== "string" || !RE_MINOR_UNITS.test(t.value)) return bad("transfer.value: must be a decimal minor-units string");
+    if (typeof t.from !== "string" || !matches(RE_ADDR, t.from)) return bad("transfer.from: must be a lowercase 0x address");
+    if (typeof t.to !== "string" || !matches(RE_ADDR, t.to)) return bad("transfer.to: must be a lowercase 0x address");
+    if (typeof t.value !== "string" || !matches(RE_MINOR_UNITS, t.value)) return bad("transfer.value: must be a decimal minor-units string");
     // The transfer names the transaction it was recovered from.
-    if (typeof t.txHash !== "string" || !RE_0X64.test(t.txHash)) return bad("transfer.txHash: must be 0x + 64 lowercase hex");
+    if (typeof t.txHash !== "string" || !matches(RE_0X64, t.txHash)) return bad("transfer.txHash: must be 0x + 64 lowercase hex");
     if (!isInt(t.blockNumber, 0)) return bad("transfer.blockNumber: must be an integer >= 0");
   }
   if (!isInt(v.headBlockNumber, 0)) return bad("headBlockNumber: must be an integer >= 0");
@@ -292,36 +378,36 @@ function checkArtifact(a) {
   if (!isObj(a)) return bad("not a JSON object");
   const required = ["spec", "tenant", "chain", "authorizationReceiptHash", "executionGrantHash",
     "correlation", "railFamily", "chainWitness", "railReceipt", "observerKid", "observedAt", "sig"];
-  for (const k of ownKeys(a)) if (!required.includes(k)) return bad(`unknown property "${k}"`);
-  for (const k of required) if (!Object.hasOwn(a, k)) return bad(`missing required property "${k}"`);
+  for (let i = 0, ks = ownKeys(a); i < ks.length; i++) { const k = ks[i]; if (!arrayIncludes(required, k)) return bad(`unknown property "${k}"`); }
+  for (let i = 0, ks = required; i < ks.length; i++) { const k = ks[i]; if (!hasOwn(a, k)) return bad(`missing required property "${k}"`); }
   if (a.spec !== SETTLEMENT_EVIDENCE_SPEC) return bad(`spec must be "${SETTLEMENT_EVIDENCE_SPEC}"`);
   if (!isStr(a.tenant, 1, 256)) return bad("tenant: must be a string of 1-256 chars");
   if (!isStr(a.chain, 1, 256)) return bad("chain: must be a string of 1-256 chars");
-  if (typeof a.authorizationReceiptHash !== "string" || !RE_SHA256.test(a.authorizationReceiptHash)) {
+  if (typeof a.authorizationReceiptHash !== "string" || !matches(RE_SHA256, a.authorizationReceiptHash)) {
     return bad("authorizationReceiptHash: must be sha256:<64 lowercase hex>");
   }
-  if (typeof a.executionGrantHash !== "string" || !RE_SHA256.test(a.executionGrantHash)) {
+  if (typeof a.executionGrantHash !== "string" || !matches(RE_SHA256, a.executionGrantHash)) {
     return bad("executionGrantHash: must be sha256:<64 lowercase hex>");
   }
   // REVISION 3 / D7: the on-chain nonce form. Uppercase is a refusal, not a normalization.
-  if (typeof a.correlation !== "string" || !RE_0X64.test(a.correlation)) {
+  if (typeof a.correlation !== "string" || !matches(RE_0X64, a.correlation)) {
     return bad("correlation: must be 0x + 64 lowercase hex (the D7 on-chain nonce form)");
   }
   if (!isStr(a.railFamily, 1, 64)) return bad("railFamily: must be a string");
   const w = a.chainWitness;
   if (!isObj(w)) return bad("chainWitness: not an object");
   const wk = ["status", "network", "asset", "payer", "payee", "amount", "txHash", "blockNumber", "settledAt"];
-  for (const k of ownKeys(w)) if (!wk.includes(k)) return bad(`chainWitness: unknown property "${k}"`);
-  for (const k of wk) if (!Object.hasOwn(w, k)) return bad(`chainWitness: missing required property "${k}"`);
-  if (!["SETTLED", "NOT_SETTLED_AT_OBSERVATION", "NOT_OBSERVED"].includes(w.status)) {
+  for (let i = 0, ks = ownKeys(w); i < ks.length; i++) { const k = ks[i]; if (!arrayIncludes(wk, k)) return bad(`chainWitness: unknown property "${k}"`); }
+  for (let i = 0, ks = wk; i < ks.length; i++) { const k = ks[i]; if (!hasOwn(w, k)) return bad(`chainWitness: missing required property "${k}"`); }
+  if (!arrayIncludes(WITNESS_STATUSES, w.status)) {
     return bad("chainWitness.status: must be SETTLED | NOT_SETTLED_AT_OBSERVATION | NOT_OBSERVED");
   }
-  if (typeof w.network !== "string" || !RE_NETWORK.test(w.network)) return bad("chainWitness.network: must be CAIP-2 eip155");
-  if (typeof w.asset !== "string" || !RE_ASSET.test(w.asset)) return bad("chainWitness.asset: must be CAIP-19 eip155/erc20");
-  if (typeof w.payer !== "string" || !RE_ADDR.test(w.payer)) return bad("chainWitness.payer: must be a lowercase 0x address");
-  if (w.payee !== null && (typeof w.payee !== "string" || !RE_ADDR.test(w.payee))) return bad("chainWitness.payee: must be a lowercase 0x address or null");
-  if (w.amount !== null && (typeof w.amount !== "string" || !RE_MINOR_UNITS.test(w.amount))) return bad("chainWitness.amount: must be a decimal minor-units string or null");
-  if (w.txHash !== null && (typeof w.txHash !== "string" || !RE_0X64.test(w.txHash))) return bad("chainWitness.txHash: must be 0x + 64 lowercase hex or null");
+  if (typeof w.network !== "string" || !matches(RE_NETWORK, w.network)) return bad("chainWitness.network: must be CAIP-2 eip155");
+  if (typeof w.asset !== "string" || !matches(RE_ASSET, w.asset)) return bad("chainWitness.asset: must be CAIP-19 eip155/erc20");
+  if (typeof w.payer !== "string" || !matches(RE_ADDR, w.payer)) return bad("chainWitness.payer: must be a lowercase 0x address");
+  if (w.payee !== null && (typeof w.payee !== "string" || !matches(RE_ADDR, w.payee))) return bad("chainWitness.payee: must be a lowercase 0x address or null");
+  if (w.amount !== null && (typeof w.amount !== "string" || !matches(RE_MINOR_UNITS, w.amount))) return bad("chainWitness.amount: must be a decimal minor-units string or null");
+  if (w.txHash !== null && (typeof w.txHash !== "string" || !matches(RE_0X64, w.txHash))) return bad("chainWitness.txHash: must be 0x + 64 lowercase hex or null");
   if (w.blockNumber !== null && !isInt(w.blockNumber, 0)) return bad("chainWitness.blockNumber: must be an integer >= 0 or null");
   if (w.settledAt !== null && parseInstant(w.settledAt) === null) return bad("chainWitness.settledAt: must be RFC 3339 or null");
   const r = a.railReceipt;
@@ -329,25 +415,27 @@ function checkArtifact(a) {
     if (!isObj(r)) return bad("railReceipt: must be null or an object");
     if (r.disclosure === "FULL") {
       const rk = ["disclosure", "format", "encoding", "bytes"];
-      for (const k of ownKeys(r)) if (!rk.includes(k)) return bad(`railReceipt: unknown property "${k}"`);
-      for (const k of rk) if (!Object.hasOwn(r, k)) return bad(`railReceipt: missing required property "${k}"`);
-      if (!["x402-offer-receipt/eip712", "x402-offer-receipt/jws", "opaque"].includes(r.format)) return bad("railReceipt.format: unknown format hint");
+      for (let i = 0, ks = ownKeys(r); i < ks.length; i++) { const k = ks[i]; if (!arrayIncludes(rk, k)) return bad(`railReceipt: unknown property "${k}"`); }
+      for (let i = 0, ks = rk; i < ks.length; i++) { const k = ks[i]; if (!hasOwn(r, k)) return bad(`railReceipt: missing required property "${k}"`); }
+      if (!arrayIncludes(RAIL_RECEIPT_FORMATS, r.format)) return bad("railReceipt.format: unknown format hint");
       if (r.encoding !== "base64") return bad('railReceipt.encoding: must be "base64"');
       // R-RAIL-2(i) — OUR OWN artifact malformed: strict base64 grammar + round-trip. Normative
-      // because Buffer.from(s, "base64") never throws and silently discards illegal characters,
-      // so "not decodable" is not a well-defined rejection without the round-trip.
-      if (typeof r.bytes !== "string" || r.bytes.length === 0 || r.bytes.length > 262144 || !RE_BASE64_STRICT.test(r.bytes)) {
+      // because a base64 decode never throws and silently discards illegal characters, so "not
+      // decodable" is not a well-defined rejection without the round-trip. Both halves of that
+      // round-trip go through captured bindings: a rewritten decode/encode pair makes the
+      // comparison a tautology, and a noncanonical-base64 artifact this rule refuses then passes.
+      if (typeof r.bytes !== "string" || r.bytes.length === 0 || r.bytes.length > 262144 || !matches(RE_BASE64_STRICT, r.bytes)) {
         return bad("railReceipt.bytes: not strict base64");
       }
-      if (Buffer.from(r.bytes, "base64").toString("base64") !== r.bytes) {
+      if (bufToString(bufferFrom(r.bytes, "base64"), "base64") !== r.bytes) {
         return bad("railReceipt.bytes: fails the strict base64 round-trip");
       }
     } else if (r.disclosure === "HASH_ONLY") {
       const rk = ["disclosure", "format", "bytesHash"];
-      for (const k of ownKeys(r)) if (!rk.includes(k)) return bad(`railReceipt: unknown property "${k}"`);
-      for (const k of rk) if (!Object.hasOwn(r, k)) return bad(`railReceipt: missing required property "${k}"`);
-      if (!["x402-offer-receipt/eip712", "x402-offer-receipt/jws", "opaque"].includes(r.format)) return bad("railReceipt.format: unknown format hint");
-      if (typeof r.bytesHash !== "string" || !RE_SHA256.test(r.bytesHash)) return bad("railReceipt.bytesHash: must be sha256:<64 lowercase hex>");
+      for (let i = 0, ks = ownKeys(r); i < ks.length; i++) { const k = ks[i]; if (!arrayIncludes(rk, k)) return bad(`railReceipt: unknown property "${k}"`); }
+      for (let i = 0, ks = rk; i < ks.length; i++) { const k = ks[i]; if (!hasOwn(r, k)) return bad(`railReceipt: missing required property "${k}"`); }
+      if (!arrayIncludes(RAIL_RECEIPT_FORMATS, r.format)) return bad("railReceipt.format: unknown format hint");
+      if (typeof r.bytesHash !== "string" || !matches(RE_SHA256, r.bytesHash)) return bad("railReceipt.bytesHash: must be sha256:<64 lowercase hex>");
     } else {
       return bad('railReceipt.disclosure: must be "FULL" or "HASH_ONLY"');
     }
@@ -372,10 +460,10 @@ const PREIMAGE_KEYS = frozenTable(["payer", "payee", "assetCaip19", "networkCaip
 
 function verifyParamsPreimage(preimageBytes, paramsHash) {
   const bad = (reason) => ({ ok: false, reason: `paramsPreimage: ${reason}` });
-  if (typeof paramsHash !== "string" || !RE_PARAMS_HASH.test(paramsHash)) {
+  if (typeof paramsHash !== "string" || !matches(RE_PARAMS_HASH, paramsHash)) {
     return bad(`receipt.action.paramsHash is not (sha256|hmac-sha256):<64hex>`);
   }
-  if (paramsHash.startsWith("hmac-sha256:")) {
+  if (strStartsWith(paramsHash, "hmac-sha256:")) {
     // The keyed form is not independently checkable by a third party. It blocks bounds AND, under
     // D7, blocks derivation — the approved chainId/token/payer are unreadable without the preimage.
     return bad("receipt.action.paramsHash is hmac-sha256: — the preimage is not third-party checkable, so bounds AND the D7 derivation are blocked");
@@ -405,25 +493,26 @@ function verifyParamsPreimage(preimageBytes, paramsHash) {
   if (!parsed.ok) return bad(parsed.reason);
   const p = parsed.value;
   if (!isObj(p)) return bad("not a JSON object");
-  for (const k of ownKeys(p)) if (!PREIMAGE_KEYS.includes(k)) return bad(`unknown member "${k}" — an unknown member is a refusal, not a tolerance (R-HASH-2)`);
-  for (const k of PREIMAGE_KEYS) {
-    if (!Object.hasOwn(p, k)) return bad(`missing member "${k}"`);
+  for (let i = 0, ks = ownKeys(p); i < ks.length; i++) { const k = ks[i]; if (!arrayIncludes(PREIMAGE_KEYS, k)) return bad(`unknown member "${k}" — an unknown member is a refusal, not a tolerance (R-HASH-2)`); }
+  for (let i = 0, ks = PREIMAGE_KEYS; i < ks.length; i++) {
+    const k = ks[i];
+    if (!hasOwn(p, k)) return bad(`missing member "${k}"`);
     if (typeof p[k] !== "string") return bad(`member "${k}" must be a string`);
   }
-  if (!RE_ADDR.test(p.payer)) return bad("payer: must be a lowercase 0x address");
-  if (!RE_ADDR.test(p.payee)) return bad("payee: must be a lowercase 0x address");
-  if (!RE_ASSET.test(p.assetCaip19)) return bad("assetCaip19: must be a lowercase eip155/erc20 CAIP-19");
-  if (!RE_NETWORK.test(p.networkCaip2)) return bad("networkCaip2: must be a lowercase eip155 CAIP-2");
+  if (!matches(RE_ADDR, p.payer)) return bad("payer: must be a lowercase 0x address");
+  if (!matches(RE_ADDR, p.payee)) return bad("payee: must be a lowercase 0x address");
+  if (!matches(RE_ASSET, p.assetCaip19)) return bad("assetCaip19: must be a lowercase eip155/erc20 CAIP-19");
+  if (!matches(RE_NETWORK, p.networkCaip2)) return bad("networkCaip2: must be a lowercase eip155 CAIP-2");
   if (parseAmount(p.maxAmountMinorUnits) === null) return bad("maxAmountMinorUnits: must be a decimal string within uint256");
-  if (!p.assetCaip19.startsWith(p.networkCaip2 + "/")) return bad("assetCaip19 does not begin with networkCaip2 + \"/\"");
+  if (!strStartsWith(p.assetCaip19, p.networkCaip2 + "/")) return bad("assetCaip19 does not begin with networkCaip2 + \"/\"");
   return { ok: true, value: p };
 }
 
 /** kid-membership over the two keyring shapes verifyActionDigest accepts (static map | lifecycle). */
 function keyringHasKid(keyring, kid) {
   if (!isObj(keyring) || typeof kid !== "string") return false;
-  if (keyring.spec === "noa.signing-key-lifecycle/0.1" && isObj(keyring.keys)) return Object.hasOwn(keyring.keys, kid);
-  return Object.hasOwn(keyring, kid);
+  if (keyring.spec === "noa.signing-key-lifecycle/0.1" && isObj(keyring.keys)) return hasOwn(keyring.keys, kid);
+  return hasOwn(keyring, kid);
 }
 
 /**
@@ -436,11 +525,11 @@ function keyringPublicKeyBytes(keyring, kid) {
   if (!isObj(keyring) || typeof kid !== "string") return null;
   let material = null;
   if (keyring.spec === "noa.signing-key-lifecycle/0.1" && isObj(keyring.keys)) {
-    if (Object.hasOwn(keyring.keys, kid)) {
+    if (hasOwn(keyring.keys, kid)) {
       const entry = keyring.keys[kid];
       if (isObj(entry) && typeof entry.publicKey === "string" && entry.publicKey.length > 0) material = entry.publicKey;
     }
-  } else if (Object.hasOwn(keyring, kid) && typeof keyring[kid] === "string" && keyring[kid].length > 0) {
+  } else if (hasOwn(keyring, kid) && typeof keyring[kid] === "string" && keyring[kid].length > 0) {
     material = keyring[kid];
   }
   return material === null ? null : bufferFrom(material, "base64");
@@ -517,18 +606,21 @@ function reconcileSettlementEvidenceInner(input) {
   let reconciled = null;
 
   const inputObj = isObj(input) ? input : {};
+  // The reported snapshot hash is a claim about WHICH trust root was used, so the bytes it is taken
+  // over must not be substitutable: a rewritten decode makes the verifier report a registry it
+  // never consulted, while the verdict itself looks untouched.
   const registrySnapshotHash = sha256Prefixed(
     typeof inputObj.keyring === "string" ? inputObj.keyring
-      : inputObj.keyring instanceof Uint8Array ? Buffer.from(inputObj.keyring).toString("utf8")
+      : inputObj.keyring instanceof Uint8Array ? bufToString(bufferFrom(inputObj.keyring), "utf8")
       : "null",
   );
   const trustPolicyHash = sha256Prefixed(canonicalize({
     expect: isObj(inputObj.expect) ? { tenant: String(inputObj.expect.tenant ?? ""), chain: String(inputObj.expect.chain ?? "") } : null,
-    minConfirmations: Number.isSafeInteger(inputObj.minConfirmations) ? inputObj.minConfirmations : null,
+    minConfirmations: isSafeInteger(inputObj.minConfirmations) ? inputObj.minConfirmations : null,
     now: typeof inputObj.now === "string" ? inputObj.now : null,
-    freshnessWindowMs: Number.isSafeInteger(inputObj.freshnessWindowMs) ? inputObj.freshnessWindowMs : null,
+    freshnessWindowMs: isSafeInteger(inputObj.freshnessWindowMs) ? inputObj.freshnessWindowMs : null,
     expectedAmountMinorUnits: typeof inputObj.expectedAmountMinorUnits === "string" ? inputObj.expectedAmountMinorUnits : null,
-    railFamilies: arrayFrom(RAIL_FAMILIES),
+    railFamilies: publishArray(RAIL_FAMILIES),
   }));
 
   const finish = (code, reason) => ({
@@ -550,7 +642,7 @@ function reconcileSettlementEvidenceInner(input) {
     reconciled,
     code,
     reason: reason ?? null,
-    warnings: arrayFrom(warnings),
+    warnings: publishArray(warnings),
   });
 
   if (!isObj(input)) return finish("ARTIFACT_TAMPERED", "input: not an object");
@@ -578,7 +670,7 @@ function reconcileSettlementEvidenceInner(input) {
     // R-RAIL-4: `format` is a human-routing hint and no security decision branches on it.
     let parseable = true;
     if (artifact.railReceipt.format !== "opaque") {
-      const decoded = Buffer.from(artifact.railReceipt.bytes, "base64").toString("utf8");
+      const decoded = bufToString(bufferFrom(artifact.railReceipt.bytes, "base64"), "utf8");
       const probe = parseDocument(decoded, "railReceipt");
       parseable = probe.ok;
     }
@@ -595,9 +687,9 @@ function reconcileSettlementEvidenceInner(input) {
     return finish("SETTLEMENT_OBSERVER_IDENTITY_SPLIT",
       `artifact: observerKid "${artifact.observerKid}" != sig.kid "${artifact.sig.kid}" — the document names one observer and is signed by another`);
   }
-  if (!RAIL_FAMILIES.includes(artifact.railFamily)) {
+  if (!arrayIncludes(RAIL_FAMILIES, artifact.railFamily)) {
     return finish("SETTLEMENT_RAIL_FAMILY_UNKNOWN",
-      `artifact.railFamily "${artifact.railFamily}" is not in this verifier's shipped family set [${arrayFrom(RAIL_FAMILIES).join(", ")}] — different rails bind the correlation with different strength, so an unknown family fails closed`);
+      `artifact.railFamily "${artifact.railFamily}" is not in this verifier's shipped family set [${arrayJoin(publishArray(RAIL_FAMILIES), ", ")}] — different rails bind the correlation with different strength, so an unknown family fails closed`);
   }
 
   // ── STAGE 3: R-11 — tenant and chain are the VERIFIER'S OWN values, never lifted anywhere ─────
@@ -612,7 +704,8 @@ function reconcileSettlementEvidenceInner(input) {
   // ── STAGE 4: R-9 / R-10 / R-11b / R-11c — the artifact must agree with itself ─────────────────
   if (witness.status !== "SETTLED") {
     // R-9: a non-null reported observation under a non-settled status is self-contradicting.
-    for (const k of ["txHash", "blockNumber", "settledAt", "payee", "amount"]) {
+    for (let i = 0, ks = ["txHash", "blockNumber", "settledAt", "payee", "amount"]; i < ks.length; i++) {
+      const k = ks[i];
       if (witness[k] !== null) {
         return finish("SETTLEMENT_STATUS_INCONSISTENT", `chainWitness.${k} is non-null while status is ${witness.status} (R-9)`);
       }
@@ -627,7 +720,7 @@ function reconcileSettlementEvidenceInner(input) {
     // R-11b: the 78-digit regex admits values above uint256 max; no EIP-3009 contract emits one.
     return finish("SETTLEMENT_STATUS_INCONSISTENT", "chainWitness.amount exceeds 2^256 - 1 (R-11b)");
   }
-  if (!witness.asset.startsWith(witness.network + "/")) {
+  if (!strStartsWith(witness.asset, witness.network + "/")) {
     // R-11c: the two patterns do not enforce agreement between themselves.
     return finish("SETTLEMENT_NETWORK_UNEXPECTED", `chainWitness.asset "${witness.asset}" does not begin with chainWitness.network "${witness.network}" + "/" (R-11c)`);
   }
@@ -640,7 +733,7 @@ function reconcileSettlementEvidenceInner(input) {
 
   const parsedChain = parseDocument(input.receiptChain, "receiptChain");
   if (!parsedChain.ok) return finish("SETTLEMENT_CORRELATION_MISMATCH", parsedChain.reason);
-  const chainDocs = Array.isArray(parsedChain.value) ? parsedChain.value : [parsedChain.value];
+  const chainDocs = isArray(parsedChain.value) ? parsedChain.value : [parsedChain.value];
 
   const parsedKeyring = parseDocument(input.keyring, "keyring");
   if (!parsedKeyring.ok) return finish("SETTLEMENT_CORRELATION_MISMATCH", parsedKeyring.reason);
@@ -662,13 +755,14 @@ function reconcileSettlementEvidenceInner(input) {
   // mismatch tells the operator the wrong thing). Selection for this pre-check uses the receipt's
   // COMMITTED chain.hash; the authenticating selection below is verifyActionDigest's own
   // recomputed one, so a lying committed hash cannot survive to the verdict.
-  for (const candidate of chainDocs) {
+  for (let i = 0, ks = chainDocs; i < ks.length; i++) {
+    const candidate = ks[i];
     if (isObj(candidate) && isObj(candidate.chain) && candidate.chain.hash === grant.approvalReceiptHash) {
       const governance = candidate.governance;
       if (!isObj(governance) || governance.verdict !== "ALLOWED") {
         const v = isObj(governance) ? governance.verdict : undefined;
         return finish("SETTLEMENT_RECEIPT_ROLE_UNFIT",
-          `the receipt the grant descends from attests verdict ${JSON.stringify(v)}, not "ALLOWED" — cryptographically bound, semantically contradictory`);
+          `the receipt the grant descends from attests verdict ${jsonStringify(v)}, not "ALLOWED" — cryptographically bound, semantically contradictory`);
       }
     }
   }
@@ -678,12 +772,12 @@ function reconcileSettlementEvidenceInner(input) {
   // (verifyChain), the grant signature (against the caller keyring), re-selects the authorization
   // by the grant's own approvalReceiptHash, recomputes the digest and compares. Its refusal reason
   // is carried through verbatim (R-12's rule), never regexed.
-  const authorization = chainDocs.find((c) => isObj(c) && isObj(c.chain) && c.chain.hash === grant.approvalReceiptHash) ?? chainDocs[0];
-  const built = buildActionDigest(JSON.stringify(authorization), JSON.stringify(grant));
+  const authorization = arrayFind(chainDocs, (c) => isObj(c) && isObj(c.chain) && c.chain.hash === grant.approvalReceiptHash) ?? chainDocs[0];
+  const built = buildActionDigest(jsonStringify(authorization), jsonStringify(grant));
   if (!built.ok) return finish("SETTLEMENT_CORRELATION_MISMATCH", built.reason);
   const verified = verifyActionDigest(
-    JSON.stringify({ spec: "noa.action-digest/0.1", digest: built.digest }),
-    JSON.stringify({ chain: chainDocs, grant, keyring: parsedKeyring.value, expect: { tenant: input.expect.tenant, chain: artifact.chain } }),
+    jsonStringify({ spec: "noa.action-digest/0.1", digest: built.digest }),
+    jsonStringify({ chain: chainDocs, grant, keyring: parsedKeyring.value, expect: { tenant: input.expect.tenant, chain: artifact.chain } }),
   );
   if (!verified.ok) return finish("SETTLEMENT_CORRELATION_MISMATCH", verified.reason);
   const projection = verified.projection;
@@ -715,8 +809,8 @@ function reconcileSettlementEvidenceInner(input) {
     return finish("SETTLEMENT_BOUNDS_UNCHECKABLE", preimage.reason);
   }
   const approved = preimage.value;
-  const approvedChainId = Number(approved.networkCaip2.slice("eip155:".length));
-  const approvedToken = approved.assetCaip19.slice(approved.assetCaip19.indexOf("erc20:") + "erc20:".length);
+  const approvedChainId = toNumber(strSlice(approved.networkCaip2, "eip155:".length));
+  const approvedToken = strSlice(approved.assetCaip19, strIndexOf(approved.assetCaip19, "erc20:") + "erc20:".length);
   const approvedMax = parseAmount(approved.maxAmountMinorUnits);
 
   // ── STAGE 9: offline coordinate bounds — B1/B2/B3 against the artifact's own report ───────────
@@ -741,7 +835,7 @@ function reconcileSettlementEvidenceInner(input) {
 
   // ── STAGE 10: THE D7 CORRELATION — recompute, never accept ────────────────────────────────────
   const grantNonce = grant.nonce;
-  if (typeof grantNonce !== "string" || !RE_HEX64.test(grantNonce)) {
+  if (typeof grantNonce !== "string" || !matches(RE_HEX64, grantNonce)) {
     correlationStatus = "MISMATCH";
     return finish("SETTLEMENT_CORRELATION_MISMATCH",
       "grant.nonce is not 64 lowercase hex — the D7 seed cannot be derived from it, so the one nonce this grant commits to cannot be recomputed");
@@ -753,14 +847,18 @@ function reconcileSettlementEvidenceInner(input) {
       tokenAddress: approvedToken,
       payerAddress: approved.payer,
       dispatchId: verified.digest, // the ASCII "sha256:<64hex>" string, prefix included (D7)
-      seed: Uint8Array.from(bufferFrom(grantNonce, "hex")),
+      // The captured `bufferFrom(x, "hex")` already returns a Uint8Array, so the extra
+      // `Uint8Array.from(...)` that used to wrap it was a second, LIVE conversion of the one input
+      // the whole verdict pivots on — and a rewritten conversion substitutes the seed of a
+      // different settlement here without touching anything else in the bundle.
+      seed: bufferFrom(grantNonce, "hex"),
     });
   } catch (e) {
     correlationStatus = "MISMATCH";
     return finish("SETTLEMENT_CORRELATION_MISMATCH", `deriveCorrelationNonce refused: ${e instanceof Error ? e.message : "non-Error thrown"}`);
   }
-  const derivedNonceHex = derived.nonce.slice(2).toLowerCase();
-  const artifactCorrelationHex = artifact.correlation.slice(2).toLowerCase();
+  const derivedNonceHex = strToLowerCase(strSlice(derived.nonce, 2));
+  const artifactCorrelationHex = strToLowerCase(strSlice(artifact.correlation, 2));
   if (derivedNonceHex !== artifactCorrelationHex) {
     correlationStatus = "MISMATCH";
     return finish("SETTLEMENT_CORRELATION_MISMATCH",
@@ -846,7 +944,7 @@ function reconcileSettlementEvidenceInner(input) {
   }
   if (isObj(holdResolution) && holdResolution.reasonCode === "HUMAN_ACK_UNENFORCED") {
     // R-23b — strictly stronger than reading `mode`: this token is what the gate itself SIGNED.
-    if (!arrayFrom(warnings).includes("SETTLEMENT_OVER_RAW_MODE_HOLD")) {
+    if (!arrayIncludes(warnings, "SETTLEMENT_OVER_RAW_MODE_HOLD")) {
       arrayPush(warnings, "SETTLEMENT_OVER_RAW_MODE_HOLD");
     }
     capped = true;
@@ -874,7 +972,7 @@ function reconcileSettlementEvidenceInner(input) {
   if (input.chainFactsOrigin !== CHAIN_FACTS_ORIGIN_RELYING_PARTY) {
     chainStatus = "UNRECONFIRMED";
     return finish("SETTLEMENT_CHAIN_FACTS_UNTRUSTED",
-      `chainFactsOrigin is ${JSON.stringify(input.chainFactsOrigin)} — ChainFacts MUST originate from the relying party's own node (R-17b); a record supplied by the party being judged is RECONFIRMED handed to the verifier by the defendant`);
+      `chainFactsOrigin is ${jsonStringify(input.chainFactsOrigin)} — ChainFacts MUST originate from the relying party's own node (R-17b); a record supplied by the party being judged is RECONFIRMED handed to the verifier by the defendant`);
   }
 
   const parsedFacts = parseDocument(input.chainFacts, "chainFacts");
@@ -1084,11 +1182,11 @@ function reconcileSettlementEvidenceInner(input) {
 
   // R-17c + R-14 — depth and freshness. RECONFIRMED says nothing about either unless the caller
   // supplied thresholds and they were met; "RECONFIRMED at unknown depth" is not a thing.
-  const depthOk = Number.isSafeInteger(input.minConfirmations)
+  const depthOk = isSafeInteger(input.minConfirmations)
     && input.minConfirmations >= 1
     && facts.headBlockNumber - log.blockNumber + 1 >= input.minConfirmations;
   const nowNs = parseInstant(input.now);
-  const windowMs = Number.isSafeInteger(input.freshnessWindowMs) && input.freshnessWindowMs > 0 ? BigInt(input.freshnessWindowMs) * 1000000n : null;
+  const windowMs = isSafeInteger(input.freshnessWindowMs) && input.freshnessWindowMs > 0 ? toBigInt(input.freshnessWindowMs) * 1000000n : null;
   const withinWindow = (ts) => {
     if (nowNs === null || windowMs === null) return false;
     const t = parseInstant(ts);

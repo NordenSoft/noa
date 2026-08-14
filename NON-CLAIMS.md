@@ -989,6 +989,41 @@ Recompute-and-compare verification makes the disclosed grant nonce load-bearing:
 withholds it cannot be verified, and one that includes it discloses the wallet link (NC-S4.14).
 A minimized presentation tier is a `/0.2` schema event, not a configuration.
 
+### NC-S4.16 — Verification assumes an unpoisoned JavaScript runtime, and that assumption cannot be discharged from inside it
+
+*This is NC-6.0 applied to the settlement verdict specifically. It is restated here because a
+reader who came for payment evidence should not have to find it in another section.*
+
+A party that can execute code in the same JavaScript process as the verifier — before or during
+verification — can rewrite the language's own built-in operations and manufacture any verdict it
+likes, on evidence it never had to forge. It does not have to break the cryptography and it does
+not have to touch the bundle: it changes what "decode these bytes", "match this timestamp",
+"lowercase this address" or "compare these two values" MEAN while the verifier is asking.
+
+This is measured, not hypothetical. Two independent adversarial reviews reproduced, end to end
+against the shipped conformance corpus, a settlement reported as fully reconfirmed when it was two
+hours stale, when its chain log belonged to a different payer, when the money had gone to a decoy
+token, and when the artifact's own malformed-bytes rule should have refused it — and, sharpest of
+all, one settlement's derivation being **recorded during an ordinary, legitimate verification and
+replayed into the next one**, so that a second, genuinely signed payment earned the first payment's
+verdict. Not one of those required a single forged byte.
+
+**What is done about it, and what that is worth.** Every computation that can move this verdict now
+runs on bindings captured when the module loaded, before any caller-supplied value has been read; a
+source-level gate (`npm run lint:security-gates`) blocks a new live one from being introduced, and
+a test suite re-runs each reproduced attack as a regression pin. That raises the cost of an
+in-process attack substantially and closes every mechanism named above. **It is not a boundary and
+it does not become one by growing.** A poison installed BEFORE the verifier loads is snapshotted,
+not defeated; and in a shared realm the set of operations trusted code performs is not enumerable
+by that trusted code, which is why this class has reopened once per review round rather than
+staying closed.
+
+**So the honest statement is this.** A positive settlement verdict means "these documents
+reconcile, *given that the process computing the answer was not already compromised*." Where that
+condition is worth money, the answer belongs somewhere the counterparty cannot run code: process
+isolation (the Go kernel, ADR-0002), or the relying party's own independent recomputation from
+chain state (NC-S4.10). This non-claim is permanent and is not scheduled to be closed.
+
 
 ## 7. Changing this document
 

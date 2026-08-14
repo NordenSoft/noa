@@ -10565,6 +10565,177 @@
       "expectChainStatus": "RECONFIRMED"
     },
     {
+      "name": "control-reverted-cancel-foreign-nonce",
+      "description": "The precedence rule, pinned from the other side: a REVERTED cancelAuthorization entry carrying a FOREIGN (payer, nonce) alongside the genuine settlement. Its sibling control proves a reverted cancel with OUR coordinates is ignored; this one proves the coordinate binding is checked FIRST and on EVERY canceled entry, because a record assembled for one authorization that carries another authorization's log is a broken record whatever that log's transaction did. Knockout: apply the binding only to SUCCESS cancels -> a record naming somebody else's authorization earns the positive.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_CHAIN_CONTRADICTED",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "executionGrantHash": "sha256:755fa2e0e1ad6f05aaba8ab81ca967ef0088d3ded219084f9751c887df762914",
+          "correlation": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "9BdUW1MrqCnZg94jZnrSMNPccAOdCx7B8Z57zFM56sMaE0iQWYDiyQBdShwUMPnzl1aFwDF9C5m+o7UD1KSaDQ=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_1",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "/71Ii97F8ZWi5BbTlCAlGz3S3VzhogJ0j/j3eHWYda1bK+7yuuoU3veAH+KfxjC9QuFfPAwIvifKJMPoKvlmAQ=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-001",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:01943851414d125042bdff1f77b1acc35486727ebd1239611c469f26ecc9b3b7",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c9c",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "Gs84bZrH6pOwKlMm0HLtgvR6y2RKPWnk/XKt/gnRiikLl12SogRpOwv7RngILgrVasspUAymQuJOhc+lUex6Ag=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [
+            {
+              "txHash": "0x4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a4a",
+              "blockNumber": 33554434,
+              "logIndex": 1,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "REVERTED",
+              "nonce": "0x7777777777777777777777777777777777777777777777777777777777777777",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      },
+      "expectChainStatus": "CONTRADICTED"
+    },
+    {
       "name": "control-settled-after-grant-expiry",
       "description": "R-13 SHOULD — facilitator delay pushed settlement past the grant window; the single-use burn already happened at dispatch. A warning, not a rejection — named so nobody tightens it into a false negative.",
       "expect": "CONTROL",

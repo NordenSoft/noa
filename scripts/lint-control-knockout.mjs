@@ -467,11 +467,17 @@ const KNOCKOUTS = [
     id: "s3-correlation-nonce-binds-seed",
     control: "S3(a) — the correlation nonce binds a high-entropy seed, so it is not a bare digest of the deal",
     file: "packages/rail-x402/src/correlation-nonce.mjs",
-    find: '  field("seed", Buffer.from(seed));',
+    // RE-PINNED when the derivation stopped feeding a live incremental hash object and started
+    // hashing ONE assembled preimage (identical bytes, identical digest — only the dispatch moved
+    // onto load-time captures). The registry CAUGHT the rot as `find` matching 0x rather than
+    // certifying a control it could no longer see, which is exactly what this layer is for, and is
+    // the second time this entry has been re-pinned by that mechanism instead of by someone
+    // remembering to.
+    find: '    label("seed", seedBytes), seedBytes,',
     // Drop the seed from the preimage and the nonce becomes a deterministic function of five PUBLIC
     // fields — exactly the refuted design: equality leaks, and an observer who can guess the deal can
     // confirm it against the chain. The dictionary-recovery test is what turns red.
-    replace: '  void seed;',
+    replace: '',
     kind: "tests",
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
@@ -578,13 +584,21 @@ const KNOCKOUTS = [
   },
   {
     id: "s4-parseinstant-true-year",
-    control: "S4 — parseInstant sets the true year explicitly so Date.UTC does not alias 0000-0099 onto 1900-1999",
+    control: "S4 — parseInstant reads the LITERAL year, so years 0000-0099 never alias onto 1900-1999",
     file: "packages/rail-x402/src/settlement-evidence.mjs",
-    find: "  dt.setUTCFullYear(year);",
-    // Drop the explicit year and a settledAt of 0099-08-13 aliases to 1999-08-13, matching a resolved
+    // RE-PINNED when the epoch computation stopped using the Date family altogether. The previous
+    // anchor was the explicit `setUTCFullYear` that REPAIRED the aliasing; the repair itself sat on
+    // a rewritable prototype method on the positive path, so the arithmetic replaced it. The
+    // registry caught the rot (`find` matched 0x) instead of quietly certifying a control that no
+    // longer existed.
+    //
+    // The mutation reproduces the ORIGINAL defect through the new code: fold years 0-99 into the
+    // 1900s, which is precisely what `Date.UTC(year, …)` did.
+    find: "  const days = daysFromCivil(year, month, day);",
+    // With this, a settledAt of 0099-08-13 aliases to 1999-08-13 and matches a resolved
     // blockTimestamp of 1999-08-13 as instants -> the R-20 arm passes and the artifact earns the
     // positive. `reject-year-0099-not-1999` is what turns red.
-    replace: "  void year;",
+    replace: "  const days = daysFromCivil(year < 100 ? year + 1900 : year, month, day);",
     kind: "tests",
     suite: ["packages/rail-x402", "npm", ["test"]],
   },

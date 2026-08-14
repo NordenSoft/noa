@@ -22,6 +22,15 @@ settled.* Nothing here proves service delivery, and nothing here proves the appr
 the payment (the correlation proves the payer key signed; the link to the mandate rests on
 locally-held documents). See `NON-CLAIMS.md` §NC-S4 for the full non-claims register.
 
+**And the ceiling has a precondition, which is part of the claim.** Every verdict below assumes an
+unpoisoned runtime. A party that can execute code inside the verifier's own process, before or
+during verification, can rewrite the language's built-in operations and manufacture any verdict on
+evidence it never had to forge — reproduced, end to end, against this document's own corpus. This
+implementation therefore performs every verdict-bearing computation through bindings captured when
+the module loaded, and a source-level gate blocks new live ones; that raises the cost of an
+in-process attack and is not a boundary. Where the answer is worth money it belongs somewhere the
+counterparty cannot run code. Stated in full as `NON-CLAIMS.md` §NC-S4.16, which governs.
+
 ## 2. The artifact
 
 `noa.settlement-evidence/0.1` is an observer-signed side artifact with root members
@@ -183,6 +192,28 @@ The reconciler's obligations, in evaluation order:
    the recomputed correlation and the approved payer BEFORE the cancel may burn or contradict: a
    cancel that names a different `(payer, nonce)` describes an unrelated authorization and is a
    `SETTLEMENT_CHAIN_CONTRADICTED`, never a burn of this one.
+
+   **The precedence of the two cancel rules, stated so it cannot be read two ways.** The
+   coordinate binding and the `txStatus` filter answer different questions, and they run in this
+   order:
+
+   1. **Binding FIRST, on EVERY canceled entry, whatever its `txStatus`.** A record submitted for
+      the adjudicated `(payer, nonce)` may not contain an entry naming a different one. That is a
+      property of the RECORD, not of the entry's outcome: the relying party's node was asked for
+      one authorization's logs and handed back somebody else's, so the record is broken and the
+      verifier refuses it — `SETTLEMENT_CHAIN_CONTRADICTED`. A reverted transaction is still a
+      real, attributable chain event carrying a real `(authorizer, nonce)`; "it reverted" says
+      nothing about whether the record describes the right authorization.
+   2. **`txStatus` SECOND, among the entries that ARE ours.** Only a `SUCCESS` cancel changed any
+      state, so only a `SUCCESS` cancel counts toward the burn or contradicts a settlement. A
+      `REVERTED` cancel carrying OUR coordinates is a NON-EVENT: it neither contradicts a genuine
+      settlement (a post-settlement cancel reverting with "authorization already used" is exactly
+      what an honest chain looks like) nor satisfies the burn.
+
+   So a `REVERTED` cancel is ignored when it is ours and refused when it is not, and the two
+   sentences do not conflict: the first rule is about record INTEGRITY, the second about entry
+   OUTCOME. Both are pinned by vectors — `control-reverted-cancel-ignored` and
+   `control-reverted-cancel-foreign-nonce`.
 7. **Caps.** Each cap sets `chainStatus` (to `UNRECONFIRMED`) AND the code
    (`SETTLEMENT_CORRELATED_UNRECONFIRMED`) AND its warning, together:
    - the **same-signing-key observer** — the observer key and the execution-signer key are **the
@@ -279,6 +310,14 @@ binding, the state conjunction, the byte-level same-key cap, the settledAt insta
 canceled-log (nonce, authorizer) binding, and the proleptic-year parse) are registered in the
 repository's control-knockout registry and are proven to turn named vectors red.
 
+A second suite alongside the corpus (`packages/rail-x402/test/poison-resistance.test.mjs`)
+re-runs, as regression pins, each in-process attack that was reproduced flipping a real verdict on
+these vectors: a substituted text decoder, a rewritten byte compare, a fabricated timestamp match,
+a constant epoch, a recorded-and-replayed correlation derivation, a rewritten address
+normalisation, and a decode rewritten to make the artifact's own base64 round-trip a tautology.
+An independent implementation is not required to reproduce those tests, but it IS subject to the
+same ceiling: see §1 and `NON-CLAIMS.md` §NC-S4.16.
+
 ## 9. Non-claims (summary — the register in `NON-CLAIMS.md` §NC-S4 governs)
 
 `RECONFIRMED` is a statement about the caller's chain facts, not about the chain · the
@@ -287,4 +326,6 @@ execution signer are not independent parties today · disclosing an evidence bun
 payer-wallet link permanently (the grant's seed makes the on-chain lookup computable by every
 bundle holder) · there is no minimized (commitment-only) presentation tier in v0.1 — the
 disclosed grant nonce is load-bearing for verification, and a minimized tier is a /0.2 schema
-event · activity outside enforced gateways is outside coverage.
+event · activity outside enforced gateways is outside coverage · **every verdict assumes an
+unpoisoned runtime: a party that can run code inside the verifier's process can manufacture any
+verdict on evidence it never had to forge, and no in-process defence closes that.**

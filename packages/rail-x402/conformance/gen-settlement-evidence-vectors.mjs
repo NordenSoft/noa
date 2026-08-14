@@ -814,6 +814,15 @@ export function buildCorpus() {
         }),
       }),
       { expectChainStatus: "RECONFIRMED" }),
+    vec("control-reverted-cancel-foreign-nonce",
+      "The precedence rule, pinned from the other side: a REVERTED cancelAuthorization entry carrying a FOREIGN (payer, nonce) alongside the genuine settlement. Its sibling control proves a reverted cancel with OUR coordinates is ignored; this one proves the coordinate binding is checked FIRST and on EVERY canceled entry, because a record assembled for one authorization that carries another authorization's log is a broken record whatever that log's transaction did. Knockout: apply the binding only to SUCCESS cancels -> a record naming somebody else's authorization earns the positive.",
+      "REJECT", "SETTLEMENT_CHAIN_CONTRADICTED",
+      baseInput({
+        chainFacts: mintChainFacts({
+          canceledLogs: [{ txHash: TX_OTHER, blockNumber: BLOCK + 2, logIndex: 1, blockTimestamp: T_SETTLED, txStatus: "REVERTED", nonce: "0x" + "77".repeat(32), authorizer: PAYER }],
+        }),
+      }),
+      { expectChainStatus: "CONTRADICTED" }),
     vec("control-settled-after-grant-expiry",
       "R-13 SHOULD — facilitator delay pushed settlement past the grant window; the single-use burn already happened at dispatch. A warning, not a rejection — named so nobody tightens it into a false negative.",
       "CONTROL", "SETTLEMENT_CORRELATED_AND_RECONFIRMED",
