@@ -17,29 +17,41 @@
  *
  * ── WHAT IT CAN AND CANNOT SEE ───────────────────────────────────────────────────────────────────
  *
- * It covers every exit code this build can produce: 0, 2, 3, 4 from the four fixture classes, and 5
- * from a usage error. It does NOT cover 6 or 7, and neither omission is an oversight:
+ * It covers every exit code this build can produce: 0, 2, 3, 4 from the four fixture classes, 5 from
+ * a usage error, and 7 from a FORCED REFUSAL (below). It does not cover 6: that needs a settlement
+ * value no rule in this verifier assigns, and the first rule that can is the one admitting a
+ * settlement artifact with no verified params preimage. Until then no bundle on earth makes this
+ * binary exit 6.
  *
- *   • `6` needs a settlement value no rule in this verifier assigns. The first rule that can is the
- *     one admitting a settlement artifact with no verified params preimage. Until then no bundle on
- *     earth makes this binary exit 6.
- *   • `7` needs the verifier to produce a tuple its own rules forbid — i.e. a defect. It is
- *     unreachable by construction from honest input, which is the point of it. What CAN be measured
- *     is that the wire is connected: a registered knockout removes an admissible pair from the
- *     mapper's table, and this file then observes the shipped binary exit 7 instead of 0 on a valid
- *     bundle. That is the throw-to-exit path proven end to end, without a fixture that lies.
+ * ── THE FORCED-REFUSAL HARNESS, AND WHY A KNOCKOUT WAS NOT ENOUGH ────────────────────────────────
+ *
+ * Exit `7` fires when the verifier produces a tuple its own rules forbid — a defect, unreachable by
+ * construction from honest input, which is the point of it. An earlier version of this file left it
+ * to a registered knockout and said so. A reviewer showed why that is not a pin: the knockout makes a
+ * valid fixture fail, and the runner scores ANY new red as a detection, so the catch could have
+ * exited `7`, `2` or `0` and the knockout would still have reported success. Delegating a pin to
+ * something that cannot tell those outcomes apart is not a pin.
+ *
+ * So the refusal is measured here, directly, with `status === 7` asserted as a number. A defect is
+ * simulated by copying the BUILT `dist/src` into a temp directory and altering the copy's
+ * success-path settlement literal, so the copied verifier hands the UNMODIFIED mapper a tuple no
+ * rule produces. The repository is never touched and the shipped code carries no test seam — the
+ * mutation lives and dies inside a directory this test creates and deletes.
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { INADMISSIBLE_TUPLE_ERROR_NAME } from "../src/exit-codes.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // .../evidence/dist/test
-const CLI = join(HERE, "..", "src", "cli.js");
-const CONF = join(HERE, "..", "..", "conformance");
+const DIST = join(HERE, "..", "src"); // .../evidence/dist/src
+const PKG = join(HERE, "..", ".."); // .../evidence
+const CLI = join(DIST, "cli.js");
+const CONF = join(PKG, "conformance");
 const WORK = mkdtempSync(join(tmpdir(), "noa-cli-wire-"));
 
 interface Fixture {
@@ -60,12 +72,14 @@ function materialise(id: string): { bundle: string; root: string; keyring: strin
 
 interface Run { status: number; stdout: string; stderr: string }
 
-function runCli(args: string[]): Run {
-  const r = spawnSync(process.execPath, [CLI, ...args], { encoding: "utf8" });
+function spawnCli(cliPath: string, args: string[]): Run {
+  const r = spawnSync(process.execPath, [cliPath, ...args], { encoding: "utf8" });
   assert.equal(r.error, undefined, `spawning the CLI failed: ${String(r.error)}`);
   assert.equal(r.signal, null, `the CLI died on signal ${r.signal}`);
   return { status: r.status ?? -1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
 }
+
+const runCli = (args: string[]): Run => spawnCli(CLI, args);
 
 function verify(id: string): { run: Run; result: Record<string, unknown> } {
   const f = materialise(id);
@@ -139,13 +153,125 @@ test("WIRE: the result JSON carries both new reporting fields, always", () => {
 });
 
 test("WIRE: a valid bundle does not print an internal-invariant complaint", () => {
-  // The other half of the exit-7 wire: on honest input the refusal path must stay silent. A knockout
-  // removes an admissible pair from the mapper's table and this file then sees exit 7 here instead —
-  // which is how the throw-to-exit path is proven without a fixture that lies.
+  // On honest input the refusal path must stay silent. Its firing is measured below, on a copy.
   const { run } = verify("valid/executed.json");
   assert.equal(run.status, 0);
   assert.equal(
-    run.stderr.includes("InadmissibleVerdictTupleError"), false,
+    run.stderr.includes(EXPECTED_CAUSE), false,
     "a fully verified bundle produced a tuple the rules forbid — that is a defect in the assignment rules",
   );
+});
+
+// ── THE FORCED REFUSAL — exit 7, on a copy of the build, with the repository untouched ───────────
+
+/**
+ * The error name the CLI must print, written out as a LITERAL rather than read from the module under
+ * test: a test that asks the implementation what its own strings are cannot notice one that changed.
+ * The equality assertion below turns a rename into a visible edit rather than a silent pass.
+ */
+const EXPECTED_CAUSE = "InadmissibleVerdictTupleError";
+
+/**
+ * The success-path settlement literal, as the compiler emits it. Replacing it makes the copied
+ * verifier assign the offline ceiling to a fully verified bundle — a defective assignment rule,
+ * simulated — so the UNMODIFIED mapper is handed a tuple no rule produces and must refuse.
+ *
+ * THIS MARKER IS THE HARNESS'S ONE ASSUMPTION, so it is checked rather than trusted: the count must
+ * be exactly 1, and the replacement must change the bytes. If a future formatting change, a compiler
+ * upgrade or a second use of the literal breaks either, this test fails LOUDLY and names the marker —
+ * it does not quietly stop mutating and go green, which is the failure mode that makes a harness
+ * worse than no harness.
+ */
+const SETTLEMENT_MARKER = 'settlement: "NO_EXECUTION_BINDING"';
+const SETTLEMENT_MARKER_REPLACEMENT = 'settlement: "ATTESTED_UNVERIFIED"';
+
+interface ForcedRefusal { pristine: Run; mutated: Run; mutatedResult: Record<string, unknown> }
+let FORCED: ForcedRefusal | null = null;
+
+/**
+ * Copy the BUILT `dist/src` to a temp directory, run the copy once unchanged, then alter one literal
+ * in the copy and run it again. Memoised: three tests read the same two spawns, so each can assert
+ * ONE property and a mutation that breaks only the exit code, or only the message, is attributed to
+ * the assertion it actually broke.
+ *
+ * The copy needs two things from the real package to run at all, and both are symlinks rather than
+ * copies: `schema/` (the container schema is resolved relative to `dist/src`) and `node_modules/`
+ * (bare specifiers resolve by walking up from the file). Nothing is written inside the repository.
+ */
+function forcedRefusal(): ForcedRefusal {
+  if (FORCED) return FORCED;
+  const tmp = mkdtempSync(join(tmpdir(), "noa-forced-refusal-"));
+  try {
+    cpSync(DIST, join(tmp, "dist", "src"), { recursive: true });
+    symlinkSync(join(PKG, "schema"), join(tmp, "schema"), "dir");
+    symlinkSync(join(PKG, "node_modules"), join(tmp, "node_modules"), "dir");
+
+    const f = materialise("valid/executed.json");
+    const cli = join(tmp, "dist", "src", "cli.js");
+    const args = [f.bundle, "--tenant-root", f.root, "--checkpoint-keyring", f.keyring,
+      "--now", f.fx.now, "--max-age-hours", String(f.fx.maxAgeHours)];
+
+    const pristine = spawnCli(cli, args);
+
+    const target = join(tmp, "dist", "src", "verify-evidence.js");
+    const before = readFileSync(target, "utf8");
+    const hits = before.split(SETTLEMENT_MARKER).length - 1;
+    assert.equal(
+      hits, 1,
+      `the harness expected exactly one occurrence of ${JSON.stringify(SETTLEMENT_MARKER)} in the built ` +
+        `verify-evidence.js and found ${hits}. The marker has drifted — fix the marker, do not delete ` +
+        `the test: a harness that stops mutating and stays green measures nothing.`,
+    );
+    const after = before.replace(SETTLEMENT_MARKER, SETTLEMENT_MARKER_REPLACEMENT);
+    assert.notEqual(after, before, "the mutation changed no bytes");
+    writeFileSync(target, after);
+
+    const mutated = spawnCli(cli, args);
+    FORCED = { pristine, mutated, mutatedResult: JSON.parse(mutated.stdout) as Record<string, unknown> };
+    return FORCED;
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+test("FORCED REFUSAL (harness fidelity): the untouched copy behaves exactly like the shipped binary", () => {
+  // Without this the whole exercise is worthless: a copy that could not run would exit non-zero for
+  // its own reasons, and the mutated run's non-zero status would prove nothing about the refusal.
+  const { pristine, mutatedResult } = forcedRefusal();
+  assert.equal(pristine.status, 0, `the unmutated copy exited ${pristine.status} — the harness, not the code, is broken`);
+  assert.equal(pristine.stderr, "", "the unmutated copy printed to stderr");
+  // …and the mutation genuinely took effect in the RUNNING process, not merely on disk.
+  const dims = mutatedResult["dimensions"] as Record<string, unknown>;
+  assert.equal(dims["settlement"], "ATTESTED_UNVERIFIED", "the mutated copy did not report the mutated settlement value");
+});
+
+test("FORCED REFUSAL: a tuple the rules cannot produce exits 7 — asserted as a number", () => {
+  // The pin the knockout could not carry. A knockout reports success on ANY new red, so it cannot
+  // tell 7 from 2 from 0; this can, and it is the only thing standing between a defective assignment
+  // rule and a payment script reading success.
+  const { mutated } = forcedRefusal();
+  assert.equal(
+    mutated.status, 7,
+    `the binary exited ${mutated.status} for a tuple no assignment rule produces. 7 is the defect report; ` +
+      `0 would pay on a verifier that contradicted itself.`,
+  );
+});
+
+test("FORCED REFUSAL: stderr names the expected cause and the offending tuple", () => {
+  // Separate from the status assertion ON PURPOSE. Deleting the stderr write and mis-wiring the exit
+  // code are two different defects, and each must be attributed to the assertion it broke rather than
+  // masked by the other.
+  const { mutated } = forcedRefusal();
+  assert.ok(
+    mutated.stderr.includes(EXPECTED_CAUSE),
+    `stderr did not name ${EXPECTED_CAUSE}. A non-zero exit with no explanation sends an operator to ` +
+      `read the evidence, when the fault is in the verifier. Got: ${JSON.stringify(mutated.stderr.slice(0, 200))}`,
+  );
+  assert.ok(mutated.stderr.includes("ATTESTED_UNVERIFIED"), "stderr did not name the offending settlement value");
+  assert.ok(mutated.stderr.includes("VALID_FULL_CHAIN"), "stderr did not name the offending verdict");
+});
+
+test("FORCED REFUSAL: the expected-cause literal still matches the exported name", () => {
+  // The literal above is deliberately hand-written; this is where a rename becomes a visible edit.
+  assert.equal(INADMISSIBLE_TUPLE_ERROR_NAME, EXPECTED_CAUSE);
 });

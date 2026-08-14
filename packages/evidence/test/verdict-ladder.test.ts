@@ -235,7 +235,12 @@ test("the two named inadmissible cases a reviewer raised are both refused", () =
   assert.throws(() => exitCodeFor("VALID_FULL_CHAIN", "ENROLLED", "NO_EXECUTION_BINDING"), InadmissibleVerdictTupleError);
 });
 
-test("exit 7 is the CLI's answer to a refusal, and the mapper never RETURNS it", () => {
+// NAMED FOR WHAT IT MEASURES. It was called "exit 7 is the CLI's answer to a refusal" and asserted
+// nothing whatever about the CLI — the same overclaim class this file already had to cut back once.
+// The CLI's answer is measured by spawning the CLI (`cli-wire.test.ts`, the forced-refusal harness).
+// What is measured HERE is narrower and still worth having: the refusal code is RESERVED — no tuple
+// can make the mapper hand it back as an ordinary answer.
+test("the refusal code is RESERVED — no tuple makes the mapper return 7, or the usage code", () => {
   assert.equal(INTERNAL_INVARIANT_EXIT_CODE, 7);
   assert.notEqual(INTERNAL_INVARIANT_EXIT_CODE, USAGE_EXIT_CODE, "a defect report and a typo must not share a number");
   for (const v of VERDICTS) for (const e of ENROLMENTS) for (const s of SETTLEMENTS) {
@@ -496,6 +501,41 @@ test("a fully verified bundle, with no registry supplied, is unchanged in every 
   assert.equal(res.dimensions.settlement, "NO_EXECUTION_BINDING");
   assert.equal(res.dimensions.integrity, "INTACT");
   assert.equal(exitCodeFor(res.verdict, res.enrolment, res.dimensions.settlement), 0);
+});
+
+test("ISOLATION: writing to one result's dimensions cannot rewrite a LATER verification's answer", () => {
+  // A reviewer reproduced this against the first version of the fix round. The early-return
+  // dimensions were a single shared constant handed out by reference, so every early-return result in
+  // a process pointed at ONE object: a consumer that wrote to a result it owned silently rewrote the
+  // dimensions of every later verification, including ones it never saw. The reproduction turned a
+  // later INVALID result into `integrity: INTACT, authorization: VALID_NOW, settlement: RECONFIRMED`.
+  //
+  // Bundle bytes cannot do this; an in-process caller can, and the object is not frozen. A verifier
+  // whose past answers can be edited by its own caller is not offering a verdict.
+  // Two DIFFERENT bundles, both taking a pre-pipeline early return — the path that shared the object.
+  const first = fixtures.find((f) => f.id === "verdict/unverified-no-tenant-root.json");
+  const second = fixtures.find((f) => f.id === "verdict/unverified-no-checkpoint-keyring.json");
+  assert.ok(first && second, "the fixtures this test needs are missing");
+
+  const a = run(first!.fx);
+  const aDims = a.dimensions as unknown as Record<string, string>;
+  aDims["integrity"] = "INTACT";
+  aDims["authorization"] = "VALID_NOW";
+  aDims["settlement"] = "RECONFIRMED";
+
+  const bResult = run(second!.fx);
+  assert.notEqual(bResult.dimensions, a.dimensions, "two independent results share one dimensions object");
+  assert.equal(bResult.dimensions.integrity, "BROKEN", "a later result inherited a caller's write");
+  assert.equal(bResult.dimensions.authorization, "UNCHECKED", "a later result inherited a caller's write");
+  assert.equal(bResult.dimensions.settlement, "UNCHECKED", "a later result inherited a caller's write");
+  assert.equal(exitCodeFor(bResult.verdict, bResult.enrolment, bResult.dimensions.settlement), 4);
+
+  // …and the SAME bundle re-verified is unaffected too, which is the form an accidental write takes.
+  const again = run(first!.fx);
+  assert.notEqual(again.dimensions, a.dimensions, "a repeated verification handed back the poisoned object");
+  assert.equal(again.dimensions.settlement, "UNCHECKED");
+  assert.equal(again.dimensions.integrity, "BROKEN");
+  assert.equal(again.dimensions.authorization, "UNCHECKED");
 });
 
 // ── 4. `purpose` DOES NOT TOUCH SETTLEMENT — measured by running it, not by reading the code ─────
