@@ -3025,6 +3025,486 @@
       }
     },
     {
+      "name": "reject-params-preimage-noncanonical-whitespace",
+      "description": "R-HASH-2 canonical form (whitespace) — the bytes parse to the six approved members and hash to their own receipt's paramsHash, but they are not the JCS encoding of that document. Accepting them lets one set of parameters carry more than one valid paramsHash.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_BOUNDS_UNCHECKABLE",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:5a905fe39f5b092a374b8be77023c8a1ccb49963eb0acc6a19be3114dd7d27b5",
+          "executionGrantHash": "sha256:222e4328362bfba48b3ba32d34c8705be348e7ea643ccddf71fe96b1c966b26d",
+          "correlation": "0x359bf303ab6905a495fb42e8e21a5afad1d49f4cc8e5111cf7973481b4bca76a",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "wmZVdm4Gk8VGozTuUwR7q8AfUXiQ6C45ijLziRgB6aoEhMZ8uAjifU7OPVYYoAzj6GWoQLZDS4cemK5pybOnDw=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_1b",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:c35328157271e77657c0faa1e3a042018e2a571f00066e2d37ce8efcdb5fb0e8",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:5a905fe39f5b092a374b8be77023c8a1ccb49963eb0acc6a19be3114dd7d27b5"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "PVYipnQ3KBr2X0mbuFtRv9qTCZqYnFagsV3G/THBOK/JYkM8WRrR93KnWuW+rCOnX8rItvSAHlI5f+t19MIjDA=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-1b",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:c35328157271e77657c0faa1e3a042018e2a571f00066e2d37ce8efcdb5fb0e8",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:5a905fe39f5b092a374b8be77023c8a1ccb49963eb0acc6a19be3114dd7d27b5",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "RzSE3BU1gfhrqpeGaEyIoFSk/hNMxMGm4FmFR2NxUP7UoljbRviUN/yO8IdSzpKbIBBP+PU+xP/e6zVHE2iRAg=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{ \"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
+      "name": "reject-params-preimage-noncanonical-member-order",
+      "description": "R-HASH-2 canonical form (member-order) — the bytes parse to the six approved members and hash to their own receipt's paramsHash, but they are not the JCS encoding of that document. Accepting them lets one set of parameters carry more than one valid paramsHash.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_BOUNDS_UNCHECKABLE",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:1f3d046ba4f84850e61fb5221e875ae9fc7f78e89e266e153e0ac23902a8063f",
+          "executionGrantHash": "sha256:2747d5b75b6b5a30af54caa0c0173f04ea5ae1a608627b0f3ffd6ab8d3ec56f1",
+          "correlation": "0x9c78adc2add830461a8e837bc7a75f3230230f9fe5786f8094804a45d4abe6e1",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "yumkSG8t6AvoGzHAcqbPMEI08xD3P5r8q+ZTwHSAweGKboAg9oVYInnYyqAFnsAgF9+RtqMiaclfeCvQY+kpCA=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_2d",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:2186933c94eecad2c0b81b3ca5afb634df0c6a23a540d642c0ac467ab8b20410",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:1f3d046ba4f84850e61fb5221e875ae9fc7f78e89e266e153e0ac23902a8063f"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "gZmNgLSdqTck3gXvAOYKheb5p6iUE2jp2owdoDu5B1BxmT+et4sImiKP6cMAzapnDNVxoSS2QoOgbOTOpwzOCA=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-2d",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:2186933c94eecad2c0b81b3ca5afb634df0c6a23a540d642c0ac467ab8b20410",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:1f3d046ba4f84850e61fb5221e875ae9fc7f78e89e266e153e0ac23902a8063f",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d2d",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "o+4AWaAikoT+wvnAqVJOoZhmInmu5mIgo9VR4oeEAXGQpX6QlfG60nXItwo+I0eP8JGE0v5JQztjocv4Nr2TCg=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"payer\":\"0x1111111111111111111111111111111111111111\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"networkCaip2\":\"eip155:8453\",\"maxAmountMinorUnits\":\"10000000\",\"resource\":\"https://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
+      "name": "reject-params-preimage-noncanonical-escaping",
+      "description": "R-HASH-2 canonical form (escaping) — the bytes parse to the six approved members and hash to their own receipt's paramsHash, but they are not the JCS encoding of that document. Accepting them lets one set of parameters carry more than one valid paramsHash.",
+      "expect": "REJECT",
+      "expectCode": "SETTLEMENT_BOUNDS_UNCHECKABLE",
+      "input": {
+        "artifact": {
+          "spec": "noa.settlement-evidence/0.1",
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1",
+          "authorizationReceiptHash": "sha256:6251ad83ab60b8de3d620e2c409548a4ee1b2c0787864038f8866735ecb1c9e8",
+          "executionGrantHash": "sha256:23bb2a6cedc4f5bf69aa5e1698da8f0651662b60110ec04ba3827df2d65457bf",
+          "correlation": "0xc857c2293e85769595f0c61fa70fec0b2542bcd34aa069225b99bb600c7c3e0c",
+          "railFamily": "x402/exact/eip3009",
+          "chainWitness": {
+            "status": "SETTLED",
+            "network": "eip155:8453",
+            "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "payer": "0x1111111111111111111111111111111111111111",
+            "payee": "0x2222222222222222222222222222222222222222",
+            "amount": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432,
+            "settledAt": "2026-08-13T10:05:04.000Z"
+          },
+          "railReceipt": {
+            "disclosure": "FULL",
+            "format": "x402-offer-receipt/eip712",
+            "encoding": "base64",
+            "bytes": "eyJyZWNlaXB0IjoiZGVtbyIsInBheVRvIjoiMHgyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyMjIyIn0="
+          },
+          "observerKid": "gate-observer-2",
+          "observedAt": "2026-08-13T10:06:00.000Z",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-observer-2",
+            "value": "9d/oL1r0H8oEsebEG1qeDYJeQGMEsJEO5OcEDiowrDIbCjR0OWofI/Veyq2CEHeCHGA6TmKPInGe25V9RfONCw=="
+          }
+        },
+        "receiptChain": [
+          {
+            "spec": "noa.receipt/0.1",
+            "id": "rcpt_payment_3e",
+            "ts": "2026-08-13T10:00:00.000Z",
+            "scope": {
+              "tenant": "tenant-acme",
+              "chain": "chain-acme-1"
+            },
+            "agent": {
+              "id": "approver-a",
+              "model": null,
+              "principal": "HUMAN"
+            },
+            "action": {
+              "id": "payment.x402",
+              "canonical": "payment.x402:vendor-42",
+              "riskClass": "HIGH",
+              "paramsHash": "sha256:3eb0f88cfc6156e6b999443ee4d16f403268abb88724cdb74719f0900342a0da",
+              "reversible": false,
+              "rollbackRef": null
+            },
+            "governance": {
+              "mode": "on",
+              "verdict": "ALLOWED",
+              "ruleId": "human-approved",
+              "approval": {
+                "by": "HUMAN:approver-1",
+                "at": "2026-08-13T10:00:00.000Z"
+              },
+              "sandboxed": false
+            },
+            "chain": {
+              "seq": 0,
+              "prevHash": null,
+              "hash": "sha256:6251ad83ab60b8de3d620e2c409548a4ee1b2c0787864038f8866735ecb1c9e8"
+            },
+            "sig": {
+              "alg": "ed25519",
+              "kid": "gate-prod-1",
+              "value": "8Baqa8xZIG5QW1CrzzB7qLclh1TXrLdziXnAOgNi/MOexDX5HAIurXzkh0x8Qi49oNgczq1PLWe/5hu09S4NBg=="
+            }
+          }
+        ],
+        "grant": {
+          "spec": "noa.execution-grant/0.1",
+          "grantId": "grant-3e",
+          "holdId": "hold-001",
+          "paramsHash": "sha256:3eb0f88cfc6156e6b999443ee4d16f403268abb88724cdb74719f0900342a0da",
+          "holdEnvelopeHash": "sha256:dc9546ba46e50eb8c81e2cbf761ac843b1d6333d83a117602b3127bac2cfdc51",
+          "approvalReceiptHash": "sha256:6251ad83ab60b8de3d620e2c409548a4ee1b2c0787864038f8866735ecb1c9e8",
+          "issuedAt": "2026-08-13T10:00:00.000Z",
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "maxUses": 1,
+          "nonce": "3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e3e",
+          "sig": {
+            "alg": "ed25519",
+            "kid": "gate-prod-1",
+            "value": "d7syFOy/WxYq690ha0gDZ/oqxSQVWEuzzmDXi2rqlUFxANbgJlfp98Ug9KVLyIj/Y34oOS9S+vqkVDwvSFRTDw=="
+          }
+        },
+        "keyring": {
+          "gate-prod-1": "MCowBQYDK2VwAyEA/EAUPoeTP4QvASHTsBt2neVM0ClnrwX3sCY9vfDTaqo=",
+          "gate-observer-2": "MCowBQYDK2VwAyEAtuSPJ/WC9lhhR5ouTU5QpuXl+zPenrJBgiUTLpbq1yY="
+        },
+        "holdEnvelope": {
+          "spec": "noa.hold-envelope/0.1",
+          "holdId": "hold-001",
+          "tenant": "tenant-acme",
+          "mode": "ENFORCED",
+          "keyManifestVersion": 1,
+          "expiresAt": "2026-08-13T10:30:00.000Z",
+          "nonce": "env-nonce-1"
+        },
+        "holdResolution": {
+          "spec": "noa.hold-resolution/0.1",
+          "holdId": "hold-001",
+          "reasonCode": "HUMAN_APPROVED_INTENT_NOT_EXECUTION_BOUND",
+          "receivedAt": "2026-08-13T10:00:00.000Z"
+        },
+        "chainFacts": {
+          "spec": "noa.chain-facts/0.1",
+          "network": "eip155:8453",
+          "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+          "authorizationState": true,
+          "authorizationUsedLogs": [
+            {
+              "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+              "blockNumber": 33554432,
+              "logIndex": 7,
+              "blockTimestamp": "2026-08-13T10:05:04.000Z",
+              "txStatus": "SUCCESS",
+              "nonce": "0x03a74e05afb0e7c69c01508fa7e9a80a701373620a4b08816220a6a6354dd64f",
+              "authorizer": "0x1111111111111111111111111111111111111111"
+            }
+          ],
+          "authorizationCanceledLogs": [],
+          "transfer": {
+            "source": "CALLDATA",
+            "address": "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+            "logIndex": 8,
+            "from": "0x1111111111111111111111111111111111111111",
+            "to": "0x2222222222222222222222222222222222222222",
+            "value": "1000000",
+            "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+            "blockNumber": 33554432
+          },
+          "headBlockNumber": 33554462,
+          "queriedAt": "2026-08-13T10:06:30.000Z"
+        },
+        "chainFactsOrigin": "RELYING_PARTY_NODE",
+        "paramsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"\\u0068ttps://vendor.example/invoice/42\"}",
+        "expect": {
+          "tenant": "tenant-acme",
+          "chain": "chain-acme-1"
+        },
+        "minConfirmations": 12,
+        "now": "2026-08-13T10:10:00.000Z",
+        "freshnessWindowMs": 3600000
+      }
+    },
+    {
       "name": "reject-chainid-from-artifact",
       "description": "REVISION 3 — a UNIFORMLY testnet-consistent artifact + chain facts (what an implementation lifting derivation inputs from the artifact would accept) against a preimage that says mainnet: the verified preimage wins.",
       "expect": "REJECT",

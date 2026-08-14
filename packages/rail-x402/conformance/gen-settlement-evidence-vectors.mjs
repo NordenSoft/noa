@@ -325,6 +325,21 @@ const correlationRaw = d7Nonce(digestRaw, "5f".repeat(32));
 const paramsHashHmac = "hmac-sha256:" + "ee".repeat(32);
 const receiptHmac = mintReceipt({ id: "rcpt_payment_hmac", paramsHash: paramsHashHmac });
 const grantHmac = mintGrant({ receipt: receiptHmac, envelope, paramsHash: paramsHashHmac, grantId: "grant-hmac", nonce: "4d".repeat(32) });
+/**
+ * Three encodings of the SAME six approved parameters that are not JCS. Each is committed by its own
+ * receipt in the vector below, so the hash rule cannot be what refuses it — only the canonical-form
+ * rule can. JCS fixes all three axes: no insignificant whitespace, members sorted by code unit, and
+ * minimal string escaping. A verifier that skips the re-canonicalization accepts all three.
+ */
+const NONCANONICAL_PREIMAGES = [
+  // (a) insignificant whitespace — the same document, one space after the opening brace.
+  { label: "whitespace", seed: "1b", text: preimageText.replace('{"', '{ "') },
+  // (b) member order — JCS sorts by code unit; this writes the six members in declaration order.
+  { label: "member-order", seed: "2d", text: JSON.stringify(PREIMAGE) },
+  // (c) string escaping — JCS requires minimal escapes; "\u0068ttps://…" parses to the same string.
+  { label: "escaping", seed: "3e", text: canonicalize(PREIMAGE).replace('"https://', '"\\u0068ttps://') },
+];
+
 // 7-member preimage committed by its own receipt — R-HASH-2(2)'s unknown-member refusal.
 const preimage7 = { ...PREIMAGE, memo: "extra" };
 const preimage7Text = canonicalize(preimage7);
@@ -533,6 +548,29 @@ export function buildCorpus() {
           correlation: correlation7,
         },
       })),
+    // R-HASH-2's CANONICAL half. Each preimage below parses to the right six members AND hashes to
+    // its own receipt's paramsHash, so the hash rule and every field rule pass — only the canonical
+    // -encoding rule can refuse it. Without that rule "canonical JCS" is a claim about the producer's
+    // intent rather than a property of the bytes, and one parameter set can carry several different
+    // accepted hashes: the same ambiguity the unknown-member refusal exists to prevent, by another door.
+    ...NONCANONICAL_PREIMAGES.map(({ label, text, seed }) => {
+      const ph = "sha256:" + sha256Hex(text);
+      const r = mintReceipt({ id: `rcpt_payment_${seed}`, paramsHash: ph });
+      const g = mintGrant({ receipt: r, envelope, paramsHash: ph, grantId: `grant-${seed}`, nonce: seed.repeat(32) });
+      return vec(`reject-params-preimage-noncanonical-${label}`,
+        `R-HASH-2 canonical form (${label}) — the bytes parse to the six approved members and hash to their own receipt's paramsHash, but they are not the JCS encoding of that document. Accepting them lets one set of parameters carry more than one valid paramsHash.`,
+        "REJECT", "SETTLEMENT_BOUNDS_UNCHECKABLE",
+        baseInput({
+          receiptChain: [r],
+          grant: g,
+          paramsPreimage: text,
+          artifactOver: {
+            authorizationReceiptHash: r.chain.hash,
+            executionGrantHash: sha256Prefixed(canonicalize(g)),
+            correlation: d7Nonce(digestOf(r, g), seed.repeat(32)),
+          },
+        }));
+    }),
     vec("reject-chainid-from-artifact",
       "REVISION 3 — a UNIFORMLY testnet-consistent artifact + chain facts (what an implementation lifting derivation inputs from the artifact would accept) against a preimage that says mainnet: the verified preimage wins.",
       "REJECT", "SETTLEMENT_NETWORK_UNEXPECTED",

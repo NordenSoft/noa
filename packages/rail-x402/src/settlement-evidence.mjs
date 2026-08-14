@@ -493,6 +493,19 @@ function verifyParamsPreimage(preimageBytes, paramsHash) {
   if (!parsed.ok) return bad(parsed.reason);
   const p = parsed.value;
   if (!isObj(p)) return bad("not a JSON object");
+  // R-HASH-2 says CANONICAL (JCS) bytes, and until this check the word "canonical" was a claim about
+  // the producer's intent rather than a property of the bytes: the hash above proves only that the
+  // receipt committed to THESE bytes, whatever shape they are in. So a preimage with inserted
+  // whitespace, non-sorted members, or non-minimal string escaping was accepted under a "JCS" label.
+  //
+  // That is the SAME ambiguity the unknown-member refusal two lines below exists to prevent — two
+  // honest parties holding "the same" params computing two different paramsHash values — arriving by
+  // a different door. Re-canonicalizing the PARSED document and requiring byte equality with what was
+  // received closes it: one set of parameters now has exactly one acceptable encoding, and therefore
+  // exactly one hash. Checked BEFORE any field is read, alongside the other shape refusals.
+  if (bufToString(rawBuf, "utf8") !== canonicalize(p)) {
+    return bad("the supplied bytes are not the CANONICAL (JCS) encoding of the document they parse to — whitespace, member order and string escaping are all part of what paramsHash commits to, so a non-canonical encoding lets one set of parameters carry more than one hash (R-HASH-2)");
+  }
   for (let i = 0, ks = ownKeys(p); i < ks.length; i++) { const k = ks[i]; if (!arrayIncludes(PREIMAGE_KEYS, k)) return bad(`unknown member "${k}" — an unknown member is a refusal, not a tolerance (R-HASH-2)`); }
   for (let i = 0, ks = PREIMAGE_KEYS; i < ks.length; i++) {
     const k = ks[i];
