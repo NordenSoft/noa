@@ -127,11 +127,19 @@ find it" for a payment that may well have settled.
   takes a `chain.findAuthorizationUse` reader. Every decision in this package is tested without a
   chain, which is correct for the logic and means the *chain-facing* half has no test in this
   package at all.
-- **[UNVERIFIED] hosted-facilitator nonce policy.** The canonical Go facilitator's `verifyEIP3009`
-  never inspects nonce content — the helpers check only 32-byte length and not-already-used. Whether
-  a **hosted** facilitator (Coinbase CDP, thirdweb, Cloudflare) adds a randomness or entropy check
-  that would reject a derived nonce is **not verified**. One testnet round-trip through the intended
-  facilitator settles it, and that round-trip has not been run. If a hosted facilitator does reject
-  derived nonces, the correlation property is lost — the payment rail is not.
+- **Hosted-facilitator nonce policy — MEASURED 2026-08-14 for one deployment; every other
+  deployment stays unverified until measured.** The canonical Go facilitator's `verifyEIP3009`
+  never inspects nonce content — the helpers check only 32-byte length and not-already-used. The
+  hosted facilitator at `x402.org` (scheme `exact`, network `eip155:84532`) was measured with three
+  signed `TransferWithAuthorization` structures from one unfunded throwaway key, differing only in
+  the nonce: a DERIVED value (this package's `deriveCorrelationNonce`), a freshly random value, and
+  a structured low-entropy control. All three were refused identically at the token contract's
+  balance simulation (`invalid_exact_evm_insufficient_balance`) with the nonce passed through
+  verbatim — no content policy was applied, and the derived nonce was signature-valid past the
+  contract's signer recovery. Reproduction:
+  `docs/reproductions/repro-p21-hosted-facilitator-nonce-policy.mjs` (broadcasts nothing, needs no
+  funds, generates its own key). A deployment that DOES reject derived nonces loses the correlation
+  property there — the payment rail is not lost; re-run the three-way comparison against any
+  facilitator before publishing an availability claim for it.
 - **No mandate approval is proven by any of this**, and no service delivery. See the scope sentence
   at the top, and `NON-CLAIMS.md` in the repository root.
