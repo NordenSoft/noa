@@ -18,7 +18,8 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { ARTIFACTS, signArtifact, refHash, receiptRefHash, type Signer as SideSigner } from "noa-approval-artifacts";
-import { buildReceipt, buildCheckpoint, type BuildInput, type Receipt, type Checkpoint, type Signer as ReceiptSigner, type Verdict } from "noa-receipt";
+import { buildReceipt, buildCheckpoint, buildActionDigest, canonicalize, sha256Hex, sha256Prefixed, type BuildInput, type Receipt, type Checkpoint, type Signer as ReceiptSigner, type Verdict } from "noa-receipt";
+import { deriveCorrelationNonce } from "noa-rail-x402";
 import type { EvidenceBundle, EvidenceOutcome } from "../src/types.js";
 import type { ReceiptRole } from "../src/receipt-roles.js";
 import { encodeDocument } from "../src/bytes.js";
@@ -99,9 +100,12 @@ function manifestKeys(
   critRevokedAt: string | null = null,
   gateValidFrom: string = DELEG_FROM,
   critValidFrom: string = DELEG_FROM,
+  // S5 §6.2 — `settlement-observer` is an additive role on the GATE branch. Appended only for the
+  // settlement worlds, so every other fixture's manifest bytes are byte-identical to before.
+  gateExtraRoles: string[] = [],
 ): J[] {
   return [
-    { kid: "gate-prod-1", type: "GATE", roles: ["hold-signer", "execution-signer"], publicKey: KEYS["gate-prod-1"]!.publicKey, validFrom: gateValidFrom, revokedAt: null },
+    { kid: "gate-prod-1", type: "GATE", roles: ["hold-signer", "execution-signer", ...gateExtraRoles], publicKey: KEYS["gate-prod-1"]!.publicKey, validFrom: gateValidFrom, revokedAt: null },
     { kid: "approver-1-device-2", type: "APPROVER", roles: ["approve-high"], publicKey: KEYS["approver-1-device-2"]!.publicKey, hpkePublicKey: HPKE["approver-1-device-2"], validFrom: approverValidFrom, revokedAt: approverRevokedAt },
     { kid: "approver-crit-5", type: "APPROVER", roles: ["approve-critical"], publicKey: KEYS["approver-crit-5"]!.publicKey, hpkePublicKey: HPKE["approver-crit-5"], validFrom: critValidFrom, revokedAt: critRevokedAt },
     { kid: "audit-1", type: "AUDIT", roles: ["audit-decrypt"], hpkePublicKey: HPKE["audit-1"], validFrom: DELEG_FROM, revokedAt: null },
@@ -123,11 +127,11 @@ function makeManifest(keys: J[], issuedAt: string = MAN_ISSUED): J {
 function action(riskClass: "HIGH" | "CRITICAL", paramsHash = PARAMS_HASH): BuildInput["action"] {
   return { id: "deploy.apply", canonical: "deploy.apply", riskClass, paramsHash, reversible: false, rollbackRef: null };
 }
-function deferredInput(riskClass: "HIGH" | "CRITICAL", verdict: Verdict = "DEFERRED"): BuildInput {
+function deferredInput(riskClass: "HIGH" | "CRITICAL", verdict: Verdict = "DEFERRED", paramsHash = PARAMS_HASH): BuildInput {
   return {
     id: "rcpt_deferred", ts: T_DEFERRED, scope: { tenant: TENANT, chain: CHAIN },
     agent: { id: "agent-a", model: null, principal: "SERVICE" },
-    action: action(riskClass), governance: { mode: "on", verdict, sandboxed: false },
+    action: action(riskClass, paramsHash), governance: { mode: "on", verdict, sandboxed: false },
   };
 }
 
@@ -152,6 +156,11 @@ interface BuildOpts {
   checkpointKeyring?: J;
   tenantRoot?: J;
   allowedParamsHash?: string; // to break step-6 action binding (approve a different action)
+  // S5 — thread ONE params hash through the whole world (deferred/allowed/executed receipt + grant),
+  // so a settlement world's action.paramsHash equals sha256 of the canonical params preimage. And add
+  // the settlement-observer role to gate-prod-1 so it can sign the settlement artifact (§6.2).
+  paramsHash?: string;
+  gateSettlementObserver?: boolean;
   grantExpiresAt?: string;
   // ── 2026-07-27 cross-family review round 3 ────────────────────────────────────────────────────
   grantParamsHash?: string; // grant authorizes a DIFFERENT action than the one approved (G12)
@@ -183,6 +192,7 @@ interface BuildOpts {
 function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
   const riskClass = opts.riskClass ?? "HIGH";
   const approverKid = opts.approverKid ?? "approver-1-device-2";
+  const worldPH = opts.paramsHash ?? PARAMS_HASH;
   const manifest = makeManifest(
     manifestKeys(
       opts.approverRevokedAt ?? null,
@@ -190,13 +200,14 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
       opts.critRevokedAt ?? null,
       opts.gateValidFrom ?? DELEG_FROM,
       opts.critValidFrom ?? DELEG_FROM,
+      opts.gateSettlementObserver ? ["settlement-observer"] : [],
     ),
     opts.manifestIssuedAt ?? MAN_ISSUED,
   );
   const MAN_HASH = refHash(manifest);
 
   const rv = opts.roleVerdicts ?? {};
-  const deferred = buildReceipt(deferredInput(riskClass, rv.deferredReceipt ?? "DEFERRED"), null, rSign("gate-prod-1"));
+  const deferred = buildReceipt(deferredInput(riskClass, rv.deferredReceipt ?? "DEFERRED", worldPH), null, rSign("gate-prod-1"));
   const DEF_HASH = deferred.chain.hash;
 
   const envelopeCore: J = {
@@ -222,7 +233,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
   }
 
   // action for the verdict receipts (allowed/blocked) — may intentionally differ (step-6 fixture).
-  const verdictAction = action(riskClass, opts.allowedParamsHash ?? PARAMS_HASH);
+  const verdictAction = action(riskClass, opts.allowedParamsHash ?? worldPH);
 
   function allowedReceipt(): Receipt {
     return buildReceipt(
@@ -236,7 +247,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
       {
         spec: "noa.execution-grant/0.1", grantId: "grant-001",
         holdId: opts.grantHoldId ?? "hold-001",
-        paramsHash: opts.grantParamsHash ?? PARAMS_HASH,
+        paramsHash: opts.grantParamsHash ?? worldPH,
         holdEnvelopeHash: opts.grantHoldEnvelopeHash ?? ENV_HASH,
         approvalReceiptHash: approvalHash, issuedAt: T_GRANT_ISSUE, expiresAt, maxUses: 1, nonce: "5eed".repeat(16),
       },
@@ -272,7 +283,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
     const allowed = allowedReceipt();
     const isFail = outcome === "EXECUTION_FAILED";
     const terminal = buildReceipt(
-      { id: isFail ? "rcpt_failed" : "rcpt_exec", ts: T_EXECUTED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: action(riskClass), governance: { mode: "on", verdict: (isFail ? rv.failedReceipt : rv.executedReceipt) ?? (isFail ? "FAILED" : "EXECUTED"), sandboxed: false } },
+      { id: isFail ? "rcpt_failed" : "rcpt_exec", ts: T_EXECUTED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: action(riskClass, worldPH), governance: { mode: "on", verdict: (isFail ? rv.failedReceipt : rv.executedReceipt) ?? (isFail ? "FAILED" : "EXECUTED"), sandboxed: false } },
       allowed, rSign("gate-prod-1"),
     );
     const decision = opts.omitDecision ? null : makeDecision("APPROVE", approverKid);
@@ -854,6 +865,189 @@ const NOW_LATE = "2026-07-14T13:00:00.000Z";
     (env.sig as J).value = ((clone(w.bundle.deferredReceipt) as J).sig as J).value;
     emit("freshness", "expired-late-tampered-envelope-sig", fixtureFrom(w, { description: "ANTI-REWARD-HACK GUARD: an EXPIRED bundle audited late (now 13:00 > expiresAt 12:30) with a CORRUPTED holdEnvelope signature. The freshness exemption drops ONLY the expiresAt>now time-rejection — the Ed25519 signature check is unconditional → still INVALID @ STEP_1 (E_HOLD_ENVELOPE). Proves the exemption did not weaken signature/structural verification for the exempt outcomes.", expectVerdict: "INVALID", expectStep: "STEP_1_HOLD_ENVELOPE", expectCode: "E_HOLD_ENVELOPE", bundle, now: NOW_LATE }));
   }
+}
+
+// ═══ 5. S5 SETTLEMENT PLANE — the artifact plane (R1/R2/R3) inside step 10 (EXECUTED) ═════════════
+// Every fixture is a full VALID EXECUTED bundle carrying a signed noa.settlement-evidence/0.1 artifact
+// bound to the bundle's OWN allowed receipt + grant, and (except where the vector removes it) the
+// canonical params-preimage STRING whose sha256 equals the receipt chain's action.paramsHash. The
+// artifact's correlation is the D7 nonce recomputed from the bundle's own documents (buildActionDigest
+// over the same allowed receipt + grant the reconciler re-selects), so it is THIS payment's, not
+// merely A payment's. The observer is gate-prod-1 under the additive settlement-observer role (§6.2);
+// the R-16 same-key cap it trips is never load-bearing on the OFFLINE plane this slice decides — no
+// chainFacts is ever supplied here, so there is no RECONFIRMED upgrade for the cap to soften.
+const S_NETWORK = "eip155:8453";
+const S_TOKEN = "0x833589fcd6edb6e08f4c7c32d4f71b54bda02913"; // Base mainnet USDC
+const S_ASSET = `${S_NETWORK}/erc20:${S_TOKEN}`;
+const S_PAYER = "0x1111111111111111111111111111111111111111";
+const S_PAYEE = "0x2222222222222222222222222222222222222222";
+const S_MALLORY = "0x3333333333333333333333333333333333333333";
+const S_PREIMAGE = { payer: S_PAYER, payee: S_PAYEE, assetCaip19: S_ASSET, networkCaip2: S_NETWORK, maxAmountMinorUnits: "10000000", resource: "https://vendor.example/invoice/42" };
+const S_PREIMAGE_TEXT = canonicalize(S_PREIMAGE);
+const S_PARAMS_HASH = "sha256:" + sha256Hex(S_PREIMAGE_TEXT);
+const S_GRANT_NONCE = "5eed".repeat(16); // the D7 seed — matches buildWorld's grant nonce
+const S_TX = "0x" + "3f".repeat(32);
+const S_BLOCK = 33554432;
+const S_SETTLED = "2026-07-14T11:58:30.000Z"; // after grant.issuedAt 11:57, before expiry 12:30
+const S_OBSERVED = "2026-07-14T11:59:00.000Z";
+
+function settlementWorld(over: {
+  paramsHash?: string;      // world params hash — keyed for the BOUNDS_UNCHECKABLE(keyed) vector
+  preimage?: string | null; // actionParamsPreimage; null OMITS it, a mismatched text breaks R2
+  witness?: J;             // chainWitness overrides
+  correlation?: string;    // artifact correlation override (R3)
+  artifactTenant?: string; // artifact tenant override (R1 binding)
+} = {}): World {
+  const worldPH = over.paramsHash ?? S_PARAMS_HASH;
+  const world = buildWorld("EXECUTED", { paramsHash: worldPH, gateSettlementObserver: true });
+  const allowed = world.bundle.allowedReceipt as unknown as Receipt;
+  const grant = world.bundle.executionGrant as J;
+  const bd = buildActionDigest(encodeDocument(allowed), encodeDocument(grant));
+  if (!bd.ok) throw new Error(`settlement fixture: action digest failed — ${bd.reason}`);
+  const correlation = over.correlation ?? deriveCorrelationNonce({
+    chainId: 8453, tokenAddress: S_TOKEN, payerAddress: S_PAYER, dispatchId: bd.digest, seed: Buffer.from(S_GRANT_NONCE, "hex"),
+  }).nonce;
+  const witness: J = {
+    status: "SETTLED", network: S_NETWORK, asset: S_ASSET, payer: S_PAYER, payee: S_PAYEE,
+    amount: "1000000", txHash: S_TX, blockNumber: S_BLOCK, settledAt: S_SETTLED, ...(over.witness ?? {}),
+  };
+  const core: J = {
+    spec: "noa.settlement-evidence/0.1", tenant: over.artifactTenant ?? TENANT, chain: CHAIN,
+    // Taken from the reconciler's OWN projection so the artifact's reference hashes are byte-exactly
+    // what layer 6 recomputes — a mismatch here would be a fixture bug, never a rule under test.
+    authorizationReceiptHash: bd.projection.authorizationReceiptHash,
+    executionGrantHash: bd.projection.executionGrantHash,
+    correlation, railFamily: "x402/exact/eip3009",
+    chainWitness: witness, railReceipt: null,
+    observerKid: "gate-prod-1", observedAt: S_OBSERVED,
+  };
+  const artifact = sign(core, "noa.settlement-evidence/0.1", "gate-prod-1");
+  const bundle = clone(world.bundle);
+  bundle.settlementEvidence = artifact;
+  if (over.preimage !== null) bundle.actionParamsPreimage = over.preimage ?? S_PREIMAGE_TEXT;
+  return { bundle, tenantRoot: world.tenantRoot, checkpointKeyring: world.checkpointKeyring };
+}
+
+// The positive control: a perfect artifact + preimage, but UNENROLLED. Nobody asked and nobody
+// re-queried, so R-DIM-1's "unenrolled valid artifact" row holds: VALID_FULL_CHAIN, settlement
+// NO_EXECUTION_BINDING, exit 0 — byte-identical in verdict/exit to the same bundle without the
+// artifact, which is what keeps the migration guarantee true.
+emit("settlement", "s5-settlement-valid-base", fixtureFrom(settlementWorld(), { description: "S5: a VALID EXECUTED bundle carrying a bound, in-bounds SETTLED settlement artifact + its params preimage. No enrolment registry exists, so the class is not ENROLLED and the artifact buys no upgrade — VALID_FULL_CHAIN, dimensions.settlement NO_EXECUTION_BINDING, exit 0 (R-DIM-1's unenrolled-valid-artifact row)", expectVerdict: "VALID_FULL_CHAIN" }));
+
+// C.14 — no actionParamsPreimage ⇒ the money was compared to nothing ⇒ INCONCLUSIVE / exit 6.
+emit("settlement", "s5-settlement-no-params-preimage", fixtureFrom(settlementWorld({ preimage: null }), { description: "C.14 (F2): a perfect SETTLED artifact with NO actionParamsPreimage — the shipped reconciler's own 'not supplied, so no positive is reachable'. INCONCLUSIVE / E_SETTLEMENT_BOUNDS_UNCHECKABLE, dimensions.settlement BOUNDS_UNCHECKABLE, exit 6 — the first end-to-end exit 6 in the program", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_UNCHECKABLE" }));
+
+// C.15 — a keyed (hmac-sha256:) paramsHash blocks bounds AND the D7 derivation ⇒ same exit 6.
+emit("settlement", "s5-settlement-keyed-params-hash", fixtureFrom(settlementWorld({ paramsHash: "hmac-sha256:" + "ee".repeat(32) }), { description: "C.15 (F2): allowedReceipt.action.paramsHash is hmac-sha256: — the keyed form is not third-party checkable, so bounds AND the D7 derivation are blocked. INCONCLUSIVE / E_SETTLEMENT_BOUNDS_UNCHECKABLE, exit 6 ('UNCHECKED is NOT passed')", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_UNCHECKABLE" }));
+
+// C.12 — a SUPPLIED preimage that does not hash to action.paramsHash is a producer lie ⇒ INVALID.
+emit("settlement", "s5-settlement-params-preimage-mismatch", fixtureFrom(settlementWorld({ preimage: canonicalize({ ...S_PREIMAGE, maxAmountMinorUnits: "10000001" }) }), { description: "C.12 (F2): a supplied actionParamsPreimage whose sha256 does not equal action.paramsHash — not one field of it is read. Distinct from C.14: a supplied-but-wrong preimage is a hard rejection (INVALID / E_PARAMS_PREIMAGE_MISMATCH, exit 2), NOT the INCONCLUSIVE of an absent one", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_PARAMS_PREIMAGE_MISMATCH" }));
+
+// C.3 — a correlation that does not match the nonce recomputed from the bundle's own documents.
+emit("settlement", "s5-settlement-wrong-correlation", fixtureFrom(settlementWorld({ correlation: "0x" + "ab".repeat(32) }), { description: "C.3 (F2): the artifact's correlation is not the D7 nonce recomputed from the bundle's own receipt + grant + verified preimage — 'a payment settled, not THE payment'. INVALID / E_SETTLEMENT_CORRELATION, exit 2. Implementable only because §7.3 puts the preimage in the bundle so the derivation can run at all", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_CORRELATION" }));
+
+// C.17 — the payee is not the approved payee; caught by B4 against the VERIFIED preimage. The attack
+// §8.2(c) describes: a payer holding the correlation signs with the correct nonce and a different payee.
+emit("settlement", "s5-settlement-payee-substituted", fixtureFrom(settlementWorld({ witness: { payee: S_MALLORY } }), { description: "C.17 (F2): the correlation recomputes correctly, but chainWitness.payee is not the approved payee. B4 against the verified preimage is the only thing that catches it — the AuthorizationUsed queries both return the same positive answer. INVALID / E_SETTLEMENT_BOUNDS_EXCEEDED, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_EXCEEDED" }));
+
+// R1 polarity — the artifact reports a determinate NON-settlement under an EXECUTED outcome: one
+// document asserting the request was dispatched AND that nothing settled.
+emit("settlement", "s5-settlement-not-observed-polarity", fixtureFrom(settlementWorld({ witness: { status: "NOT_OBSERVED", payee: null, amount: null, txHash: null, blockNumber: null, settledAt: null } }), { description: "R1 polarity: a SETTLEMENT artifact reporting NOT_OBSERVED under an EXECUTED outcome — the settlement-free asymmetry cannot be widened by attaching an artifact that says the payment did NOT happen. INVALID / E_SETTLEMENT_POLARITY, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_POLARITY" }));
+
+// R1 binding — the artifact's own tenant is not the verifier's (R-11), a hard rejection caught offline.
+emit("settlement", "s5-settlement-tenant-mismatch", fixtureFrom(settlementWorld({ artifactTenant: "tenant-globex" }), { description: "R1 binding: the settlement artifact's own tenant is not the verifier's expected tenant (R-11), so it is a replay of another tenant's evidence. INVALID / E_SETTLEMENT_BINDING, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BINDING" }));
+
+// LABEL AFTER ACCEPTANCE — the settlement rule ran, examined the artifact and ACCEPTED it, and the
+// run then failed LATER (a correctly-signed checkpoint pinned to the wrong head). The reported
+// settlement label must say what actually happened here — NO_EXECUTION_BINDING, the unenrolled
+// valid-artifact state — and must NOT fall back to UNCHECKED, whose whole meaning is "the settlement
+// rule never ran". Measured before the fix: this bundle reported UNCHECKED, contradicting the
+// definition the README gives for that value. The verdict and exit are the checkpoint's either way.
+{
+  const w = settlementWorld();
+  const bundle = clone(w.bundle);
+  // Correctly signed by the gate, but pinned to the ALLOWED receipt while the chain head is the
+  // EXECUTED one — a genuine step-17 refusal that has nothing to do with the settlement plane.
+  bundle.checkpoint = buildCheckpoint(clone(w.bundle.allowedReceipt) as Receipt, T_CHECKPOINT, rSign("gate-prod-1"));
+  emit("settlement", "s5-settlement-accepted-then-checkpoint-fails", fixtureFrom(w, { description: "LABEL AFTER ACCEPTANCE: a valid, bound, in-bounds settlement artifact IS examined and accepted at step 10, and the run then fails at step 17 on an authenticated checkpoint pinned to the wrong head. The failure is the checkpoint's (INVALID / E_CHECKPOINT_RECONCILE, exit 2), but dimensions.settlement must report NO_EXECUTION_BINDING — what the settlement rule actually found — not UNCHECKED, which means the rule never ran. Before the fix this bundle reported UNCHECKED and contradicted the README's own definition", expectVerdict: "INVALID", expectStep: "STEP_17_CHECKPOINT_RECONCILE", expectCode: "E_CHECKPOINT_RECONCILE", bundle }));
+}
+
+// DOMINANCE — the same no-preimage bundle as C.14, with the checkpoint signature corrupted as well.
+// The settlement question is unanswered (soft: INCONCLUSIVE, exit 6) AND the checkpoint is tampered
+// (hard: INVALID, exit 2). It is reported as the TAMPERING, because that is the more serious and the
+// more specific truth about these bytes. Before the fix the out-of-band checkpoint result was
+// DISCARDED and only the soft code survived, so ATTACHING A SETTLEMENT ARTIFACT DOWNGRADED FORGED
+// BYTES from exit 2 to exit 6 — telling an automation "unanswered, retry later" about a signature
+// that does not verify. Removing the two settlement members from this very bundle already returned
+// exit 2, which is what makes the downgrade a boundary crossing rather than a difference of opinion.
+{
+  const w = settlementWorld({ preimage: null });
+  const bundle = clone(w.bundle);
+  // A foreign but well-formed Ed25519 value (the deferred receipt's) swapped into the checkpoint's
+  // signature: nothing else is perturbed, so the SIGNATURE is the only thing wrong and step 17 owns it.
+  ((bundle.checkpoint as J).sig as J).value = ((clone(w.bundle.deferredReceipt) as J).sig as J).value;
+  emit("settlement", "s5-settlement-uncheckable-over-tampered-checkpoint", fixtureFrom(w, { description: "DOMINANCE (panel round 2): a settlement artifact with NO params preimage (soft — alone it is INCONCLUSIVE / exit 6) on a bundle whose checkpoint SIGNATURE does not verify (hard — INVALID / exit 2). The hard tampering wins and is reported as the failing step: authenticated-data tampering must never be reported as 'the settlement bounds were not answered', which crosses the exit-2/exit-6 automation boundary in the 'retry later' direction. INVALID / STEP_17 / E_CHECKPOINT_RECONCILE, exit 2, integrity BROKEN — and dimensions.settlement still reports BOUNDS_UNCHECKABLE, because the artifact really was examined and hiding that would hide half of what is wrong", expectVerdict: "INVALID", expectStep: "STEP_17_CHECKPOINT_RECONCILE", expectCode: "E_CHECKPOINT_RECONCILE", bundle }));
+}
+
+// CO-PRESENCE — an EXECUTED bundle carrying a preimage and NO settlement artifact. The union admits
+// the two members independently, and every check that reads the preimage sits behind the artifact, so
+// before this rule an attacker holding NO signing key could append a preimage member to a valid
+// signed bundle and still get VALID_FULL_CHAIN / exit 0 — a positive verdict covering bytes no step
+// examined. The value here is deliberately unparseable junk, so the ONLY thing that can refuse it is
+// the co-presence rule itself.
+{
+  const w = buildWorld("EXECUTED");
+  const bundle = clone(w.bundle);
+  (bundle as unknown as Record<string, unknown>).actionParamsPreimage = "garbage - not JSON, not JCS, signed by nobody";
+  emit("settlement", "s5-params-preimage-without-artifact", fixtureFrom(w, { description: "CO-PRESENCE (panel F1): an EXECUTED bundle carrying actionParamsPreimage with NO settlementEvidence. The preimage bounds nothing, no hash or shape check reaches it, and it still DISCLOSES payee/cap/resource — so it is a rejection, not a tolerated extra. Before this rule the same bundle returned VALID_FULL_CHAIN / exit 0 with the member unexamined. INVALID / E_PARAMS_PREIMAGE_ORPHANED, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_PARAMS_PREIMAGE_ORPHANED", bundle }));
+}
+
+// C.13 — a preimage that HASHES CORRECTLY but carries a seventh member. Not a tolerance: an accepted
+// extra member lets two honest parties holding "the same" params compute two different paramsHash
+// values. It is SUPPLIED under a sha256 hash, so it takes the producer-lie branch, not the withheld one.
+{
+  const preimage7Text = canonicalize({ ...S_PREIMAGE, memo: "extra" });
+  emit("settlement", "s5-params-preimage-unknown-member", fixtureFrom(settlementWorld({ paramsHash: "sha256:" + sha256Hex(preimage7Text), preimage: preimage7Text }), { description: "C.13 (F2): the preimage hashes correctly to action.paramsHash but carries a seventh member. R-HASH-2 refuses an unknown member rather than tolerating it — an accepted extra member lets two honest parties holding 'the same' params compute two different paramsHash values. INVALID / E_PARAMS_PREIMAGE_MISMATCH, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_PARAMS_PREIMAGE_MISMATCH" }));
+}
+
+// C.16 — the artifact is UNIFORMLY testnet (network, asset, and a correlation genuinely derived from
+// those testnet coordinates) while the verified preimage says mainnet. B1 against the preimage runs
+// BEFORE any correlation work and refuses.
+//
+// ⚠ WHAT THIS VECTOR DOES **NOT** PROVE, corrected after a reviewer challenged the original claim and
+// the challenge was MEASURED. It was described here as proving that the derivation inputs come from
+// the preimage rather than from the artifact. It does not, and no vector can:
+//   • Measured 2026-08-14 — the derivation was mutated to take chainId/token/payer from
+//     `chainWitness` instead of the verified preimage. The ENTIRE rail corpus (113 tests) and this
+//     vector stayed GREEN. The mutant is not merely untested, it is observationally EQUIVALENT.
+//   • The reason is structural, and it is the actual defence: B1/B2/B3 compare the artifact's
+//     network, asset and payer to the verified preimage and REFUSE on any difference — before the
+//     derivation runs. So on every path that reaches the derivation the two candidate sources are
+//     provably equal, and no input can tell them apart. The bounds ARE the provenance enforcement;
+//     the derivation's choice of source is a readability property, not an independently testable one.
+// What this vector genuinely pins is the ORDERING that makes the question moot: it expects the BOUNDS
+// code, so an implementation that derived the correlation first would report a correlation mismatch
+// here instead and go red.
+{
+  const S_NETWORK_TESTNET = "eip155:84532";
+  const S_TOKEN_TESTNET = "0x036cbd53842c5426634e7929541ec2318f3dcf7e"; // Base Sepolia USDC
+  const wT = buildWorld("EXECUTED", { paramsHash: S_PARAMS_HASH, gateSettlementObserver: true });
+  const bdT = buildActionDigest(encodeDocument(wT.bundle.allowedReceipt), encodeDocument(wT.bundle.executionGrant));
+  if (!bdT.ok) throw new Error(`C.16 fixture: action digest failed — ${bdT.reason}`);
+  const testnetNonce = deriveCorrelationNonce({
+    chainId: 84532, tokenAddress: S_TOKEN_TESTNET, payerAddress: S_PAYER, dispatchId: bdT.digest, seed: Buffer.from(S_GRANT_NONCE, "hex"),
+  }).nonce;
+  emit("settlement", "s5-settlement-network-substituted", fixtureFrom(settlementWorld({ witness: { network: S_NETWORK_TESTNET, asset: `${S_NETWORK_TESTNET}/erc20:${S_TOKEN_TESTNET}` }, correlation: testnetNonce }), { description: "C.16 (F2): the artifact's chainWitness is UNIFORMLY testnet and its correlation is genuinely derived from those testnet coordinates, while the verified preimage says mainnet. B1 against the verified preimage runs BEFORE any correlation work and refuses. NOTE (measured, corrected claim): this does NOT prove the derivation reads the preimage rather than the artifact — a mutant taking the coordinates from the artifact leaves the whole corpus green, because B1-B3 force the two sources equal before the derivation runs. What it pins is that ORDERING: deriving first would report a correlation mismatch here instead. INVALID / E_SETTLEMENT_BOUNDS_EXCEEDED, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_EXCEEDED" }));
+}
+
+// E.5 — the preimage IS a container member, so it IS in OPTIONAL_ARTIFACT_FIELDS and the step-0 union
+// pre-rule owns it. Without this vector the §7.3 touch point the spec calls "necessary and missed" is
+// untested, and a preimage rides an unrelated outcome completely unlooked-at.
+{
+  const w = buildWorld("EXPIRED");
+  const bundle = clone(w.bundle);
+  (bundle as unknown as Record<string, unknown>).actionParamsPreimage = S_PREIMAGE_TEXT;
+  emit("settlement", "s5-params-preimage-on-expired", fixtureFrom(w, { description: "E.5 (F2): an EXPIRED bundle carrying actionParamsPreimage, which the EXPIRED union does not define. The preimage is a container member, so OPTIONAL_ARTIFACT_FIELDS + the step-0 union pre-rule own it — a name listed in the union alone would ride this bundle unverified. INVALID / STEP_0 / E_OUTCOME_ARTIFACT_SET, exit 2", expectVerdict: "INVALID", expectStep: "STEP_0_TENANT_EQUALITY", expectCode: "E_OUTCOME_ARTIFACT_SET", bundle }));
 }
 
 // ─── write ───────────────────────────────────────────────────────────────────────────────────────

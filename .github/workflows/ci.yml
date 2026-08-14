@@ -135,6 +135,11 @@ jobs:
         run: cd packages/adapter-core && npm ci
       - name: approval-artifacts tests
         run: cd packages/approval-artifacts && npm ci && npm test
+      - name: Install rail-x402 deps for evidence's local package dependency
+        # evidence depends on noa-rail-x402 via file:../rail-x402, which npm installs as a SYMLINK —
+        # imports inside rail-x402 resolve from its REAL path, so its own node_modules (carrying
+        # noa-receipt) must exist BEFORE evidence's suite runs, not at its later test step.
+        run: cd packages/rail-x402 && npm ci
       - name: evidence tests
         run: cd packages/evidence && npm ci && npm test
       - name: gate tests
@@ -295,7 +300,7 @@ jobs:
         # a bare checkout does not have (a developer's sibling checkout always does — which is why
         # none of this could fail anywhere but here).
         run: |
-          for p in signer-core approval-artifacts gate relay evidence adapter-core; do
+          for p in signer-core approval-artifacts gate relay evidence adapter-core rail-x402; do
             npm --prefix "packages/$p" ci
           done
           npm --prefix noa-mobile ci

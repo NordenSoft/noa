@@ -115,11 +115,11 @@ const RULE_ROWS: readonly RuleRow[] = [
   { rule: "no enrolment registry supplied and everything else green — nobody asked", verdict: "VALID_FULL_CHAIN", enrolment: "NOT_EVALUATED", settlement: "NO_EXECUTION_BINDING", exit: 0, wired: true },
   { rule: "the same, on a bundle whose tail has no authenticated anchor", verdict: "VALID_SEGMENT_ONLY", enrolment: "NOT_EVALUATED", settlement: "NO_EXECUTION_BINDING", exit: 0, wired: true },
 
-  // ── the settlement artifact plane: present ⇒ always checked ───────────────────────────────────
-  { rule: "the settlement artifact is unbound, mis-referenced, or asserts a negative under a positive outcome", verdict: "INVALID", enrolment: "NOT_EVALUATED", settlement: "CONTRADICTED", exit: 2, wired: false },
-  { rule: "a supplied params preimage does not hash to the approved parameters", verdict: "INVALID", enrolment: "NOT_EVALUATED", settlement: "CONTRADICTED", exit: 2, wired: false },
-  { rule: "a settlement artifact with no verified params preimage — the money was compared to nothing", verdict: "INCONCLUSIVE", enrolment: "NOT_EVALUATED", settlement: "BOUNDS_UNCHECKABLE", exit: 6, wired: false },
-  { rule: "the artifact's network, asset, payer, payee or amount is outside the approved bounds", verdict: "INVALID", enrolment: "NOT_EVALUATED", settlement: "CONTRADICTED", exit: 2, wired: false },
+  // ── the settlement artifact plane: present ⇒ always checked (WIRED in slice I2) ────────────────
+  { rule: "the settlement artifact is unbound, mis-referenced, or asserts a negative under a positive outcome", verdict: "INVALID", enrolment: "NOT_EVALUATED", settlement: "CONTRADICTED", exit: 2, wired: true },
+  { rule: "a supplied params preimage does not hash to the approved parameters", verdict: "INVALID", enrolment: "NOT_EVALUATED", settlement: "CONTRADICTED", exit: 2, wired: true },
+  { rule: "a settlement artifact with no verified params preimage — the money was compared to nothing", verdict: "INCONCLUSIVE", enrolment: "NOT_EVALUATED", settlement: "BOUNDS_UNCHECKABLE", exit: 6, wired: true },
+  { rule: "the artifact's network, asset, payer, payee or amount is outside the approved bounds", verdict: "INVALID", enrolment: "NOT_EVALUATED", settlement: "CONTRADICTED", exit: 2, wired: true },
 
   // ── the enrolment plane: a verifier input, and it can only make the verdict harder ────────────
   { rule: "registries supplied and the verifier was given no relying-party identity", verdict: "UNVERIFIED", enrolment: "UNVERIFIABLE", settlement: "UNCHECKED", exit: 4, wired: false },
@@ -282,6 +282,12 @@ test("which rules are WIRED in this verifier is stated, not assumed", () => {
       "a non-executed outcome with no fresh trusted checkpoint",
       "no enrolment registry supplied and everything else green — nobody asked",
       "the same, on a bundle whose tail has no authenticated anchor",
+      // Slice I2 wired the settlement ARTIFACT plane (R1/R2/R3): present ⇒ always checked, even with
+      // no enrolment registry. The enrolment plane and the R8/R9 requirement remain unwired below.
+      "the settlement artifact is unbound, mis-referenced, or asserts a negative under a positive outcome",
+      "a supplied params preimage does not hash to the approved parameters",
+      "a settlement artifact with no verified params preimage — the money was compared to nothing",
+      "the artifact's network, asset, payer, payee or amount is outside the approved bounds",
     ],
     "the set of rules this table says are built changed. That is a real change to what a verdict " +
       "means — make it deliberately, and move the corpus assertions below with it.",
@@ -422,8 +428,24 @@ test("no enrolment input exists, so EVERY fixture reports that the question was 
   }
 });
 
+/**
+ * Does this fixture carry EITHER settlement member?
+ *
+ * Keyed on both names, not on the artifact alone. A preimage riding ALONE is itself a rejection (the
+ * co-presence rule), so an artifact-only predicate would let that fixture fall into the invariants
+ * below, which are about the corpus that existed before any settlement member did.
+ */
+function carriesSettlementMember(fx: Fixture): boolean {
+  const b = fx.bundle as { settlementEvidence?: unknown; actionParamsPreimage?: unknown };
+  return b.settlementEvidence !== undefined || b.actionParamsPreimage !== undefined;
+}
+
 test("the settlement dimension states which of the two happened: the rule never ran, or nobody asked", () => {
   for (const { id, fx } of fixtures) {
+    // The settlement RULE runs when a bundle carries either settlement member; those fixtures set a
+    // settlement value (BOUNDS_UNCHECKABLE / CONTRADICTED) and are the subject of the conformance +
+    // cli-wire suites, not of this "nobody asked, so nothing moved" invariant over the prior corpus.
+    if (carriesSettlementMember(fx)) continue;
     const res = run(fx);
     const want: SettlementDimension = res.failedStep === undefined ? "NO_EXECUTION_BINDING" : "UNCHECKED";
     assert.equal(
@@ -437,6 +459,12 @@ test("the settlement dimension states which of the two happened: the rule never 
 
 test("MIGRATION: every fixture's exit code is byte-for-byte the one it had before the ladder", () => {
   for (const { id, fx } of fixtures) {
+    // A settlement-bearing bundle could not exist before this slice — the container schema
+    // (additionalProperties:false) rejected both members — so there is no "before" exit code to
+    // preserve. The migration guarantee is about the bundles that DID exist: every one carrying
+    // NEITHER member, which is 100% of prior traffic. Those must still map byte-for-byte to their
+    // pre-ladder code.
+    if (carriesSettlementMember(fx)) continue;
     const res = run(fx);
     assert.equal(
       exitCodeFor(res.verdict, res.enrolment, res.dimensions.settlement),
@@ -519,6 +547,42 @@ test("a fully verified bundle, with no registry supplied, is unchanged in every 
   assert.equal(res.dimensions.settlement, "NO_EXECUTION_BINDING");
   assert.equal(res.dimensions.integrity, "INTACT");
   assert.equal(exitCodeFor(res.verdict, res.enrolment, res.dimensions.settlement), 0);
+});
+
+test("THE SETTLEMENT LABEL SURVIVES A LATER FAILURE — it says what the rule found, not where the run stopped", () => {
+  // `UNCHECKED` means exactly one thing: the settlement rule never ran. So a run in which the rule DID
+  // run must never report it, whatever happens afterwards. Two cases, because they are different
+  // states and one fallback used to flatten both onto `UNCHECKED`:
+  //
+  //   (a) the rule ran and ACCEPTED the artifact, and a LATER step failed. Measured before the fix:
+  //       reported `UNCHECKED`, contradicting this package's own definition of the value.
+  //   (b) the rule ran and REFUSED (bounds uncheckable) on a bundle whose checkpoint was ALSO
+  //       tampered, so the checkpoint failure dominates the verdict. The verdict is the tampering's;
+  //       the settlement label is still the settlement rule's.
+  //
+  // In both, the verdict and the exit code belong to the checkpoint — that is the dominance rule —
+  // while the dimension is a separate claim about a separate question, and it stays true.
+  for (const [id, wantSettlement, why] of [
+    ["settlement/s5-settlement-accepted-then-checkpoint-fails.json", "NO_EXECUTION_BINDING",
+      "the artifact was examined and accepted; the run then failed at the checkpoint"],
+    ["settlement/s5-settlement-uncheckable-over-tampered-checkpoint.json", "BOUNDS_UNCHECKABLE",
+      "the artifact was examined and its bounds were uncheckable; the checkpoint was tampered too"],
+  ] as const) {
+    const fx = fixtures.find((f) => f.id === id);
+    assert.ok(fx, `the fixture ${id} is missing`);
+    const res = run(fx!.fx);
+    assert.equal(
+      res.dimensions.settlement, wantSettlement,
+      `${id}: settlement ${res.dimensions.settlement}, expected ${wantSettlement} — ${why}. ` +
+        `UNCHECKED would claim the settlement rule never ran, which is false for this bundle.`,
+    );
+    // Both are hard rejections owned by the checkpoint, and both exit 2 — the tampering, not the
+    // settlement. Asserted here so the dimension fix cannot quietly move the verdict with it.
+    assert.equal(res.verdict, "INVALID", `${id}: verdict`);
+    assert.equal(res.failedStep, "STEP_17_CHECKPOINT_RECONCILE", `${id}: the checkpoint owns the failure`);
+    assert.equal(res.dimensions.integrity, "BROKEN", `${id}: integrity`);
+    assert.equal(exitCodeFor(res.verdict, res.enrolment, res.dimensions.settlement), 2, `${id}: exit code`);
+  }
 });
 
 test("ISOLATION: writing to one result's dimensions cannot rewrite a LATER verification's answer", () => {

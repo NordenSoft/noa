@@ -17,11 +17,10 @@
  *
  * ── WHAT IT CAN AND CANNOT SEE ───────────────────────────────────────────────────────────────────
  *
- * It covers every exit code this build can produce: 0, 2, 3, 4 from the four fixture classes, 5 from
- * a usage error, and 7 from a FORCED REFUSAL (below). It does not cover 6: that needs a settlement
- * value no rule in this verifier assigns, and the first rule that can is the one admitting a
- * settlement artifact with no verified params preimage. Until then no bundle on earth makes this
- * binary exit 6.
+ * It covers every exit code this build can produce: 0, 2, 3, 4 from four fixture classes, 6 from a
+ * settlement artifact with no verifiable params preimage (slice I2 wired the rule that assigns
+ * BOUNDS_UNCHECKABLE, so a real bundle now makes this binary exit 6 — the case this comment used to
+ * say was unreachable), 5 from a usage error, and 7 from a FORCED REFUSAL (below).
  *
  * ── THE FORCED-REFUSAL HARNESS, AND WHY A KNOCKOUT WAS NOT ENOUGH ────────────────────────────────
  *
@@ -99,6 +98,11 @@ const WIRE_CASES: ReadonlyArray<{ id: string; verdict: string; settlement: strin
   { id: "reject/step10-executed-result.json", verdict: "INVALID", settlement: "UNCHECKED", exit: 2, why: "a hard rejection at a named step" },
   { id: "reject/step16-stale-checkpoint.json", verdict: "INCONCLUSIVE", settlement: "UNCHECKED", exit: 3, why: "a stale checkpoint — the pre-existing meaning of 3" },
   { id: "verdict/unverified-no-tenant-root.json", verdict: "UNVERIFIED", settlement: "UNCHECKED", exit: 4, why: "no external trust root supplied" },
+  // Slice I2 — the FIRST bundle that makes the shipped binary exit 6 end to end: a valid EXECUTED
+  // bundle whose settlement artifact ships no verifiable params preimage, so the money was compared to
+  // nothing. INCONCLUSIVE with settlement BOUNDS_UNCHECKABLE ⇒ exit 6, which the mapper keeps DISTINCT
+  // from the stale-checkpoint 3 above so a "refresh and retry" script cannot pass this state.
+  { id: "settlement/s5-settlement-no-params-preimage.json", verdict: "INCONCLUSIVE", settlement: "BOUNDS_UNCHECKABLE", exit: 6, why: "a settlement asked-and-unanswered — no verifiable params preimage" },
 ];
 
 for (const c of WIRE_CASES) {
@@ -117,12 +121,13 @@ for (const c of WIRE_CASES) {
   });
 }
 
-test("WIRE ANTI-VACUITY: the four cases produce four DIFFERENT exit codes", () => {
-  // Without this, `process.exit(2)` for everything would satisfy three of the four assertions above
-  // being written separately — and a constant exit code is precisely the mutation this file exists
-  // to catch.
+test("WIRE ANTI-VACUITY: the five cases produce five DIFFERENT exit codes", () => {
+  // Without this, `process.exit(2)` for everything would satisfy the assertions above written
+  // separately — and a constant exit code is precisely the mutation this file exists to catch. The
+  // presence of 6 here is the load-bearing addition: it is the number the whole S5 ladder exists to
+  // surface, and a wire that collapsed it onto 3 would let a "refresh and retry" script walk past it.
   const seen = WIRE_CASES.map((c) => verify(c.id).run.status);
-  assert.deepEqual([...new Set(seen)].sort(), [0, 2, 3, 4], "the wire collapsed distinct verdicts onto one exit code");
+  assert.deepEqual([...new Set(seen)].sort((a, b) => a - b), [0, 2, 3, 4, 6], "the wire collapsed distinct verdicts onto one exit code");
 });
 
 test("WIRE: the consumption-result rule reaches the SHELL — one field separates exit 0 from exit 2", () => {

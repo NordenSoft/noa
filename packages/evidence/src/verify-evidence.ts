@@ -364,15 +364,71 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     const r = step(ctx);
     steps.push(r);
     if (!r.ok) {
+      // A settlement rejection is set INSIDE step 10 and carries its own dimension on ctx. It is not a
+      // "stopped before the settlement question" state — the artifact WAS examined.
+      //
+      // Step 10 ONLY. A `STEP_11_EXECUTION_FAILED` disjunct used to sit here and was dead in two
+      // independent ways: `checkSettlement` is called from step 10 alone, and the outcome union admits
+      // neither settlement member on `EXECUTION_FAILED`, so no step-11 bundle can carry one. It is
+      // removed rather than kept "for symmetry", because a dead disjunct advertises a step-11
+      // settlement plane that does not exist. Whoever builds one — S4-OPEN-1's owner-gated widening of
+      // the union to `EXECUTION_FAILED` — adds it back deliberately, with the union change that makes
+      // it reachable and a vector that proves it.
+      const settlementFailure = r.step === "STEP_10_EXECUTED" && ctx.settlement !== undefined;
+      // On a SETTLEMENT failure the pipeline stops at step 10/11, which is BEFORE the chain and
+      // checkpoint step. So the checkpoint step is run OUT OF BAND — otherwise a bundle whose bytes
+      // are cryptographically perfect would be reported `integrity: BROKEN` merely because a later
+      // rule refused it. Its result is CAPTURED, not discarded: it decides integrity AND, in the one
+      // case below, which failure is reported.
+      //
+      // ── TAMPERING DOMINATES AN UNANSWERED QUESTION ────────────────────────────────────────────
+      // Discarding this result was a measured defect. `E_SETTLEMENT_BOUNDS_UNCHECKABLE` is SOFT — it
+      // says the settlement question could not be answered — and it maps to INCONCLUSIVE / exit 6.
+      // A step-17 failure is HARD: a signature that does not verify, a chain that is not
+      // genesis-rooted, a checkpoint that does not match the head. With the result thrown away, a
+      // bundle carrying BOTH reported only the soft one, so ATTACHING A SETTLEMENT ARTIFACT
+      // DOWNGRADED AUTHENTICATED-DATA TAMPERING from INVALID / exit 2 to INCONCLUSIVE / exit 6 —
+      // across the exact boundary the two numbers exist to separate, and in the direction that tells
+      // an automation "unanswered, try later" about forged bytes. Removing the two settlement members
+      // from the same bundle correctly returned exit 2.
+      //
+      // The hard checkpoint failure therefore WINS, and it is reported as the failing step: tampering
+      // is both the more serious and the more specific truth about those bytes.
+      //
+      // SCOPE, deliberately narrow. Dominance applies ONLY to the soft settlement code. Where the
+      // settlement failure is itself hard (any `CONTRADICTED` cause — wrong correlation, bounds
+      // exceeded, bad preimage, wrong polarity), the verdict and the exit code are already INVALID /
+      // 2, nothing crosses a boundary, and §5.4a's "first failure in shipped PIPELINE order" keeps
+      // attribution at step 10, which runs first. The SOFT checkpoint states stay non-dominating too:
+      // when step 17 returns `ok` with no trusted anchor, the settlement rejection stands — a
+      // settlement rejection over an unanchored (as opposed to tampered) bundle is still a settlement
+      // rejection.
+      let failing = r;
+      if (settlementFailure && ctx.checkpointReconciled === undefined) {
+        const cp = step17_checkpointReconcile(ctx);
+        // Recorded in the audit trail because it genuinely ran, in the order it ran.
+        steps.push(cp);
+        if (!cp.ok && r.code === "E_SETTLEMENT_BOUNDS_UNCHECKABLE") failing = cp;
+      }
+      // REVISION 3 — the map is three-way: `E_SETTLEMENT_BOUNDS_UNCHECKABLE` joins the two checkpoint
+      // codes on the INCONCLUSIVE branch (a settlement whose bounds could not be checked is asked-and-
+      // unanswered, not a hard rejection). Every CONTRADICTED settlement code stays on the INVALID
+      // default, alongside every non-settlement failure — including a dominating step-17 failure,
+      // whose `E_CHECKPOINT_RECONCILE` is absent from this list precisely so it lands on INVALID.
       const verdict: EvidenceVerdict =
-        r.code === "E_INCONCLUSIVE_NO_CHECKPOINT" || r.code === "E_STALE_CHECKPOINT" ? "INCONCLUSIVE" : "INVALID";
-      // A failure BEFORE the chain/checkpoint step leaves integrity genuinely unproven, and a
-      // failure at step 17 means it is broken. Neither is reported as INTACT: this dimension states
-      // what was PROVEN, never what was merely not disproven.
-      const integrity: VerdictDimensions["integrity"] = ctx.checkpointReconciled === true && r.step !== "STEP_17_CHECKPOINT_RECONCILE" ? "INTACT" : "BROKEN";
-      // The pipeline stopped, so the settlement question was never reached. `UNCHECKED` is the one
-      // value that must never be read as "an artifact was examined and found acceptable".
-      return result(verdict, bundle.outcome, steps, ctx.warnings, { integrity, authorization: ctx.authorization, settlement: "UNCHECKED" }, NOT_EVALUATED, r, [...ctx.rolesAsserted], purpose);
+        failing.code === "E_INCONCLUSIVE_NO_CHECKPOINT" || failing.code === "E_STALE_CHECKPOINT" || failing.code === "E_SETTLEMENT_BOUNDS_UNCHECKABLE"
+          ? "INCONCLUSIVE"
+          : "INVALID";
+      // Integrity states what was PROVEN: a failure before the checkpoint step leaves it unproven, and
+      // a failure AT step 17 — reached in the pipeline or out of band — means it is broken.
+      const integrity: VerdictDimensions["integrity"] = ctx.checkpointReconciled === true && failing.step !== "STEP_17_CHECKPOINT_RECONCILE" ? "INTACT" : "BROKEN";
+      // A run that stopped OUTSIDE the settlement rule examined no settlement evidence (UNCHECKED, the
+      // value that must never read as "an artifact was examined and accepted"); a settlement rejection
+      // carries the dimension the rule set (BOUNDS_UNCHECKABLE or CONTRADICTED). That dimension is
+      // reported even when the checkpoint failure dominates the VERDICT: the artifact really was
+      // examined, and suppressing it would hide half of what is wrong with the bundle.
+      const settlement: VerdictDimensions["settlement"] = ctx.settlement ?? "UNCHECKED";
+      return result(verdict, bundle.outcome, steps, ctx.warnings, { integrity, authorization: ctx.authorization, settlement }, NOT_EVALUATED, failing, [...ctx.rolesAsserted], purpose);
     }
   }
 
