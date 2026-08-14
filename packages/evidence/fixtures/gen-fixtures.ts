@@ -957,6 +957,38 @@ emit("settlement", "s5-settlement-not-observed-polarity", fixtureFrom(settlement
 // R1 binding — the artifact's own tenant is not the verifier's (R-11), a hard rejection caught offline.
 emit("settlement", "s5-settlement-tenant-mismatch", fixtureFrom(settlementWorld({ artifactTenant: "tenant-globex" }), { description: "R1 binding: the settlement artifact's own tenant is not the verifier's expected tenant (R-11), so it is a replay of another tenant's evidence. INVALID / E_SETTLEMENT_BINDING, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BINDING" }));
 
+// LABEL AFTER ACCEPTANCE — the settlement rule ran, examined the artifact and ACCEPTED it, and the
+// run then failed LATER (a correctly-signed checkpoint pinned to the wrong head). The reported
+// settlement label must say what actually happened here — NO_EXECUTION_BINDING, the unenrolled
+// valid-artifact state — and must NOT fall back to UNCHECKED, whose whole meaning is "the settlement
+// rule never ran". Measured before the fix: this bundle reported UNCHECKED, contradicting the
+// definition the README gives for that value. The verdict and exit are the checkpoint's either way.
+{
+  const w = settlementWorld();
+  const bundle = clone(w.bundle);
+  // Correctly signed by the gate, but pinned to the ALLOWED receipt while the chain head is the
+  // EXECUTED one — a genuine step-17 refusal that has nothing to do with the settlement plane.
+  bundle.checkpoint = buildCheckpoint(clone(w.bundle.allowedReceipt) as Receipt, T_CHECKPOINT, rSign("gate-prod-1"));
+  emit("settlement", "s5-settlement-accepted-then-checkpoint-fails", fixtureFrom(w, { description: "LABEL AFTER ACCEPTANCE: a valid, bound, in-bounds settlement artifact IS examined and accepted at step 10, and the run then fails at step 17 on an authenticated checkpoint pinned to the wrong head. The failure is the checkpoint's (INVALID / E_CHECKPOINT_RECONCILE, exit 2), but dimensions.settlement must report NO_EXECUTION_BINDING — what the settlement rule actually found — not UNCHECKED, which means the rule never ran. Before the fix this bundle reported UNCHECKED and contradicted the README's own definition", expectVerdict: "INVALID", expectStep: "STEP_17_CHECKPOINT_RECONCILE", expectCode: "E_CHECKPOINT_RECONCILE", bundle }));
+}
+
+// DOMINANCE — the same no-preimage bundle as C.14, with the checkpoint signature corrupted as well.
+// The settlement question is unanswered (soft: INCONCLUSIVE, exit 6) AND the checkpoint is tampered
+// (hard: INVALID, exit 2). It is reported as the TAMPERING, because that is the more serious and the
+// more specific truth about these bytes. Before the fix the out-of-band checkpoint result was
+// DISCARDED and only the soft code survived, so ATTACHING A SETTLEMENT ARTIFACT DOWNGRADED FORGED
+// BYTES from exit 2 to exit 6 — telling an automation "unanswered, retry later" about a signature
+// that does not verify. Removing the two settlement members from this very bundle already returned
+// exit 2, which is what makes the downgrade a boundary crossing rather than a difference of opinion.
+{
+  const w = settlementWorld({ preimage: null });
+  const bundle = clone(w.bundle);
+  // A foreign but well-formed Ed25519 value (the deferred receipt's) swapped into the checkpoint's
+  // signature: nothing else is perturbed, so the SIGNATURE is the only thing wrong and step 17 owns it.
+  ((bundle.checkpoint as J).sig as J).value = ((clone(w.bundle.deferredReceipt) as J).sig as J).value;
+  emit("settlement", "s5-settlement-uncheckable-over-tampered-checkpoint", fixtureFrom(w, { description: "DOMINANCE (panel round 2): a settlement artifact with NO params preimage (soft — alone it is INCONCLUSIVE / exit 6) on a bundle whose checkpoint SIGNATURE does not verify (hard — INVALID / exit 2). The hard tampering wins and is reported as the failing step: authenticated-data tampering must never be reported as 'the settlement bounds were not answered', which crosses the exit-2/exit-6 automation boundary in the 'retry later' direction. INVALID / STEP_17 / E_CHECKPOINT_RECONCILE, exit 2, integrity BROKEN — and dimensions.settlement still reports BOUNDS_UNCHECKABLE, because the artifact really was examined and hiding that would hide half of what is wrong", expectVerdict: "INVALID", expectStep: "STEP_17_CHECKPOINT_RECONCILE", expectCode: "E_CHECKPOINT_RECONCILE", bundle }));
+}
+
 // CO-PRESENCE — an EXECUTED bundle carrying a preimage and NO settlement artifact. The union admits
 // the two members independently, and every check that reads the preimage sits behind the artifact, so
 // before this rule an attacker holding NO signing key could append a preimage member to a valid

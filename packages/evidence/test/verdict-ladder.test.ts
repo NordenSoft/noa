@@ -549,6 +549,42 @@ test("a fully verified bundle, with no registry supplied, is unchanged in every 
   assert.equal(exitCodeFor(res.verdict, res.enrolment, res.dimensions.settlement), 0);
 });
 
+test("THE SETTLEMENT LABEL SURVIVES A LATER FAILURE — it says what the rule found, not where the run stopped", () => {
+  // `UNCHECKED` means exactly one thing: the settlement rule never ran. So a run in which the rule DID
+  // run must never report it, whatever happens afterwards. Two cases, because they are different
+  // states and one fallback used to flatten both onto `UNCHECKED`:
+  //
+  //   (a) the rule ran and ACCEPTED the artifact, and a LATER step failed. Measured before the fix:
+  //       reported `UNCHECKED`, contradicting this package's own definition of the value.
+  //   (b) the rule ran and REFUSED (bounds uncheckable) on a bundle whose checkpoint was ALSO
+  //       tampered, so the checkpoint failure dominates the verdict. The verdict is the tampering's;
+  //       the settlement label is still the settlement rule's.
+  //
+  // In both, the verdict and the exit code belong to the checkpoint — that is the dominance rule —
+  // while the dimension is a separate claim about a separate question, and it stays true.
+  for (const [id, wantSettlement, why] of [
+    ["settlement/s5-settlement-accepted-then-checkpoint-fails.json", "NO_EXECUTION_BINDING",
+      "the artifact was examined and accepted; the run then failed at the checkpoint"],
+    ["settlement/s5-settlement-uncheckable-over-tampered-checkpoint.json", "BOUNDS_UNCHECKABLE",
+      "the artifact was examined and its bounds were uncheckable; the checkpoint was tampered too"],
+  ] as const) {
+    const fx = fixtures.find((f) => f.id === id);
+    assert.ok(fx, `the fixture ${id} is missing`);
+    const res = run(fx!.fx);
+    assert.equal(
+      res.dimensions.settlement, wantSettlement,
+      `${id}: settlement ${res.dimensions.settlement}, expected ${wantSettlement} — ${why}. ` +
+        `UNCHECKED would claim the settlement rule never ran, which is false for this bundle.`,
+    );
+    // Both are hard rejections owned by the checkpoint, and both exit 2 — the tampering, not the
+    // settlement. Asserted here so the dimension fix cannot quietly move the verdict with it.
+    assert.equal(res.verdict, "INVALID", `${id}: verdict`);
+    assert.equal(res.failedStep, "STEP_17_CHECKPOINT_RECONCILE", `${id}: the checkpoint owns the failure`);
+    assert.equal(res.dimensions.integrity, "BROKEN", `${id}: integrity`);
+    assert.equal(exitCodeFor(res.verdict, res.enrolment, res.dimensions.settlement), 2, `${id}: exit code`);
+  }
+});
+
 test("ISOLATION: writing to one result's dimensions cannot rewrite a LATER verification's answer", () => {
   // A reviewer reproduced this against the first version of the fix round. The early-return
   // dimensions were a single shared constant handed out by reference, so every early-return result in

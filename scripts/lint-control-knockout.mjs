@@ -1669,6 +1669,41 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/rail-x402", "npm", ["test"]],
   },
+  {
+    id: "tampered-checkpoint-dominates-an-unanswered-settlement",
+    control:
+      "A settlement failure stops the pipeline BEFORE the chain/checkpoint step, so that step runs out " +
+      "of band — and its result must be CAPTURED, not merely consulted for the integrity dimension. " +
+      "`E_SETTLEMENT_BOUNDS_UNCHECKABLE` is SOFT (the question could not be answered: INCONCLUSIVE, " +
+      "exit 6); a step-17 failure is HARD (a signature that does not verify, a chain that is not " +
+      "genesis-rooted: INVALID, exit 2). Drop the dominance and a bundle carrying BOTH reports only the " +
+      "soft one, so ATTACHING A SETTLEMENT ARTIFACT DOWNGRADES AUTHENTICATED-DATA TAMPERING from exit 2 " +
+      "to exit 6 — across the exact boundary those two numbers exist to separate, and in the direction " +
+      "that tells an automation 'unanswered, retry later' about forged bytes. The same bundle without " +
+      "the settlement members already returned exit 2, which is what makes it a boundary crossing " +
+      "rather than a difference of opinion. Must red the uncheckable-over-tampered-checkpoint vector.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "        if (!cp.ok && r.code === \"E_SETTLEMENT_BOUNDS_UNCHECKABLE\") failing = cp;",
+    replace: "        if (false) failing = cp;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-label-survives-a-later-failure",
+    control:
+      "`UNCHECKED` means exactly one thing — the settlement rule never ran — so a run in which the " +
+      "rule DID run must never report it. The success branch records what it found on the context; " +
+      "without that record the failure path falls back to `UNCHECKED`, and a bundle whose artifact was " +
+      "examined AND ACCEPTED reports 'the rule never ran' as soon as any later step fails. That is a " +
+      "false statement about which checks were performed, in the field a reader consults to find out " +
+      "exactly that, and it contradicts the package's own published definition of the value. Removing " +
+      "the assignment must red the label regression.",
+    file: "packages/evidence/src/steps.ts",
+    find: "      ctx.settlement = \"NO_EXECUTION_BINDING\";\n      return null;",
+    replace: "      return null;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment

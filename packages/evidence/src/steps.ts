@@ -967,10 +967,19 @@ function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
 
   const detail = r.reason === null ? "" : ` — ${r.reason}`;
   switch (r.code) {
-    // valid, bound, offline artifact. Unenrolled ⇒ the dimension stays NO_EXECUTION_BINDING (set by
-    // the pipeline-complete default), never upgraded. This is the ONLY non-reject settlement outcome
-    // this slice can produce.
+    // A valid, bound, in-bounds offline artifact — the ONLY non-reject settlement outcome this slice
+    // can produce. Unenrolled, so it is NO_EXECUTION_BINDING (R-DIM-1's unenrolled-valid-artifact
+    // row) and never upgraded: nobody asked, and nobody re-queried.
+    //
+    // RECORDED ON `ctx`, not left to the pipeline-complete default, because the two are not the same
+    // thing when a LATER step fails. Leaving it unset made the failure path fall back to `UNCHECKED` —
+    // whose whole meaning is "the settlement rule never ran" — for a bundle whose artifact this rule
+    // had just examined and ACCEPTED. Measured end to end: a validly-signed wrong-head checkpoint on
+    // an artifact-bearing bundle passed step 10, failed step 17, and reported `UNCHECKED`, which
+    // contradicts the documented definition of the value. Setting it here makes the label true on
+    // every exit path, including the one where a hard checkpoint failure dominates the verdict.
     case "SETTLEMENT_CORRELATED_UNRECONFIRMED":
+      ctx.settlement = "NO_EXECUTION_BINDING";
       return null;
     // R1 polarity — the artifact reports a determinate NON-settlement under an EXECUTED outcome: the
     // one document asserts the request was handed off AND that nothing settled.
