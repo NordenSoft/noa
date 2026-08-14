@@ -96,6 +96,13 @@ export interface EvidenceBundle {
   executionUncertainty?: unknown;
   executedReceipt?: unknown;
   failedReceipt?: unknown;
+  // S5 (REVISION 3, §7.3) — schema-additive, EXECUTED-only, both optional at the container level so
+  // every old bundle passes the container check unchanged. `settlementEvidence` is the S4
+  // `noa.settlement-evidence/0.1` artifact; `actionParamsPreimage` is the canonical JCS **string**
+  // whose SHA-256 must equal the allowed receipt's `action.paramsHash` before one field is read
+  // (a string, not an object, so the byte comparison the shipped reconciler runs is not re-derived).
+  settlementEvidence?: unknown;
+  actionParamsPreimage?: unknown;
 }
 
 /**
@@ -165,7 +172,17 @@ export type StepCode =
   | "E_OUTCOME_ARTIFACT_SET"
   | "E_RECEIPT_ROLE"
   | "E_AUTHORIZATION_WINDOW"
-  | "E_NO_TRUST_ROOT";
+  | "E_NO_TRUST_ROOT"
+  // S5 (REVISION 3) settlement-artifact plane — one code per failure class, emitted ONLY inside
+  // step 10 (EXECUTED), and only when the bundle carries a settlement artifact (present ⇒ always
+  // checked). The enrolment-plane and R8/R9 requirement codes are NOT here yet — they arrive with
+  // the enrolment registry (a later slice); these are the artifact-plane rules R1/R2/R3.
+  | "E_SETTLEMENT_BINDING" // R1 — the artifact is not a valid, bound noa.settlement-evidence/0.1
+  | "E_SETTLEMENT_POLARITY" // R1 — a determinate non-settlement status under an EXECUTED outcome
+  | "E_SETTLEMENT_CORRELATION" // R3 — the recomputed D7 nonce != the artifact's correlation
+  | "E_PARAMS_PREIMAGE_MISMATCH" // R2 — a SUPPLIED preimage does not hash to paramsHash / bad shape
+  | "E_SETTLEMENT_BOUNDS_UNCHECKABLE" // R2 — witness present, preimage ABSENT or paramsHash keyed
+  | "E_SETTLEMENT_BOUNDS_EXCEEDED"; // R3 — network/asset/payer/payee/amount outside the preimage
 
 /**
  * The §13 outcome-keyed union, MADE MECHANICAL. The container is documented as "each outcome carries
@@ -183,7 +200,11 @@ export type StepCode =
  * than collapsing onto this pre-rule.
  */
 export const OUTCOME_ARTIFACT_UNION: Readonly<Record<EvidenceOutcome, FrozenSet<string>>> = frozenTable({
-  EXECUTED: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "executedReceipt"]),
+  // S5 §7.3 point 1: `settlementEvidence` AND `actionParamsPreimage` ride the EXECUTED union entry
+  // ONLY — the preimage exists to bound the artifact it travels with, and admitting a disclosure on
+  // an outcome with nothing to check it against buys nothing. (S4-OPEN-1: widening to
+  // EXECUTION_FAILED is owner-gated and stays out of the union until the owner decides.)
+  EXECUTED: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "executedReceipt", "settlementEvidence", "actionParamsPreimage"]),
   EXECUTION_FAILED: frozenSet(["decisionArtifact", "allowedReceipt", "executionGrant", "executionConsumption", "failedReceipt"]),
   DENIED: frozenSet(["decisionArtifact", "blockedReceipt"]),
   EXPIRED: frozenSet(["timeoutReceipt"]),
@@ -231,6 +252,12 @@ export const OPTIONAL_ARTIFACT_FIELDS: readonly string[] = frozenTable([
   "executionUncertainty",
   "executedReceipt",
   "failedReceipt",
+  // S5 §7.3 point 2: BOTH must appear here, not only in the union. The step-0 pre-rule iterates
+  // OPTIONAL_ARTIFACT_FIELDS (never the schema or the union keys), so a name absent here that a
+  // non-EXECUTED bundle carries is SILENTLY IGNORED — the exact PRESENT-but-not-in-union hole this
+  // list closes. With both listed, a `settlementEvidence` on a DENIED bundle is E_OUTCOME_ARTIFACT_SET.
+  "settlementEvidence",
+  "actionParamsPreimage",
 ]);
 
 /** The outcome of running a single named step. */

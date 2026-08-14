@@ -34,6 +34,8 @@
     "executionConsumption": { "type": "object" },
     "executionUncertainty": { "type": "object" },
     "executedReceipt": { "type": "object" },
-    "failedReceipt": { "type": "object" }
+    "failedReceipt": { "type": "object" },
+    "settlementEvidence": { "type": "object" },
+    "actionParamsPreimage": { "type": "string" }
   }
 }
