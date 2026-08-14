@@ -135,8 +135,11 @@ find it" for a payment that may well have settled.
   the nonce: a DERIVED value (this package's `deriveCorrelationNonce`), a freshly random value, and
   a structured low-entropy control. All three were refused identically at the token contract's
   balance simulation (`invalid_exact_evm_insufficient_balance`) with the nonce passed through
-  verbatim — no content policy was applied, and the derived nonce was signature-valid past the
-  contract's signer recovery. Reproduction:
+  verbatim — no content policy was applied AT OR BEFORE THAT STAGE, and the derived nonce was
+  signature-valid past the contract's signer recovery. What this does NOT establish: the settlement
+  path was never exercised (the requests were refused for want of funds, nothing was broadcast), so
+  a policy applied at settlement time, on a funded path, or by an endpoint verification does not
+  share is **not excluded**. Reproduction:
   `docs/reproductions/repro-p21-hosted-facilitator-nonce-policy.mjs` (broadcasts nothing, needs no
   funds, generates its own key). A deployment that DOES reject derived nonces loses the correlation
   property there — the payment rail is not lost; re-run the three-way comparison against any
