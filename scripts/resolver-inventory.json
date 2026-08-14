@@ -1494,6 +1494,7 @@
     "packages/evidence/test/authorization-window.test.ts": "evidence tests/tools: consumers of the evidence resolvers",
     "packages/evidence/test/conformance.test.ts": "evidence tests/tools: consumers of the evidence resolvers",
     "packages/evidence/test/receipt-role-enumeration.test.ts": "evidence tests/tools: consumers of the evidence resolvers",
+    "packages/evidence/test/cli-wire.test.ts": "evidence tests/tools: writes each shipped fixture's tenantRoot/checkpointKeyring to temp FILES and spawns the CLI over them to read the real process exit code; constructs no KeyEntry and resolves nothing itself",
     "packages/evidence/test/verdict-ladder.test.ts": "evidence tests/tools: consumers of the evidence resolvers — hands each shipped fixture's tenantRoot/checkpointKeyring to verifyEvidence as BYTES; constructs no KeyEntry and resolves nothing itself",
     "packages/framework-adapters/test/langchain.test.mjs": "downstream consumer: passes a string keyring to verify APIs; constructs no KeyEntry",
     "packages/framework-adapters/test/no-premature-executed.test.mjs": "downstream consumer: passes a string keyring to verify APIs; constructs no KeyEntry",

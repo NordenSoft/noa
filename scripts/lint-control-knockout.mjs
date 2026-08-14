@@ -1446,6 +1446,62 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
+  {
+    id: "settlement-cli-exit-wire-carries-the-verdict",
+    control:
+      "The CLI hands the SHELL the code the mapper computed. This is not a hypothetical: a reviewer " +
+      "replaced this line with `process.exit(0)` and the whole suite stayed green, because every " +
+      "assertion called the mapper and none started the binary. Every rejection would have exited 0 " +
+      "on the exact channel a payment script reads, while the suite reported health. A doctrine that " +
+      "calls the exit code \"the only channel most consumers use\" has to measure the process, not " +
+      "the function one call short of it.",
+    file: "packages/evidence/src/cli.ts",
+    find: "  process.exit(code);",
+    replace: "  process.exit(0);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-cli-usage-error-is-not-success",
+    control:
+      "A usage or IO error exits 5, never 0. \"The arguments were wrong\" and \"the evidence says X\" " +
+      "must not share a number, or a script reads a typo as a verification result — and it reads it " +
+      "in the direction of the claim. Measured: turning this into 0 left the pre-wire suite green.",
+    file: "packages/evidence/src/cli.ts",
+    find: "  process.exit(USAGE_EXIT_CODE);",
+    replace: "  process.exit(0);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-inadmissible-tuple-refused-not-answered",
+    control:
+      "A tuple the assignment rules cannot produce is REFUSED by the mapper, and the CLI turns that " +
+      "refusal into exit 7. Answering by verdict alone — the shape this replaced — returns 0 at the " +
+      "money boundary for exactly the inputs a defective rule delivers. The mutation removes the " +
+      "admissible pair every honest run uses, so a valid bundle now produces a tuple the table does " +
+      "not list: the binary must exit 7 with the error's name on stderr rather than 0. That is the " +
+      "throw-to-exit path proven end to end, without a fixture that lies.",
+    file: "packages/evidence/src/exit-codes.ts",
+    find: "  NOT_EVALUATED: frozenSet<SettlementDimension>([\"NO_EXECUTION_BINDING\"]),",
+    replace: "  NOT_EVALUATED: frozenSet<SettlementDimension>([]),",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-not-conditioned-on-what-the-caller-asked-for",
+    control:
+      "The settlement value does not depend on `purpose`. An audit run and an authorization run " +
+      "examined the same settlement evidence — none — so a purpose-conditional value would be a " +
+      "verdict that changes with who is asking. The mutation is the one a reviewer chose precisely " +
+      "because the corpus runner never passes `purpose`: it was invisible to every fixture-driven " +
+      "assertion, which is why the behavioural two-run pin exists.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },\n    NOT_EVALUATED,",
+    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\" },\n    NOT_EVALUATED,",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment
