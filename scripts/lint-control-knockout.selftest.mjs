@@ -26,10 +26,12 @@
  * itself wrong, which is worse than any single control being wrong.
  */
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry } from "./lib/knockout-runner.mjs";
+import { execFileSync } from "node:child_process";
+import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths } from "./lib/knockout-runner.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ko-selftest-"));
 let failures = 0;
@@ -227,6 +229,256 @@ check("requires must be a NON-EMPTY array — an empty one declares nothing whil
   assert.throws(() => validateKnockoutRegistry([DEP_ENTRY("empty", [])]), /non-empty array/);
 });
 
+/* ─── THE DERIVED STATE: dist/ AND COMMITTED GENERATED FILES ────────────────────────────────────
+ *
+ * The defect these arms pin, root-caused three separate times: the runner restored the mutated
+ * SOURCE and proved it byte-for-byte, then walked away from everything that source had already been
+ * compiled and generated into. `dist/` is gitignored, so the sweep's residue check could not see the
+ * mutant build; the next arm read it. `packages/evidence`'s test script regenerates COMMITTED
+ * conformance fixtures from whatever kernel build is on disk, so the leak did not stay invisible —
+ * it rewrote nine settlement fixtures locally, and on 2026-08-14 rewrote
+ * `conformance/settlement/s5-settlement-valid-base.json` in GitHub CI and failed an unrelated PR.
+ *
+ * The fixture below is that incident in miniature and in about a second: a suite that, when the
+ * subject is mutated, WRITES THE MUTATION INTO `dist/` (what `tsc` does) and rewrites a committed
+ * fixture from it (what a generator does). Both directions are measured, because a guard that is
+ * silently doing nothing looks exactly like a guard that is working. */
+const buildFixture = () => {
+  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-derived-"));
+  fs.mkdirSync(path.join(r, "dist"), { recursive: true });
+  fs.writeFileSync(path.join(r, "subject.js"), `${MARKER}\nexport default guard;\n`);
+  fs.writeFileSync(path.join(r, "dist", "subject.js"), `COMPILED FROM: ${MARKER}\n`);
+  fs.writeFileSync(path.join(r, "dist", "untouched.js"), "a build output no arm ever writes\n");
+  fs.writeFileSync(path.join(r, "fixture.json"), `{"generatedFrom":"${MARKER}"}\n`);
+  fs.writeFileSync(path.join(r, "notes.md"), "a tracked file no suite ever writes\n");
+  // The suite compiles the subject into dist/ and regenerates the committed fixture from it — the
+  // real `npm run build && node dist/fixtures/gen-fixtures.js && node --test …` shape. The extra
+  // emitted file appears only under the MUTANT, because that is the case that must be deleted: a
+  // build output that did not exist before the arm can only have come from the mutation.
+  fs.writeFileSync(
+    path.join(r, "suite.mjs"),
+    [
+      `import fs from "node:fs";`,
+      `import path from "node:path";`,
+      `import { fileURLToPath } from "node:url";`,
+      `const dir = path.dirname(fileURLToPath(import.meta.url));`,
+      `const src = fs.readFileSync(path.join(dir, "subject.js"), "utf8").trim().split("\\n")[0];`,
+      `const broken = !src.includes("REAL_CHECK");`,
+      `fs.writeFileSync(path.join(dir, "dist", "subject.js"), "COMPILED FROM: " + src + "\\n");`,
+      `if (broken) fs.writeFileSync(path.join(dir, "dist", "emitted-this-run.js"), "only the mutant emits this\\n");`,
+      `fs.writeFileSync(path.join(dir, "fixture.json"), JSON.stringify({ generatedFrom: src }) + "\\n");`,
+      `if (broken) console.log("\\u2716 the guard is load-bearing (1.0ms)");`,
+      `console.log("\\u2139 tests 1");`,
+      `console.log("\\u2139 pass " + (broken ? 0 : 1));`,
+      `process.exit(broken ? 1 : 0);`,
+    ].join("\n"),
+  );
+  return r;
+};
+const digestOf = (p) => crypto.createHash("sha256").update(fs.readFileSync(p)).digest("hex");
+const derivedEntry = (r) => ({
+  id: "derived", control: "the fixture guard", file: "subject.js", kind: "tests",
+  find: MARKER, replace: "const guard = true;",
+  suite: [".", process.execPath, [path.join(r, "suite.mjs")]],
+});
+const derivedBaseline = (r) => {
+  const obs = observeSuite(r, derivedEntry(r).suite);
+  return { exit: obs.exit, failing: obs.failing, findings: obs.findings, ms: obs.ms, timedOut: false, out: obs.out };
+};
+
+/** A guard that does nothing — the runner as it behaved before this fix. */
+const NO_GUARD = { recover: () => null, beginArm: () => true, endArm: () => null };
+
+const derivedRoots = [];
+const withDerivedFixture = (fn) => {
+  const r = buildFixture();
+  derivedRoots.push(r);
+  const base = derivedBaseline(r);
+  return fn(r, base);
+};
+
+check("ANTI-VACUITY: WITHOUT the guard, the mutant survives in dist/ and in the committed fixture", () => {
+  withDerivedFixture((r, base) => {
+    const ev = runKnockout({ root: r, entry: derivedEntry(r), baseline: base, timeoutMs: 60_000, guard: NO_GUARD });
+    assert.equal(ev.verdict, VERDICT.DETECTOR_TRIGGERED, `the fixture must produce a real kill; got ${ev.verdict}`);
+    assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), `${MARKER}\nexport default guard;\n`,
+      "source restoration is the part that already worked — if this fails the fixture is wrong, not the guard");
+    assert.match(fs.readFileSync(path.join(r, "dist", "subject.js"), "utf8"), /const guard = true;/,
+      "the fixture never leaked a mutant build, so the arm below would prove nothing");
+    assert.match(fs.readFileSync(path.join(r, "fixture.json"), "utf8"), /const guard = true;/,
+      "the fixture never rewrote its committed file, so the tracked-file arm below would prove nothing");
+  });
+});
+
+check("the mutant NEVER survives in dist/ — the build state is restored byte-for-byte", () => {
+  withDerivedFixture((r, base) => {
+    const before = {
+      compiled: digestOf(path.join(r, "dist", "subject.js")),
+      untouched: digestOf(path.join(r, "dist", "untouched.js")),
+    };
+    const ev = runKnockout({
+      root: r, entry: derivedEntry(r), baseline: base, timeoutMs: 60_000,
+      guard: createBuildStateGuard({ root: r, cacheDir: path.join(r, "..", path.basename(r) + "-cache") }),
+    });
+    assert.equal(ev.verdict, VERDICT.DETECTOR_TRIGGERED, `got ${ev.verdict}: ${ev.detail}`);
+    assert.equal(digestOf(path.join(r, "dist", "subject.js")), before.compiled,
+      "a mutant BUILD survived the arm. This is the defect: source restored, dist/ left compiled from " +
+        "the mutation, and gitignored so the residue check cannot see it");
+    assert.equal(digestOf(path.join(r, "dist", "untouched.js")), before.untouched,
+      "the guard rewrote a build output the arm never touched");
+    assert.equal(fs.existsSync(path.join(r, "dist", "emitted-this-run.js")), false,
+      "build output that did not exist before the arm was left behind — it is derived from the mutant");
+    assert.ok(ev.buildState, "the evidence record does not say what was restored, so nobody can audit it");
+    assert.ok(ev.buildState.artifactsRestored.includes("dist/subject.js"), "the restore is not reported");
+    assert.equal(ev.restored, true, "restoration was not reported as proven");
+  });
+});
+
+check("a run that DIES mid-arm is repaired by the next run, source AND build", () => {
+  withDerivedFixture((r) => {
+    const cacheDir = path.join(r, "..", path.basename(r) + "-crash-cache");
+    const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
+    const pristineBuild = digestOf(path.join(r, "dist", "subject.js"));
+
+    // Exactly what an arm does before it runs a suite, and then the process dies: no `finally`,
+    // no restore, a mutant on disk in BOTH source and build.
+    const dying = createBuildStateGuard({ root: r, cacheDir });
+    dying.beginArm({ entryId: "killed-arm", sources: new Map([["subject.js", pristineSource]]) });
+    fs.writeFileSync(path.join(r, "subject.js"), "const guard = true;\nexport default guard;\n");
+    fs.writeFileSync(path.join(r, "dist", "subject.js"), "COMPILED FROM: const guard = true;\n");
+
+    const nextRun = createBuildStateGuard({ root: r, cacheDir });
+    const report = nextRun.recover();
+    assert.ok(report, "the next run did not notice that the previous one died holding a mutant");
+    assert.deepEqual(report.sources, ["subject.js"]);
+    assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), pristineSource,
+      "the mutant SOURCE survived the crash — this happened twice for real, found by hand with git status");
+    assert.equal(digestOf(path.join(r, "dist", "subject.js")), pristineBuild,
+      "the mutant BUILD survived the crash, and git status cannot see it at all");
+    assert.equal(createBuildStateGuard({ root: r, cacheDir }).recover(), null,
+      "recovery is not idempotent — every later run would keep claiming a crash");
+  });
+});
+
+/** THE INCIDENT ITSELF: a suite that regenerates a COMMITTED file while the mutant is live. */
+check("a committed file the mutated suite regenerated is reverted from the index", () => {
+  withDerivedFixture((r) => {
+    const git = (...args) => execFileSync("git", args, { cwd: r, stdio: "pipe", encoding: "utf8" });
+    git("init", "-q");
+    git("config", "user.email", "selftest@example.invalid");
+    git("config", "user.name", "knockout selftest");
+    fs.writeFileSync(path.join(r, ".gitignore"), "dist/\n");
+    git("add", "-A");
+    git("-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture");
+    const committed = fs.readFileSync(path.join(r, "fixture.json"), "utf8");
+
+    const ev = runKnockout({
+      root: r, entry: derivedEntry(r), baseline: derivedBaseline(r), timeoutMs: 60_000,
+      guard: createBuildStateGuard({ root: r, cacheDir: path.join(r, "..", path.basename(r) + "-git-cache") }),
+    });
+    assert.equal(ev.verdict, VERDICT.DETECTOR_TRIGGERED, `got ${ev.verdict}: ${ev.detail}`);
+    assert.equal(fs.readFileSync(path.join(r, "fixture.json"), "utf8"), committed,
+      "the mutated suite's generator rewrote a COMMITTED file and the runner left it rewritten — " +
+        "this is byte-for-byte the CI failure of 2026-08-14");
+    assert.deepEqual(ev.buildState.trackedReverted, ["fixture.json"]);
+    assert.equal(git("status", "--porcelain").trim(), "", "the arm left the worktree dirty");
+  });
+});
+
+check("uncommitted work the arm never touched is NEVER reverted by the guard", () => {
+  withDerivedFixture((r) => {
+    const git = (...args) => execFileSync("git", args, { cwd: r, stdio: "pipe", encoding: "utf8" });
+    git("init", "-q");
+    git("config", "user.email", "selftest@example.invalid");
+    git("config", "user.name", "knockout selftest");
+    fs.writeFileSync(path.join(r, ".gitignore"), "dist/\n");
+    git("add", "-A");
+    git("-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture");
+    // A developer legitimately has uncommitted work while the sweep runs. `git checkout --` over it
+    // would destroy that work silently — which is why the guard reverts ONLY paths that were clean
+    // when the arm began, exactly as the residue check measures a DIFFERENCE rather than emptiness.
+    const mine = "MY OWN UNCOMMITTED EDIT\n";
+    fs.writeFileSync(path.join(r, "notes.md"), mine);
+
+    const ev = runKnockout({
+      root: r, entry: derivedEntry(r), baseline: derivedBaseline(r), timeoutMs: 60_000,
+      guard: createBuildStateGuard({ root: r, cacheDir: path.join(r, "..", path.basename(r) + "-mine-cache") }),
+    });
+    assert.equal(fs.readFileSync(path.join(r, "notes.md"), "utf8"), mine,
+      "the guard reverted a file the arm never touched — it just deleted a developer's work");
+    assert.deepEqual(ev.buildState.trackedReverted, ["fixture.json"],
+      "the guard reverted more (or less) than the one file this arm's generator rewrote");
+  });
+});
+
+check("a marker whose process is STILL ALIVE is another run, not a crash — never 'recovered'", () => {
+  withDerivedFixture((r) => {
+    const cacheDir = path.join(r, "..", path.basename(r) + "-live-cache");
+    const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
+    createBuildStateGuard({ root: r, cacheDir })
+      .beginArm({ entryId: "an-arm-in-flight-elsewhere", sources: new Map([["subject.js", pristineSource]]) });
+    // Re-stamp the marker with a pid that is certainly alive and certainly not this process.
+    const marker = JSON.parse(fs.readFileSync(path.join(cacheDir, "inflight.json"), "utf8"));
+    fs.writeFileSync(path.join(cacheDir, "inflight.json"), JSON.stringify({ ...marker, pid: 1 }));
+    const live = "const guard = true;\nexport default guard;\n";
+    fs.writeFileSync(path.join(r, "subject.js"), live);
+
+    assert.equal(createBuildStateGuard({ root: r, cacheDir }).recover(), null,
+      "a live run's in-flight arm was reported as a crash");
+    assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), live,
+      "the other run's live mutation was overwritten mid-suite — it would then be handed a verdict " +
+        "about bytes it did not write");
+  });
+});
+
+check("a guard that cannot snapshot means NO experiment happens — not a weaker one", () => {
+  withDerivedFixture((r) => {
+    const pristineSource = fs.readFileSync(path.join(r, "subject.js"), "utf8");
+    const pristineBuild = digestOf(path.join(r, "dist", "subject.js"));
+    const ev = runKnockout({
+      root: r, entry: derivedEntry(r), baseline: derivedBaseline(r), timeoutMs: 60_000,
+      guard: { recover: () => null, endArm: () => null, beginArm() { throw new Error("no room on device"); } },
+    });
+    assert.equal(ev.verdict, VERDICT.RESTORATION_FAILED, `got ${ev.verdict}: ${ev.detail}`);
+    assert.match(ev.detail, /NOTHING was mutated/);
+    assert.equal(fs.readFileSync(path.join(r, "subject.js"), "utf8"), pristineSource,
+      "the runner mutated the tree after its promise to give it back had already failed");
+    assert.equal(digestOf(path.join(r, "dist", "subject.js")), pristineBuild);
+  });
+});
+
+check("listBuildArtifacts takes every dist/ tree and never enters node_modules", () => {
+  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-walk-"));
+  derivedRoots.push(r);
+  fs.mkdirSync(path.join(r, "dist", "src"), { recursive: true });
+  fs.mkdirSync(path.join(r, "packages", "a", "dist"), { recursive: true });
+  fs.mkdirSync(path.join(r, "packages", "a", "node_modules", "dep", "dist"), { recursive: true });
+  fs.mkdirSync(path.join(r, "src"), { recursive: true });
+  fs.writeFileSync(path.join(r, "dist", "src", "i.js"), "1");
+  fs.writeFileSync(path.join(r, "dist", "tsconfig.tsbuildinfo"), "2");
+  fs.writeFileSync(path.join(r, "packages", "a", "dist", "i.js"), "3");
+  fs.writeFileSync(path.join(r, "packages", "a", "node_modules", "dep", "dist", "i.js"), "4");
+  fs.writeFileSync(path.join(r, "src", "i.ts"), "5");
+  assert.deepEqual(listBuildArtifacts(r), [
+    "dist/src/i.js", "dist/tsconfig.tsbuildinfo", "packages/a/dist/i.js",
+  ], "a dependency's dist/ was snapshotted (thousands of files per arm) or a real one was missed");
+});
+
+check("gitDirtyPaths says NULL outside a git tree — 'cannot tell' is not 'clean'", () => {
+  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-nogit-"));
+  derivedRoots.push(r);
+  assert.equal(gitDirtyPaths(r), null,
+    "a non-git tree reported as clean would let the guard believe it had verified something");
+});
+
+for (const r of derivedRoots) {
+  fs.rmSync(r, { recursive: true, force: true });
+  fs.rmSync(`${r}-cache`, { recursive: true, force: true });
+  fs.rmSync(`${r}-crash-cache`, { recursive: true, force: true });
+  fs.rmSync(`${r}-git-cache`, { recursive: true, force: true });
+  fs.rmSync(`${r}-mine-cache`, { recursive: true, force: true });
+}
 fs.rmSync(root, { recursive: true, force: true });
+fs.rmSync(path.join(os.tmpdir(), `noa-knockout-${crypto.createHash("sha256").update(path.resolve(root)).digest("hex").slice(0, 16)}`), { recursive: true, force: true });
 console.log(`\n${failures === 0 ? "knockout runner classifies correctly" : `${failures} FAILURE(S) — the framework that judges every control is wrong`}`);
 process.exit(failures === 0 ? 0 : 1);

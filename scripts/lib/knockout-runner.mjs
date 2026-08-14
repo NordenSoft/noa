@@ -38,6 +38,7 @@
  * no "probably".
  */
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
@@ -280,6 +281,406 @@ export function partitionByDependency(registry, repoRoot, probes) {
 
 const sha = (s) => crypto.createHash("sha256").update(s).digest("hex");
 
+/* ══ THE BUILD STATE IS PART OF THE EXPERIMENT ═══════════════════════════════════════════════════
+ *
+ * ── THE DEFECT, ROOT-CAUSED THREE TIMES ────────────────────────────────────────────────────────
+ * Everything above restores SOURCE and proves it byte-for-byte. Nothing restored what the source
+ * had already been COMPILED INTO. A knockout writes a mutant into `src/`, the suite's own
+ * `npm run build` turns that mutant into `dist/`, the mutant source is then restored — and the
+ * mutant `dist/` stays. It is gitignored, so the residue check at the end of the sweep cannot see
+ * it. Whatever runs next reads it.
+ *
+ * That is not theoretical; it was measured three times, twice as a mutant left on disk after an
+ * interrupted run (`src/cose/cbor.ts`, `src/intrinsics.ts`,
+ * `packages/adapter-core/src/side-effect-state.mjs`) and once as something far worse. Every package
+ * here resolves the kernel through a symlink (`packages/evidence/node_modules/noa-receipt -> ../../..`)
+ * and `packages/evidence`'s own test script is
+ *
+ *     npm run build && node dist/fixtures/gen-fixtures.js && node --test dist/test/*.test.js
+ *
+ * — a GENERATOR that writes COMMITTED conformance fixtures, built from whatever kernel `dist/`
+ * happens to be on disk. A stale mutant kernel rewrote nine settlement fixtures locally, and on
+ * 2026-08-14 rewrote `packages/evidence/conformance/settlement/s5-settlement-valid-base.json` in
+ * GitHub CI, failing an unrelated pull request with WORKTREE RESIDUE. The residue guard was RIGHT
+ * both times — a knockout that cannot restore the tree has not produced a security result — it was
+ * simply the only thing left that could still see the damage, and by then the damage was in a
+ * committed file.
+ *
+ * ── THE CLASS, NOT THE INSTANCE ────────────────────────────────────────────────────────────────
+ * The rule this restores is: **an experiment owns everything it derives.** Source is one derived
+ * surface among three, and it was the only one being returned:
+ *
+ *   1. the mutated source files            — restored + sha-verified above (was already correct)
+ *   2. compiled output (`dist/`)           — RESTORED HERE, byte-exact, from a pre-mutation snapshot
+ *   3. generated files that git TRACKS     — RESTORED HERE, from the index, only where this arm
+ *      (conformance fixtures, vectors)       dirtied a path that was clean when the arm began
+ *
+ * ── WHY A SNAPSHOT AND NOT A REBUILD ───────────────────────────────────────────────────────────
+ * "Rebuild the affected package after each arm" was the obvious repair and is the weaker one.
+ *   • It is not byte-exact. `tsc` output is reproducible in practice but nothing here PROVES it,
+ *     and a rebuild that differs by one byte is indistinguishable from a leak that differs by one
+ *     byte. Restoring the exact bytes that were there before the mutation is provable by hash.
+ *   • It cannot answer "which package". A suite is an arbitrary command; `packages/e2e-demo`'s
+ *     builds six siblings. Guessing the affected package from the mutated file's directory is a
+ *     model of the build, and this file's whole history is about models of a runner being wrong
+ *     where the runner is ground truth. The snapshot MEASURES what changed instead.
+ *   • It costs a `tsc` per arm (~0.6s each, six packages) across 121 arms. The snapshot costs one
+ *     content hash of ~3 MB of `dist/` per arm.
+ *   • It is not crash-tolerant. A snapshot on disk plus an in-flight marker lets the NEXT run
+ *     repair a tree the previous run died holding; a rebuild has nothing to rebuild FROM once the
+ *     mutant source is also still on disk.
+ * The rebuild is kept where it belongs — as the sweep-level backstop in the caller, which restores
+ * artefacts for anything this per-arm guard could not.
+ */
+
+/**
+ * Directories a derived-artefact walk must never enter: installed dependencies (which ship hundreds
+ * of their own `dist/` trees — snapshotting those would cost more than the sweep) and every dot
+ * directory (`.git`, `.venv`, tool scratch). No compiler in this repository emits into a dot
+ * directory, and `.git` in particular must never be copied by anything.
+ */
+const skipWalk = (name) => name === "node_modules" || name.startsWith(".");
+
+/**
+ * Every DERIVED build output under `root`: the full contents of every `dist/` tree plus any loose
+ * `*.tsbuildinfo`. Returned as repo-relative POSIX-ish paths, sorted.
+ *
+ * Symlinks are skipped rather than followed: every package links the kernel back to the repo root
+ * (`packages/evidence/node_modules/noa-receipt -> ../../..`), so following them makes this tree
+ * cyclic, and a symlinked file's bytes belong to whatever it points at.
+ */
+export function listBuildArtifacts(root) {
+  const found = [];
+  const collectAll = (relDir) => {
+    let entries;
+    try { entries = fs.readdirSync(path.join(root, relDir), { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const rel = `${relDir}/${e.name}`;
+      if (e.isSymbolicLink()) continue;
+      if (e.isDirectory()) collectAll(rel);
+      else if (e.isFile()) found.push(rel);
+    }
+  };
+  const walk = (relDir) => {
+    let entries;
+    try { entries = fs.readdirSync(relDir ? path.join(root, relDir) : root, { withFileTypes: true }); } catch { return; }
+    for (const e of entries) {
+      const rel = relDir ? `${relDir}/${e.name}` : e.name;
+      if (e.isSymbolicLink()) continue;
+      if (e.isDirectory()) {
+        if (skipWalk(e.name)) continue;
+        // A `dist/` tree is taken WHOLE and not descended past — a `dist/` inside a `dist/` is
+        // already part of the outer one.
+        if (e.name === "dist") collectAll(rel);
+        else walk(rel);
+        continue;
+      }
+      if (e.isFile() && e.name.endsWith(".tsbuildinfo")) found.push(rel);
+    }
+  };
+  walk("");
+  return found.sort();
+}
+
+/**
+ * `git status --porcelain -z` as a Map of path → two-letter status code.
+ *
+ * `-z` is not a detail: without it git QUOTES paths containing non-ASCII or spaces
+ * (`core.quotePath`), and a quoted path handed back to `git checkout --` names a file that does
+ * not exist. Returns `null` when this is not a git tree, which is a different fact from "clean".
+ */
+export function gitDirtyPaths(root) {
+  let raw;
+  try {
+    raw = execFileSync("git", ["status", "--porcelain", "-z"], {
+      cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch { return null; }
+  const fields = raw.split("\0");
+  const dirty = new Map();
+  for (let i = 0; i < fields.length; i++) {
+    const entry = fields[i];
+    if (entry.length < 4) continue;
+    const code = entry.slice(0, 2);
+    dirty.set(entry.slice(3), code);
+    // A rename/copy entry is followed by its ORIGINAL path in the NEXT NUL-separated field.
+    if (code[0] === "R" || code[0] === "C" || code[1] === "R" || code[1] === "C") i++;
+  }
+  return dirty;
+}
+
+/** Where the snapshot store and the in-flight marker live. Never inside git's view. */
+function defaultArtifactCacheDir(root) {
+  const nodeModules = path.join(root, "node_modules");
+  if (fs.existsSync(nodeModules)) return path.join(nodeModules, ".cache", "noa-knockout");
+  // No `node_modules` (a selftest fixture, a bare checkout): a deterministic temp directory, so a
+  // crashed run is still recoverable by the next one from the same root.
+  return path.join(os.tmpdir(), `noa-knockout-${sha(path.resolve(root)).slice(0, 16)}`);
+}
+
+const copyInto = (from, to) => {
+  fs.mkdirSync(path.dirname(to), { recursive: true });
+  fs.copyFileSync(from, to);
+};
+
+/** Signal 0 asks "does this pid exist?" and sends nothing. A pid we may not signal still exists. */
+const processIsAlive = (pid) => {
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return true; } catch (e) { return e && e.code === "EPERM"; }
+};
+
+/**
+ * The per-arm guard over derived state. One instance per repository root, reused across arms so the
+ * snapshot store is refreshed incrementally instead of rebuilt.
+ *
+ * Lifecycle, per arm:
+ *   beginArm()  — refresh the byte snapshot of every `dist/` file, record which paths git already
+ *                 considers dirty, and write an in-flight marker holding the pristine SOURCE bytes.
+ *   endArm()    — restore any artefact whose bytes changed, delete any that did not exist before,
+ *                 revert any tracked file this arm dirtied, and clear the marker.
+ *   recover()   — at startup: if a marker survives, a previous run died mid-arm. Put the tree back
+ *                 and SAY SO. This is the crash path; no `finally` runs after SIGKILL.
+ *
+ * The snapshot is taken PER ARM rather than once per sweep on purpose. Whatever is on disk when an
+ * arm begins is that arm's ground truth — including a developer's own uncommitted work and
+ * including anything a baseline run legitimately regenerated. The guard returns the tree to where
+ * the arm found it; it never asserts a repo-wide opinion about what `dist/` "should" contain.
+ */
+export function createBuildStateGuard({ root, cacheDir = defaultArtifactCacheDir(root) } = {}) {
+  const repoRoot = path.resolve(root);
+  const storeDir = path.join(cacheDir, "artifacts");
+  const sourceDir = path.join(cacheDir, "sources");
+  const indexPath = path.join(cacheDir, "index.json");
+  const markerPath = path.join(cacheDir, "inflight.json");
+
+  /** rel → sha256 of the bytes currently held in the store. */
+  let index = new Map();
+  let armed = null;
+  let recovered = null;
+
+  const loadIndex = () => {
+    try { index = new Map(Object.entries(JSON.parse(fs.readFileSync(indexPath, "utf8")))); }
+    catch { index = new Map(); }
+  };
+  const saveIndex = () => {
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(indexPath, JSON.stringify(Object.fromEntries(index)));
+  };
+  const hashFile = (abs) => {
+    try { return sha(fs.readFileSync(abs)); } catch { return null; }
+  };
+
+  /** Bring the store to the tree's CURRENT bytes. Copies only what actually differs. */
+  const syncStore = () => {
+    const present = new Set();
+    for (const rel of listBuildArtifacts(repoRoot)) {
+      const abs = path.join(repoRoot, rel);
+      const digest = hashFile(abs);
+      if (digest === null) continue;
+      present.add(rel);
+      const stored = path.join(storeDir, rel);
+      // The index is only a claim about the store; if the stored copy is gone, believing the index
+      // would mean discovering at RESTORE time that there is nothing to restore from.
+      if (index.get(rel) === digest && fs.existsSync(stored)) continue;
+      copyInto(abs, stored);
+      index.set(rel, digest);
+    }
+    for (const rel of [...index.keys()]) {
+      if (present.has(rel)) continue;
+      try { fs.rmSync(path.join(storeDir, rel), { force: true }); } catch { /* already gone */ }
+      index.delete(rel);
+    }
+    saveIndex();
+  };
+
+  /** Put every derived artefact back to the bytes the store holds. Byte-exact, verified by hash. */
+  const restoreStore = () => {
+    const restored = [];
+    const removed = [];
+    const failures = [];
+    const present = new Set();
+    for (const rel of listBuildArtifacts(repoRoot)) {
+      const abs = path.join(repoRoot, rel);
+      present.add(rel);
+      const want = index.get(rel);
+      if (want === undefined) {
+        // Built during the arm and absent before it: returning the tree means it goes away. It is
+        // derived from the MUTANT, so keeping it is the leak this guard exists to stop.
+        try { fs.rmSync(abs, { force: true }); removed.push(rel); }
+        catch (e) { failures.push(`could not delete mutant build output ${rel}: ${String(e && e.message)}`); }
+        continue;
+      }
+      if (hashFile(abs) === want) continue;
+      try {
+        copyInto(path.join(storeDir, rel), abs);
+        restored.push(rel);
+      } catch (e) {
+        failures.push(`could not restore build output ${rel}: ${String(e && e.message)}`);
+      }
+    }
+    for (const rel of index.keys()) {
+      if (present.has(rel)) continue;   // deleted by the arm (a build that cleans its own output)
+      try {
+        copyInto(path.join(storeDir, rel), path.join(repoRoot, rel));
+        restored.push(rel);
+      } catch (e) {
+        failures.push(`could not restore deleted build output ${rel}: ${String(e && e.message)}`);
+      }
+    }
+    // The store still holds the pristine bytes, and the tree now matches them again — so the index
+    // stays valid for the next arm and nothing has to be re-copied.
+    return { restored: restored.sort(), removed: removed.sort(), failures };
+  };
+
+  /**
+   * Revert files git TRACKS that this arm dirtied. Untracked additions are REPORTED, never deleted:
+   * deleting a file this process did not provably create is how a tool destroys work it did not
+   * own, and the residue check already refuses a run that leaves one behind.
+   */
+  const restoreTracked = (before, skip) => {
+    const reverted = [];
+    const additions = [];
+    const failures = [];
+    const after = gitDirtyPaths(repoRoot);
+    if (after === null || before === null) return { reverted, additions, failures };
+    for (const [p, code] of after) {
+      if (before.has(p)) continue;         // dirty before this arm — a developer's own work, not ours
+      if (skip.has(p)) continue;           // a mutation target: restored and sha-verified separately
+      if (code === "??") { additions.push(p); continue; }
+      try {
+        execFileSync("git", ["checkout", "--", p], { cwd: repoRoot, stdio: "pipe" });
+        reverted.push(p);
+      } catch (e) {
+        failures.push(`could not revert generated file ${p}: ${String(e && e.message)}`);
+      }
+    }
+    return { reverted: reverted.sort(), additions: additions.sort(), failures };
+  };
+
+  const clearMarker = () => { try { fs.rmSync(markerPath, { force: true }); } catch { /* nothing to clear */ } };
+
+  const guard = {
+    cacheDir,
+
+    /**
+     * Repair a tree a previous run died holding. Returns `null` when there is nothing to repair, so
+     * a caller can print the report ONLY when a crash actually happened.
+     */
+    recover() {
+      if (recovered !== null) return recovered.repaired ? recovered : null;
+      loadIndex();
+      let marker = null;
+      try { marker = JSON.parse(fs.readFileSync(markerPath, "utf8")); } catch { marker = null; }
+      if (!marker || marker.root !== repoRoot) { recovered = { repaired: false }; clearMarker(); return null; }
+      // A marker whose process is STILL ALIVE is not a crash — it is another knockout run holding
+      // this tree right now. "Recovering" from it would rewrite a live experiment's mutation
+      // mid-suite and hand that run a verdict about a file it did not write.
+      if (marker.pid !== process.pid && processIsAlive(marker.pid)) {
+        recovered = { repaired: false };
+        return null;
+      }
+
+      const sources = [];
+      for (const s of marker.sources ?? []) {
+        const abs = path.join(repoRoot, s.rel);
+        const current = hashFile(abs);
+        if (current === s.pristineSha) continue;     // its `finally` did run; only the artefacts are stale
+        try {
+          fs.copyFileSync(path.join(sourceDir, s.store), abs);
+          sources.push(s.rel);
+        } catch (e) {
+          sources.push(`${s.rel} (FAILED: ${String(e && e.message)})`);
+        }
+      }
+      const artefacts = restoreStore();
+      // `dirtyBefore: null` means the crashed run could not ask git anything. It must NOT collapse
+      // to "nothing was dirty" — that reading would revert every uncommitted file in the tree.
+      const tracked = restoreTracked(
+        marker.dirtyBefore == null ? null : new Map(marker.dirtyBefore),
+        new Set((marker.sources ?? []).map((s) => s.rel)),
+      );
+      clearMarker();
+      recovered = {
+        repaired: true,
+        entry: marker.entry ?? "<unknown>",
+        startedAt: marker.startedAt ?? "<unknown>",
+        sources,
+        artifacts: artefacts.restored,
+        removed: artefacts.removed,
+        tracked: tracked.reverted,
+        additions: tracked.additions,
+        failures: [...artefacts.failures, ...tracked.failures],
+      };
+      return recovered;
+    },
+
+    /**
+     * Snapshot everything this arm may derive, and record on disk what it would take to undo the
+     * arm if this process never reaches its `finally`.
+     */
+    beginArm({ entryId, sources }) {
+      guard.recover();
+      const started = Date.now();
+      fs.mkdirSync(sourceDir, { recursive: true });
+      syncStore();
+      const dirtyBefore = gitDirtyPaths(repoRoot);
+      const marker = {
+        version: 1,
+        root: repoRoot,
+        pid: process.pid,
+        entry: entryId,
+        startedAt: new Date().toISOString(),
+        dirtyBefore: dirtyBefore === null ? null : [...dirtyBefore],
+        sources: [],
+      };
+      let n = 0;
+      for (const [rel, bytes] of sources) {
+        const store = `s${n++}`;
+        fs.writeFileSync(path.join(sourceDir, store), bytes);
+        marker.sources.push({ rel, store, pristineSha: sha(bytes) });
+      }
+      fs.writeFileSync(markerPath, JSON.stringify(marker));
+      // The guard's OWN cost, so the sweep can report what this protection actually charges. It
+      // must never include the suite run that happens between the two halves — a number that big
+      // would be a claim about the wrong thing.
+      armed = { dirtyBefore, targets: new Set(marker.sources.map((s) => s.rel)), ms: Date.now() - started };
+      return true;
+    },
+
+    /** Put the derived state back. Safe to call when no arm is in flight. */
+    endArm() {
+      if (armed === null) return null;
+      const { dirtyBefore, targets, ms } = armed;
+      armed = null;
+      const started = Date.now();
+      const artefacts = restoreStore();
+      const tracked = restoreTracked(dirtyBefore, targets);
+      clearMarker();
+      return {
+        artifactsRestored: artefacts.restored,
+        artifactsRemoved: artefacts.removed,
+        trackedReverted: tracked.reverted,
+        untrackedAdditions: tracked.additions,
+        failures: [...artefacts.failures, ...tracked.failures],
+        ms: ms + (Date.now() - started),
+      };
+    },
+  };
+  return guard;
+}
+
+/** One guard per repository root, so the snapshot store survives across the arms of a sweep. */
+const GUARDS = new Map();
+export function buildStateGuardFor(root) {
+  const key = path.resolve(root);
+  let guard = GUARDS.get(key);
+  if (guard === undefined) {
+    guard = createBuildStateGuard({ root: key });
+    GUARDS.set(key, guard);
+  }
+  return guard;
+}
+
 /**
  * Extract the set of failing test names from a node:test run. Order-independent.
  *
@@ -393,9 +794,12 @@ export function observeSuite(root, [dir, cmd, args], timeoutMs = 900_000) {
  * @param {object[]} [o.registry]  same registry used to resolve entry.andAlso
  * @param {object} o.baseline      { exit, failing:Set, ms } for this entry's suite, measured CLEAN
  * @param {number} [o.timeoutMs]
+ * @param {object} [o.guard]       derived-state guard; defaults to the one for this root
  * @returns {object} evidence record
  */
-export function runKnockout({ root, entry, registry = [entry], baseline, timeoutMs = 900_000 }) {
+export function runKnockout({
+  root, entry, registry = [entry], baseline, timeoutMs = 900_000, guard = buildStateGuardFor(root),
+}) {
   const registryById = validateKnockoutRegistry(registry);
   const paired = entry.andAlso === undefined ? null : registryById.get(entry.andAlso);
   const ev = {
@@ -482,11 +886,33 @@ export function runKnockout({ root, entry, registry = [entry], baseline, timeout
       }
     }
 
+    const toWrite = new Map();
     for (const [rel, src] of mutated) {
-      if (sha(src) !== ev.hashBefore[rel]) {
-        written.set(rel, src);
-        fs.writeFileSync(path.join(root, rel), src);
-      }
+      if (sha(src) !== ev.hashBefore[rel]) toWrite.set(rel, src);
+    }
+    // ARMED BEFORE THE FIRST BYTE REACHES DISK. The snapshot of every derived artefact, and the
+    // on-disk marker that lets the NEXT run undo this arm, must both exist before the mutation does
+    // — a marker written afterwards describes a window it was not covering. And if the snapshot
+    // cannot be taken, the mutation does NOT happen: an experiment that cannot promise to give the
+    // tree back is not run at a lower standard, it is refused.
+    try {
+      guard.beginArm({
+        entryId: entry.id,
+        sources: new Map([...toWrite.keys()].map((rel) => [rel, pristine.get(rel)])),
+      });
+    } catch (e) {
+      ev.verdict = VERDICT.RESTORATION_FAILED;
+      ev.detail =
+        `the derived-state guard could not snapshot this tree (${String(e && e.message)}), so NOTHING ` +
+        `was mutated and no experiment was performed. A knockout that cannot promise to restore the ` +
+        `build state must not create one.`;
+      return ev;
+    }
+    // `written` is populated only as bytes actually reach disk, so the restore loop in `finally`
+    // never tries to un-write a mutation that was never applied.
+    for (const [rel, src] of toWrite) {
+      written.set(rel, src);
+      fs.writeFileSync(path.join(root, rel), src);
     }
     ev.hashMutated = sha(mutated.get(entry.file));
     if (paired) {
@@ -611,6 +1037,39 @@ export function runKnockout({ root, entry, registry = [entry], baseline, timeout
         restorationFailures.push(`could not restore ${rel}: ${String(e && e.message)}`);
       }
     }
+
+    // ── (5b) the DERIVED state goes back too, before anything else can consume it ───────────────
+    // Source first (above), then everything compiled or generated from it. The order matters only
+    // in one direction: nothing may read this tree between the two, and nothing does — both happen
+    // inside the same synchronous `finally`.
+    let derived = null;
+    let derivedOk = true;
+    try {
+      derived = guard.endArm();
+    } catch (e) {
+      derivedOk = false;
+      // A guard that throws must not swallow the verdict this arm just produced, and must not be
+      // reported as a clean restore either.
+      restorationFailures.push(`the derived-state guard threw while restoring: ${String(e && e.message)}`);
+    }
+    if (derived !== null) {
+      ev.buildState = {
+        artifactsRestored: derived.artifactsRestored,
+        artifactsRemoved: derived.artifactsRemoved,
+        trackedReverted: derived.trackedReverted,
+        untrackedAdditions: derived.untrackedAdditions,
+        ms: derived.ms,
+      };
+      for (const failure of derived.failures) restorationFailures.push(failure);
+      for (const added of derived.untrackedAdditions) {
+        restorationFailures.push(
+          `the mutated suite created ${added}, which git does not track. It is left on disk rather ` +
+          `than deleted — this runner does not remove a file it cannot prove it created — so the ` +
+          `tree is NOT as the arm found it`,
+        );
+      }
+    }
+
     ev.hashAfter = {};
     for (const rel of targets) {
       try {
@@ -628,7 +1087,11 @@ export function runKnockout({ root, entry, registry = [entry], baseline, timeout
         );
       }
     }
-    ev.restored = targets.every((rel) => ev.hashAfter[rel] === ev.hashBefore[rel]);
+    // "Restored" means the tree, not the source file. A run that returns `src/` byte-for-byte and
+    // leaves a mutant `dist/` behind has restored nothing that matters to whatever runs next.
+    ev.restored =
+      targets.every((rel) => ev.hashAfter[rel] === ev.hashBefore[rel]) && derivedOk &&
+      (derived === null || (derived.failures.length === 0 && derived.untrackedAdditions.length === 0));
     if (restorationFailures.length > 0) {
       ev.verdict = VERDICT.RESTORATION_FAILED;
       ev.detail = restorationFailures.join("; ");

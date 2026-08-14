@@ -29,6 +29,14 @@
  * mutation applied, restoration verified against that same sha256, and a dirty-tree check at the
  * end. Restoration that cannot be proven is itself a failing verdict.
  *
+ * ⚠ EXTENDED 2026-08-14. "Restoration" used to mean the SOURCE file only, and the source is one of
+ * three surfaces an experiment derives. The compiled `dist/` built from the mutant, and any
+ * committed file a suite's own generator rewrote while the mutant was live, both survived the arm.
+ * A stale mutant kernel build reached `packages/evidence`'s fixture generator and rewrote committed
+ * conformance fixtures — nine locally, and one in GitHub CI that failed an unrelated pull request.
+ * All three surfaces are now returned after every arm by the derived-state guard in
+ * `lib/knockout-runner.mjs`, and an arm that cannot return them says RESTORATION_FAILED.
+ *
  * And the verdict is no longer `green ? SURVIVED : KILLED`. That treated a real detection, a
  * pre-existing failure, a compile error, a crash and a timeout as one value. Six of the entries
  * below target `packages/gate`, whose baseline is `exit 1, 200/2` — so they reported KILLED for any
@@ -45,6 +53,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING, partitionByDependency,
+  buildStateGuardFor,
 } from "./lib/knockout-runner.mjs";
 import { DEPENDENCY_PROBES } from "./lib/phone-core-probe.mjs";
 
@@ -1752,6 +1761,36 @@ if (REQUIRES && selected.length === 0) {
   process.exit(1);
 }
 
+// ── A RUN THAT DIED MID-ARM IS REPAIRED BEFORE ANYTHING IS MEASURED ────────────────────────────
+// No `finally` runs after SIGKILL, and a synchronous sweep cannot service a signal handler either
+// — installing one would only make Ctrl-C stop working until the sweep ended. So the crash path is
+// answered the other way round: each arm leaves an on-disk marker naming what it is holding, and
+// the NEXT run reads it. Twice already a mutant source survived an interrupted run
+// (`src/intrinsics.ts`, `packages/adapter-core/src/side-effect-state.mjs`) and was found by hand
+// with `git status`; a mutant `dist/` from the same crash is invisible to `git status` entirely.
+//
+// This runs BEFORE the baselines on purpose. A baseline measured against a leaked mutant build is
+// the same defect one level down: every verdict in the sweep would then be relative to it.
+const RECOVERY = buildStateGuardFor(ROOT).recover();
+const recoveryFindings = [];
+if (RECOVERY) {
+  console.log(`⚠ RECOVERED an interrupted knockout run (entry ${RECOVERY.entry}, started ${RECOVERY.startedAt}):`);
+  const say = (label, items) => { if (items.length) console.log(`    ${label}: ${items.join(", ")}`); };
+  say("restored mutant SOURCE", RECOVERY.sources);
+  say(`restored ${RECOVERY.artifacts.length} build artefact(s)`, RECOVERY.artifacts.slice(0, 6));
+  say("deleted build output the interrupted arm created", RECOVERY.removed.slice(0, 6));
+  say("reverted generated file(s)", RECOVERY.tracked);
+  say("left in place (untracked, not this runner's to delete)", RECOVERY.additions);
+  if (RECOVERY.failures.length === 0) console.log("    the tree is back to its pre-crash state\n");
+  else {
+    for (const f of RECOVERY.failures) console.log(`    ⚠ ${f}`);
+    recoveryFindings.push(
+      `  CRASH RECOVERY INCOMPLETE  a previous run died during ${RECOVERY.entry} and this run could ` +
+      `not fully repair the tree: ${RECOVERY.failures.join("; ")}`,
+    );
+  }
+}
+
 // Snapshot the worktree BEFORE anything runs, so residue is measured as a DIFFERENCE.
 let WORKTREE_BEFORE = "";
 try {
@@ -1802,6 +1841,25 @@ for (const r of results) {
   if (r.restored === false) console.log(`           ⚠ RESTORATION UNPROVEN for ${r.file}`);
 }
 
+// ── WHAT THE ARMS DERIVED, AND GAVE BACK ───────────────────────────────────────────────────────
+// Source restoration has been proven per experiment for a year; the compiled and generated output
+// of that source was not, and a mutant `dist/` is invisible to the residue check below because it
+// is gitignored. This line is where that work becomes visible: a sweep whose arms compile nothing
+// legitimately prints zeroes, and a sweep that reports zeroes while `packages/evidence` was
+// mutated is a guard that has stopped working.
+{
+  const withState = results.filter((r) => r.buildState);
+  const sum = (pick) => withState.reduce((n, r) => n + pick(r.buildState).length, 0);
+  const ms = withState.reduce((n, r) => n + r.buildState.ms, 0);
+  if (withState.length > 0) {
+    console.log(
+      `\n  derived state returned after every arm: ${sum((b) => b.artifactsRestored)} build artefact(s) ` +
+      `restored, ${sum((b) => b.artifactsRemoved)} removed, ${sum((b) => b.trackedReverted)} generated ` +
+      `file(s) reverted — ${ms}ms total across ${withState.length} arm(s)`,
+    );
+  }
+}
+
 const passed = results.filter((r) => PASSING.has(r.verdict));
 console.log(`\nproven load-bearing ${passed.length}/${results.length}`);
 
@@ -1839,7 +1897,7 @@ try {
 } catch { /* not a git tree — the check below simply cannot run */ }
 
 const bad = results.filter((r) => !PASSING.has(r.verdict));
-const errors = [];
+const errors = [...recoveryFindings];
 for (const r of bad) {
   errors.push(`  ${r.verdict.padEnd(26)} ${r.id} — ${r.detail || "(no detail)"}`);
 }
@@ -1864,14 +1922,23 @@ if (results.length === 0 && DEPS_MISSING.length > 0) {
 }
 
 /**
- * Restore build artefacts to the pristine sources — knockout runs left dist/ built from mutated
- * input, and a later step reading dist/ would be reading the mutation.
+ * Rebuild every compiled package from the (already restored) sources — the SWEEP-LEVEL BACKSTOP.
  *
  * ⚠ THIS MUST RUN ON THE FAILURE PATH TOO, and for a while it did not. The findings block below used
  * to `process.exit(1)` above this rebuild, so the ONE run that most needs clean artefacts — a red one
  * — was the one run that left mutant `dist/` on disk. Source restoration is SHA-verified per
  * experiment and was never in doubt; the compiled output is a second copy of the mutation, ignored by
  * git and therefore invisible to the residue check right above. Whatever ran next read it.
+ *
+ * ⚠ AND IT WAS NEVER SUFFICIENT, which is the defect fixed in `knockout-runner.mjs`. Running at the
+ * END of the sweep cannot help the 120 arms that come after arm 1: between two arms the tree still
+ * carried the previous mutation's `dist/`, and one of those arms is `packages/evidence`, whose test
+ * script REGENERATES committed conformance fixtures from whatever kernel build is on disk. Nine
+ * settlement fixtures were rewritten that way locally, and on 2026-08-14 the same leak rewrote
+ * `packages/evidence/conformance/settlement/s5-settlement-valid-base.json` in GitHub CI and failed
+ * an unrelated pull request. Derived state is now returned AFTER EVERY ARM, byte-exact, by the
+ * guard in the runner library. This rebuild stays as the last line of defence: it is the only thing
+ * that can repair an artefact the per-arm snapshot could not.
  */
 function restorePristineArtifacts() {
   try {
