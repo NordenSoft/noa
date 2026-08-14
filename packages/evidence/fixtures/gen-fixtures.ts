@@ -436,6 +436,20 @@ interface Fixture {
   expectVerdict: string;
   expectStep: string | null;
   expectCode: string | null;
+  /**
+   * THE NUMBER THE SHELL RECEIVES, declared per fixture rather than derived.
+   *
+   * Almost nothing reads `dimensions`. A caller writing `if noa-verify-evidence …; then pay(); fi`
+   * has exactly one bit, and every honest caveat this verifier reports lives in a field that caller
+   * never opens — so the exit code is the surface the corpus most needs to pin, and until now it was
+   * pinned for eleven hand-picked cases in the wire suite and for none of the other hundred.
+   *
+   * DECLARED, and that is the point. Computing it here from `exitCodeFor` would compare the mapper
+   * to itself and go green for any mapper. The default below is the four-way split that predates the
+   * settlement dimension, written out independently; a fixture whose real answer is `6` says so
+   * explicitly, and `6` is exactly the state a "refresh and retry" script must not walk past.
+   */
+  expectExit: number;
   now: string;
   maxAgeHours: number;
   bundle: EvidenceBundle;
@@ -464,10 +478,25 @@ const files: Array<{ path: string; fx: Fixture }> = [];
 function emit(slug: string, name: string, fx: Fixture): void {
   files.push({ path: join(slug, name + ".json"), fx });
 }
+/**
+ * The exit code EXACTLY as it was before the settlement dimension existed — the four-way split on the
+ * verdict word alone. Written out here rather than imported from `exit-codes.ts` on purpose: a
+ * default computed by the module under test cannot disagree with it. A fixture whose real answer is
+ * the settlement `6` overrides this, so the override list IS the list of bundles that split
+ * `INCONCLUSIVE`, readable in one grep.
+ */
+function exitFromVerdictAlone(verdict: string): number {
+  if (verdict === "VALID_FULL_CHAIN" || verdict === "VALID_SEGMENT_ONLY" || verdict === "VALID_FROM_TRUSTED_ANCHOR") return 0;
+  if (verdict === "INVALID") return 2;
+  if (verdict === "INCONCLUSIVE") return 3;
+  return 4;
+}
+
 function fixtureFrom(w: World, over: Partial<Fixture>): Fixture {
   return {
     description: over.description ?? "", expectVerdict: over.expectVerdict ?? "VALID_FULL_CHAIN",
     expectStep: over.expectStep ?? null, expectCode: over.expectCode ?? null,
+    expectExit: over.expectExit ?? exitFromVerdictAlone(over.expectVerdict ?? "VALID_FULL_CHAIN"),
     now: over.now ?? NOW, maxAgeHours: over.maxAgeHours ?? 24,
     bundle: over.bundle ?? w.bundle, tenantRoot: over.tenantRoot ?? w.tenantRoot, checkpointKeyring: over.checkpointKeyring ?? w.checkpointKeyring,
     // Emitted ONLY when the fixture actually supplies them, so the committed JSON of every
@@ -1037,10 +1066,10 @@ function settlementWorld(over: {
 emit("settlement", "s5-settlement-valid-base", fixtureFrom(settlementWorld(), { description: "S5: a VALID EXECUTED bundle carrying a bound, in-bounds SETTLED settlement artifact + its params preimage. No enrolment registry exists, so the class is not ENROLLED and the artifact buys no upgrade — VALID_FULL_CHAIN, dimensions.settlement NO_EXECUTION_BINDING, exit 0 (R-DIM-1's unenrolled-valid-artifact row)", expectVerdict: "VALID_FULL_CHAIN" }));
 
 // C.14 — no actionParamsPreimage ⇒ the money was compared to nothing ⇒ INCONCLUSIVE / exit 6.
-emit("settlement", "s5-settlement-no-params-preimage", fixtureFrom(settlementWorld({ preimage: null }), { description: "C.14 (F2): a perfect SETTLED artifact with NO actionParamsPreimage — the shipped reconciler's own 'not supplied, so no positive is reachable'. INCONCLUSIVE / E_SETTLEMENT_BOUNDS_UNCHECKABLE, dimensions.settlement BOUNDS_UNCHECKABLE, exit 6 — the first end-to-end exit 6 in the program", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_UNCHECKABLE" }));
+emit("settlement", "s5-settlement-no-params-preimage", fixtureFrom(settlementWorld({ preimage: null }), { description: "C.14 (F2): a perfect SETTLED artifact with NO actionParamsPreimage — the shipped reconciler's own 'not supplied, so no positive is reachable'. INCONCLUSIVE / E_SETTLEMENT_BOUNDS_UNCHECKABLE, dimensions.settlement BOUNDS_UNCHECKABLE, exit 6 — the first end-to-end exit 6 in the program", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_UNCHECKABLE" }));
 
 // C.15 — a keyed (hmac-sha256:) paramsHash blocks bounds AND the D7 derivation ⇒ same exit 6.
-emit("settlement", "s5-settlement-keyed-params-hash", fixtureFrom(settlementWorld({ paramsHash: "hmac-sha256:" + "ee".repeat(32) }), { description: "C.15 (F2): allowedReceipt.action.paramsHash is hmac-sha256: — the keyed form is not third-party checkable, so bounds AND the D7 derivation are blocked. INCONCLUSIVE / E_SETTLEMENT_BOUNDS_UNCHECKABLE, exit 6 ('UNCHECKED is NOT passed')", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_UNCHECKABLE" }));
+emit("settlement", "s5-settlement-keyed-params-hash", fixtureFrom(settlementWorld({ paramsHash: "hmac-sha256:" + "ee".repeat(32) }), { description: "C.15 (F2): allowedReceipt.action.paramsHash is hmac-sha256: — the keyed form is not third-party checkable, so bounds AND the D7 derivation are blocked. INCONCLUSIVE / E_SETTLEMENT_BOUNDS_UNCHECKABLE, exit 6 ('UNCHECKED is NOT passed')", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_UNCHECKABLE" }));
 
 // C.12 — a SUPPLIED preimage that does not hash to action.paramsHash is a producer lie ⇒ INVALID.
 emit("settlement", "s5-settlement-params-preimage-mismatch", fixtureFrom(settlementWorld({ preimage: canonicalize({ ...S_PREIMAGE, maxAmountMinorUnits: "10000001" }) }), { description: "C.12 (F2): a supplied actionParamsPreimage whose sha256 does not equal action.paramsHash — not one field of it is read. Distinct from C.14: a supplied-but-wrong preimage is a hard rejection (INVALID / E_PARAMS_PREIMAGE_MISMATCH, exit 2), NOT the INCONCLUSIVE of an absent one", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_PARAMS_PREIMAGE_MISMATCH" }));
@@ -1280,7 +1309,7 @@ function enrolRegistry(over: {
   emit("enrolment", "s5-enrolment-no-registry", fixtureFrom(w, { description: "A.2 (MIGRATION): the enrolment-capable bundle verified with NO --enrolment-registry. The verifier was not configured to ask, so it does not ask and does not change its answer: VALID_FULL_CHAIN, enrolment NOT_EVALUATED, dimensions.settlement NO_EXECUTION_BINDING, exit 0. Red the moment any enrolment rule leaks into the no-registry path — and the anti-vacuity partner of s5-enrolment-class-absent, which is these EXACT bundle bytes with a registry supplied", expectVerdict: "VALID_FULL_CHAIN" }));
 
   // A.1 — THE HEADLINE. Enrolled, and the bundle carries no settlement artifact at all.
-  emit("enrolment", "s5-enrolled-no-settlement", fixtureFrom(w, { description: "A.1 (THE HEADLINE): registry supplied, audience matched, in window, class ENROLLED — and the bundle carries no settlement artifact. A dispatch is the gate's own self-report about its own paperwork, and for an enrolled class that is no longer enough. INCONCLUSIVE / STEP_10_EXECUTED / E_SETTLEMENT_REQUIRED, enrolment ENROLLED, dimensions.settlement NOT_ESTABLISHED, integrity INTACT (the bytes are perfect; it is the EVIDENCE that is missing), exit 6", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+  emit("enrolment", "s5-enrolled-no-settlement", fixtureFrom(w, { description: "A.1 (THE HEADLINE): registry supplied, audience matched, in window, class ENROLLED — and the bundle carries no settlement artifact. A dispatch is the gate's own self-report about its own paperwork, and for an enrolled class that is no longer enough. INCONCLUSIVE / STEP_10_EXECUTED / E_SETTLEMENT_REQUIRED, enrolment ENROLLED, dimensions.settlement NOT_ESTABLISHED, integrity INTACT (the bytes are perfect; it is the EVIDENCE that is missing), exit 6", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
 
   // B.10 / G.3 — absence buys NOTHING. Same bundle bytes as the A.2 vector above.
   emit("enrolment", "s5-enrolment-class-absent", fixtureFrom(w, { description: "B.10/G.3 (THE DEFECT-B FIX): a closed:true, in-window, audience-matched registry that positively OMITS this bundle's class. Under the design this replaced, these exact bytes were VALID_FULL_CHAIN / exit 0 — a narrower registry bought a positive, and the same document recommended narrowing. An omission is now an unanswered question: UNVERIFIED / E_ENROLMENT_CLASS_ABSENT, enrolment CLASS_ABSENT, exit 4", expectVerdict: "UNVERIFIED", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_CLASS_ABSENT", enrolmentRegistries: [enrolRegistry({ classes: [enrolRow({ actionId: "payments.charge", actionSchema: { id: "payments.charge", version: 1, hash: "sha256:" + "1".repeat(64) }, projection: { id: "payments.display", version: 1, hash: "sha256:" + "2".repeat(64) } })] })], audience: ENROL_AUDIENCE }));
@@ -1333,7 +1362,7 @@ function enrolRegistry(over: {
   // boundary is visible rather than inferred.
   const v6 = enrolRegistry({ version: 6, notBefore: "2026-07-01T00:00:00.000000000Z", notAfter: "2026-07-14T11:56:30.000000000Z" });
   const v7 = enrolRegistry({ version: 7, notBefore: "2026-07-14T11:56:30.000000001Z", notAfter: "2027-07-01T00:00:00.000000000Z", classes: [enrolRow({ projection: { id: "deploy.display", version: 2, hash: "sha256:" + "7".repeat(64) } })] });
-  emit("enrolment", "s5-enrolment-nanosecond-rotation-boundary", fixtureFrom(w, { description: "PANEL R1 #2: a rotation whose boundary is ONE NANOSECOND wide — v6 closes at :30.000000000Z, v7 opens at :30.000000001Z, and the bundle's gate-signed authorization instant is exactly :30.000000000Z. v7 carries the ROTATED projection hash, so selecting it as well reports INVALID / E_ENROLMENT_MISMATCH for an ordinary, spec-compliant rotation — a hard rejection of honest archives produced entirely by the arithmetic. Date.parse truncates to milliseconds and collapses the boundary; the exact bigint/nanosecond parser the artifact layer already runs for key activation selects v6 alone. The class is correctly enrolled, so the bundle stops where an enrolled class stops: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, exit 6", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [v6, v7], audience: ENROL_AUDIENCE }));
+  emit("enrolment", "s5-enrolment-nanosecond-rotation-boundary", fixtureFrom(w, { description: "PANEL R1 #2: a rotation whose boundary is ONE NANOSECOND wide — v6 closes at :30.000000000Z, v7 opens at :30.000000001Z, and the bundle's gate-signed authorization instant is exactly :30.000000000Z. v7 carries the ROTATED projection hash, so selecting it as well reports INVALID / E_ENROLMENT_MISMATCH for an ordinary, spec-compliant rotation — a hard rejection of honest archives produced entirely by the arithmetic. Date.parse truncates to milliseconds and collapses the boundary; the exact bigint/nanosecond parser the artifact layer already runs for key activation selects v6 alone. The class is correctly enrolled, so the bundle stops where an enrolled class stops: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, exit 6", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [v6, v7], audience: ENROL_AUDIENCE }));
 }
 
 // PANEL R1 #3 — A SHARED PROJECTION ID IS NOT A SHARED CLASS.
@@ -1361,19 +1390,19 @@ function enrolRegistry(over: {
 // A.3 — THE OFFLINE CEILING. The vector the whole reconfirmation gate exists for.
 {
   const w = settlementWorld({ observerKid: "gate-observer-2", enrolDelegation: true });
-  emit("enrolment", "s5-enrolled-attested-but-unqueried", fixtureFrom(w, { description: "A.3 (THE CEILING): class ENROLLED, and the bundle carries a valid, correctly bound, in-bounds SETTLED settlement artifact signed by an observer that is NOT the execution signer, plus its hash-verified params preimage. Everything an offline verifier can check, checks. And NOBODY RE-QUERIED THE CHAIN: an offline verifier can establish that an assertion is authentic and bound, never that it is TRUE, because the signer of the assertion is not the world. INCONCLUSIVE / STEP_10_EXECUTED / E_SETTLEMENT_UNRECONFIRMED, dimensions.settlement ATTESTED_UNVERIFIED, integrity INTACT, exit 6. Under a design that stopped at the offline tier these exact bytes were VALID_FULL_CHAIN / exit 0 — a self-consistent forgery with nothing queried", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_UNRECONFIRMED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+  emit("enrolment", "s5-enrolled-attested-but-unqueried", fixtureFrom(w, { description: "A.3 (THE CEILING): class ENROLLED, and the bundle carries a valid, correctly bound, in-bounds SETTLED settlement artifact signed by an observer that is NOT the execution signer, plus its hash-verified params preimage. Everything an offline verifier can check, checks. And NOBODY RE-QUERIED THE CHAIN: an offline verifier can establish that an assertion is authentic and bound, never that it is TRUE, because the signer of the assertion is not the world. INCONCLUSIVE / STEP_10_EXECUTED / E_SETTLEMENT_UNRECONFIRMED, dimensions.settlement ATTESTED_UNVERIFIED, integrity INTACT, exit 6. Under a design that stopped at the offline tier these exact bytes were VALID_FULL_CHAIN / exit 0 — a self-consistent forgery with nothing queried", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_UNRECONFIRMED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
 }
 
 // R8's relationship cap — the SAME bundle shape, observed by the execution signer's own key.
 {
   const w = settlementWorld({ enrolDelegation: true }); // observer defaults to gate-prod-1
-  emit("enrolment", "s5-enrolled-self-witnessed", fixtureFrom(w, { description: "R8/R-16: the same enrolled, artifact-bearing bundle as the ceiling vector, except that the settlement observer's key IS the execution signer's key. The party that says it dispatched the request is the party saying it settled, so the observation is not admissible for an enrolled class. CAPPED rather than REJECTED — this is today's honest deployment shape, and refusing it outright would refuse the only shape that currently exists: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, dimensions.settlement NOT_ESTABLISHED, exit 6. The contrast with s5-enrolled-attested-but-unqueried is one key", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+  emit("enrolment", "s5-enrolled-self-witnessed", fixtureFrom(w, { description: "R8/R-16: the same enrolled, artifact-bearing bundle as the ceiling vector, except that the settlement observer's key IS the execution signer's key. The party that says it dispatched the request is the party saying it settled, so the observation is not admissible for an enrolled class. CAPPED rather than REJECTED — this is today's honest deployment shape, and refusing it outright would refuse the only shape that currently exists: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, dimensions.settlement NOT_ESTABLISHED, exit 6. The contrast with s5-enrolled-attested-but-unqueried is one key", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
 }
 
 // THE I3 CARRY-FORWARD — the failure label may not be the cheap way out of an enrolled class.
 {
   const w = buildWorld("EXECUTION_FAILED", { enrolDelegation: true });
-  emit("enrolment", "s5-enrolled-failure-unwitnessed", fixtureFrom(w, { description: "THE CARRY-FORWARD: an EXECUTION_FAILED bundle whose class is ENROLLED. EXECUTION_FAILED is a POSITIVE outcome that pays no step-15 freshness tax, so the moment enrolment gives EXECUTED a price it becomes the ONLY outcome that is both step-15-exempt and settlement-free — the cheap relabelling path for a gate hiding a spend. The only thing asserting that nothing was dispatched is the gate's own consumption, and a determinate negative is claimable only on an observation by a party that did not execute. INCONCLUSIVE / STEP_11_EXECUTION_FAILED / E_NON_DISPATCH_UNWITNESSED, dimensions.settlement NOT_ESTABLISHED, exit 6. Nothing is widened to reach this: not POSITIVE_OUTCOMES, not the outcome-artifact union", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_NON_DISPATCH_UNWITNESSED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+  emit("enrolment", "s5-enrolled-failure-unwitnessed", fixtureFrom(w, { description: "THE CARRY-FORWARD: an EXECUTION_FAILED bundle whose class is ENROLLED. EXECUTION_FAILED is a POSITIVE outcome that pays no step-15 freshness tax, so the moment enrolment gives EXECUTED a price it becomes the ONLY outcome that is both step-15-exempt and settlement-free — the cheap relabelling path for a gate hiding a spend. The only thing asserting that nothing was dispatched is the gate's own consumption, and a determinate negative is claimable only on an observation by a party that did not execute. INCONCLUSIVE / STEP_11_EXECUTION_FAILED / E_NON_DISPATCH_UNWITNESSED, dimensions.settlement NOT_ESTABLISHED, exit 6. Nothing is widened to reach this: not POSITIVE_OUTCOMES, not the outcome-artifact union", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_NON_DISPATCH_UNWITNESSED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
   // …and its control: the SAME bundle with no registry supplied keeps the verdict it has always had.
   emit("enrolment", "s5-failure-no-registry", fixtureFrom(w, { description: "THE CARRY-FORWARD'S CONTROL: the same EXECUTION_FAILED bundle with NO registry supplied. Nothing changes — VALID_FULL_CHAIN, enrolment NOT_EVALUATED, exit 0. The carry-forward rule is scoped to enrolled classes only, so no historical failure bundle moves, and the pair is what proves the rule is enrolment-scoped rather than a blanket refusal of the outcome", expectVerdict: "VALID_FULL_CHAIN" }));
 }
@@ -1382,7 +1411,7 @@ function enrolRegistry(over: {
 {
   const w = buildWorld("EXECUTED", { enrolDelegation: true });
   const superseded = enrolRegistry({ version: 6, notBefore: "2025-07-01T00:00:00.000Z", notAfter: "2026-07-05T00:00:00.000Z", classes: [enrolRow({ projection: { id: "deploy.display", version: 1, hash: "sha256:" + "f".repeat(64) } })] });
-  emit("enrolment", "s5-enrolment-superseded-registry-not-a-contradiction", fixtureFrom(w, { description: "ROTATION IS NOT EQUIVOCATION: the reader holds two registries — a SUPERSEDED one whose window closed before this bundle and which pins the OLD projection hash, and the current one that enrols the class correctly. Reading row-level contradictions across out-of-window registries would turn every ordinary projection re-build into a hard INVALID for every archived bundle, so row-level checks are scoped to IN-WINDOW registries while registry-level ones (tenant, closed) are not. The current registry governs, the class is enrolled, and the bundle stops where an enrolled class stops: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, exit 6", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [superseded, enrolRegistry()], audience: ENROL_AUDIENCE }));
+  emit("enrolment", "s5-enrolment-superseded-registry-not-a-contradiction", fixtureFrom(w, { description: "ROTATION IS NOT EQUIVOCATION: the reader holds two registries — a SUPERSEDED one whose window closed before this bundle and which pins the OLD projection hash, and the current one that enrols the class correctly. Reading row-level contradictions across out-of-window registries would turn every ordinary projection re-build into a hard INVALID for every archived bundle, so row-level checks are scoped to IN-WINDOW registries while registry-level ones (tenant, closed) are not. The current registry governs, the class is enrolled, and the bundle stops where an enrolled class stops: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, exit 6", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [superseded, enrolRegistry()], audience: ENROL_AUDIENCE }));
 }
 
 // ═══ 6b. THE `authorize` PATH — the one code the corpus could not reach ══════════════════════════
@@ -1411,7 +1440,7 @@ function enrolRegistry(over: {
 // cross-implementation matrix that is a guaranteed divergence rather than a theoretical one.
 {
   const w = buildWorld("EXECUTED", { enrolDelegation: true, checkpointTs: T_CHECKPOINT_STALE });
-  emit("enrolment", "s5-settlement-required-over-stale-checkpoint", fixtureFrom(w, { description: "A.5 (§5.4a FAILURE PRECEDENCE): an ENROLLED class with no settlement artifact AND a checkpoint older than max-age. Both rules refuse; the pipeline stops at the FIRST failing step in shipped order, and step 10 precedes the freshness step. The reported answer is therefore the SETTLEMENT one — never the checkpoint code — INCONCLUSIVE / STEP_10_EXECUTED / E_SETTLEMENT_REQUIRED, exit 6. Its contrast with s5-enrolled-no-settlement is one field, checkpoint.ts, and the answer must not move: precedence is a property of the pipeline, not of how many things are wrong", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+  emit("enrolment", "s5-settlement-required-over-stale-checkpoint", fixtureFrom(w, { description: "A.5 (§5.4a FAILURE PRECEDENCE): an ENROLLED class with no settlement artifact AND a checkpoint older than max-age. Both rules refuse; the pipeline stops at the FIRST failing step in shipped order, and step 10 precedes the freshness step. The reported answer is therefore the SETTLEMENT one — never the checkpoint code — INCONCLUSIVE / STEP_10_EXECUTED / E_SETTLEMENT_REQUIRED, exit 6. Its contrast with s5-enrolled-no-settlement is one field, checkpoint.ts, and the answer must not move: precedence is a property of the pipeline, not of how many things are wrong", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
 }
 
 // C.1's SECOND HALF — the self-witness attack wearing a second name. The observer kid is NOT the
@@ -1421,7 +1450,7 @@ function enrolRegistry(over: {
 // that checks ONLY the kid string passes the entire corpus.
 {
   const w = settlementWorld({ observerKid: "gate-observer-alias", enrolDelegation: true });
-  emit("enrolment", "s5-enrolled-self-witnessed-second-kid", fixtureFrom(w, { description: "C.1 SECOND HALF (R-16): the settlement observer's kid is NOT the execution signer's kid — and the two kids resolve to the SAME public key. One key holding both roles under two names is the same party attesting to its own effect, so the relationship cap must key on key MATERIAL and not on the label. The fast path (equal kids) is measured by s5-enrolled-self-witnessed; this measures the path that survives renaming, and an implementation comparing only kid strings goes green on that one and red on this. INCONCLUSIVE / E_SETTLEMENT_REQUIRED, dimensions.settlement NOT_ESTABLISHED, exit 6", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+  emit("enrolment", "s5-enrolled-self-witnessed-second-kid", fixtureFrom(w, { description: "C.1 SECOND HALF (R-16): the settlement observer's kid is NOT the execution signer's kid — and the two kids resolve to the SAME public key. One key holding both roles under two names is the same party attesting to its own effect, so the relationship cap must key on key MATERIAL and not on the label. The fast path (equal kids) is measured by s5-enrolled-self-witnessed; this measures the path that survives renaming, and an implementation comparing only kid strings goes green on that one and red on this. INCONCLUSIVE / E_SETTLEMENT_REQUIRED, dimensions.settlement NOT_ESTABLISHED, exit 6", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
 }
 
 // G.3 — THE LEGACY BUNDLE. A registry is supplied against a bundle whose OWN delegation never
@@ -1441,7 +1470,7 @@ function enrolRegistry(over: {
 // and never a contradiction.
 {
   const w = settlementWorld({ observerKid: "gate-observer-2", enrolDelegation: true, witness: { txHash: null, blockNumber: null } });
-  emit("enrolment", "s5-settlement-missing-coordinates", fixtureFrom(w, { description: "C.9 (R8, R-SE-4): an ENROLLED class whose settlement artifact omits the coordinates that make it falsifiable — no txHash, no blockNumber. Everything else about the artifact is perfect. A settlement claim nobody can re-derive at their own node is not evidence a third party can check, and an unfalsifiable assertion is an absence rather than an accusation: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, dimensions.settlement NOT_ESTABLISHED, exit 6", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+  emit("enrolment", "s5-settlement-missing-coordinates", fixtureFrom(w, { description: "C.9 (R8, R-SE-4): an ENROLLED class whose settlement artifact omits the coordinates that make it falsifiable — no txHash, no blockNumber. Everything else about the artifact is perfect. A settlement claim nobody can re-derive at their own node is not evidence a third party can check, and an unfalsifiable assertion is an absence rather than an accusation: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, dimensions.settlement NOT_ESTABLISHED, exit 6", expectVerdict: "INCONCLUSIVE", expectExit: 6, expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
 }
 
 // THE STEP-11 REASON PIN (carried from the I3 panel). Step 11's checks all share

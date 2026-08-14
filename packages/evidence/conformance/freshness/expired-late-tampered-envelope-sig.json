@@ -3,6 +3,7 @@
   "expectVerdict": "INVALID",
   "expectStep": "STEP_1_HOLD_ENVELOPE",
   "expectCode": "E_HOLD_ENVELOPE",
+  "expectExit": 2,
   "now": "2026-07-14T13:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {

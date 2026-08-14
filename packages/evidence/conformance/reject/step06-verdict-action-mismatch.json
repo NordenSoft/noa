@@ -3,6 +3,7 @@
   "expectVerdict": "INVALID",
   "expectStep": "STEP_6_VERDICT_RECEIPT_BINDING",
   "expectCode": "E_VERDICT_BINDING",
+  "expectExit": 2,
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {
