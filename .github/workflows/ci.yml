@@ -377,7 +377,13 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    # 30 -> 60 (2026-08-14). The ceiling was reached, not approached: run 31807908253 CANCELLED both
+    # legs mid-knockout, which reports nothing at all — a truncated gate is indistinguishable from a
+    # gate that passed unless someone reads the log. The knockout registry grows every slice (111 ->
+    # 142 in this one) and each control re-runs a whole package suite, so the headroom is set well
+    # above the current ~40 minutes rather than just above it. If this is reached again the answer is
+    # to SHARD the registry across jobs, never to drop controls.
+    timeout-minutes: 60
     strategy:
       matrix:
         node: [20, 22]
@@ -593,7 +599,21 @@ jobs:
           npm --prefix packages/e2e-demo run build:deps
 
       - name: L4 control knockout (every control has a test that dies without it)
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # ONE MATRIX LEG, and the restriction is about what the experiment MEASURES, not about what it
+        # costs. A knockout deletes a SOURCE control and re-runs the suite — mutation and assertion
+        # are both source-level — so running the identical 142 mutations again under a second Node
+        # version re-answers a question nobody asked. Every control is still measured, exactly once,
+        # and the gate still BLOCKS. Nothing is skipped, excused, or made advisory.
+        #
+        # ⚠ MEASURED 2026-08-14 (run 31807908253), and this is why the condition exists at all: with
+        # the step on both legs the job hit its 30-minute ceiling and `test (20)` and `test (22)` were
+        # both CANCELLED — not failed. A cancelled gate reports NOTHING: 142 controls went unmeasured
+        # while the run merely looked slow. The registry grows every slice, so the most expensive gate
+        # in the repository was also the one most likely to be silently truncated.
+        #
+        # The product's Node 20/22 compatibility is measured by "Build + generate vectors + test"
+        # above, which runs on BOTH legs.
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.node == 22 }}
         # Slow by construction: each control is removed and its suite re-run. It runs here rather
         # than in a fast lane precisely because "what would have caught this?" is worth the minutes.
         run: npm run lint:knockout
