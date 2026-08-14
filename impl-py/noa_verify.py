@@ -261,6 +261,50 @@ _PARAMS_HASH_RE = _re.compile(r"^(sha256|hmac-sha256):[0-9a-f]{64}$")
 # SIGNED bytes (the exact interop bar B2 exists to hold). [0-9] makes Python ASCII-only, matching both.
 _RFC3339_RE = _re.compile(r"^[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?([Zz]|[+-][0-9]{2}:[0-9]{2})$")
 
+
+def _days_in_month(year, month):
+    """Real length of `month` in `year`; 0 for an out-of-range month, so any day then fails."""
+    if month in (1, 3, 5, 7, 8, 10, 12):
+        return 31
+    if month in (4, 6, 9, 11):
+        return 30
+    if month == 2:
+        return 29 if (year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)) else 28
+    return 0
+
+
+def _is_rfc3339_instant(s):
+    """RFC 3339 §5.6 date-time: the LEXICAL form above PLUS the field ranges the ABNF's own comments
+    impose (month 01-12, mday by month and year including leap years, hour 00-23, minute 00-59,
+    second 00-60, numoffset hours 00-23 / minutes 00-59). Mirrors src/scan.ts isRfc3339Instant.
+
+    The regex alone accepted `2026-13-45T99:99:99.000Z` — month 13, day 45, hour 99 — on a SIGNED,
+    chain-valid CRITICAL receipt, in all five implementations. A `ts` that denotes no instant cannot
+    be ordered against its neighbours, so it is not a weaker timestamp; it is a "when" that can be
+    argued both ways after the fact. It is detectable with NO key material at all, so it belongs in
+    the shape validator, beside the unknown-field rule.
+
+    SECOND 60 IS ACCEPTED ON PURPOSE: a leap second is a real instant that has really occurred 27
+    times, and which UTC days carry one is an IERS table, not a property of the string."""
+    if not isinstance(s, str) or not _RFC3339_RE.fullmatch(s):
+        return False
+    year, month, day = int(s[0:4]), int(s[5:7]), int(s[8:10])
+    if month < 1 or month > 12:
+        return False
+    if day < 1 or day > _days_in_month(year, month):
+        return False
+    if int(s[11:13]) > 23:
+        return False
+    if int(s[14:16]) > 59:
+        return False
+    if int(s[17:19]) > 60:  # 60 is the leap second, and it is legal
+        return False
+    # The lexical check already proved the tail is EITHER a single Z/z OR exactly ±HH:MM.
+    if s[-1] in ("Z", "z"):
+        return True
+    return int(s[-5:-3]) <= 23 and int(s[-2:]) <= 59
+
+
 # JS Number.isSafeInteger upper bound — chain.seq must be a non-negative safe integer (parity with schema maximum).
 _SAFE_INT_MAX = 2**53 - 1
 
@@ -321,7 +365,9 @@ def validate_receipt_shape(value):
         if not _is_str(rid) or len(rid) == 0 or len(rid) > 128:
             errors.append("receipt.id: non-empty string <=128 chars")
         ts = r.get("ts")
-        if not _is_str(ts) or not _RFC3339_RE.fullmatch(ts):
+        # R5: _is_rfc3339_instant, not the bare lexical regex — a `ts` matching `\d{2}` for a month
+        # is not a moment in time. See that function for why second 60 stays accepted.
+        if not _is_str(ts) or not _is_rfc3339_instant(ts):
             errors.append("receipt.ts: must be RFC 3339 UTC timestamp")
 
         # scope
@@ -403,7 +449,7 @@ def validate_receipt_shape(value):
                     if not _is_str(ap.get("by")):
                         errors.append("receipt.governance.approval.by: string")
                     at = ap.get("at")
-                    if not _is_str(at) or not _RFC3339_RE.fullmatch(at):
+                    if not _is_str(at) or not _is_rfc3339_instant(at):
                         errors.append("receipt.governance.approval.at: RFC 3339 UTC")
                 else:
                     errors.append("receipt.governance.approval: object or null")
@@ -424,6 +470,39 @@ def validate_receipt_shape(value):
                     errors.append("receipt.governance.compliance: object or null")
         else:
             errors.append("receipt.governance: object required")
+
+        # ── CROSS-FIELD COHERENCE — A SIGNED RECEIPT MAY NOT CONTRADICT ITSELF ────────────────────
+        # Every check above reads ONE field. A receipt can satisfy all of them and still argue both
+        # ways: agent.principal "SANDBOX_SIM" (the actor was the sandbox simulator) beside
+        # governance.sandboxed false (this really happened), on a CRITICAL wire.transfer, signed and
+        # chain-valid. Reproduced across all five verifiers, 25 of 25 VALID, before this block.
+        #
+        # They live in the SHAPE validator, not on the signature path, for the same reason an
+        # unknown smuggled field does: they are decidable with NO KEY MATERIAL AT ALL. Mirrors
+        # src/schema.ts validateReceiptShapeParsed.
+        #
+        # Each rule is ONE-DIRECTIONAL, because the converse is legitimate: a SERVICE agent may run
+        # inside a sandbox (conformance/golden/0.3.0/multi/chain.json holds such a VALID receipt),
+        # and a reversible action need not carry a rollbackRef. Comparisons are against the literal
+        # True/False so a field that already failed its own type check reports one defect, not two.
+        if _is_obj(agent) and _is_obj(action) and _is_obj(gov):
+            principal = agent.get("principal")
+            verdict = gov.get("verdict")
+            sandboxed = gov.get("sandboxed")
+            reversible = action.get("reversible")
+            rollback_present = "rollbackRef" in action and action.get("rollbackRef") is not None
+            # R1. Names the SANDBOX SIMULATOR as the actor while denying it was a simulation.
+            if principal == "SANDBOX_SIM" and sandboxed is False:
+                errors.append('receipt.governance.sandboxed: must be true when agent.principal is "SANDBOX_SIM"')
+            # R2. Records a SIMULATED outcome while denying it was a simulation.
+            if verdict == "SIMULATED" and sandboxed is False:
+                errors.append('receipt.governance.sandboxed: must be true when governance.verdict is "SIMULATED"')
+            # R3. An action declared impossible to undo, carrying the reference used to undo it.
+            if reversible is False and rollback_present:
+                errors.append("receipt.action.rollbackRef: must be absent or null when action.reversible is false")
+            # R4. Says the action WAS undone while declaring it could not be.
+            if verdict == "ROLLED_BACK" and reversible is False:
+                errors.append('receipt.action.reversible: must be true when governance.verdict is "ROLLED_BACK"')
 
         # chain
         ch = r.get("chain")
@@ -490,7 +569,7 @@ def _verify_checkpoint(cp, keyring):
     hs = cp.get("highestSeq")
     if not isinstance(hs, int) or isinstance(hs, bool) or hs < 0 or hs > _SAFE_INT_MAX: return "bad"
     if not isinstance(cp.get("headHash"), str) or not _HASH_RE.fullmatch(cp.get("headHash")): return "bad"
-    if not isinstance(cp.get("ts"), str) or not _RFC3339_RE.fullmatch(cp.get("ts")): return "bad"
+    if not isinstance(cp.get("ts"), str) or not _is_rfc3339_instant(cp.get("ts")): return "bad"
     sig = cp.get("sig")
     # sig sub-object is ALSO strict (top-level strictness alone isn't enough): exactly {alg,kid,value}, alg="ed25519" — closes a
     # smuggled-field channel inside the SIGNED surface + an unvalidated alg, parity with src/verify.ts.

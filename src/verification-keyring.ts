@@ -9,7 +9,7 @@ import {
   objectCreateNull,
   objectGetOwnPropertyNames,
 } from "./intrinsics.js";
-import { isRfc3339 } from "./scan.js";
+import { isRfc3339Instant } from "./scan.js";
 
 /** Atomic public-key plus lifecycle-state trust document. */
 export const SIGNING_KEY_LIFECYCLE_SPEC = "noa.signing-key-lifecycle/0.1";
@@ -110,7 +110,7 @@ export function parseVerificationKeyring(
     }
     if (
       retiredAt !== null
-      && (typeof retiredAt !== "string" || !isRfc3339(retiredAt) || isNaNValue(dateParse(retiredAt)))
+      && (typeof retiredAt !== "string" || !isRfc3339Instant(retiredAt) || isNaNValue(dateParse(retiredAt)))
     ) {
       return { ok: false, reason: `lifecycle retiredAt for signing key ${jsonStringify(kid)} must be null or a parseable RFC 3339 instant` };
     }

@@ -34,8 +34,54 @@ public static class Schema
         new(@"\A[0-9]{4}-[0-9]{2}-[0-9]{2}[Tt][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,9})?([Zz]|[+-][0-9]{2}:[0-9]{2})\z",
             RegexOptions.CultureInvariant);
 
+    /// <summary>LEXICAL FORM ONLY — month 13 and hour 99 match [0-9]{2}. A trust artifact's
+    /// timestamp is validated with <see cref="Rfc3339Instant"/>; this alone is not enough.</summary>
     public static bool Rfc3339(string s) => Rfc3339Re.IsMatch(s);
     public static bool HashFormat(string s) => HashRe.IsMatch(s);
+
+    /// <summary>Real length of <paramref name="month"/> in <paramref name="year"/>; 0 for an
+    /// out-of-range month, so any day then fails.</summary>
+    private static int DaysInMonth(int year, int month) => month switch
+    {
+        1 or 3 or 5 or 7 or 8 or 10 or 12 => 31,
+        4 or 6 or 9 or 11 => 30,
+        2 => (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0)) ? 29 : 28,
+        _ => 0,
+    };
+
+    /// <summary>The two ASCII digits at <paramref name="i"/> as a number. The caller has already
+    /// proven they ARE digits (Rfc3339Re matched).</summary>
+    private static int Two(string s, int i) => (s[i] - '0') * 10 + (s[i + 1] - '0');
+
+    /// <summary>
+    /// RFC 3339 §5.6 date-time: the LEXICAL form <see cref="Rfc3339"/> accepts PLUS the field ranges
+    /// the ABNF's own comments impose (month 01-12, mday by month and year including leap years,
+    /// hour 00-23, minute 00-59, second 00-60, numoffset hours 00-23 / minutes 00-59). Mirrors
+    /// impl-py _is_rfc3339_instant / src/scan.ts isRfc3339Instant.
+    ///
+    /// The pattern alone accepted "2026-13-45T99:99:99.000Z" — month 13, day 45, hour 99 — on a
+    /// SIGNED, chain-valid CRITICAL receipt, in all five implementations. A ts that denotes no
+    /// instant cannot be ordered against its neighbours; it is a "when" that can be argued both ways
+    /// after the fact, and it is decidable with NO key material at all, so it belongs in the shape
+    /// validator.
+    ///
+    /// SECOND 60 IS ACCEPTED ON PURPOSE: a leap second is a real instant that has really occurred 27
+    /// times, and which UTC days carry one is an IERS table, not a property of the string.
+    /// </summary>
+    public static bool Rfc3339Instant(string s)
+    {
+        if (!Rfc3339Re.IsMatch(s)) return false;
+        int year = Two(s, 0) * 100 + Two(s, 2);
+        int month = Two(s, 5);
+        int day = Two(s, 8);
+        if (month < 1 || month > 12 || day < 1 || day > DaysInMonth(year, month)) return false;
+        // 60 is the leap second, and it is legal.
+        if (Two(s, 11) > 23 || Two(s, 14) > 59 || Two(s, 17) > 60) return false;
+        // The lexical check already proved the tail is EITHER a single Z/z OR exactly ±HH:MM.
+        int n = s.Length;
+        if (s[n - 1] == 'Z' || s[n - 1] == 'z') return true;
+        return Two(s, n - 5) <= 23 && Two(s, n - 2) <= 59;
+    }
 
     public static (bool ok, List<string> errors) Validate(JVal value)
     {
@@ -57,7 +103,9 @@ public static class Schema
                 errors.Add("receipt.id: non-empty string <=128 chars");
 
             string? ts = Str(r, "ts");
-            if (ts is null || !Rfc3339(ts))
+            // R5: Rfc3339Instant, not the bare pattern — a `ts` matching [0-9]{2} for a month is not a
+            // moment in time. See Rfc3339Instant for why second 60 (a leap second) stays accepted.
+            if (ts is null || !Rfc3339Instant(ts))
                 errors.Add("receipt.ts: must be RFC 3339 UTC timestamp");
 
             // scope
@@ -144,7 +192,7 @@ public static class Schema
                         if (Str(ap, "by") is null)
                             errors.Add("receipt.governance.approval.by: string");
                         string? at = Str(ap, "at");
-                        if (at is null || !Rfc3339(at))
+                        if (at is null || !Rfc3339Instant(at))
                             errors.Add("receipt.governance.approval.at: RFC 3339 UTC");
                     }
                     else
@@ -181,6 +229,44 @@ public static class Schema
             else
             {
                 errors.Add("receipt.governance: object required");
+            }
+
+            // ── CROSS-FIELD COHERENCE — A SIGNED RECEIPT MAY NOT CONTRADICT ITSELF ───────────────
+            // Every check above reads ONE field. A receipt can satisfy all of them and still argue
+            // both ways: agent.principal "SANDBOX_SIM" (the actor was the sandbox simulator) beside
+            // governance.sandboxed false (this really happened), on a CRITICAL wire.transfer, signed
+            // and chain-valid. Reproduced across all five verifiers, 25 of 25 VALID, before this.
+            //
+            // They live in the SHAPE validator, not on the signature path, for the same reason an
+            // unknown smuggled field does: they are decidable with NO key material at all. Mirrors
+            // impl-py validate_receipt_shape / src/schema.ts validateReceiptShapeParsed.
+            //
+            // Each rule is ONE-DIRECTIONAL, because the converse is legitimate: a SERVICE agent may
+            // run inside a sandbox (conformance/golden/0.3.0/multi/chain.json holds such a VALID
+            // receipt), and a reversible action need not carry a rollbackRef. The `is JBool { Value:
+            // false }` patterns mean a field that already failed its own type check reports one
+            // defect, not two.
+            if (r.Get("agent") is JObj cAgent && r.Get("action") is JObj cAction &&
+                r.Get("governance") is JObj cGov)
+            {
+                string? principal = Str(cAgent, "principal");
+                string? verdict = Str(cGov, "verdict");
+                bool sandboxedFalse = cGov.Get("sandboxed") is JBool { Value: false };
+                bool reversibleFalse = cAction.Get("reversible") is JBool { Value: false };
+                bool rollbackPresent = cAction.Has("rollbackRef") && cAction.Get("rollbackRef") is not JNull;
+
+                // R1. Names the SANDBOX SIMULATOR as the actor while denying it was a simulation.
+                if (principal == "SANDBOX_SIM" && sandboxedFalse)
+                    errors.Add("receipt.governance.sandboxed: must be true when agent.principal is \"SANDBOX_SIM\"");
+                // R2. Records a SIMULATED outcome while denying it was a simulation.
+                if (verdict == "SIMULATED" && sandboxedFalse)
+                    errors.Add("receipt.governance.sandboxed: must be true when governance.verdict is \"SIMULATED\"");
+                // R3. An action declared impossible to undo, carrying the reference used to undo it.
+                if (reversibleFalse && rollbackPresent)
+                    errors.Add("receipt.action.rollbackRef: must be absent or null when action.reversible is false");
+                // R4. Says the action WAS undone while declaring it could not be.
+                if (verdict == "ROLLED_BACK" && reversibleFalse)
+                    errors.Add("receipt.action.reversible: must be true when governance.verdict is \"ROLLED_BACK\"");
             }
 
             // chain

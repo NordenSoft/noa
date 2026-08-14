@@ -32,7 +32,7 @@ import { verifyEd25519 } from "../keys.js";
 import { canonicalize } from "../jcs.js";
 import { signingMessage } from "../signing.js";
 import { parseDocument } from "../bytes.js";
-import { isSha256Hash, isRfc3339 } from "../scan.js";
+import { isSha256Hash, isRfc3339Instant } from "../scan.js";
 import { inertOptions, type OptionSchema } from "../opts.js";
 import { arrayLength, isArray, isFiniteNumber, isSafeInteger, mapGet, mapHas, mapSet, newMap, newSet, mapValuesToArray, dateParse, setAdd, setHas, isNaNValue } from "../intrinsics.js";
 
@@ -192,7 +192,7 @@ function r(
  * silently coerced into a freshness pass.
  */
 function parseAnchorTsMs(ts: string): number | null {
-  if (!isRfc3339(ts)) return null;
+  if (!isRfc3339Instant(ts)) return null;
   const ms = dateParse(ts);
   return isNaNValue(ms) ? null : ms;
 }

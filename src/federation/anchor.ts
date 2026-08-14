@@ -27,7 +27,7 @@ import { verifyChain } from "../verify.js";
 import { jsonStringify } from "../intrinsics.js";
 import { arrayLength, arrayPush, arrayJoin, isSafeInteger, isArray } from "../intrinsics.js";
 import { safeParse } from "../safe-json.js";
-import { isSha256Hash, isRfc3339 } from "../scan.js";
+import { isSha256Hash, isRfc3339Instant } from "../scan.js";
 import type { Receipt } from "../types.js";
 import type { Signer } from "../builder.js";
 import { anchorSigningInput, type Anchor } from "./acceptance.js";
@@ -80,7 +80,7 @@ function frontierInputErrors(frontier: AnchorFrontier, signer: Signer): string[]
   if (typeof frontier.headHash !== "string" || !isSha256Hash(frontier.headHash)) {
     arrayPush(errors, "frontier.headHash must be sha256:<64 hex>");
   }
-  if (typeof frontier.ts !== "string" || !isRfc3339(frontier.ts)) {
+  if (typeof frontier.ts !== "string" || !isRfc3339Instant(frontier.ts)) {
     arrayPush(errors, "frontier.ts must be an RFC 3339 UTC timestamp");
   }
   if (typeof signer !== "object" || signer === null) {
@@ -102,7 +102,7 @@ function anchorDraftErrors(a: Anchor): string[] {
     arrayPush(errors, "anchor.highestSeq must be a non-negative safe integer");
   }
   if (typeof a.headHash !== "string" || !isSha256Hash(a.headHash)) arrayPush(errors, "anchor.headHash must be sha256:<64 hex>");
-  if (typeof a.ts !== "string" || !isRfc3339(a.ts)) arrayPush(errors, "anchor.ts must be an RFC 3339 UTC timestamp");
+  if (typeof a.ts !== "string" || !isRfc3339Instant(a.ts)) arrayPush(errors, "anchor.ts must be an RFC 3339 UTC timestamp");
   if (a.sig.alg !== "ed25519") arrayPush(errors, 'anchor.sig.alg must be "ed25519"');
   if (typeof a.sig.kid !== "string" || a.sig.kid.length === 0) arrayPush(errors, "anchor.sig.kid must be a non-empty string");
   if (typeof a.sig.value !== "string" || a.sig.value.length === 0) arrayPush(errors, "anchor.sig.value must be a non-empty string");

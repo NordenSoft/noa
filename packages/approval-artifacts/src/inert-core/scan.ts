@@ -138,10 +138,13 @@ export function isHex4(s: string): boolean {
  * Replaces
  * `/^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/`.
  *
- * Deliberately the SAME laxness as the pattern it replaces: this is a lexical-form check, not a
- * calendar check, and it accepted `2026-13-45T99:99:99Z` before. Tightening it here would change
- * five implementations' agreed verdict on already-signed receipts, which §3.5 forbids — the
- * migration is an API change, never a format change.
+ * LEXICAL FORM ONLY — exactly as lax as the pattern it replaces, and deliberately kept that way so
+ * the differential parity proof in `test/scan-parity.test.ts` stays a pure regex-vs-scanner
+ * comparison. It accepts `2026-13-45T99:99:99Z`: month 13, day 45 and hour 99 all match `\d{2}`.
+ *
+ * THIS FUNCTION IS NOT THE ONE A TRUST ARTIFACT'S TIMESTAMP IS VALIDATED WITH — use
+ * `isRfc3339Instant` below. A caller that reaches for the lexical form on a decision path is
+ * accepting a string that has the SHAPE of a moment in time without denoting one.
  */
 export function isRfc3339(s: string): boolean {
   if (typeof s !== "string") return false;
@@ -179,4 +182,78 @@ export function isRfc3339(s: string): boolean {
   if (!digitRun(s, i + 1, 2)) return false;
   if (at(s, i + 3) !== COLON) return false;
   return digitRun(s, i + 4, 2);
+}
+
+/** Two ASCII digits at `from` as a number. Caller has already proven they ARE digits. */
+function num2(s: string, from: number): number {
+  return (at(s, from) - ZERO) * 10 + (at(s, from + 1) - ZERO);
+}
+
+/** Four ASCII digits at `from` as a number. Caller has already proven they ARE digits. */
+function num4(s: string, from: number): number {
+  return (
+    (at(s, from) - ZERO) * 1000 +
+    (at(s, from + 1) - ZERO) * 100 +
+    (at(s, from + 2) - ZERO) * 10 +
+    (at(s, from + 3) - ZERO)
+  );
+}
+
+/** Proleptic Gregorian leap year, the rule RFC 3339 §5.6's `date-mday` comment defers to. */
+function isLeapYear(y: number): boolean {
+  if (y % 4 !== 0) return false;
+  if (y % 100 !== 0) return true;
+  return y % 400 === 0;
+}
+
+/** Real length of `month` in `year`; 0 for an out-of-range month (so any day fails). */
+function daysInMonth(year: number, month: number): number {
+  if (month === 1 || month === 3 || month === 5 || month === 7 || month === 8 || month === 10 || month === 12) return 31;
+  if (month === 4 || month === 6 || month === 9 || month === 11) return 30;
+  if (month === 2) return isLeapYear(year) ? 29 : 28;
+  return 0;
+}
+
+/**
+ * RFC 3339 §5.6 `date-time` — the LEXICAL form of `isRfc3339` **plus** the field ranges the ABNF's
+ * own comments impose (`date-month` 01-12, `date-mday` 01-28/29/30/31 by month and year,
+ * `time-hour` 00-23, `time-minute` 00-59, `time-second` 00-60, `time-numoffset` hours 00-23 /
+ * minutes 00-59). A string that passes this DENOTES AN INSTANT; a string that only passes
+ * `isRfc3339` merely has the shape of one.
+ *
+ * WHY THE SHAPE CHECK ALONE WAS A SECURITY DEFECT, not a strictness preference. `ts` is inside the
+ * signed body and is the only ordering evidence a receipt carries. All five verifiers accepted
+ * `2026-13-45T99:99:99.000Z` as a genuine, chain-valid, signature-verifying receipt — a CRITICAL
+ * `wire.transfer` that no reader could place in time, and that the non-monotonic-`ts` warning could
+ * not compare against its neighbours. A timestamp nobody can order is not a weaker timestamp; it is
+ * a receipt whose "when" can be argued both ways after the fact, which is the same failure class as
+ * the sandboxed/simulated contradictions in `validateReceiptShapeParsed`. Like an unknown smuggled
+ * field, it is detectable with NO key material at all, so it belongs in the shape validator.
+ *
+ * SECOND 60 IS ACCEPTED ON PURPOSE. A leap second (`23:59:60Z`) is a real instant that has really
+ * occurred 27 times; rejecting it would refuse a truthful receipt. Which UTC days actually carry
+ * one is a table published by the IERS, not a property of the string — a verifier that shipped that
+ * table would go wrong the moment the table changed, so the range, not the calendar of leap
+ * seconds, is what is enforced. `test/scan-parity.test.ts` pins this acceptance so a later
+ * "tightening" cannot quietly remove it.
+ */
+export function isRfc3339Instant(s: string): boolean {
+  if (!isRfc3339(s)) return false;
+  const year = num4(s, 0);
+  const month = num2(s, 5);
+  const day = num2(s, 8);
+  if (month < 1 || month > 12) return false;
+  if (day < 1 || day > daysInMonth(year, month)) return false;
+  if (num2(s, 11) > 23) return false; // time-hour
+  if (num2(s, 14) > 59) return false; // time-minute
+  if (num2(s, 17) > 60) return false; // time-second — 60 is the leap second, and it is legal
+  // Offset. `isRfc3339` has already proven the tail is EITHER a single Z/z OR exactly `±HH:MM`
+  // occupying the last 6 characters, so the last character alone decides which — never a scan for
+  // a `+`/`-` (the date's own separators are the same code unit).
+  const n = s.length;
+  const last = at(s, n - 1);
+  if (last === Z_UPPER || last === Z_LOWER) return true;
+  if (num2(s, n - 5) > 23) return false; // time-numoffset hours
+  if (num2(s, n - 2) > 59) return false; // time-numoffset minutes
+  return true;
 }

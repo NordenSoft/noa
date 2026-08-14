@@ -6,7 +6,7 @@
 use crate::jcs::canonicalize;
 use crate::json::{Json, SAFE_INT_MAX};
 use crate::keys::verify_sig;
-use crate::schema::{is_hash, is_rfc3339, validate_receipt_shape};
+use crate::schema::{is_hash, is_rfc3339_instant, validate_receipt_shape};
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 
@@ -134,7 +134,7 @@ fn verify_checkpoint(cp: &Json, keyring: Option<&Json>) -> &'static str {
         _ => return "bad",
     }
     match cp.get("ts") {
-        Some(Json::Str(s)) if is_rfc3339(s) => {}
+        Some(Json::Str(s)) if is_rfc3339_instant(s) => {}
         _ => return "bad",
     }
     let sig = match cp.get("sig") {
