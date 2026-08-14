@@ -35,6 +35,10 @@ const KEYS: Record<string, { publicKey: string; privateKey: string }> = {
   "gate-prod-1": { publicKey: "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=", privateKey: "MC4CAQAwBQYDK2VwBCIEIJnbx8diTrCphCyQUzgzVeop23E7nR4z5qlvAWktnDLj" },
   "approver-1-device-2": { publicKey: "MCowBQYDK2VwAyEANrq8SiwpHxclTXg0+xBZHhycN9Md4xQxm4Csh0DMwb8=", privateKey: "MC4CAQAwBQYDK2VwBCIEIDoHJAvpZbzucGimAun8IjTMoX17SixbPYiUFCbhhrJL" },
   "approver-crit-5": { publicKey: "MCowBQYDK2VwAyEAtN4H1lCn75RSP7yjvFOXA8mX3RNhjmPvMcGqRBjIlhY=", privateKey: "MC4CAQAwBQYDK2VwBCIEIJ9XRUuytMv70Jo+YacYjwgE0lOdGs9SEf0ksJEn1c9z" },
+  // S5 — an observer key that is NOT the execution signer, so a bundle can get past the R-16
+  // relationship cap and reach the offline ceiling instead of stopping at "not admissible". Same
+  // material as `noa-approval-artifacts`' `gate-observer-2`, so the ecosystem keeps ONE key world.
+  "gate-observer-2": { publicKey: "MCowBQYDK2VwAyEA7DuTd+HYKoDDdhqZ/sWPFxOCg+zYnIqDq49+9n9mVuM=", privateKey: "MC4CAQAwBQYDK2VwBCIEIDYyPhz4XZJOp7jNcIkUcfAEadA/nApBZ8hjn0iLSXl6" },
 };
 const HPKE: Record<string, string> = {
   "approver-1-device-2": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28",
@@ -103,9 +107,15 @@ function manifestKeys(
   // S5 §6.2 — `settlement-observer` is an additive role on the GATE branch. Appended only for the
   // settlement worlds, so every other fixture's manifest bytes are byte-identical to before.
   gateExtraRoles: string[] = [],
+  // S5 — an INDEPENDENT settlement observer, appended only where a fixture needs one, so every
+  // other fixture's manifest bytes are byte-identical to before.
+  independentObserver = false,
 ): J[] {
   return [
     { kid: "gate-prod-1", type: "GATE", roles: ["hold-signer", "execution-signer", ...gateExtraRoles], publicKey: KEYS["gate-prod-1"]!.publicKey, validFrom: gateValidFrom, revokedAt: null },
+    ...(independentObserver
+      ? [{ kid: "gate-observer-2", type: "GATE", roles: ["settlement-observer"], publicKey: KEYS["gate-observer-2"]!.publicKey, validFrom: gateValidFrom, revokedAt: null } as J]
+      : []),
     { kid: "approver-1-device-2", type: "APPROVER", roles: ["approve-high"], publicKey: KEYS["approver-1-device-2"]!.publicKey, hpkePublicKey: HPKE["approver-1-device-2"], validFrom: approverValidFrom, revokedAt: approverRevokedAt },
     { kid: "approver-crit-5", type: "APPROVER", roles: ["approve-critical"], publicKey: KEYS["approver-crit-5"]!.publicKey, hpkePublicKey: HPKE["approver-crit-5"], validFrom: critValidFrom, revokedAt: critRevokedAt },
     { kid: "audit-1", type: "AUDIT", roles: ["audit-decrypt"], hpkePublicKey: HPKE["audit-1"], validFrom: DELEG_FROM, revokedAt: null },
@@ -113,6 +123,21 @@ function manifestKeys(
 }
 const DELEGATION = sign(
   { spec: "noa.key-delegation/0.1", tenant: TENANT, delegatedKid: "manifest-signer-3", delegatedPublicKey: KEYS["manifest-signer-3"]!.publicKey, permissions: ["key-manifest-sign"], validFrom: DELEG_FROM, expiresAt: DELEG_EXP },
+  "noa.key-delegation/0.1", "tenant-authority-1",
+);
+/**
+ * S5 §3.3 — the SAME delegation plus the enrolment permission, minted only for the enrolment worlds
+ * so every other fixture's bytes are byte-identical to before.
+ *
+ * Two permissions on ONE delegation is ONE kid and ONE private key holding both authorities, and
+ * that is stated here rather than glossed: this buys visibility and independent revocation, not
+ * custody separation. It is also why an enrolment registry is only consultable against a bundle
+ * whose OWN delegation granted the authority — a tenant that enrols a class after the fact turns
+ * older bundles UNVERIFIED rather than VALID, which is the fail-closed direction and the one this
+ * design permits.
+ */
+const DELEGATION_WITH_ENROL = sign(
+  { spec: "noa.key-delegation/0.1", tenant: TENANT, delegatedKid: "manifest-signer-3", delegatedPublicKey: KEYS["manifest-signer-3"]!.publicKey, permissions: ["key-manifest-sign", "action-class-enrol"], validFrom: DELEG_FROM, expiresAt: DELEG_EXP },
   "noa.key-delegation/0.1", "tenant-authority-1",
 );
 
@@ -161,6 +186,19 @@ interface BuildOpts {
   // the settlement-observer role to gate-prod-1 so it can sign the settlement artifact (§6.2).
   paramsHash?: string;
   gateSettlementObserver?: boolean;
+  /** S5 §3.3 — mint the delegation that also carries `action-class-enrol` (enrolment worlds only). */
+  enrolDelegation?: boolean;
+  /**
+   * S5 §3.4 — a RAW hold: `mode: "RAW"` and NO display projection. Never enrollable, because on a
+   * RAW hold the display a human approved and the params a grant authorizes are unrelated fields.
+   */
+  rawHold?: boolean;
+  /**
+   * S5 — the settlement observer's kid. The default (`gate-prod-1`, the execution signer itself) is
+   * today's honest deployment and is CAPPED by R-16; a distinct observer key is what lets a bundle
+   * reach the offline ceiling for an enrolled class instead of stopping at "not admissible".
+   */
+  settlementObserverKid?: string;
   grantExpiresAt?: string;
   // ── 2026-07-27 cross-family review round 3 ────────────────────────────────────────────────────
   grantParamsHash?: string; // grant authorizes a DIFFERENT action than the one approved (G12)
@@ -201,6 +239,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
       opts.gateValidFrom ?? DELEG_FROM,
       opts.critValidFrom ?? DELEG_FROM,
       opts.gateSettlementObserver ? ["settlement-observer"] : [],
+      opts.settlementObserverKid !== undefined && opts.settlementObserverKid !== "gate-prod-1",
     ),
     opts.manifestIssuedAt ?? MAN_ISSUED,
   );
@@ -212,9 +251,9 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
 
   const envelopeCore: J = {
     spec: "noa.hold/0.1", holdId: "hold-001", deferredReceiptId: "rcpt_deferred", deferredReceiptHash: DEF_HASH,
-    mode: "ENFORCED", displayCiphertextHash: "sha256:" + "b".repeat(64),
+    mode: opts.rawHold ? "RAW" : "ENFORCED", displayCiphertextHash: "sha256:" + "b".repeat(64),
     actionSchema: { id: "deploy.apply", version: 1, hash: "sha256:" + "c".repeat(64) },
-    displayProjection: { id: "deploy.display", version: 1, hash: "sha256:" + "d".repeat(64) },
+    displayProjection: opts.rawHold ? null : { id: "deploy.display", version: 1, hash: "sha256:" + "d".repeat(64) },
     canonicalization: "JCS-RFC8785", keyManifestVersion: 2, keyManifestHash: MAN_HASH,
     tenant: TENANT, expiresAt: T_GRANT_EXP, nonce: "envelope-nonce-01", gateKid: "gate-prod-1",
   };
@@ -269,7 +308,7 @@ function buildWorld(outcome: EvidenceOutcome, opts: BuildOpts = {}): World {
 
   const base: Partial<EvidenceBundle> = {
     spec: "noa.approval-evidence/0.1", outcome, holdEnvelope: envelope, deferredReceipt: deferred,
-    keyManifest: manifest, keyDelegation: DELEGATION,
+    keyManifest: manifest, keyDelegation: opts.enrolDelegation ? DELEGATION_WITH_ENROL : DELEGATION,
   };
   const cpKid = opts.checkpointKid ?? "gate-prod-1";
   const cpTs = opts.checkpointTs ?? T_CHECKPOINT;
@@ -375,6 +414,14 @@ interface Fixture {
   bundle: EvidenceBundle;
   tenantRoot: J;
   checkpointKeyring: J;
+  /**
+   * S5 — the THIRD external verifier input, and it is OPTIONAL in the fixture exactly as it is at the
+   * verifier: a fixture that omits it is a run where the enrolment question was never asked, which is
+   * every fixture that existed before this slice. The runners pass these through verbatim.
+   */
+  enrolmentRegistries?: J[];
+  /** S5 — the reading verifier's own relying-party identity. */
+  audience?: string;
 }
 const files: Array<{ path: string; fx: Fixture }> = [];
 function emit(slug: string, name: string, fx: Fixture): void {
@@ -386,6 +433,10 @@ function fixtureFrom(w: World, over: Partial<Fixture>): Fixture {
     expectStep: over.expectStep ?? null, expectCode: over.expectCode ?? null,
     now: over.now ?? NOW, maxAgeHours: over.maxAgeHours ?? 24,
     bundle: over.bundle ?? w.bundle, tenantRoot: over.tenantRoot ?? w.tenantRoot, checkpointKeyring: over.checkpointKeyring ?? w.checkpointKeyring,
+    // Emitted ONLY when the fixture actually supplies them, so the committed JSON of every
+    // pre-enrolment fixture is byte-identical to what it was.
+    ...(over.enrolmentRegistries !== undefined ? { enrolmentRegistries: over.enrolmentRegistries } : {}),
+    ...(over.audience !== undefined ? { audience: over.audience } : {}),
   };
 }
 function clone<T>(x: T): T {
@@ -897,9 +948,18 @@ function settlementWorld(over: {
   witness?: J;             // chainWitness overrides
   correlation?: string;    // artifact correlation override (R3)
   artifactTenant?: string; // artifact tenant override (R1 binding)
+  // S5 enrolment: who observes, and whether the world's delegation grants enrolment authority.
+  observerKid?: string;    // default gate-prod-1 — the execution signer, and therefore R-16 CAPPED
+  enrolDelegation?: boolean;
 } = {}): World {
   const worldPH = over.paramsHash ?? S_PARAMS_HASH;
-  const world = buildWorld("EXECUTED", { paramsHash: worldPH, gateSettlementObserver: true });
+  const observerKid = over.observerKid ?? "gate-prod-1";
+  const world = buildWorld("EXECUTED", {
+    paramsHash: worldPH,
+    gateSettlementObserver: observerKid === "gate-prod-1",
+    settlementObserverKid: observerKid,
+    ...(over.enrolDelegation ? { enrolDelegation: true } : {}),
+  });
   const allowed = world.bundle.allowedReceipt as unknown as Receipt;
   const grant = world.bundle.executionGrant as J;
   const bd = buildActionDigest(encodeDocument(allowed), encodeDocument(grant));
@@ -919,9 +979,9 @@ function settlementWorld(over: {
     executionGrantHash: bd.projection.executionGrantHash,
     correlation, railFamily: "x402/exact/eip3009",
     chainWitness: witness, railReceipt: null,
-    observerKid: "gate-prod-1", observedAt: S_OBSERVED,
+    observerKid, observedAt: S_OBSERVED,
   };
-  const artifact = sign(core, "noa.settlement-evidence/0.1", "gate-prod-1");
+  const artifact = sign(core, "noa.settlement-evidence/0.1", observerKid);
   const bundle = clone(world.bundle);
   bundle.settlementEvidence = artifact;
   if (over.preimage !== null) bundle.actionParamsPreimage = over.preimage ?? S_PREIMAGE_TEXT;
@@ -1048,6 +1108,133 @@ emit("settlement", "s5-settlement-tenant-mismatch", fixtureFrom(settlementWorld(
   const bundle = clone(w.bundle);
   (bundle as unknown as Record<string, unknown>).actionParamsPreimage = S_PREIMAGE_TEXT;
   emit("settlement", "s5-params-preimage-on-expired", fixtureFrom(w, { description: "E.5 (F2): an EXPIRED bundle carrying actionParamsPreimage, which the EXPIRED union does not define. The preimage is a container member, so OPTIONAL_ARTIFACT_FIELDS + the step-0 union pre-rule own it — a name listed in the union alone would ride this bundle unverified. INVALID / STEP_0 / E_OUTCOME_ARTIFACT_SET, exit 2", expectVerdict: "INVALID", expectStep: "STEP_0_TENANT_EQUALITY", expectCode: "E_OUTCOME_ARTIFACT_SET", bundle }));
+}
+
+// ═══ 6. S5 ENROLMENT PLANE — the THIRD external verifier input (R4-R7) and what it unlocks ════════
+//
+// Every fixture below is built from ONE bundle world whose delegation also carries the
+// `action-class-enrol` permission, and differs ONLY in the registries the READER was handed. That is
+// the point: enrolment is a property of the verifier's configuration, not of the bundle, so the
+// bundle bytes are held constant and the reader's inputs are what move.
+//
+// THE ANTI-VACUITY PAIR IS `s5-enrolment-no-registry` AND `s5-enrolment-class-absent`: the SAME
+// bundle, verified with no registry (VALID_FULL_CHAIN, exit 0) and with an audience-matched,
+// in-window, closed registry that does not enrol its class (UNVERIFIED, exit 4). That pair is the
+// whole governing property in two files — supplying a registry can only make a verdict harder, and
+// nothing a signer OMITS makes one easier.
+const ENROL_AUDIENCE = "rp:vendor.example";
+const ENROL_OTHER_AUDIENCE = "rp:someone.else.example";
+const ENROL_NOT_BEFORE = "2026-07-01T00:00:00.000Z"; // contains T_RECEIVED (2026-07-14T11:56:30Z)
+const ENROL_NOT_AFTER = "2027-07-01T00:00:00.000Z";
+const ENROL_SCHEMA = { id: "deploy.apply", version: 1, hash: "sha256:" + "c".repeat(64) }; // = envelope.actionSchema
+const ENROL_PROJECTION = { id: "deploy.display", version: 1, hash: "sha256:" + "d".repeat(64) }; // = envelope.displayProjection
+
+/** One enrolled-class row for the world's own class, with per-vector overrides. */
+function enrolRow(over: J = {}): J {
+  return {
+    actionId: "deploy.apply", // = deferredReceipt.action.id, NOT the display-projection namespace
+    actionSchema: clone(ENROL_SCHEMA), projection: clone(ENROL_PROJECTION),
+    witnessSpec: "noa.settlement-evidence/0.1", claimTier: "SETTLEMENT_CORRELATED",
+    declaredExecutableFields: ["chainId", "token", "from", "to", "value"],
+    declaredWitnessedFields: ["chainId", "token", "from", "to", "value", "nonce"],
+    ...over,
+  };
+}
+
+/** A signed registry. `signerKid` defaults to the root-delegated enrolment signer. */
+function enrolRegistry(over: {
+  tenant?: string; audience?: string[]; notBefore?: string; notAfter?: string;
+  closed?: boolean; classes?: J[]; signerKid?: string; version?: number;
+} = {}): J {
+  return sign({
+    spec: "noa.action-class-enrolment/0.1",
+    tenant: over.tenant ?? TENANT,
+    version: over.version ?? 7,
+    audience: over.audience ?? [ENROL_AUDIENCE, "rp:acquirer.example"],
+    notBefore: over.notBefore ?? ENROL_NOT_BEFORE,
+    notAfter: over.notAfter ?? ENROL_NOT_AFTER,
+    closed: over.closed ?? true,
+    classes: over.classes ?? [enrolRow()],
+  }, "noa.action-class-enrolment/0.1", over.signerKid ?? "manifest-signer-3");
+}
+
+{
+  // The base world: a bundle that verifies to VALID_FULL_CHAIN on its own, carrying the delegation
+  // that grants enrolment authority. Nothing about the BUNDLE changes across the vectors below.
+  const w = buildWorld("EXECUTED", { enrolDelegation: true });
+
+  // A.2 / the migration guarantee, as a vector: the reader supplies NO registry, so the question is
+  // never asked and the answer is exactly what it was before this plane existed.
+  emit("enrolment", "s5-enrolment-no-registry", fixtureFrom(w, { description: "A.2 (MIGRATION): the enrolment-capable bundle verified with NO --enrolment-registry. The verifier was not configured to ask, so it does not ask and does not change its answer: VALID_FULL_CHAIN, enrolment NOT_EVALUATED, dimensions.settlement NO_EXECUTION_BINDING, exit 0. Red the moment any enrolment rule leaks into the no-registry path — and the anti-vacuity partner of s5-enrolment-class-absent, which is these EXACT bundle bytes with a registry supplied", expectVerdict: "VALID_FULL_CHAIN" }));
+
+  // A.1 — THE HEADLINE. Enrolled, and the bundle carries no settlement artifact at all.
+  emit("enrolment", "s5-enrolled-no-settlement", fixtureFrom(w, { description: "A.1 (THE HEADLINE): registry supplied, audience matched, in window, class ENROLLED — and the bundle carries no settlement artifact. A dispatch is the gate's own self-report about its own paperwork, and for an enrolled class that is no longer enough. INCONCLUSIVE / STEP_10_EXECUTED / E_SETTLEMENT_REQUIRED, enrolment ENROLLED, dimensions.settlement NOT_ESTABLISHED, integrity INTACT (the bytes are perfect; it is the EVIDENCE that is missing), exit 6", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+
+  // B.10 / G.3 — absence buys NOTHING. Same bundle bytes as the A.2 vector above.
+  emit("enrolment", "s5-enrolment-class-absent", fixtureFrom(w, { description: "B.10/G.3 (THE DEFECT-B FIX): a closed:true, in-window, audience-matched registry that positively OMITS this bundle's class. Under the design this replaced, these exact bytes were VALID_FULL_CHAIN / exit 0 — a narrower registry bought a positive, and the same document recommended narrowing. An omission is now an unanswered question: UNVERIFIED / E_ENROLMENT_CLASS_ABSENT, enrolment CLASS_ABSENT, exit 4", expectVerdict: "UNVERIFIED", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_CLASS_ABSENT", enrolmentRegistries: [enrolRegistry({ classes: [enrolRow({ actionId: "payments.charge", actionSchema: { id: "payments.charge", version: 1, hash: "sha256:" + "1".repeat(64) }, projection: { id: "payments.display", version: 1, hash: "sha256:" + "2".repeat(64) } })] })], audience: ENROL_AUDIENCE }));
+
+  // The one-signature restoration of the permissive regime, and it does not exist.
+  emit("enrolment", "s5-enrolment-empty-closed-registry", fixtureFrom(w, { description: "THE WITHDRAWN FEATURE: a signed `classes: [], closed: true` registry. An earlier design named this as a tenant's way to restore VALID_FULL_CHAIN across every class with one signature — and put it in the runbook. That sentence describes an attack, not an obligation: a single root signature that re-blesses every class is precisely the governance-capture move the residuals section spends its length conceding. Here it blesses nothing. An empty closed registry answers CLASS_ABSENT for every class: UNVERIFIED / E_ENROLMENT_CLASS_ABSENT, exit 4", expectVerdict: "UNVERIFIED", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_CLASS_ABSENT", enrolmentRegistries: [enrolRegistry({ classes: [] })], audience: ENROL_AUDIENCE }));
+
+  // B.9 — a registry with no reader.
+  emit("enrolment", "s5-enrolment-no-audience", fixtureFrom(w, { description: "B.9: a perfectly valid registry is supplied and the verifier is given NO --audience. A registry that does not know who is reading it cannot be scoped, and an unscoped registry is indistinguishable from a policy downgrade — so it is refused rather than consulted. UNVERIFIED / E_ENROLMENT_AUDIENCE, enrolment UNVERIFIABLE, exit 4", expectVerdict: "UNVERIFIED", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_AUDIENCE", enrolmentRegistries: [enrolRegistry()] }));
+
+  // B.11 — addressed to somebody else. NOT an accusation.
+  emit("enrolment", "s5-enrolment-audience-mismatch", fixtureFrom(w, { description: "B.11: a valid closed:true registry enrolling this class, whose signed audience does not name this reader. NOT INVALID: a registry written for someone else is not evidence of wrongdoing, it is simply not addressed here — so it is NOT SELECTED, and the verifier says it could not answer. UNVERIFIED / E_ENROLMENT_UNVERIFIABLE, exit 4", expectVerdict: "UNVERIFIED", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_UNVERIFIABLE", enrolmentRegistries: [enrolRegistry({ audience: [ENROL_OTHER_AUDIENCE] })], audience: ENROL_AUDIENCE }));
+
+  // B.3 — signed by a kid the root delegated NOTHING of this kind to.
+  emit("enrolment", "s5-enrolment-undelegated-signer", fixtureFrom(w, { description: "B.3: the registry is signed by the GATE key. The gate is in the manifest and signs holds and grants, and the root never delegated ENROLMENT authority to it — which is the whole reason action-class-enrol is its own permission rather than a reuse of key-manifest-sign. A registry the root did not authorize is not a registry: UNVERIFIED / E_ENROLMENT_UNVERIFIABLE, exit 4", expectVerdict: "UNVERIFIED", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_UNVERIFIABLE", enrolmentRegistries: [enrolRegistry({ signerKid: "gate-prod-1" })], audience: ENROL_AUDIENCE }));
+
+  // B.7 — an open registry is never consulted.
+  emit("enrolment", "s5-enrolment-not-closed", fixtureFrom(w, { description: "B.7: closed:false. An open registry makes no complete statement about its audience and window, so every omission in it is ambiguous between 'not enrolled' and 'not mentioned' — and this design refuses to read either as a permission. It is never consulted: UNVERIFIED / E_ENROLMENT_NOT_CLOSED, enrolment UNVERIFIABLE, exit 4", expectVerdict: "UNVERIFIED", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_NOT_CLOSED", enrolmentRegistries: [enrolRegistry({ closed: false })], audience: ENROL_AUDIENCE }));
+
+  // B.1 — the window, and it is reject-only.
+  emit("enrolment", "s5-enrolment-stale-window", fixtureFrom(w, { description: "B.1: the registry's [notBefore, notAfter] excludes this bundle's gate-signed authorization instant. Tested against holdResolution.receivedAt and NOT against now, because testing against now would make archived bundles rot. The instant is producer-chosen, so it may REFUSE enrolment and may never ESTABLISH it: UNVERIFIED / E_ENROLMENT_OUT_OF_WINDOW, enrolment OUT_OF_WINDOW, exit 4", expectVerdict: "UNVERIFIED", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_OUT_OF_WINDOW", enrolmentRegistries: [enrolRegistry({ notBefore: "2026-08-01T00:00:00.000Z", notAfter: "2027-08-01T00:00:00.000Z" })], audience: ENROL_AUDIENCE }));
+
+  // B.2 — our own governance, about somebody else's tenant. A CONTRADICTION, not a gap.
+  emit("enrolment", "s5-enrolment-wrong-tenant", fixtureFrom(w, { description: "B.2: a registry that AUTHENTICATES under this bundle's own root delegation while declaring a different tenant, presented as governing this bundle. That is not an unanswered question — it is two documents contradicting each other, and the one accusing is the registry: INVALID / E_ENROLMENT_MISMATCH, enrolment CONTRADICTED, exit 2. Decided rather than left to the fixture: step 0 cannot claim it first, because the tenant list there is a fixed literal array the registry is not in and never will be — the registry is not a bundle member at all", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_MISMATCH", enrolmentRegistries: [enrolRegistry({ tenant: "tenant-globex" })], audience: ENROL_AUDIENCE }));
+
+  // B.4 — the projection hash drifted. A contradiction, deliberately NOT a soft de-enrolment.
+  emit("enrolment", "s5-enrolment-projection-hash-drift", fixtureFrom(w, { description: "B.4: the row names this class by id and version and pins a DIFFERENT projection hash. Re-adjudicated as a contradiction rather than an absence: a row claiming to enrol THIS class while disagreeing about which renderer produced the human's display is two documents about one object, and reporting it as 'class absent' would make a deliberate hash substitution and an accidental build drift look identical. INVALID / E_ENROLMENT_MISMATCH, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_MISMATCH", enrolmentRegistries: [enrolRegistry({ classes: [enrolRow({ projection: { id: "deploy.display", version: 1, hash: "sha256:" + "e".repeat(64) } })] })], audience: ENROL_AUDIENCE }));
+
+  // B.6 — the actionId cross-check: the console↔kernel drift becomes blocking for enrolled classes.
+  emit("enrolment", "s5-enrolment-action-id-drift", fixtureFrom(w, { description: "B.6: the row's actionId does not equal deferredReceipt.action.id. This is what turns a known console↔kernel identifier drift from silent semantic divergence into a BLOCKING defect for enrolled classes — a deliberate side benefit, and the reason a payment class must not be enrolled until the console points at the same identifier. INVALID / E_ENROLMENT_MISMATCH, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_MISMATCH", enrolmentRegistries: [enrolRegistry({ classes: [enrolRow({ actionId: "deploy.apply.v2" })] })], audience: ENROL_AUDIENCE }));
+
+  // B.8 — the namespace trap, and it is the regression pin for the class-key correction.
+  emit("enrolment", "s5-enrolment-actionschema-namespace", fixtureFrom(w, { description: "B.8: the row's actionId names the DISPLAY-PROJECTION namespace ('deploy.display') instead of the action-schema one ('deploy.apply'). Measured against this bundle, where the two genuinely differ — displayProjection.id is 'deploy.display' while actionSchema.id and deferredReceipt.action.id are both 'deploy.apply'. An earlier design keyed the whole class on the projection alone and was therefore keyed on the wrong namespace; this vector is what keeps that correction from silently reverting. INVALID / E_ENROLMENT_MISMATCH, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_MISMATCH", enrolmentRegistries: [enrolRegistry({ classes: [enrolRow({ actionId: "deploy.display" })] })], audience: ENROL_AUDIENCE }));
+}
+
+// B.5 — RAW mode is never enrollable, and the registry claiming otherwise is the contradiction.
+{
+  const raw = buildWorld("EXECUTED", { enrolDelegation: true, rawHold: true });
+  emit("enrolment", "s5-enrolment-raw-mode", fixtureFrom(raw, { description: "B.5: a RAW hold (mode RAW, displayProjection null) with a registry claiming its class enrolled. On a RAW hold the display a human approved and the params a grant authorizes are two unrelated fields, so half the class key does not exist and the other half cannot be tied to a rendering — a registry asserting enrolment here is asserting something the gate-signed envelope cannot support. INVALID / E_ENROLMENT_MISMATCH, exit 2. This composes with the ratified rule that RAW must not issue a human-approved grant for a critical action", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_ENROLMENT_MISMATCH", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+}
+
+// A.3 — THE OFFLINE CEILING. The vector the whole reconfirmation gate exists for.
+{
+  const w = settlementWorld({ observerKid: "gate-observer-2", enrolDelegation: true });
+  emit("enrolment", "s5-enrolled-attested-but-unqueried", fixtureFrom(w, { description: "A.3 (THE CEILING): class ENROLLED, and the bundle carries a valid, correctly bound, in-bounds SETTLED settlement artifact signed by an observer that is NOT the execution signer, plus its hash-verified params preimage. Everything an offline verifier can check, checks. And NOBODY RE-QUERIED THE CHAIN: an offline verifier can establish that an assertion is authentic and bound, never that it is TRUE, because the signer of the assertion is not the world. INCONCLUSIVE / STEP_10_EXECUTED / E_SETTLEMENT_UNRECONFIRMED, dimensions.settlement ATTESTED_UNVERIFIED, integrity INTACT, exit 6. Under a design that stopped at the offline tier these exact bytes were VALID_FULL_CHAIN / exit 0 — a self-consistent forgery with nothing queried", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_UNRECONFIRMED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+}
+
+// R8's relationship cap — the SAME bundle shape, observed by the execution signer's own key.
+{
+  const w = settlementWorld({ enrolDelegation: true }); // observer defaults to gate-prod-1
+  emit("enrolment", "s5-enrolled-self-witnessed", fixtureFrom(w, { description: "R8/R-16: the same enrolled, artifact-bearing bundle as the ceiling vector, except that the settlement observer's key IS the execution signer's key. The party that says it dispatched the request is the party saying it settled, so the observation is not admissible for an enrolled class. CAPPED rather than REJECTED — this is today's honest deployment shape, and refusing it outright would refuse the only shape that currently exists: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, dimensions.settlement NOT_ESTABLISHED, exit 6. The contrast with s5-enrolled-attested-but-unqueried is one key", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+}
+
+// THE I3 CARRY-FORWARD — the failure label may not be the cheap way out of an enrolled class.
+{
+  const w = buildWorld("EXECUTION_FAILED", { enrolDelegation: true });
+  emit("enrolment", "s5-enrolled-failure-unwitnessed", fixtureFrom(w, { description: "THE CARRY-FORWARD: an EXECUTION_FAILED bundle whose class is ENROLLED. EXECUTION_FAILED is a POSITIVE outcome that pays no step-15 freshness tax, so the moment enrolment gives EXECUTED a price it becomes the ONLY outcome that is both step-15-exempt and settlement-free — the cheap relabelling path for a gate hiding a spend. The only thing asserting that nothing was dispatched is the gate's own consumption, and a determinate negative is claimable only on an observation by a party that did not execute. INCONCLUSIVE / STEP_11_EXECUTION_FAILED / E_NON_DISPATCH_UNWITNESSED, dimensions.settlement NOT_ESTABLISHED, exit 6. Nothing is widened to reach this: not POSITIVE_OUTCOMES, not the outcome-artifact union", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_11_EXECUTION_FAILED", expectCode: "E_NON_DISPATCH_UNWITNESSED", enrolmentRegistries: [enrolRegistry()], audience: ENROL_AUDIENCE }));
+  // …and its control: the SAME bundle with no registry supplied keeps the verdict it has always had.
+  emit("enrolment", "s5-failure-no-registry", fixtureFrom(w, { description: "THE CARRY-FORWARD'S CONTROL: the same EXECUTION_FAILED bundle with NO registry supplied. Nothing changes — VALID_FULL_CHAIN, enrolment NOT_EVALUATED, exit 0. The carry-forward rule is scoped to enrolled classes only, so no historical failure bundle moves, and the pair is what proves the rule is enrolment-scoped rather than a blanket refusal of the outcome", expectVerdict: "VALID_FULL_CHAIN" }));
+}
+
+// TWO REGISTRIES, ONE READER: rotation must not be a false accusation.
+{
+  const w = buildWorld("EXECUTED", { enrolDelegation: true });
+  const superseded = enrolRegistry({ version: 6, notBefore: "2025-07-01T00:00:00.000Z", notAfter: "2026-07-05T00:00:00.000Z", classes: [enrolRow({ projection: { id: "deploy.display", version: 1, hash: "sha256:" + "f".repeat(64) } })] });
+  emit("enrolment", "s5-enrolment-superseded-registry-not-a-contradiction", fixtureFrom(w, { description: "ROTATION IS NOT EQUIVOCATION: the reader holds two registries — a SUPERSEDED one whose window closed before this bundle and which pins the OLD projection hash, and the current one that enrols the class correctly. Reading row-level contradictions across out-of-window registries would turn every ordinary projection re-build into a hard INVALID for every archived bundle, so row-level checks are scoped to IN-WINDOW registries while registry-level ones (tenant, closed) are not. The current registry governs, the class is enrolled, and the bundle stops where an enrolled class stops: INCONCLUSIVE / E_SETTLEMENT_REQUIRED, exit 6", expectVerdict: "INCONCLUSIVE", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_REQUIRED", enrolmentRegistries: [superseded, enrolRegistry()], audience: ENROL_AUDIENCE }));
 }
 
 // ─── write ───────────────────────────────────────────────────────────────────────────────────────

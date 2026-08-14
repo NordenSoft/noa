@@ -33,6 +33,13 @@ interface Fixture {
   bundle: unknown;
   tenantRoot: Record<string, unknown>;
   checkpointKeyring: Record<string, unknown>;
+  /**
+   * S5 — the THIRD external verifier input, and the reason it is OPTIONAL here matters: a fixture
+   * that omits it is a run in which the enrolment question was never asked. That is every fixture
+   * that existed before the enrolment plane, and it is why supplying nothing changes nothing.
+   */
+  enrolmentRegistries?: unknown[];
+  audience?: string;
 }
 interface Loaded {
   slug: string;
@@ -54,6 +61,10 @@ function run(fx: Fixture) {
   return verifyEvidence(b(fx.bundle), {
     tenantRoot: b(fx.tenantRoot),
     checkpointKeyring: b(fx.checkpointKeyring),
+    // Each registry becomes BYTES here, exactly as an operator holds it on disk. Passing the parsed
+    // object would authenticate a re-serialization instead of the document.
+    ...(fx.enrolmentRegistries !== undefined ? { enrolmentRegistries: fx.enrolmentRegistries.map((r) => b(r)) } : {}),
+    ...(fx.audience !== undefined ? { audience: fx.audience } : {}),
     now: fx.now,
     maxAgeMs: fx.maxAgeHours * 60 * 60 * 1000,
     schemas,

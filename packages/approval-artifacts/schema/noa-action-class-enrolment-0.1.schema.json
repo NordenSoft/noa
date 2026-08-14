@@ -19,8 +19,8 @@
     "notBefore": { "$ref": "#/$defs/rfc3339" },
     "notAfter": { "$ref": "#/$defs/rfc3339" },
     "closed": {
-      "description": "MUST be true. A registry that does not claim completeness for its audience and window cannot be reasoned over at all, so `false` is a refusal rather than a weaker statement.",
-      "const": true
+      "description": "Whether this registry claims to be COMPLETE for its audience and window. Typed as a boolean rather than pinned to `true` ON PURPOSE: `false` is a well-formed document that states 'I make no completeness claim', and refusing it belongs to the VERIFIER, which reports it with its own distinct code (E_ENROLMENT_NOT_CLOSED). Pinning `const: true` here would refuse the document at the grammar and collapse that cause into the generic 'this registry does not authenticate' bucket — the exact indistinguishability the enrolment refusals are split five ways to prevent. Only `true` is ever consultable.",
+      "type": "boolean"
     },
     "classes": {
       "description": "The enrolled classes. MAY be empty: an empty closed registry states 'I make no statement about any class for this audience', which yields UNVERIFIED for every class — never a positive.",

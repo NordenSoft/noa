@@ -33,7 +33,9 @@ import type { VerificationPurpose } from "./types.js";
 function usage(msg?: string): never {
   if (msg) process.stderr.write(`error: ${msg}\n`);
   process.stderr.write(
-    "usage: noa-verify-evidence <bundle.json> --tenant-root <root.json> --checkpoint-keyring <cp.json> [--now <rfc3339>] [--max-age-hours <n>] [--purpose audit|authorize]\n",
+    "usage: noa-verify-evidence <bundle.json> --tenant-root <root.json> --checkpoint-keyring <cp.json> "
+      + "[--enrolment-registry <reg.json> ...] [--audience <relying-party-id>] "
+      + "[--now <rfc3339>] [--max-age-hours <n>] [--purpose audit|authorize]\n",
   );
   process.exit(USAGE_EXIT_CODE);
 }
@@ -61,11 +63,21 @@ function main(argv: string[]): void {
   let now: string | undefined;
   let maxAgeHours: number | undefined;
   let purpose: VerificationPurpose | undefined;
+  // REPEATABLE, because a relying party legitimately holds several registries — one per tenant it
+  // transacts with, and successive windows for the same tenant across a rotation. The flag appends
+  // rather than replaces so a second `--enrolment-registry` cannot silently discard the first.
+  const enrolmentRegistryPaths: string[] = [];
+  let audience: string | undefined;
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
     if (a === "--tenant-root") tenantRootPath = args[++i];
     else if (a === "--checkpoint-keyring") checkpointKeyringPath = args[++i];
+    else if (a === "--enrolment-registry") {
+      const p = args[++i];
+      if (p === undefined) usage("--enrolment-registry needs a file path");
+      enrolmentRegistryPaths.push(p);
+    } else if (a === "--audience") audience = args[++i];
     else if (a === "--now") now = args[++i];
     else if (a === "--max-age-hours") maxAgeHours = Number(args[++i]);
     else if (a === "--purpose") {
@@ -89,10 +101,22 @@ function main(argv: string[]): void {
   const bundle = readBytes(bundlePath);
   const tenantRoot = readBytes(tenantRootPath);
   const checkpointKeyring = readBytes(checkpointKeyringPath);
+  const enrolmentRegistries = enrolmentRegistryPaths.map(readBytes);
+
+  // A REGISTRY WITH NO READER IS A USAGE ERROR HERE, and a fail-closed verdict in the verifier.
+  // Both, deliberately: the verifier must never depend on a caller having checked, and an operator
+  // who forgot the flag deserves the sentence that says so rather than an UNVERIFIED they will read
+  // as a statement about the evidence. NOT the reverse — `--audience` with no registry is fine and
+  // means nothing was asked, which is exactly what the result will say.
+  if (enrolmentRegistries.length > 0 && (audience === undefined || audience === "")) {
+    usage("--enrolment-registry requires --audience (this verifier's own relying-party identity): a registry that does not know who is reading it cannot be scoped");
+  }
 
   const res = verifyEvidence(bundle, {
     tenantRoot,
     checkpointKeyring,
+    ...(enrolmentRegistries.length > 0 ? { enrolmentRegistries } : {}),
+    ...(audience !== undefined ? { audience } : {}),
     ...(now !== undefined ? { now } : {}),
     ...(maxAgeHours !== undefined && Number.isFinite(maxAgeHours) ? { maxAgeMs: maxAgeHours * 60 * 60 * 1000 } : {}),
     ...(purpose !== undefined ? { purpose } : {}),

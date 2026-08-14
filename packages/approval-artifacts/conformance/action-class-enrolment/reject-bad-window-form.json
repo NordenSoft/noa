@@ -1,5 +1,5 @@
 {
-  "description": "closed:false, RE-SIGNED — a registry that does not claim completeness for its audience and window cannot be reasoned over at all, so the schema refuses it outright rather than treating it as a weaker statement",
+  "description": "notBefore is not an RFC 3339 instant, RE-SIGNED — the window is what binds a registry to a moment in a tenant's governance, and a member that is not a time cannot be compared to a gate-signed authorization instant at all",
   "spec": "noa.action-class-enrolment/0.1",
   "expect": "REJECT",
   "rejectionClass": "structural",
@@ -11,9 +11,9 @@
       "rp:vendor.example",
       "rp:acquirer.example"
     ],
-    "notBefore": "2026-07-01T00:00:00.000Z",
+    "notBefore": "2026-07",
     "notAfter": "2027-07-01T00:00:00.000Z",
-    "closed": false,
+    "closed": true,
     "classes": [
       {
         "actionId": "deploy.apply",
@@ -49,7 +49,7 @@
     "sig": {
       "alg": "ed25519",
       "kid": "enrol-signer-4",
-      "value": "qihErPKblaZpdFzS3ghUvnKyJkIzyMlLu9ABaZoc4KFXdtTPCNIWgPH5CAALPCk8R+kOLxw9Tv3OZCbU+aQABQ=="
+      "value": "/UMBd9iKDnlFfkZ1chhnoHEobbg9+dFiD878nPeauxzpRdmnrGpGl1VTZvsLT0Y+amfwzUPdkTJcQM2Wqnq3BQ=="
     }
   },
   "context": {

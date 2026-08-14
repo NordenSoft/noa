@@ -728,7 +728,12 @@ function addUnknownProp(signedOrCore: J): J {
 
   emit("action-class-enrolment", "reject-revoked-key.json", { description: "signed by a revoked key that DOES hold action-class-enrol (enrol-revoked-6) — measures revocation, not role-check ordering luck", spec, expect: "REJECT", rejectionClass: "revoked-key", artifact: reSign(clone(enrolmentCore), spec, "enrol-revoked-6"), context: baseCtx });
 
-  emit("action-class-enrolment", "reject-open-registry.json", { description: "closed:false, RE-SIGNED — a registry that does not claim completeness for its audience and window cannot be reasoned over at all, so the schema refuses it outright rather than treating it as a weaker statement", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(enrolmentCore), closed: false }, spec, "enrol-signer-4"), context: baseCtx });
+  // NOT A VECTOR HERE, AND THE REASON IS THE POINT: `closed: false` is a WELL-FORMED document that
+  // states "I make no completeness claim", so this layer accepts it and the EVIDENCE VERIFIER refuses
+  // it with its own distinct code. Pinning `const: true` in the schema would have refused it at the
+  // grammar — which reads as stricter and is actually WEAKER, because the operator would then be told
+  // only "this registry does not authenticate", the same sentence an unauthorized signer produces.
+  emit("action-class-enrolment", "reject-bad-window-form.json", { description: "notBefore is not an RFC 3339 instant, RE-SIGNED — the window is what binds a registry to a moment in a tenant's governance, and a member that is not a time cannot be compared to a gate-signed authorization instant at all", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(enrolmentCore), notBefore: "2026-07" }, spec, "enrol-signer-4"), context: baseCtx });
 
   emit("action-class-enrolment", "reject-audience-wildcard.json", { description: "audience [\"*\"], RE-SIGNED — wildcards are forbidden at the grammar. A value meaning \"I did not decide\" must never be readable as \"I decided yes\", which is the same reason closed:false is refused", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(enrolmentCore), audience: ["*"] }, spec, "enrol-signer-4"), context: baseCtx });
 
