@@ -215,8 +215,9 @@ jobs:
       - name: Say out loud what will NOT be measured
         # A silent skip is how a repository comes to believe it tests a path nobody has run since
         # the credential lapsed. This warning appears on the PR checks page, next to the green ticks
-        # it is qualifying: 6 scenarios here, plus 10 knockout controls in the `test` job that
-        # declare `requires: ["phone-core"]` and are excluded as SETUP_FAILED.
+        # it is qualifying: 6 scenarios here, plus the 10 knockout controls that declare
+        # `requires: ["phone-core"]` — everywhere else they are excluded as SETUP_FAILED, including
+        # in every shard of the `knockout` job, and this is the one environment that can measure them.
         if: steps.preflight.outputs.present != 'true'
         run: |
           echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_SSH_KEY secret (read-only deploy key on NordenSoft/noamandate-mobile) to measure them."
@@ -548,14 +549,20 @@ jobs:
           npm --prefix packages/approval-artifacts ci && npm --prefix packages/approval-artifacts run build
           npm --prefix packages/gate ci && npm --prefix packages/gate run build
           npm run test:r7-exploits
-      - name: Install adapter-core before the knockout sweep — it mutates sources these suites import
-        # MOVED 2026-08-03, same defect as above: the knockout ran before adapter-core was installed,
-        # so 63 of its 66 controls could not even load the code they mutate. It reported findings that
-        # were import errors, not measurements — a red gate for a reason that had nothing to do with
-        # the controls it exists to prove.
+      - name: Install adapter-core — the verdict-differential sweep and its own unit tests need it
+        # MOVED 2026-08-03 for the knockout sweep, which has since moved to the `knockout` job; the
+        # step stays because the verdict-differential poison sweep and the adapter-core unit tests
+        # below both read this package's installed tree. The original lesson still applies to both:
+        # a suite that cannot LOAD the code it measures reports import errors as findings.
         run: cd packages/adapter-core && npm ci
-      - name: Install EVERY package the knockout sweep mutates — a suite that cannot run measures nothing
+      - name: Install the sibling packages this job's later steps run — a suite that cannot run measures nothing
         # ADDED 2026-08-03, and it is the same class as the adapter-core step above found one layer up.
+        #
+        # THE KNOCKOUT SWEEP NO LONGER RUNS IN THIS JOB (it moved to the sharded `knockout` job, which
+        # builds its own environment with `scripts/ci-knockout-install.mjs` — one authority, and it
+        # REFUSES if the registry mutates a package its plan does not name). This list stays for the
+        # steps below that still need these trees. The measurement that produced it is kept because it
+        # is the reason the new script refuses rather than trusts:
         #
         # The knockout registry mutates controls across ten packages and re-runs each one's suite. This
         # job installed FOUR of them (root, approval-artifacts, gate, adapter-core). The other six were
