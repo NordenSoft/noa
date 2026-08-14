@@ -144,13 +144,18 @@ export interface VerifyEvidenceOptions {
 }
 
 /**
- * THE SETTLEMENT / ENROLMENT ASSIGNMENT, and why every path in this file gets it explicitly.
+ * THE SETTLEMENT / ENROLMENT ASSIGNMENT, and why the COMPILER — not this comment — enforces it.
  *
- * The rule is that every return point maps to exactly ONE `(enrolment, settlement)` pair — because
- * the process exit code is a pure function of `(verdict, settlement)` (`exit-codes.ts`), and two
+ * The rule is that every return point maps to exactly ONE `(enrolment, settlement)` pair, because
+ * the process exit code is derived from `(verdict, enrolment, settlement)` (`exit-codes.ts`) and two
  * verifiers must not return different exit codes for the same bytes. A default that quietly applies
- * wherever nobody thought about it is how that property is lost, so the pairs below are stated at
- * each return rather than inherited.
+ * wherever nobody thought about it is how that property is lost.
+ *
+ * An earlier version of this file said exactly that and then left six early returns inheriting a
+ * default — a reviewer counted them. Saying "stated at each return" while six returns say nothing is
+ * the same failure one level up. So `dimensions` and `enrolment` are now REQUIRED parameters of
+ * `result()`, positioned before every optional one: a return point that forgets does not compile.
+ * The discipline is a type error rather than a paragraph.
  *
  * TODAY THERE IS NO ENROLMENT INPUT, and that is not an omission — it is the migration mechanism.
  * The verifier is not configured to ask whether this action's class requires settlement evidence, so
@@ -171,16 +176,23 @@ export interface VerifyEvidenceOptions {
  */
 const NOT_EVALUATED: EnrolmentEvaluation = "NOT_EVALUATED";
 
+/**
+ * The dimensions of a run that never reached the settlement question — every early return and every
+ * pipeline stop. Named rather than repeated: nine call sites spelling the same three fields is nine
+ * chances to spell one of them differently.
+ */
+const NOTHING_PROVEN: VerdictDimensions = { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" };
+
 function result(
   verdict: EvidenceVerdict,
   outcome: EvidenceOutcome | null,
   steps: StepResult[],
   warnings: string[],
+  dimensions: VerdictDimensions,
+  enrolment: EnrolmentEvaluation,
   failing?: StepResult,
   rolesAsserted: ReceiptRole[] = [],
-  dimensions: VerdictDimensions = { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" },
   purpose: VerificationPurpose = "audit",
-  enrolment: EnrolmentEvaluation = NOT_EVALUATED,
 ): VerifyEvidenceResult {
   const r: VerifyEvidenceResult = {
     verdict,
@@ -237,7 +249,7 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     optMaxAgeMs = opts.maxAgeMs;
     rawPurpose = opts.purpose ?? "audit";
   } catch {
-    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "verification options could not be read: an option accessor threw" });
+    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "verification options could not be read: an option accessor threw" });
   }
   const schemas = suppliedSchemas ?? loadSchemas();
 
@@ -247,7 +259,7 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
   // decides whether a live authorization check runs, an unrecognised value must FAIL CLOSED, never
   // quietly downgrade to audit.
   if (rawPurpose !== "audit" && rawPurpose !== "authorize") {
-    return result("UNVERIFIED", null, [], warnings, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: `unrecognised purpose ${JSON.stringify(rawPurpose)} — must be exactly "audit" or "authorize" (fail-closed: an unknown purpose is never treated as audit)` });
+    return result("UNVERIFIED", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: `unrecognised purpose ${JSON.stringify(rawPurpose)} — must be exactly "audit" or "authorize" (fail-closed: an unknown purpose is never treated as audit)` });
   }
   const purpose: VerificationPurpose = rawPurpose;
 
@@ -261,11 +273,11 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
   // rejects duplicate keys outright, so it fails here rather than deeper in.
   const parsedBundle = parseDocument(bundleInput, "bundle");
   if (!parsedBundle.ok) {
-    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the byte boundary: ${parsedBundle.reason}` }, [], { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" }, purpose);
+    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the byte boundary: ${parsedBundle.reason}` }, [], purpose);
   }
   const bundle = parsedBundle.value as EvidenceBundle;
   if (bundle === null || typeof bundle !== "object" || Array.isArray(bundle)) {
-    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "bundle rejected at the byte boundary: the document is not a JSON object" }, [], { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" }, purpose);
+    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "bundle rejected at the byte boundary: the document is not a JSON object" }, [], purpose);
   }
 
   const rootKeyring = asRootKeyEntryMap(optTenantRoot);
@@ -273,7 +285,7 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
 
   // (F7a) external trust root REQUIRED — no root / no checkpoint keyring → UNVERIFIED, never VALID.
   if (Object.keys(rootKeyring).length === 0) {
-    return result("UNVERIFIED", null, [], warnings, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --tenant-root supplied (F7a): cannot anchor the delegation → manifest chain" });
+    return result("UNVERIFIED", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --tenant-root supplied (F7a): cannot anchor the delegation → manifest chain" });
   }
   if (
     !checkpointTrust.ok
@@ -282,17 +294,17 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     || Array.isArray(checkpointTrust.value)
     || Object.keys(checkpointTrust.value).length === 0
   ) {
-    return result("UNVERIFIED", null, [], warnings, { step: "STEP_17_CHECKPOINT_RECONCILE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --checkpoint-keyring supplied (F7a): cannot authenticate the tail-completeness anchor" });
+    return result("UNVERIFIED", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_17_CHECKPOINT_RECONCILE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --checkpoint-keyring supplied (F7a): cannot authenticate the tail-completeness anchor" });
   }
 
   // container shape (the union structure; sub-artifact internals are validated per-step). Runs over
   // the FROZEN snapshot — the same bytes every step will read.
   const shape = evalSchema(schemas.container as Record<string, unknown>, bundle as unknown as Record<string, unknown>);
   if (!shape.ok) {
-    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle container invalid: ${shape.errors.join("; ")}` });
+    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle container invalid: ${shape.errors.join("; ")}` });
   }
   if (bundle.spec !== EVIDENCE_SPEC) {
-    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `spec != ${EVIDENCE_SPEC}` });
+    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `spec != ${EVIDENCE_SPEC}` });
   }
 
   // precompute the shared context.
@@ -348,7 +360,7 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
       const integrity: VerdictDimensions["integrity"] = ctx.checkpointReconciled === true && r.step !== "STEP_17_CHECKPOINT_RECONCILE" ? "INTACT" : "BROKEN";
       // The pipeline stopped, so the settlement question was never reached. `UNCHECKED` is the one
       // value that must never be read as "an artifact was examined and found acceptable".
-      return result(verdict, bundle.outcome, steps, ctx.warnings, r, [...ctx.rolesAsserted], { integrity, authorization: ctx.authorization, settlement: "UNCHECKED" }, purpose);
+      return result(verdict, bundle.outcome, steps, ctx.warnings, { integrity, authorization: ctx.authorization, settlement: "UNCHECKED" }, NOT_EVALUATED, r, [...ctx.rolesAsserted], purpose);
     }
   }
 
@@ -368,13 +380,15 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     bundle.outcome,
     steps,
     ctx.warnings,
-    undefined,
-    [...ctx.rolesAsserted],
     // The whole pipeline ran and nobody asked the settlement question, because no enrolment input
     // was supplied. `NO_EXECUTION_BINDING` says the true thing about what this verdict rests on:
     // for this bundle no execution binding was established, and the verdict word means exactly what
-    // it meant before this field existed.
+    // it meant before this field existed. This value does NOT depend on `purpose` — an audit run and
+    // an authorization run examine the same settlement evidence, namely none.
     { integrity: "INTACT", authorization: ctx.authorization, settlement: "NO_EXECUTION_BINDING" },
+    NOT_EVALUATED,
+    undefined,
+    [...ctx.rolesAsserted],
     purpose,
   );
 }
