@@ -25,7 +25,22 @@ export {
   type VerdictDimensions,
   type VerdictPolicy,
   type VerificationPurpose,
+  // The settlement ladder: the third verdict dimension, and whether the enrolment question was
+  // asked at all.
+  type SettlementDimension,
+  type EnrolmentEvaluation,
 } from "./types.js";
+
+// The exit code a consumer acts on, published so a downstream verifier maps the same result to the
+// same number instead of re-deriving one. Two implementations that disagree here disagree about
+// whether a payment may proceed.
+export {
+  exitCodeFor,
+  USAGE_EXIT_CODE,
+  SETTLEMENT_UNRESOLVED,
+  SETTLEMENT_ADMISSIBLE_ON_POSITIVE,
+  type EvidenceExitCode,
+} from "./exit-codes.js";
 
 export {
   verifyEvidence,

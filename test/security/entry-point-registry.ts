@@ -192,4 +192,5 @@ export const NOA_APPROVAL_EVIDENCE: EntryPoint[] = [
   { name: "buildResolvedKeyring", cls: "bytes-in", why: "snapshots the root keyring, delegation and manifest" },
   { name: "buildReceiptKeyring", cls: "bytes-in", why: "snapshots the manifest" },
   { name: "assertReceiptRole", cls: "bytes-in", why: "snapshots the bundle; index.ts advertises it for direct downstream reuse, so it cannot rely on verifyEvidence having ingested" },
+  { name: "exitCodeFor", cls: "dataless" },
 ];

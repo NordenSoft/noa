@@ -173,6 +173,9 @@ const REGISTRY: Record<string, "ingests" | "dataless"> = {
   buildResolvedKeyring: "ingests",
   buildReceiptKeyring: "ingests",
   assertReceiptRole: "ingests",
+  // Two string enum members in, a small integer out. There is no caller-owned object to flip, and
+  // an unrecognised verdict falls through to a NON-ZERO code, so the fail direction is refusal.
+  exitCodeFor: "dataless",
 };
 
 test("C2: every exported function is classified — a NEW export cannot appear unrouted", () => {
