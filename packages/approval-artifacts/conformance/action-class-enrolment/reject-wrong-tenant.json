@@ -1,0 +1,64 @@
+{
+  "description": "tenant changed to a foreign tenant (re-signed) — a registry that authenticates under THIS root while declaring another tenant is a contradiction, and the tenant field is the only place it is visible offline",
+  "spec": "noa.action-class-enrolment/0.1",
+  "expect": "REJECT",
+  "rejectionClass": "wrong-tenant",
+  "artifact": {
+    "spec": "noa.action-class-enrolment/0.1",
+    "tenant": "tenant-EVIL",
+    "version": 7,
+    "audience": [
+      "rp:vendor.example",
+      "rp:acquirer.example"
+    ],
+    "notBefore": "2026-07-01T00:00:00.000Z",
+    "notAfter": "2027-07-01T00:00:00.000Z",
+    "closed": true,
+    "classes": [
+      {
+        "actionId": "deploy.apply",
+        "actionSchema": {
+          "id": "deploy.apply",
+          "version": 1,
+          "hash": "sha256:b14a2efd8a0fda96358a7fc47b022209225c1ee156469b83553b283d82aca05a"
+        },
+        "projection": {
+          "id": "deploy.display",
+          "version": 1,
+          "hash": "sha256:4fd0b3e137ba0c0436890e079f10229767c17741b83c1fded54532aac711c07e"
+        },
+        "witnessSpec": "noa.settlement-evidence/0.1",
+        "claimTier": "SETTLEMENT_CORRELATED",
+        "declaredExecutableFields": [
+          "chainId",
+          "token",
+          "from",
+          "to",
+          "value"
+        ],
+        "declaredWitnessedFields": [
+          "chainId",
+          "token",
+          "from",
+          "to",
+          "value",
+          "nonce"
+        ]
+      }
+    ],
+    "sig": {
+      "alg": "ed25519",
+      "kid": "enrol-signer-4",
+      "value": "fjCdzn7rZddn6j5kWSKXHCGig3pmr4ZItPlDQOFttVqKagT+7P9f5DiMDojmsCBIISikSSwsxkfw7hRvU8zVBg=="
+    }
+  },
+  "context": {
+    "now": "2026-07-14T12:00:00.000Z",
+    "equals": [
+      {
+        "path": "tenant",
+        "value": "tenant-acme"
+      }
+    ]
+  }
+}

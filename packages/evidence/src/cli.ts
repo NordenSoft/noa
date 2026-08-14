@@ -33,7 +33,9 @@ import type { VerificationPurpose } from "./types.js";
 function usage(msg?: string): never {
   if (msg) process.stderr.write(`error: ${msg}\n`);
   process.stderr.write(
-    "usage: noa-verify-evidence <bundle.json> --tenant-root <root.json> --checkpoint-keyring <cp.json> [--now <rfc3339>] [--max-age-hours <n>] [--purpose audit|authorize]\n",
+    "usage: noa-verify-evidence <bundle.json> --tenant-root <root.json> --checkpoint-keyring <cp.json> "
+      + "[--enrolment-registry <reg.json> ...] [--audience <relying-party-id>] "
+      + "[--now <rfc3339>] [--max-age-hours <n>] [--purpose audit|authorize]\n",
   );
   process.exit(USAGE_EXIT_CODE);
 }
@@ -61,19 +63,97 @@ function main(argv: string[]): void {
   let now: string | undefined;
   let maxAgeHours: number | undefined;
   let purpose: VerificationPurpose | undefined;
+  // REPEATABLE, because a relying party legitimately holds several registries — one per tenant it
+  // transacts with, and successive windows for the same tenant across a rotation. The flag appends
+  // rather than replaces so a second `--enrolment-registry` cannot silently discard the first.
+  const enrolmentRegistryPaths: string[] = [];
+  let audience: string | undefined;
+
+  /**
+   * SINGLETON FLAGS: a MISSING value and a SECOND occurrence are both usage errors.
+   *
+   * ⚠ WHY THIS IS A HELPER RATHER THAN SIX HAND-WRITTEN BRANCHES, MEASURED. Every singleton used to
+   * be `x = args[++i]`, which is wrong twice over:
+   *
+   *   • A BARE TRAILING FLAG consumed `undefined` and the run CONTINUED. An invocation ending in
+   *     `--audience` verified with no reader identity and exited 0 — the operator typed a flag, got a
+   *     verdict, and nothing said the flag did nothing.
+   *   • A REPEATED FLAG was LAST-WINS, silently. Measured: `--audience hostile --audience good`
+   *     exited 6 and `--audience good --audience hostile` exited 4, so whoever appends to the command
+   *     line last decides the answer. That is the shape a wrapper script, a CI template or an
+   *     injected argument exploits, and it applies to `--tenant-root` exactly as much as to
+   *     `--audience`: appending a second trust root would silently replace the first.
+   *
+   * `--enrolment-registry` is deliberately NOT a singleton — a reader legitimately holds several —
+   * and it APPENDS, so a second one can never discard the first. That is the whole distinction: a
+   * repeatable flag accumulates, a singleton refuses.
+   */
+  const seen = new Set<string>();
+  const singleton = (flag: string, i: number): string => {
+    if (seen.has(flag)) {
+      usage(`${flag} was given more than once — it names ONE value, and silently taking the last would let whoever appends to the command line last decide the answer`);
+    }
+    seen.add(flag);
+    const v = args[i];
+    if (v === undefined || v.startsWith("--")) {
+      usage(`${flag} needs a value${v === undefined ? "" : ` (got the next flag ${v})`}`);
+    }
+    return v;
+  };
+
+  /**
+   * A NUMERIC flag's value is VALIDATED HERE, at the moment it is read — never converted and
+   * inspected later.
+   *
+   * ⚠ THE DEFECT THIS REPLACES, MEASURED, AND IT CROSSED THE USAGE/VERDICT BOUNDARY. The value was
+   * `Number(...)`, which answers `NaN` for a malformed string and `Infinity` for `"1e400"`. Nothing
+   * refused either: the call site further down carried a `Number.isFinite` guard that SILENTLY
+   * OMITTED `maxAgeMs` when the conversion failed — restoring the PERMISSIVE 24-hour default. So on
+   * one DENIED fixture:
+   *
+   *     --max-age-hours 0                        -> exit 3   (the freshness rule fires)
+   *     --max-age-hours definitely-not-a-number  -> exit 0   (the rule is gone)
+   *
+   * A mistyped SAFETY option produced a positive verdict. `Number.isFinite` reading as a defence is
+   * exactly the shape that hides one: it was true of the guard and false of the outcome, because
+   * "the value is not finite" was answered by dropping the option rather than by refusing the run.
+   *
+   * The raw string is checked, not just the converted number, because `Number("")` is `0` and
+   * `Number(" ")` is `0` — an empty value would otherwise become the STRICTEST setting by accident,
+   * which is the same class of silent substitution in the other direction.
+   */
+  const finiteNumber = (flag: string, raw: string): number => {
+    const n = Number(raw);
+    if (raw.trim() === "" || !Number.isFinite(n)) {
+      usage(`${flag} must be a finite number (got ${JSON.stringify(raw)}) — a malformed safety option is refused, never dropped: silently falling back to the default turns a typo into a more permissive run`);
+    }
+    if (n < 0) {
+      usage(`${flag} must not be negative (got ${JSON.stringify(raw)})`);
+    }
+    return n;
+  };
 
   for (let i = 0; i < args.length; i++) {
     const a = args[i]!;
-    if (a === "--tenant-root") tenantRootPath = args[++i];
-    else if (a === "--checkpoint-keyring") checkpointKeyringPath = args[++i];
-    else if (a === "--now") now = args[++i];
-    else if (a === "--max-age-hours") maxAgeHours = Number(args[++i]);
+    if (a === "--tenant-root") tenantRootPath = singleton(a, ++i);
+    else if (a === "--checkpoint-keyring") checkpointKeyringPath = singleton(a, ++i);
+    else if (a === "--enrolment-registry") {
+      // REPEATABLE: appends rather than replaces, so a second one cannot discard the first.
+      const p = args[++i];
+      if (p === undefined || p.startsWith("--")) usage("--enrolment-registry needs a file path");
+      enrolmentRegistryPaths.push(p);
+    } else if (a === "--audience") audience = singleton(a, ++i);
+    else if (a === "--now") now = singleton(a, ++i);
+    // The ONLY numeric flag this CLI takes. If a second one is ever added it goes through
+    // `finiteNumber` as well — that is why the validation is a named helper rather than two lines
+    // inlined here, where the next flag would be written beside it and not through it.
+    else if (a === "--max-age-hours") maxAgeHours = finiteNumber(a, singleton(a, ++i));
     else if (a === "--purpose") {
       // Both purposes require authority at verifier-controlled `now`; `authorize` identifies the
       // result as a current authorization decision. Any other value is a usage error here —
       // verifyEvidence ALSO fail-closes on it, but rejecting at the CLI gives the operator a clear
       // message instead of an UNVERIFIED verdict.
-      const p = args[++i];
+      const p = singleton(a, ++i);
       if (p !== "audit" && p !== "authorize") usage(`--purpose must be "audit" or "authorize" (got ${JSON.stringify(p)})`);
       purpose = p;
     } else if (a === "-h" || a === "--help") usage();
@@ -89,12 +169,28 @@ function main(argv: string[]): void {
   const bundle = readBytes(bundlePath);
   const tenantRoot = readBytes(tenantRootPath);
   const checkpointKeyring = readBytes(checkpointKeyringPath);
+  const enrolmentRegistries = enrolmentRegistryPaths.map(readBytes);
+
+  // A REGISTRY WITH NO READER IS A USAGE ERROR HERE, and a fail-closed verdict in the verifier.
+  // Both, deliberately: the verifier must never depend on a caller having checked, and an operator
+  // who forgot the flag deserves the sentence that says so rather than an UNVERIFIED they will read
+  // as a statement about the evidence. NOT the reverse — `--audience` with no registry is fine and
+  // means nothing was asked, which is exactly what the result will say.
+  if (enrolmentRegistries.length > 0 && (audience === undefined || audience === "")) {
+    usage("--enrolment-registry requires --audience (this verifier's own relying-party identity): a registry that does not know who is reading it cannot be scoped");
+  }
 
   const res = verifyEvidence(bundle, {
     tenantRoot,
     checkpointKeyring,
+    ...(enrolmentRegistries.length > 0 ? { enrolmentRegistries } : {}),
+    ...(audience !== undefined ? { audience } : {}),
     ...(now !== undefined ? { now } : {}),
-    ...(maxAgeHours !== undefined && Number.isFinite(maxAgeHours) ? { maxAgeMs: maxAgeHours * 60 * 60 * 1000 } : {}),
+    // NO `Number.isFinite` GUARD HERE, deliberately. A non-finite value cannot reach this line —
+    // `finiteNumber` refuses it with exit 5 at parse time. The guard that used to stand here read as
+    // a defence and acted as a silent DOWNGRADE: it dropped the option and restored the permissive
+    // default. A conditional that quietly discards a safety setting is worse than no conditional.
+    ...(maxAgeHours !== undefined ? { maxAgeMs: maxAgeHours * 60 * 60 * 1000 } : {}),
     ...(purpose !== undefined ? { purpose } : {}),
   });
 

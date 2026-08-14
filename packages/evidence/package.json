@@ -2,7 +2,7 @@
   "name": "noa-approval-evidence",
   "version": "0.1.0",
   "private": true,
-  "description": "The §13 Approval Evidence Bundle (noa.approval-evidence/0.1, D11-v2) + the offline `noa verify-evidence` 18-step verifier (plus two verifier-owned boundary steps: the F7b tenant-equality pre-rule and the receipt-role integrity rule). An outcome-keyed union over a full genesis-rooted receipt chain + a reused noa.checkpoint/0.1 head anchor (F4), verified fail-closed against an EXTERNAL tenant trust root + checkpoint keyring (F7). The step-15 by-principle negative-outcome rule means NO 'nothing/cancelled/unknown' label can launder an unproven execution: without a fresh trusted checkpoint every non-executed outcome is INCONCLUSIVE. Reuses noa-receipt's verifyChain/verifyCheckpoint and noa-approval-artifacts' verifyArtifact/refHash — nothing re-implemented. The S5 settlement plane bridges to noa-rail-x402's shipped reconcileSettlementEvidence (D7 correlation, layers 4+6) rather than re-deriving it. Zero runtime deps beyond those three.",
+  "description": "The \u00a713 Approval Evidence Bundle (noa.approval-evidence/0.1, D11-v2) + the offline `noa verify-evidence` 18-step verifier (plus two verifier-owned boundary steps: the F7b tenant-equality pre-rule and the receipt-role integrity rule). An outcome-keyed union over a full genesis-rooted receipt chain + a reused noa.checkpoint/0.1 head anchor (F4), verified fail-closed against an EXTERNAL tenant trust root + checkpoint keyring (F7). The step-15 by-principle negative-outcome rule means NO 'nothing/cancelled/unknown' label can launder an unproven execution: without a fresh trusted checkpoint every non-executed outcome is INCONCLUSIVE. Reuses noa-receipt's verifyChain/verifyCheckpoint and noa-approval-artifacts' verifyArtifact/refHash \u2014 nothing re-implemented. The S5 settlement plane bridges to noa-rail-x402's shipped reconcileSettlementEvidence (D7 correlation, layers 4+6) rather than re-deriving it. Zero runtime deps beyond those three.",
   "keywords": [
     "ai-agent",
     "governance",
@@ -45,9 +45,10 @@
     "NOTICE"
   ],
   "scripts": {
+    "build:deps": "npm --prefix ../.. run build && npm --prefix ../approval-artifacts run build",
     "build": "tsc -p tsconfig.json",
-    "gen:fixtures": "npm run build && node dist/fixtures/gen-fixtures.js",
-    "test": "npm run build && node dist/fixtures/gen-fixtures.js && node --test dist/test/*.test.js",
+    "gen:fixtures": "npm run build:deps && npm run build && node dist/fixtures/gen-fixtures.js",
+    "test": "npm run build:deps && npm run build && node dist/fixtures/gen-fixtures.js && node --test dist/test/*.test.js",
     "scan:authorization-window": "npm run build && node scripts/authorization-window-scan.mjs"
   },
   "dependencies": {

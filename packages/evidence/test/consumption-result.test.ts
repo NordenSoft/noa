@@ -182,8 +182,13 @@ test("MIGRATION: the verdict this corpus was produced under is STATED, so two ve
   // A rule that flips a verdict without moving the policy version leaves two different answers for
   // the same bytes with nothing to tell them apart. The value is asserted as a LITERAL rather than
   // imported: a test that asks the constant what it says cannot notice that it never moved.
+  //
+  // MOVED to `2026-08-15` by the enrolment slice, and the reason it moved AGAIN is the same reason:
+  // supplying an enrolment registry can turn a bundle that verified into `UNVERIFIED` or
+  // `INCONCLUSIVE`. Updating the literal here is the deliberate edit that says so — the assertion
+  // exists precisely so a rule change cannot ship without one.
   const res = run(load("valid/execution_failed.json"));
-  assert.equal(res.policy.verifierVersion, "noa.verify-evidence/2026-08-14");
+  assert.equal(res.policy.verifierVersion, "noa.verify-evidence/2026-08-15");
 });
 
 test("NON-CLAIM: this rule tests the SHAPE of the failure claim, never its truth", () => {

@@ -73,6 +73,36 @@ test("conformance corpus is non-empty and complete (every folder = 1 valid + ≥
   // Hold and Decision each carry one additional security regression beyond the base seven.
   assert.equal(byslug.get("hold-envelope")!.reject, 8, "hold-envelope must ship 8 rejections (incl. F2 recipients-swap)");
   assert.equal(byslug.get("decision")!.reject, 8, "decision must ship 8 rejections (incl. signer-identity split)");
+  // The enrolment registry ships well past the floor, and the number is PINNED rather than left to
+  // "≥7" — a reviewer found the generator's own header claiming 10 while the folder held 12. A count
+  // nobody asserts is a count that drifts, and the corpus on disk is the authority: this reads it.
+  assert.equal(
+    byslug.get("action-class-enrolment")!.reject, 13,
+    "action-class-enrolment must ship 13 rejections — 1 valid + 13 is what the folder holds, and this " +
+      "assertion is what stops the generator's header and the corpus disagreeing again",
+  );
+});
+
+test("the INDEX is derived from the corpus, not written beside it", () => {
+  // The committed INDEX.json is generated, so it can only drift if the generator and the emitted
+  // files disagree — which is exactly the class the count above caught in prose. Re-derived here from
+  // the files on disk, so the index cannot claim a corpus that is not there.
+  const index = loadJson(join(CONF_DIR, "INDEX.json")) as {
+    totals: { files: number };
+    bySpec: Record<string, { valid: number; reject: number }>;
+  };
+  assert.equal(index.totals.files, vectors.length, "INDEX.json's total disagrees with the files on disk");
+  const bySpec = new Map<string, { valid: number; reject: number }>();
+  for (const v of vectors) {
+    const c = bySpec.get(v.vec.spec) ?? { valid: 0, reject: 0 };
+    if (v.vec.expect === "ACCEPT") c.valid++;
+    else c.reject++;
+    bySpec.set(v.vec.spec, c);
+  }
+  for (const [spec, counts] of bySpec) {
+    assert.deepEqual(index.bySpec[spec], counts, `INDEX.json disagrees with the corpus for ${spec}`);
+  }
+  assert.equal(Object.keys(index.bySpec).length, bySpec.size, "INDEX.json names a spec the corpus does not contain");
 });
 
 test("every valid vector ACCEPTS and every rejection vector REJECTS", () => {

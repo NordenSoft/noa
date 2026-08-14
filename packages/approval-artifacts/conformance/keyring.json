@@ -78,5 +78,20 @@
     "roles": [
       "settlement-observer"
     ]
+  },
+  "enrol-signer-4": {
+    "publicKey": "MCowBQYDK2VwAyEA6+RM10QdYpijDNBGsHwk8SoA+xvYWwnW03CkplcexMA=",
+    "type": "DELEGATED",
+    "roles": [
+      "action-class-enrol"
+    ]
+  },
+  "enrol-revoked-6": {
+    "publicKey": "MCowBQYDK2VwAyEAIr4E8uDJwZbNplRik4MPb+tjxGOsRgqYfuAX9wTzl34=",
+    "type": "DELEGATED",
+    "roles": [
+      "action-class-enrol"
+    ],
+    "revokedAt": "2026-07-01T00:00:00.000Z"
   }
 }

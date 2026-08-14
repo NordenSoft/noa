@@ -29,6 +29,14 @@
  * mutation applied, restoration verified against that same sha256, and a dirty-tree check at the
  * end. Restoration that cannot be proven is itself a failing verdict.
  *
+ * ⚠ EXTENDED 2026-08-14. "Restoration" used to mean the SOURCE file only, and the source is one of
+ * three surfaces an experiment derives. The compiled `dist/` built from the mutant, and any
+ * committed file a suite's own generator rewrote while the mutant was live, both survived the arm.
+ * A stale mutant kernel build reached `packages/evidence`'s fixture generator and rewrote committed
+ * conformance fixtures — nine locally, and one in GitHub CI that failed an unrelated pull request.
+ * All three surfaces are now returned after every arm by the derived-state guard in
+ * `lib/knockout-runner.mjs`, and an arm that cannot return them says RESTORATION_FAILED.
+ *
  * And the verdict is no longer `green ? SURVIVED : KILLED`. That treated a real detection, a
  * pre-existing failure, a compile error, a crash and a timeout as one value. Six of the entries
  * below target `packages/gate`, whose baseline is `exit 1, 200/2` — so they reported KILLED for any
@@ -45,6 +53,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING, partitionByDependency,
+  buildStateGuardFor, isGitWorkTree,
 } from "./lib/knockout-runner.mjs";
 import { DEPENDENCY_PROBES } from "./lib/phone-core-probe.mjs";
 
@@ -1546,8 +1555,8 @@ const KNOCKOUTS = [
       "because the corpus runner never passes `purpose`: it was invisible to every fixture-driven " +
       "assertion, which is why the behavioural two-run pin exists.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },\n    NOT_EVALUATED,",
-    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\" },\n    NOT_EVALUATED,",
+    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },\n    // REPORTED, not hardcoded",
+    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\" },\n    // REPORTED, not hardcoded",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
@@ -1683,7 +1692,7 @@ const KNOCKOUTS = [
       "the settlement members already returned exit 2, which is what makes it a boundary crossing " +
       "rather than a difference of opinion. Must red the uncheckable-over-tampered-checkpoint vector.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "        if (!cp.ok && r.code === \"E_SETTLEMENT_BOUNDS_UNCHECKABLE\") failing = cp;",
+    find: "        if (!cp.ok && isSoftS5Failure(r.code)) failing = cp;",
     replace: "        if (false) failing = cp;",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
@@ -1701,6 +1710,347 @@ const KNOCKOUTS = [
     file: "packages/evidence/src/steps.ts",
     find: "      ctx.settlement = \"NO_EXECUTION_BINDING\";\n      return null;",
     replace: "      return null;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+
+  // ── S5 SLICE I4 — THE ENROLMENT PLANE ─────────────────────────────────────────────────────────
+  //
+  // Every entry below removes ONE rule and requires the corpus to notice. The set is organised
+  // around one sentence: SUPPLYING A REGISTRY MAY ONLY EVER MAKE A VERDICT HARDER TO REACH. Each
+  // mutation is a different way of making that false, and the design's own predecessor failed the
+  // first one — an absent class bought the legacy positive, so narrowing a registry was a bypass.
+  {
+    id: "enrolment-absence-buys-nothing",
+    control:
+      "A class positively ABSENT from a selected, in-window, closed registry is UNVERIFIED — never a " +
+      "blessing. This is the single most important rule in the plane, because the design it replaced " +
+      "got it backwards: there, an absent class received the legacy VALID_FULL_CHAIN with no " +
+      "settlement evidence at all, so a registry NARROWED to omit the payment class was MORE " +
+      "permissive for that class than one that enrolled it — and the same document recommended " +
+      "narrowing, shipping a recommended practice that doubled as the bypass. The mutation restores " +
+      "exactly that behaviour: absence falls through to 'nobody asked'. The class-absent and " +
+      "empty-registry fixtures must go from UNVERIFIED / exit 4 back to VALID_FULL_CHAIN / exit 0.",
+    file: "packages/evidence/src/enrolment.ts",
+    find:
+      "  if (!enrolled) {\n" +
+      "    ctx.enrolment = \"CLASS_ABSENT\";\n" +
+      "    return fail(S, \"E_ENROLMENT_CLASS_ABSENT\",\n" +
+      "      \"this bundle's action class is absent from every selected, in-window enrolment registry — an omission is an unanswered question, never a statement that the class is unenrolled (R7)\");\n" +
+      "  }\n",
+    replace: "  if (!enrolled) return null;\n",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-requires-a-reader-identity",
+    control:
+      "Registries supplied with no `--audience` are REFUSED, not consulted. An unscoped registry is " +
+      "the hole the audience field exists to close: without a reader identity, 'a registry scoped to " +
+      "one relying party' and 'a policy downgrade' are the same bytes and no verifier can tell them " +
+      "apart. The mutation makes a missing identity harmless, so a document written for somebody " +
+      "else applies here silently — which is the whole attack.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "  if (audience === undefined || audience === \"\") {",
+    replace: "  if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-audience-match-is-exact",
+    control:
+      "A registry is consulted only when it NAMES this reader — exact string membership, no wildcard, " +
+      "no prefix, no case folding. The mutation accepts any registry with a non-empty audience, which " +
+      "is the lenient matcher a reviewer would have to squint at: it looks like a scoping check and " +
+      "selects every registry that reaches the reader. The audience-mismatch fixture must notice.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "    if (!isArray(aud) || !arraySome(aud, (a: unknown) => a === audience)) {",
+    replace: "    if (!isArray(aud) || aud.length === 0) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-open-registry-is-never-consulted",
+    control:
+      "`closed: false` is a refusal, not a weaker statement. An open registry makes no complete claim " +
+      "for its audience and window, so every omission in it is ambiguous between 'not enrolled' and " +
+      "'not mentioned' — and this design refuses to read either as a permission. The mutation " +
+      "consults it anyway. Registered separately from the schema, DELIBERATELY: the schema types " +
+      "`closed` as a boolean precisely so this rule is the refuser and the operator is told WHICH " +
+      "thing is wrong instead of the generic 'does not authenticate'.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "    if (r.doc.closed !== true) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-window-must-contain-the-authorization-instant",
+    control:
+      "A registry governs a bundle only when its window contains the bundle's gate-signed " +
+      "authorization instant. The mutation treats every selected registry as in-window, which is how " +
+      "a stale or not-yet-live registry silently governs traffic it was never issued for. The window " +
+      "is REJECT-ONLY by construction — every failure on this plane is non-positive — so removing it " +
+      "cannot be defended as 'still fail-closed': it changes WHICH governance applies.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "    if (receivedAt >= nb && receivedAt <= na) arrayPush(inWindow, r);",
+    replace: "    arrayPush(inWindow, r);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-wrong-tenant-is-a-contradiction",
+    control:
+      "A registry that AUTHENTICATES under this bundle's own root delegation while declaring a " +
+      "different tenant is a CONTRADICTION — our own governance making a statement about somebody " +
+      "else, handed over as if it governed this bundle. The mutation lets it govern. Note the " +
+      "asymmetry this pins: a registry that does not authenticate is merely unusable (UNVERIFIED), " +
+      "while one that does and disagrees is an accusation (INVALID), and the two must not collapse.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "    if (t !== ctx.tenant) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-class-key-is-a-pair",
+    control:
+      "The class key is the PAIR (actionSchema, displayProjection), and the projection half is what " +
+      "makes enrolment fall out on a rendering change — fail-closed on drift, by construction. The " +
+      "mutation drops the projection comparison, so a row that names this class while pinning a " +
+      "DIFFERENT renderer hash enrols it anyway. That is the de-enrolment attack in reverse: an " +
+      "attacker who can substitute the projection hash keeps the class enrolled under a renderer " +
+      "nobody approved.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "        if (!projection.exact) {",
+    replace: "        if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-actionid-crosscheck-binds-the-namespace",
+    control:
+      "The row's `actionId` must equal `deferredReceipt.action.id` — the ACTION-SCHEMA namespace, not " +
+      "the display-projection one. This is what turns a known console↔kernel identifier drift from " +
+      "silent semantic divergence into a blocking defect for enrolled classes, and it is the " +
+      "regression pin for a correction an earlier design got wrong in the other direction: it keyed " +
+      "the whole class on the projection alone, i.e. on a namespace that never equals `action.id`. " +
+      "The mutation removes the cross-check; the id-drift and namespace fixtures must both notice.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "        if (rowActionId !== deferredActionId) {",
+    replace: "        if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-raw-mode-is-never-enrollable",
+    control:
+      "A RAW hold is never enrollable: on a RAW hold the display a human approved and the params a " +
+      "grant authorizes are two unrelated fields, so half the class key does not exist and the other " +
+      "half cannot be tied to a rendering. A registry claiming the class enrolled there is asserting " +
+      "something the gate-signed envelope cannot support. The mutation admits it, which would let a " +
+      "RAW flow acquire the appearance of an enrolled, human-approved class.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "        if (asStr(env?.mode) !== \"ENFORCED\") {",
+    replace: "        if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolled-class-requires-settlement-evidence",
+    control:
+      "THE RULE THE WHOLE SLICE EXISTS FOR. For an ENROLLED class an EXECUTED claim owes settlement " +
+      "evidence, and a dispatch — the gate's own self-report about its own paperwork — is no longer " +
+      "enough. The mutation removes the requirement, so an enrolled class with NO witness at all " +
+      "returns to VALID_FULL_CHAIN and exit 0, which is the exact sentence this design was built to " +
+      "stop being true. The headline fixture must go red.",
+    file: "packages/evidence/src/steps.ts",
+    find:
+      "  if (ctx.enrolment === \"ENROLLED\") {\n" +
+      "    const requiredErr = checkSettlementRequired(ctx, S, ctx.settlementFacts ?? null);\n" +
+      "    if (requiredErr) return requiredErr;\n" +
+      "  }\n",
+    replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-attestation-is-not-a-settlement",
+    control:
+      "THE CEILING. An authentic, bound, in-bounds, determinate settlement artifact that NOBODY " +
+      "RE-QUERIED is INCONCLUSIVE, never a positive: an offline verifier can establish that an " +
+      "assertion is well-formed and bound to this approval, and can never establish that it is TRUE, " +
+      "because the signer of the assertion is not the world. The mutation returns the offline tier as " +
+      "a pass — which is precisely the shipped defect this ladder replaced, where a self-consistent " +
+      "forged SETTLED artifact signed by any authorized observer produced VALID_FULL_CHAIN and exit 0 " +
+      "with nothing queried.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "  ctx.settlement = \"ATTESTED_UNVERIFIED\";\n  return fail(S, \"E_SETTLEMENT_UNRECONFIRMED\",",
+    replace: "  ctx.settlement = \"ATTESTED_UNVERIFIED\";\n  if (true) return null;\n  return fail(S, \"E_SETTLEMENT_UNRECONFIRMED\",",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-self-witnessed-settlement-is-not-admissible",
+    control:
+      "A key that says 'I dispatched it' saying 'and it settled' is one party attesting to its own " +
+      "effect, and for an enrolled class that observation is not admissible. It is CAPPED rather than " +
+      "REJECTED on purpose — this is today's honest deployment shape, and refusing it outright would " +
+      "refuse the only shape that currently exists. The mutation admits it, which would let the " +
+      "executing party supply its own settlement witness. The two fixtures differ by ONE key, so this " +
+      "arm is independent of the requirement rule above.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "  if (facts.observerRelationship === \"SAME_SIGNING_KEY\") {",
+    replace: "  if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolled-failure-may-not-ride-the-gates-word",
+    control:
+      "THE CARRY-FORWARD. `EXECUTION_FAILED` is a POSITIVE outcome that pays no step-15 " +
+      "fresh-checkpoint tax, so the moment enrolment gives EXECUTED a price it becomes the ONLY " +
+      "outcome that is both step-15-exempt AND settlement-free — the cheap relabelling path for a " +
+      "gate hiding a spend. The mutation removes the rule, so an enrolled class relabelled as a " +
+      "failure returns to VALID_FULL_CHAIN and exit 0 on the gate's own word. The rule is scoped to " +
+      "enrolled classes, so its CONTROL fixture — the same bundle with no registry — must stay green " +
+      "under the mutation, which is what makes this an arm on the asymmetry rather than on step 11.",
+    file: "packages/evidence/src/steps.ts",
+    find:
+      "  const witnessErr = checkNonDispatchWitnessed(ctx, S);\n" +
+      "  if (witnessErr) return witnessErr;\n",
+    replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  // ── PANEL ROUND 1 — one arm per finding, each proving the FIX is what the corpus measures ──────
+  {
+    id: "enrolment-supplied-collection-shape-is-refused",
+    control:
+      "THE HIGH FINDING. A SUPPLIED registry collection this verifier cannot read as a list is " +
+      "REFUSED — it never softens into \"no registry supplied\", which is the PERMISSIVE branch. The " +
+      "mutation restores the shipped normalization (anything not an array becomes `undefined`), so a " +
+      "reader that handed over the registry bytes directly, or an array-LIKE object, or a Set, has " +
+      "supplied governance and receives VALID_FULL_CHAIN / NOT_EVALUATED / exit 0. This is the only " +
+      "route in the plane that skips the plane entirely, and it is reachable from the PUBLISHED " +
+      "runtime API — TypeScript does not make malformed JavaScript calls impossible.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "      registryShapeRefusal = `enrolmentRegistries was supplied as ${typeof suppliedRegistries === \"object\" && suppliedRegistries !== null ? \"a non-array object\" : JSON.stringify(typeof suppliedRegistries)} — a registry collection this verifier cannot read as a list is REFUSED, never treated as \"no registry supplied\". Softening an unrecognised trust-input shape into the unconfigured branch would return a positive verdict for a reader that did supply governance`;",
+    replace: "      optEnrolmentRegistries = undefined;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-collection-copied-by-index-not-by-iterator",
+    control:
+      "The registry collection is snapshotted BY INDEX through `length`, never through the caller's " +
+      "iterator. On a genuine array `length` is a non-configurable data property, so there is nothing " +
+      "to lie; `Symbol.iterator` is an ordinary own slot, so there is. The mutation restores the " +
+      "spread, and a REAL array — one `Array.isArray` calls an array — carrying an own iterator that " +
+      "yields nothing copies to `[]`: the no-registry branch and exit 0 again, through a different " +
+      "door than the shape check above. Registered separately for exactly that reason.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "      for (let i = 0; i < len; i++) arrayPush(snapshot, suppliedRegistries[i] as Uint8Array | string);",
+    replace: "      for (const item of [...(suppliedRegistries as unknown[])]) arrayPush(snapshot, item as Uint8Array | string);",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-window-arithmetic-is-nanosecond-exact",
+    control:
+      "Registry windows are compared in EXACT nanoseconds, through the grammar that admitted the " +
+      "document. The mutation restores millisecond `Date.parse`, which collapses a one-nanosecond " +
+      "rotation boundary: two contiguous, non-overlapping, strictly-versioned registries both match " +
+      "the same authorization instant, the SUCCESSOR carrying the rotated projection hash is selected " +
+      "too, and an honest archived bundle is reported INVALID / E_ENROLMENT_MISMATCH for an ordinary " +
+      "governance rotation. A hard rejection of good evidence produced entirely by the arithmetic — " +
+      "which is why the fix reuses the parser the artifact layer already runs for key activation " +
+      "rather than a second one that can drift from it.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "  return rfc3339Nanos(v, ctx.schemas[ENROLMENT_SPEC]);",
+    replace: "  const ms = typeof v === \"string\" ? Date.parse(v) : NaN;\n  return Number.isNaN(ms) ? null : BigInt(ms) * 1000000n;",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-class-selection-requires-the-action-side",
+    control:
+      "Only an ACTION-side handle may select a registry row for adjudication. The class is the PAIR, " +
+      "the ACTION half identifies it, and the projection half is what the pair is checked AGAINST once " +
+      "the row is known to be about this class. The mutation restores selection on the projection id " +
+      "alone — and projection identifiers are a SHARED namespace, so a registry enrolling a genuinely " +
+      "different action class that renders through the same projection becomes INVALID / " +
+      "E_ENROLMENT_MISMATCH. That is an accusation aimed at a registry which merely does not mention " +
+      "this class, where the honest answer is CLASS_ABSENT. The error runs in the ACCUSING direction, " +
+      "which is why it gets its own arm instead of being folded into the pair check.",
+    file: "packages/evidence/src/enrolment.ts",
+    find: "      const candidate =\n        schema.idMatch\n",
+    replace: "      const candidate =\n        schema.idMatch\n        || projection.idMatch\n",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "cli-numeric-flag-is-refused-not-dropped",
+    control:
+      "A malformed NUMERIC flag is a usage error, and the run does not continue with the option " +
+      "quietly removed. Measured on a DENIED fixture: `--max-age-hours 0` exits 3 because the " +
+      "freshness rule fires, while `--max-age-hours definitely-not-a-number` exited 0 — `Number()` " +
+      "answered NaN, and a `Number.isFinite` guard at the call site OMITTED maxAgeMs, restoring the " +
+      "permissive 24-hour default. A mistyped SAFETY option produced a positive verdict, across the " +
+      "usage/verdict boundary. The mutation removes the validation so the malformed value flows " +
+      "through again; the wire suite must catch it at the process boundary, which is the only place " +
+      "the exit code is real.",
+    file: "packages/evidence/src/cli.ts",
+    find: "    if (raw.trim() === \"\" || !Number.isFinite(n)) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "cli-singleton-flag-refuses-repetition",
+    control:
+      "A singleton flag given twice is a USAGE error, never last-wins. Measured: " +
+      "`--audience hostile --audience good` exited 6 and `--audience good --audience hostile` exited " +
+      "4, so whoever appends to the command line LAST decided the answer, silently. That is the shape " +
+      "a wrapper script, a CI template or an injected argument exploits, and it applied to " +
+      "`--tenant-root` as much as to `--audience`. The mutation restores last-wins.",
+    file: "packages/evidence/src/cli.ts",
+    find: "    if (seen.has(flag)) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "cli-singleton-flag-requires-a-value",
+    control:
+      "A singleton flag with no value is a USAGE error, and the run does not continue. Measured: an " +
+      "otherwise valid invocation ending in a bare `--audience` consumed `undefined`, VERIFIED ANYWAY " +
+      "and exited 0 — the operator typed a flag, got a verdict, and nothing said the flag did nothing. " +
+      "The same check refuses a flag whose \"value\" is the NEXT FLAG, which is how a bare flag in the " +
+      "middle of a command line silently eats its successor. The mutation restores the bare read.",
+    file: "packages/evidence/src/cli.ts",
+    find:
+      "    if (v === undefined || v.startsWith(\"--\")) {\n" +
+      "      usage(`${flag} needs a value${v === undefined ? \"\" : ` (got the next flag ${v})`}`);\n" +
+      "    }\n" +
+      "    return v;\n",
+    replace: "    return v as string;\n",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "enrolment-refusals-are-not-all-hard-rejections",
+    control:
+      "The verdict map is THREE-way. An unconfigured or unaddressed reader is UNVERIFIED — a " +
+      "statement about THIS VERIFIER — while missing evidence is INCONCLUSIVE and only a " +
+      "contradiction is INVALID. The mutation collapses the UNVERIFIED branch onto the INVALID " +
+      "default, which is SAFE (it does not over-claim) and WRONG: it accuses cryptographically " +
+      "perfect evidence of being broken because the reader's own configuration could not answer, and " +
+      "an auditor who learns the verdict word lies stops reading it. This is the exact mistake an " +
+      "implementer makes by adding one code to one ternary.",
+    file: "packages/evidence/src/verify-evidence.ts",
+    find: "        UNVERIFIED_CODES.has(failing.code ?? \"\")\n          ? \"UNVERIFIED\"",
+    replace: "        false\n          ? \"UNVERIFIED\"",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
@@ -1752,11 +2102,129 @@ if (REQUIRES && selected.length === 0) {
   process.exit(1);
 }
 
+// ── A RUN THAT DIED MID-ARM IS REPAIRED BEFORE ANYTHING IS MEASURED ────────────────────────────
+// No `finally` runs after SIGKILL, and a synchronous sweep cannot service a signal handler either
+// — installing one would only make Ctrl-C stop working until the sweep ended. So the crash path is
+// answered the other way round: each arm leaves an on-disk marker naming what it is holding, and
+// the NEXT run reads it. Twice already a mutant source survived an interrupted run
+// (`src/intrinsics.ts`, `packages/adapter-core/src/side-effect-state.mjs`) and was found by hand
+// with `git status`; a mutant `dist/` from the same crash is invisible to `git status` entirely.
+//
+// This runs BEFORE the baselines on purpose. A baseline measured against a leaked mutant build is
+// the same defect one level down: every verdict in the sweep would then be relative to it.
+//
+// AND IT IS A HARD STOP, not a finding filed at the end (panel round 1). A finding is something the
+// run reports after measuring; the whole point here is that measuring must not begin. Two states
+// end this process before a single baseline is taken:
+//   • ANOTHER RUN HOLDS THIS TREE — its mutation is on disk right now. Racing it produces two sets
+//     of verdicts about a third tree that is neither run's.
+//   • THE PREVIOUS RUN'S LEFTOVERS COULD NOT BE PROVEN CLEAN — a mutant source that could not be
+//     restored, or a file whose contents are neither pristine nor the recorded mutation. Every
+//     baseline after that would be measured against unknown bytes.
+const GUARD = buildStateGuardFor(ROOT);
+const START = GUARD.start();
+if (!START.ok && START.kind === "held") {
+  console.error(
+    `\nANOTHER KNOCKOUT RUN OWNS THIS TREE.\n` +
+    `  holder:   ${START.detail}${START.startedAt ? `, since ${START.startedAt}` : ""}\n` +
+    `  lock:     ${START.lockPath}\n` +
+    (START.certainty === "indeterminate"
+      ? `This machine would not tell us whether that process is alive (\`ps\` refused). An unknown\n` +
+        `holder is treated exactly as a live one: the alternative is to recover a tree somebody else\n` +
+        `may be mid-suite in.\n`
+      : `Its mutation is on disk right now. Two runs mutating one worktree measure a third tree that\n` +
+        `is neither of theirs, so this one refuses to start rather than race.\n`) +
+    `Wait for it, or — once you have confirmed that process is gone — delete the lock file.\n`,
+  );
+  process.exit(1);
+}
+if (!START.ok && START.kind === "corrupt") {
+  console.error(
+    `\nTHE KNOCKOUT LOCK COULD NOT BE READ.\n  ${START.detail}\n  lock:     ${START.lockPath}\n` +
+    `Only a lock file that is ABSENT means no run is in flight. One that cannot be parsed might\n` +
+    `describe a run holding a mutation, so this refuses rather than assume. Inspect it and remove it.\n`,
+  );
+  process.exit(1);
+}
+if (!START.ok) {
+  const r = START.recovered;
+  console.error(`\n⚠ an interrupted knockout run (entry ${r.entry}, started ${r.startedAt}) could not be repaired:`);
+  for (const f of [...r.failures, ...r.unresolved]) console.error(`    ⚠ ${f}`);
+  for (const p of r.suspect) {
+    console.error(
+      `    ⚠ ${p} went dirty during the interrupted phase. During a live phase this runner is the` +
+      ` only actor and can prove that file is its output; after a crash the window is unbounded, so` +
+      ` it will not touch it for you.`,
+    );
+  }
+  console.error(
+    `\nTHE PREVIOUS RUN'S LEFTOVERS COULD NOT BE PROVEN CLEAN.\n` +
+    `  lock:     ${START.lockPath}  (kept, deliberately — a cleared lock over an unrestored tree\n` +
+    `            tells the next run there is nothing to look at)\n` +
+    `Every baseline measured from here would be measured against unknown bytes, so no baseline is\n` +
+    `measured. Inspect the files above, put them right, then re-run.\n`,
+  );
+  process.exit(1);
+}
+if (START.recovered) {
+  const r = START.recovered;
+  console.log(`⚠ RECOVERED an interrupted knockout run (entry ${r.entry}, started ${r.startedAt}):`);
+  const say = (label, items) => { if (items.length) console.log(`    ${label}: ${items.join(", ")}`); };
+  say("restored mutant SOURCE", r.sources);
+  say(`restored ${r.artifacts.length} build artefact(s)`, r.artifacts.slice(0, 6));
+  say("deleted build output the interrupted phase created", r.removed.slice(0, 6));
+  console.log("    the tree is provably back to its pre-crash state\n");
+}
+
+// The lock is this run's, and it must not outlive the process — a lock left behind would make every
+// later run refuse. `exit` covers the ordinary paths and every `process.exit` below it.
+process.on("exit", () => { try { GUARD.release(); } catch { /* nothing left to release */ } });
+
+// The tracked-file half of the guard is only as good as git's answer, and "git could not tell us"
+// must never arrive as "nothing was dirty". Inside the gate that distinction is not left to a
+// library default: this repository IS a git work tree, and if it ever is not — or if the probe
+// itself cannot answer — the sweep says so and stops rather than running with a third of the guard
+// silently inert.
+try {
+  if (!isGitWorkTree(ROOT)) {
+    console.error(
+      `\n${ROOT} is not a git work tree, so the guard cannot see which generated files a suite\n` +
+      `rewrites — the surface that corrupted a committed conformance fixture in CI. Refusing to run.\n`,
+    );
+    process.exit(1);
+  }
+} catch (e) {
+  console.error(`\ncannot tell whether ${ROOT} is a git work tree (${String(e && e.message)}). Refusing to run.\n`);
+  process.exit(1);
+}
+
 // Snapshot the worktree BEFORE anything runs, so residue is measured as a DIFFERENCE.
 let WORKTREE_BEFORE = "";
 try {
   WORKTREE_BEFORE = execFileSync("git", ["status", "--porcelain"], { cwd: ROOT, encoding: "utf8" }).trim();
 } catch { /* not a git tree */ }
+
+// ── THE BASELINE PHASE IS PROTECTED TOO ────────────────────────────────────────────────────────
+// Panel round 2 #2. Protection used to begin at the first MUTATION, and the damage does not: the
+// clean baseline for `packages/evidence` runs `npm run build && node dist/fixtures/gen-fixtures.js`,
+// which rewrites committed conformance fixtures. A developer with an uncommitted edit in one of
+// those files lost it before any arm existed to protect them, and the residue check could not see
+// the loss because it compares status STRINGS and ` M fixture.json` is unchanged either way.
+//
+// Two deliberate narrowings, so this protects work without hiding facts:
+//   • `artifacts: false` — the baselines COMPILE from pristine sources, and that build is the
+//     reference every arm is later restored to. Snapshotting `dist/` here and putting it back would
+//     delete a package's first build and make every arm rebuild it.
+//   • `tracked: "dirty-only"` — only paths that were ALREADY dirty are put back. A file that was
+//     clean and that a baseline changed is a genuine drift between the committed fixtures and their
+//     generator; reverting that would hide something the residue check should report.
+const BASELINE_PHASE = "<suite baselines>";
+try {
+  GUARD.beginPhase({ label: BASELINE_PHASE, artifacts: false, tracked: "dirty-only" });
+} catch (e) {
+  console.error(`\ncannot protect the tree before measuring baselines: ${String(e && e.message)}\nRefusing to run.\n`);
+  process.exit(1);
+}
 
 const suiteKey = (k) => JSON.stringify(k.suite);
 const baselines = new Map();
@@ -1769,11 +2237,34 @@ for (const k of selected) {
   baselines.set(key, { exit: obs.exit, failing: obs.failing, findings: obs.findings, ms: obs.ms, timedOut: obs.timedOut, out: obs.out });
 }
 
+// Close the baseline phase: any uncommitted work a baseline generator overwrote goes back now,
+// before the first mutation, and a phase that cannot be closed stops the run exactly as an arm's
+// would — nothing measured after an unrestored tree is about the tree anybody meant to measure.
+const BASELINE_RESTORE = GUARD.endPhase();
+if (BASELINE_RESTORE && BASELINE_RESTORE.failures.length > 0) {
+  console.error(`\nthe suite baselines left this tree in a state the guard could not return:`);
+  for (const f of BASELINE_RESTORE.failures) console.error(`    ⚠ ${f}`);
+  console.error(`No mutation was applied. Refusing to measure anything from here.\n`);
+  process.exit(1);
+}
+if (BASELINE_RESTORE && BASELINE_RESTORE.trackedReverted.length > 0) {
+  console.log(
+    `  baseline phase: put back ${BASELINE_RESTORE.trackedReverted.length} uncommitted file(s) a ` +
+    `baseline generator had overwritten (${BASELINE_RESTORE.trackedReverted.slice(0, 4).join(", ")})\n`,
+  );
+}
+
 // A knockout whose baseline could not even be measured proves nothing, so say that rather than
 // scoring it.
 const unmeasurable = [...baselines.entries()].filter(([, b]) => b.timedOut);
 
 const results = [];
+// ── AN ARM THAT COULD NOT GIVE THE TREE BACK ENDS THE SWEEP ────────────────────────────────────
+// This used to record RESTORATION_FAILED and carry on to the next arm, which is the same fail-open
+// shape as the defect this guard was written for: every later arm would then mutate, measure and
+// restore relative to whatever the failed one left behind, and the honest verdicts of 100 arms
+// would be printed beside the one line saying the tree was never clean. The instrument stops.
+let aborted = null;
 for (const k of selected) {
   const baseline = baselines.get(suiteKey(k));
   if (baseline.timedOut) {
@@ -1783,6 +2274,10 @@ for (const k of selected) {
   }
   const result = runKnockout({ root: ROOT, entry: k, registry: KNOCKOUTS, baseline });
   results.push(requireNamedProofFailures(k, result));
+  if (result.restored === false || result.verdict === VERDICT.RESTORATION_FAILED) {
+    aborted = { id: k.id, detail: result.detail, done: results.length, total: selected.length };
+    break;
+  }
 }
 
 // ── REPORT ─────────────────────────────────────────────────────────────────────────────────────
@@ -1800,6 +2295,25 @@ for (const r of results) {
   console.log(`  ${mark} ${String(r.verdict).padEnd(28)} ${r.id.padEnd(34)} ${r.control}`);
   if (r.detail) console.log(`           ${r.detail}`);
   if (r.restored === false) console.log(`           ⚠ RESTORATION UNPROVEN for ${r.file}`);
+}
+
+// ── WHAT THE ARMS DERIVED, AND GAVE BACK ───────────────────────────────────────────────────────
+// Source restoration has been proven per experiment for a year; the compiled and generated output
+// of that source was not, and a mutant `dist/` is invisible to the residue check below because it
+// is gitignored. This line is where that work becomes visible: a sweep whose arms compile nothing
+// legitimately prints zeroes, and a sweep that reports zeroes while `packages/evidence` was
+// mutated is a guard that has stopped working.
+{
+  const withState = results.filter((r) => r.buildState);
+  const sum = (pick) => withState.reduce((n, r) => n + pick(r.buildState).length, 0);
+  const ms = withState.reduce((n, r) => n + r.buildState.ms, 0);
+  if (withState.length > 0) {
+    console.log(
+      `\n  derived state returned after every arm: ${sum((b) => b.artifactsRestored)} build artefact(s) ` +
+      `restored, ${sum((b) => b.artifactsRemoved)} removed, ${sum((b) => b.trackedReverted)} generated ` +
+      `file(s) reverted — ${ms}ms total across ${withState.length} arm(s)`,
+    );
+  }
 }
 
 const passed = results.filter((r) => PASSING.has(r.verdict));
@@ -1840,6 +2354,17 @@ try {
 
 const bad = results.filter((r) => !PASSING.has(r.verdict));
 const errors = [];
+if (aborted) {
+  errors.push(
+    `  SWEEP ABORTED              ${aborted.id} could not return the tree, so the run STOPPED after ` +
+    `${aborted.done} of ${aborted.total} controls.\n` +
+    `      ${aborted.detail || "(no detail)"}\n` +
+    `      The ${aborted.total - aborted.done} knockout experiment(s) after it were NOT PERFORMED. ` +
+    `(Every suite baseline above had already been measured, on a tree that was still clean.) A ` +
+    `knockout that cannot restore the tree has not produced a security result, and neither has ` +
+    `anything measured after it.`,
+  );
+}
 for (const r of bad) {
   errors.push(`  ${r.verdict.padEnd(26)} ${r.id} — ${r.detail || "(no detail)"}`);
 }
@@ -1864,14 +2389,23 @@ if (results.length === 0 && DEPS_MISSING.length > 0) {
 }
 
 /**
- * Restore build artefacts to the pristine sources — knockout runs left dist/ built from mutated
- * input, and a later step reading dist/ would be reading the mutation.
+ * Rebuild every compiled package from the (already restored) sources — the SWEEP-LEVEL BACKSTOP.
  *
  * ⚠ THIS MUST RUN ON THE FAILURE PATH TOO, and for a while it did not. The findings block below used
  * to `process.exit(1)` above this rebuild, so the ONE run that most needs clean artefacts — a red one
  * — was the one run that left mutant `dist/` on disk. Source restoration is SHA-verified per
  * experiment and was never in doubt; the compiled output is a second copy of the mutation, ignored by
  * git and therefore invisible to the residue check right above. Whatever ran next read it.
+ *
+ * ⚠ AND IT WAS NEVER SUFFICIENT, which is the defect fixed in `knockout-runner.mjs`. Running at the
+ * END of the sweep cannot help the 120 arms that come after arm 1: between two arms the tree still
+ * carried the previous mutation's `dist/`, and one of those arms is `packages/evidence`, whose test
+ * script REGENERATES committed conformance fixtures from whatever kernel build is on disk. Nine
+ * settlement fixtures were rewritten that way locally, and on 2026-08-14 the same leak rewrote
+ * `packages/evidence/conformance/settlement/s5-settlement-valid-base.json` in GitHub CI and failed
+ * an unrelated pull request. Derived state is now returned AFTER EVERY ARM, byte-exact, by the
+ * guard in the runner library. This rebuild stays as the last line of defence: it is the only thing
+ * that can repair an artefact the per-arm snapshot could not.
  */
 function restorePristineArtifacts() {
   try {

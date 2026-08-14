@@ -29,6 +29,7 @@ const pristineDateParse = intrinsics.dateParse;
 /** The empty permitted-artifact set for an outcome the union table does not name (inert, shared). */
 const EMPTY_FIELD_SET = frozenSet<string>([]);
 import {
+  type EnrolmentEvaluation,
   type EvidenceBundle,
   type EvidenceOutcome,
   type StepName,
@@ -41,6 +42,7 @@ import {
   OPTIONAL_ARTIFACT_FIELDS,
   STEP_OWNED_ABSENCE,
 } from "./types.js";
+import { checkEnrolment, checkNonDispatchWitnessed, checkSettlementRequired, type SettlementFacts } from "./enrolment.js";
 import {
   buildResolvedKeyring,
   buildReceiptKeyring,
@@ -97,12 +99,35 @@ export interface Ctx {
   /** DESIGN 2: the authorization dimension, computed in step 1 and reported alongside the verdict. */
   authorization: VerdictDimensions["authorization"];
   /**
-   * S5: the settlement dimension, set ONLY by the settlement rule inside step 10 when the bundle
-   * carries a settlement artifact. Left unset on every other path, so `verify-evidence` reads it as
-   * `UNCHECKED` on a non-settlement failure and lets the pipeline-complete default
-   * (`NO_EXECUTION_BINDING`) stand on success — the settlement rule is the ONLY writer.
+   * S5: the settlement dimension, set ONLY by the settlement rules inside steps 10/11 when the
+   * bundle carries a settlement artifact or the class is enrolled. Left unset on every other path,
+   * so `verify-evidence` reads it as `UNCHECKED` on a non-settlement failure and lets the
+   * pipeline-complete default (`NO_EXECUTION_BINDING`) stand on success.
    */
   settlement?: SettlementDimension;
+  /**
+   * S5 — what the D7 reconciler concluded about an ACCEPTED settlement artifact, recorded by the
+   * artifact plane so the enrolment plane's R8 can read it without running the reconciler twice.
+   * Absent means no artifact was accepted, which R8 reads as the absence it is.
+   */
+  settlementFacts?: SettlementFacts;
+  /**
+   * S5 — THE THIRD EXTERNAL INPUT. The enrolment registries the operator supplied, as DOCUMENTS
+   * (bytes), never bundle members: enrolment states a tenant's governance, and a producer that held
+   * the document saying "this class owes a witness" could simply delete it.
+   *
+   * `undefined` or empty is the migration branch: the question is not asked, and no rule below the
+   * first line of the enrolment plane runs.
+   */
+  enrolmentRegistries?: ReadonlyArray<Uint8Array | string>;
+  /** S5 — this verifier's OWN relying-party identity, matched against a registry's signed audience. */
+  audience?: string;
+  /**
+   * S5 — what the enrolment plane found, written by that plane alone. `verify-evidence` reports it
+   * verbatim, so the default `NOT_EVALUATED` is a statement with a meaning ("nobody asked") rather
+   * than a placeholder.
+   */
+  enrolment: EnrolmentEvaluation;
 }
 
 // ─── tiny structural getters (no schema logic — that is verifyArtifact's job) ─────────────────────
@@ -979,6 +1004,9 @@ function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
     // contradicts the documented definition of the value. Setting it here makes the label true on
     // every exit path, including the one where a hard checkpoint failure dominates the verdict.
     case "SETTLEMENT_CORRELATED_UNRECONFIRMED":
+      // Handed to the enrolment plane's R8 rather than re-derived there: running the reconciler a
+      // second time would be a second answer that can disagree with the first.
+      ctx.settlementFacts = { code: r.code, observerRelationship: r.observerRelationship };
       ctx.settlement = "NO_EXECUTION_BINDING";
       return null;
     // R1 polarity — the artifact reports a determinate NON-settlement under an EXECUTED outcome: the
@@ -1060,6 +1088,19 @@ export function step10_executed(ctx: Ctx): StepResult {
   // first. A no-op when the bundle carries no settlement artifact.
   const settlementErr = checkSettlement(ctx, S);
   if (settlementErr) return settlementErr;
+  // (§5.2 R4-R7) The ENROLMENT plane runs AFTER the artifact plane, and the order is normative: an
+  // artifact that is present must be checked whether or not a registry was supplied, so "present ⇒
+  // always checked" never depends on a verifier input. A no-op when no registry was supplied.
+  const enrolErr = checkEnrolment(ctx, S);
+  if (enrolErr) return enrolErr;
+  // (§5.2 R8/R9) And ONLY for an enrolled class does an EXECUTED claim owe a witness. Every branch
+  // of this rule is non-positive in this build: the sole route to a positive for an enrolled class
+  // is the relying party's own node re-answering the chain queries, an input this verifier does not
+  // take yet. The ceiling is the honest answer, not a gap to route around.
+  if (ctx.enrolment === "ENROLLED") {
+    const requiredErr = checkSettlementRequired(ctx, S, ctx.settlementFacts ?? null);
+    if (requiredErr) return requiredErr;
+  }
   return ok(S);
 }
 
@@ -1108,6 +1149,15 @@ export function step11_executionFailed(ctx: Ctx): StepResult {
   // failure outcome may not ride a consumption that says the request was dispatched.
   const resultErr = checkConsumptionResult(ctx, S, "E_EXECUTION_FAILED", "FAILED_BEFORE_DISPATCH");
   if (resultErr) return resultErr;
+  // THE I3 CARRY-FORWARD (see enrolment.ts). The enrolment plane runs here too — AFTER R10, so a
+  // mislabelled consumption is attributed to the rule that owns it — because `EXECUTION_FAILED` is
+  // step-15-exempt AND settlement-free, which makes it the cheap relabelling path for a gate hiding
+  // a spend the moment enrolment gives `EXECUTED` a price. For an ENROLLED class the gate's own word
+  // is not enough. With no registry supplied nothing here changes.
+  const enrolErr = checkEnrolment(ctx, S);
+  if (enrolErr) return enrolErr;
+  const witnessErr = checkNonDispatchWitnessed(ctx, S);
+  if (witnessErr) return witnessErr;
   return ok(S);
 }
 

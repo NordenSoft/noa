@@ -175,8 +175,7 @@ export type StepCode =
   | "E_NO_TRUST_ROOT"
   // S5 (REVISION 3) settlement-artifact plane — one code per failure class, emitted ONLY inside
   // step 10 (EXECUTED), and only when the bundle carries a settlement artifact (present ⇒ always
-  // checked). The enrolment-plane and R8/R9 requirement codes are NOT here yet — they arrive with
-  // the enrolment registry (a later slice); these are the artifact-plane rules R1/R2/R3.
+  // checked). These are the artifact-plane rules R1/R2/R3.
   | "E_SETTLEMENT_BINDING" // R1 — the artifact is not a valid, bound noa.settlement-evidence/0.1
   | "E_SETTLEMENT_POLARITY" // R1 — a determinate non-settlement status under an EXECUTED outcome
   | "E_SETTLEMENT_CORRELATION" // R3 — the recomputed D7 nonce != the artifact's correlation
@@ -187,7 +186,32 @@ export type StepCode =
   // E_SETTLEMENT_BINDING, which §5.3 warns must not become a bucket.
   | "E_PARAMS_PREIMAGE_ORPHANED" // R2 — a preimage with no settlementEvidence: it bounds nothing
   | "E_SETTLEMENT_BOUNDS_UNCHECKABLE" // R2 — witness present, preimage ABSENT or paramsHash keyed
-  | "E_SETTLEMENT_BOUNDS_EXCEEDED"; // R3 — network/asset/payer/payee/amount outside the preimage
+  | "E_SETTLEMENT_BOUNDS_EXCEEDED" // R3 — network/asset/payer/payee/amount outside the preimage
+  // ── S5 enrolment plane (R4-R7) — FIVE distinct refusals plus one contradiction. ────────────────
+  //
+  // They are five codes and not one because the retired `E_ENROLMENT_UNKNOWN` was a bucket for four
+  // different causes, which makes them mutually substitutable: a bug that turns "this registry is
+  // not addressed to me" into "this class is not in it" passes both fixtures. Every code below is
+  // pinned by exactly one vector, and every vector pins exactly one code.
+  //
+  // FIVE ARE `UNVERIFIED`, NOT `INVALID`, and the split is the rule's whole point: an unconfigured
+  // or unaddressed verifier could not ANSWER, which is a statement about the reader's own
+  // configuration. Only a registry that CONTRADICTS the bundle is an accusation.
+  | "E_ENROLMENT_AUDIENCE" // R4 — registries supplied and no --audience: an unscoped registry
+  | "E_ENROLMENT_UNVERIFIABLE" // R5 — none authenticates AND is addressed to this reader
+  | "E_ENROLMENT_NOT_CLOSED" // R5 — a selected registry does not claim completeness
+  | "E_ENROLMENT_MISMATCH" // R5 — a selected registry structurally contradicts the bundle (INVALID)
+  | "E_ENROLMENT_OUT_OF_WINDOW" // R6 — no selected registry's window contains receivedAt
+  | "E_ENROLMENT_CLASS_ABSENT" // R7 — the class is absent from every selected registry
+  // ── S5 the settlement REQUIREMENT, reachable only for an ENROLLED class (R8/R9). ───────────────
+  | "E_SETTLEMENT_REQUIRED" // R8 — enrolled, and no admissible determinate witness answers
+  | "E_SETTLEMENT_UNRECONFIRMED" // R9 — enrolled and attested, and nobody re-queried
+  // The I3 carry-forward, expressed inside the enrolment rules rather than by widening any union.
+  // `EXECUTION_FAILED` is a POSITIVE outcome that pays no step-15 freshness tax, so once EXECUTED
+  // costs a witness for an enrolled class, the failure label becomes the cheap relabelling path for
+  // a gate hiding a spend. For an ENROLLED class the gate's own `FAILED_BEFORE_DISPATCH` is not
+  // enough on its own, and no artifact admitted on this outcome can supply the missing observation.
+  | "E_NON_DISPATCH_UNWITNESSED"; // enrolled + EXECUTION_FAILED with no checkable non-dispatch
 
 /**
  * The §13 outcome-keyed union, MADE MECHANICAL. The container is documented as "each outcome carries
@@ -341,14 +365,26 @@ export type SettlementDimension =
 /**
  * Whether the verifier was configured to ask the enrolment question at all, and what it found.
  *
- * `NOT_EVALUATED` is the value on every run that supplies no enrolment registry — which is every
- * run today. It is a REAL, reportable state, distinct from "evaluated and found wanting": a verifier
- * that was not handed the input does not ask the question, and therefore does not change its answer.
- * That distinction is what makes "no historical bundle changes verdict" constructible rather than
- * merely promised.
+ * `NOT_EVALUATED` is a REAL, reportable state, distinct from "evaluated and found wanting": a
+ * verifier that was not handed the input does not ask the question, and therefore does not change
+ * its answer. That distinction is what makes "no historical bundle changes verdict" constructible
+ * rather than merely promised.
+ *
+ * THE ONE PROPERTY EVERY OTHER MEMBER SHARES: supplying a registry can only ever make a verdict
+ * HARDER to reach. `UNVERIFIABLE`, `OUT_OF_WINDOW`, `CLASS_ABSENT` and `CONTRADICTED` are all
+ * non-positive, and `ENROLLED` adds a requirement rather than removing one. Nothing a signer writes
+ * into a registry — and nothing a signer OMITS from one — buys a positive that supplying no registry
+ * would not also have given. The only route to the permissive regime is a relying party choosing not
+ * to configure a registry, which is the reader's own decision and cannot be made for it.
  */
 export type EnrolmentEvaluation =
-  /** no enrolment registry was supplied — the question was not asked. */
+  /**
+   * The question was not asked. Two ways to reach it, and they are the same statement:
+   *   • no enrolment registry was supplied to this verifier; or
+   *   • this bundle's outcome asserts no execution effect, so no class can be enrolled for it —
+   *     the enrolment plane runs inside steps 10/11 only (a DENIED bundle is governed by step 15's
+   *     fresh-checkpoint rule instead, which is the tax the two positive outcomes do not pay).
+   */
   | "NOT_EVALUATED"
   /** registries were supplied but none authenticates, is closed, or is addressed to this reader. */
   | "UNVERIFIABLE"
@@ -390,14 +426,19 @@ export interface VerdictPolicy {
 /**
  * The rule-set version of this verifier. BUMP when a change can flip a bundle's verdict.
  *
- * `2026-08-14` is that case, and the flip is named rather than left to be discovered: step 11 now
- * requires the consumption to report the determinate non-dispatch (`FAILED_BEFORE_DISPATCH`), so an
- * `EXECUTION_FAILED` bundle carrying a `DISPATCHED` consumption — which verified before — is now
- * `INVALID`. That is a retroactive change to a class of historical evidence, and it is the reason
- * this string moves: a reader holding two verdicts for the same bytes can tell which rules produced
- * each, because every result carries it.
+ * `2026-08-14` covered the consumption-result rule: step 11 requires the determinate non-dispatch
+ * (`FAILED_BEFORE_DISPATCH`), so an `EXECUTION_FAILED` bundle carrying a `DISPATCHED` consumption —
+ * which verified before — is `INVALID`.
+ *
+ * `2026-08-15` is the enrolment plane, and the flip it can cause is named rather than left to be
+ * discovered: WHEN A REGISTRY IS SUPPLIED, a bundle that verified under the previous rule set can
+ * now be `UNVERIFIED` or `INCONCLUSIVE`. It can never move the other way — no registry content
+ * produces a positive that its absence would not also have produced — and a verifier supplied with
+ * NO registry returns byte-for-byte what it returned before. So the flip is opt-in per reader, and
+ * a reader holding two verdicts for the same bytes can tell which rule set produced each, because
+ * every result carries this string.
  */
-export const VERIFIER_POLICY_VERSION = "noa.verify-evidence/2026-08-14" as const;
+export const VERIFIER_POLICY_VERSION = "noa.verify-evidence/2026-08-15" as const;
 
 /** The full `verify-evidence` result. */
 export interface VerifyEvidenceResult {
