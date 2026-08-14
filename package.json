@@ -1,7 +1,7 @@
 {
   "name": "noa-receipt",
   "version": "0.7.0",
-  "description": "NOA Agent Action Receipt — open, offline-verifiable provenance for AI-agent actions. The governance/receipt organ only; the NOA brain is separate and proprietary.",
+  "description": "NOA Agent Action Receipt \u2014 open, offline-verifiable provenance for AI-agent actions. The governance/receipt organ only; the NOA brain is separate and proprietary.",
   "license": "Apache-2.0",
   "type": "module",
   "homepage": "https://noatrust.com",
@@ -84,7 +84,9 @@
     "typecheck:all": "node scripts/typecheck-all.mjs",
     "lint:release-parity": "node scripts/lint-kernel-release-parity.selftest.mjs && node scripts/lint-kernel-release-parity.mjs",
     "lint:verdict-differential": "node scripts/lint-verdict-differential.mjs",
-    "lint:stranded-branches": "node scripts/lint-stranded-branches.mjs --selftest && node scripts/lint-stranded-branches.mjs"
+    "lint:stranded-branches": "node scripts/lint-stranded-branches.mjs --selftest && node scripts/lint-stranded-branches.mjs",
+    "gen:current-state": "node scripts/gen-current-state.mjs --write --with-tests",
+    "check:current-state": "node scripts/gen-current-state.mjs --check"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

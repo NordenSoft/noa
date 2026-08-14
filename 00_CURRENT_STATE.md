@@ -1,7 +1,7 @@
-Last updated: 2026-08-15 (measured; every number below was re-run in this tree, not carried forward)
+Last updated: 2026-08-15. The measured sections are GENERATED — `node scripts/gen-current-state.mjs
+--check` fails if they are stale. The prose is maintained by hand and is the part that can still rot.
 
-> ⚠ **This file has now been stale three times, and each correction is part of the commit that found
-> it.** The 2026-08-04 revision corrected four wrong claims about the registry, the checkout version
+> ⚠ **This file has now been stale FOUR times, and hand-measuring it has failed every time.** The 2026-08-04 revision corrected four wrong claims about the registry, the checkout version
 > and CI. That revision went stale in turn: it reported the kernel at **534** tests, the knockout
 > suite at **74 controls**, and `lint:release-parity` as **PARITY PASS** — measured 585, 82 and RED
 > on 2026-08-12. And that revision went stale too, which an external reviewer of PR #78 found rather
@@ -10,10 +10,15 @@ Last updated: 2026-08-15 (measured; every number below was re-run in this tree, 
 > from its table entirely. Understating coverage by a factor of three is not a harmless error — a
 > release reviewer reads this file as evidence.
 >
-> The lesson is not "try harder to remember". A state file has to be re-measured on every release,
-> which is why it is a release blocker with its own line in `06_RELEASE_CHECKLIST.md` — and the third
-> staleness happened anyway, because between releases nothing re-runs it. Numbers below now carry the
-> command that produced them, so the next reader can re-run rather than trust.
+> The fourth was found in the very commit that corrected the third: an external reviewer re-derived
+> the release distances and got 57/41/16/26 against the 29/18/11/21 that had just been written, and
+> found two test tallies reported as "no numeric tally" when both suites print one.
+>
+> The lesson is not "try harder to remember", and it is not "re-measure on every release" — that was
+> already a release blocker in `06_RELEASE_CHECKLIST.md` and it did not help, because between
+> releases nothing re-runs it and a commit distance is wrong one commit later BY CONSTRUCTION. The
+> mechanically-drifting numbers are therefore no longer written by anyone. They are generated, and a
+> `--check` mode fails when they drift.
 
 Production status: `PROTOTYPE` with active `SPECIFICATION` work. Zero tenants, zero revenue, zero
 external adopters. A public individual Internet-Draft `-00` exists; later local text is proposed and
@@ -35,62 +40,85 @@ Registry, measured 2026-08-12:
 | `noa-mcp-adapter-core` | 0.3.2 | 2026-08-04T16:49:21Z |
 | `noa-mcp-proxy` | 0.3.2 | 2026-08-04T16:49:52Z |
 
-This tree is **29 commits past tag `v0.6.2`** and is being prepared as **0.7.0**, unpublished.
-(`origin/main` is 18 past the tag; this release branch adds eleven more. The two numbers are not
-interchangeable, and an earlier draft of this line quoted main's while sitting on the branch.)
+This tree is being prepared as **0.7.0**, unpublished. The distance figures below are GENERATED —
+they were typed by hand until 2026-08-15 and were wrong within a day, every time, because a commit
+count is stale one commit later by construction.
+
+<!-- GENERATED:BEGIN release-distance -->
+Compared against `v0.7.0`, the tag `lint:release-parity` measures against:
+
+- **11 shipped path(s) differ** out of **42** watched.
+- The malformed-approval-rules fix is **MERGED** (`95ba53ae3000`, and is on `origin/main`).
+
+The COMMIT DISTANCE is deliberately not printed here. It changes with every commit — including
+the commit that would record it — so embedding it makes this file stale on write and makes
+`--check` fail on the next commit for no reason at all. That is not a number a committed file
+can hold honestly. Run it when you need it:
+
+```console
+git rev-list --count v0.7.0..HEAD          # this tree
+git rev-list --count v0.7.0..origin/main   # main
+```
+
+The shipped-path figure IS embedded, because it only moves when the shipped surface moves, and
+it is read out of `lint:release-parity`'s own output rather than re-derived — a second
+derivation is a second authority. A draft of this generator computed 13 while the doc said 21,
+a reviewer measured 26 and the gate reported 11: four answers to one question, each defining
+"shipped path" slightly differently.
+<!-- GENERATED:END release-distance -->
+
 `lint:release-parity` is therefore RED, exits 1, and says:
 
 ```console
 PARITY FAIL: 2 check(s) failed. Release the kernel before the dependent packages.
 ```
 
-**That RED is correct behaviour, not a defect.** 21 shipped paths differ between tag `v0.6.2` and
-HEAD, and the published `0.6.2` tarball is missing `dist/src/action-digest.{js,d.ts}` entirely,
-because the feature is not in what is published under that version. The check exists to say exactly
-that, and it goes green by RELEASING, never by relaxing the check. It is deliberately not part of
-`ci.yml` for the same reason.
+**That RED is correct behaviour, not a defect.** The published `0.6.2` tarball is missing
+`dist/src/action-digest.{js,d.ts}` entirely, because the feature is not in what is published under
+that version. The check exists to say exactly that, and it goes green by RELEASING, never by
+relaxing the check. It is deliberately not part of `ci.yml` for the same reason.
 
 ## Measured totals, 2026-08-15
 
-Re-measured in full on 2026-08-15. **Most numbers in the previous edition of this section were
-stale**, some by a factor of three: it claimed 585 kernel tests against 589, 133 evidence tests
-against 446, and 82 knockout controls against 144, and it omitted two packages that have test
-scripts. Five rows were still correct (`relay`, `tsa-anchor`, `signer-core`, `e2e-demo`, and
-`signer-sidecar`'s "no tally"), and they are marked as such rather than presented as new work. A
-document that calls itself the measured current state and reports a third of the real coverage is
-worse than one that reports nothing, so what follows is a fresh run of each command, and the command
-is named beside the number.
+This section has gone stale FOUR times — 2026-08-04, 2026-08-12, and twice on 2026-08-15, the last
+two found by an external reviewer of a pull request rather than by a release. Each time the answer
+was "re-measure more carefully", and each time that answer failed, because a number typed into prose
+is correct only at the instant it is typed.
+
+So the numbers that drift mechanically are now GENERATED from the commands that measure them:
+
+```console
+node scripts/gen-current-state.mjs --write --with-tests   # rewrite the blocks below
+node scripts/gen-current-state.mjs --check                # exit 1 if they are stale
+```
+
+`--check` is the release gate, the same shape as `check:matrix` and `check:entry-points`. Nothing
+between the sentinels is typed by hand; the prose around them is what a human maintains.
 
 Kernel `npm test` at the repository root: **589 pass / 0 fail / 0 skipped**, exit 0.
 
 Per package, each from `cd packages/<name> && npm test`, run sequentially (never in parallel — they
-share the root `dist/` and would race on it):
+share the root `dist/` and would race on it). Two tally formats are read: `node --test`'s own
+`ℹ pass N`, and the TAP-style `# pass N` the hand-rolled smoke suites print. Missing the second is
+why this table said `packages/signer-sidecar` had "no numeric tally" for months when it reports
+12/12, and why `packages/mcp-proxy`'s smoke assertions went uncounted entirely.
 
-| package | result | previously claimed |
+<!-- GENERATED:BEGIN test-tallies -->
+| package | result | status |
 |---|---|---|
-| `packages/evidence` | 446 pass / 0 fail | 133 |
-| `packages/adapter-core` | 377 pass / 0 fail | 332 |
-| `packages/gate` | 289 pass / 0 fail | 246 |
-| `packages/approval-artifacts` | 209 pass / 0 fail | 179 |
-| `packages/relay` | 166 pass / 0 fail | 166 |
-| `packages/framework-adapters` | 126 pass / 0 fail | *(absent from the table)* |
-| `packages/mcp-proxy` | 124 pass / 0 fail, plus its smoke line | "no numeric tally" |
-| `packages/tsa-anchor` | 120 pass / 0 fail | 120 |
-| `packages/rail-x402` | 113 pass / 0 fail | *(absent from the table)* |
-| `packages/signer-core` | 79 pass / 0 fail | 79 |
-| `packages/e2e-demo` | 15 pass / 0 fail | 15 pass / 0 fail |
-| `packages/signer-sidecar` | no numeric tally — see below | no numeric tally |
-
-Three corrections to how this table used to read:
-
-- `packages/mcp-proxy` **does** emit a `node --test` tally now (124 / 0). It also prints a
-  hand-rolled `SMOKE TEST PASS` line, which is what the previous edition saw. `packages/signer-sidecar`
-  still emits only the smoke line, so **there is still no pass count to quote for it and none is
-  invented here.** No failure appears anywhere in its log.
-- `packages/framework-adapters` and `packages/rail-x402` have test scripts and were simply missing
-  from the table. Both are green.
-- `packages/e2e-demo` is unchanged at 15 / 0, and it is the one row where the previous edition was
-  already right.
+| `packages/evidence` | 448 pass / 0 fail | exit 0 |
+| `packages/adapter-core` | 377 pass / 0 fail | exit 0 |
+| `packages/gate` | 289 pass / 0 fail | exit 0 |
+| `packages/approval-artifacts` | 209 pass / 0 fail | exit 0 |
+| `packages/relay` | 166 pass / 0 fail | exit 0 |
+| `packages/framework-adapters` | 126 pass / 0 fail | exit 0 |
+| `packages/mcp-proxy` | 124 pass / 0 fail, plus 222 / 222 smoke assertions | exit 0 |
+| `packages/tsa-anchor` | 120 pass / 0 fail | exit 0 |
+| `packages/rail-x402` | 113 pass / 0 fail | exit 0 |
+| `packages/signer-core` | 79 pass / 0 fail | exit 0 |
+| `packages/e2e-demo` | 15 pass / 0 fail | exit 0 |
+| `packages/signer-sidecar` | 12 / 12 smoke assertions | exit 0 |
+<!-- GENERATED:END test-tallies -->
 
 **If you run any of this from a `git worktree`, read this first.** `packages/e2e-demo/tsconfig.json`
 maps `noa-mobile/*` to the RELATIVE paths `../../../noa-mobile/src/*` and `../../noa-mobile/src/*`.
@@ -116,9 +144,13 @@ Other gates:
   (`framework-adapters`, `mcp-proxy`, `rail-x402`, `signer-sidecar`, `tsa-anchor`) report
   `skip — no TypeScript (plain .mjs)`, which is a stated skip, not a silent pass. The previous
   edition said 12 projects and four skips.
-- `lint:security-gates` — **zero blocking findings**; **367** warn-mode findings, all within
-  ratcheted budgets (the previous edition said 362). Budgets may only fall: a regression fails the
-  build even though the absolute number is non-zero.
+- `lint:security-gates` — **zero blocking findings**, and warn-mode counts are now held by a REAL
+  RATCHET in `scripts/security-gate-counts.json`. Until 2026-08-15 the code said "the count may only
+  fall" and compared against a BUDGET WITH SLACK: L8 mcp-proxy sat at 37 against a budget of 47, so
+  ten new prohibited dispatches could enter the authorization path with the gate still green. A
+  reviewer inserted one and it did. The gate now fails on any RISE above the recorded count, and also
+  on a FALL — because leaving the old number in place carries that much slack forward for a later
+  regression to spend. Re-record with `--write-security-counts`; an improvement is a visible commit.
 - `lint:resolver-parity` — **OK, 0 findings, exit 0**, over 65 sites and 145 vocabulary files, with
   8/8 knockout bindings registered (the previous edition said 0 findings over 55 sites and 128
   files). The gate treats the runner as ground truth, so all three
@@ -145,7 +177,9 @@ core was unreachable. It runs now.
   second, larger defect in the same gate: a rules file that is valid JSON but not a rule set
   (`{}`, `null`, a bare string, a partially-invalid array) made the proxy forward the same
   over-threshold transfer with no approval, because the structural validator that already existed was
-  never called. Fixed on `fix/proxy-rules-fail-open`, not yet merged.
+  never called. That fix is MERGED — see the generated release-distance block above, which names the
+  commit and whether it is on `origin/main`, rather than asserting a merge state in prose that goes
+  stale the moment it lands.
 - **`file:../..` everywhere.** Every in-repo consumer of the kernel (`adapter-core`, `e2e-demo`,
   `evidence`, `gate`, `signer-sidecar`, `tsa-anchor`, and `signer-core` as a dev dependency) depends on
   `noa-receipt: file:../..`. Nothing pins a published version, so every package builds against this
