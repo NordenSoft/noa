@@ -1025,6 +1025,80 @@ isolation (the Go kernel, ADR-0002), or the relying party's own independent reco
 chain state (NC-S4.10). This non-claim is permanent and is not scheduled to be closed.
 
 
+## S5. Action-class enrolment — what requiring settlement evidence does and does not buy (added 2026-08-15)
+
+The subject is `noa.action-class-enrolment/0.1` and the enrolment plane inside the evidence
+verifier's steps 10 and 11. The one-sentence ceiling for the whole family: **enrolment makes a claim
+COST more; it never makes one TRUE.**
+
+### NC-S5.1 — A reader that supplies no registry sees the old regime, and nothing can change that
+
+The enrolment question is asked only when a relying party hands the verifier a registry. A party
+that supplies none gets exactly the verdicts it got before this plane existed — including
+`VALID_FULL_CHAIN` for a self-reported dispatch. This is not closable from inside the verifier: a
+verifier cannot require an input it was not given. It is what keeps historical verdicts unchanged
+and it is the escape, read from two sides — and the party declining here is the one being protected
+rather than the one being judged.
+
+### NC-S5.2 — Outcome shopping is not closed
+
+The plane runs for the two POSITIVE outcomes only. A gate that wants to avoid the requirement can
+claim `UNKNOWN_AFTER_DISPATCH`, which needs only its own signed uncertainty artifact — a self-report
+by the party being judged. What that costs is step 15's fresh-checkpoint tax, which the two positive
+outcomes escape; it is a price, not a barrier. The FAILURE label IS closed for an enrolled class (the
+gate's own `FAILED_BEFORE_DISPATCH` is no longer sufficient), and that closure exists precisely
+because `EXECUTION_FAILED` paid no tax at all.
+
+### NC-S5.3 — Registry equivocation is detectable, not locally decidable
+
+A tenant root that signs two overlapping registries — one enrolling a class, one omitting it — is
+caught only when a reader holds both. A reader holding one cannot see the other. Registries MUST have
+non-overlapping, contiguous windows and a strictly monotonic `version`; that is a producer obligation
+this verifier cannot enforce from a single document. The residual lands on governance capture, which
+is a known open class rather than a new one.
+
+### NC-S5.4 — `receivedAt` is producer-chosen, so window selection is only half-closed
+
+The registry window is tested against the gate-signed `holdResolution.receivedAt`, and the gate is
+the party this design distrusts. It is REJECT-ONLY — it can refuse enrolment and can never establish
+it — and since every failure on the plane is non-positive, a backdated instant cannot move a verdict
+toward accept by any route. What it CAN still do is select which of two spec-compliant registries
+applies. Closing that needs the registry pinned at hold time, which no shipped artifact carries.
+
+### NC-S5.5 — Pinning the projection hash pins the RENDERER, not what a human saw
+
+The class key includes the display projection's hash, which is a digest of the renderer's source text
+inside the gate process. It does not establish that any display was rendered, nor that the display a
+human approved is the one the gate sealed — those remain NC-3.4 and NC-4.4. The operational
+consequence is real and is named rather than discovered: a bundler or minifier change re-hashes the
+projection with no semantic change and silently de-enrols the class, turning subsequent bundles
+`UNVERIFIED` until the registry is re-issued.
+
+### NC-S5.6 — Enrolment authority and manifest-signing authority are separated in NAME, not in custody
+
+`action-class-enrol` is its own delegation permission, so a root can revoke enrolment authority
+without rotating the manifest signer, and a reader of a delegation can see which authorities it
+grants. Both permissions on ONE delegation is still one kid and one private key: a manifest-signing
+compromise does escalate to a claim escalation. Custody separation needs a second, differently-keyed
+delegation, and the container declares a single one.
+
+### NC-S5.7 — A registry is consulted only against a bundle whose own delegation granted the authority
+
+The registry authenticates against the keyring resolved from the BUNDLE's delegation. A tenant that
+grants enrolment authority today therefore cannot have its registry consulted against a bundle whose
+delegation predates the grant: those bundles report `UNVERIFIED`, not `VALID`. That is the
+fail-closed direction and it is deliberate, but it means enrolment is not retroactive, and an archive
+audit either accepts `UNVERIFIED` or is run without the registry.
+
+### NC-S5.8 — For an enrolled class this verifier cannot return a positive at all
+
+The only route to a positive is a record of the relying party's own node re-answering the chain
+queries, and that input is not built. Every enrolled path terminates non-positive. This is the honest
+ceiling of an offline verifier — it can establish that a settlement assertion is authentic and bound,
+never that it is true — and it is stated here so a green corpus is never read as "the enrolled path
+works".
+
+
 ## 7. Changing this document
 
 **Adding** a non-claim: an ordinary commit. Always in scope, never needs justification.
