@@ -43,7 +43,10 @@ function load(id: string): Fixture {
 
 /** Run a fixture, optionally REPLACING what the reader was handed. */
 function run(fx: Fixture, over: { registries?: unknown[] | undefined; audience?: string | undefined } = {}) {
-  const registries = over.registries !== undefined ? over.registries : fx.enrolmentRegistries;
+  // `in` rather than `!== undefined`, so a caller can say "hand this reader NOTHING" and mean it.
+  // With a `??` fallback, passing `undefined` would silently restore the fixture's own registries —
+  // and the test that most needs to express "no registries" is the one about the permissive regime.
+  const registries = "registries" in over ? over.registries : fx.enrolmentRegistries;
   const audience = "audience" in over ? over.audience : fx.audience;
   return verifyEvidence(b(fx.bundle), {
     tenantRoot: b(fx.tenantRoot),
@@ -105,6 +108,57 @@ test("DOWNGRADE: an EMPTY closed registry blesses nothing — it refuses everyth
     assert.equal(res.code, "E_ENROLMENT_CLASS_ABSENT", `${id}: code`);
     assert.equal(exitOf(res), 4, `${id}: an omission bought a positive — that is the bypass this design replaced`);
   }
+});
+
+test("DOWNGRADE: the BYTE BOUNDARY holds for the registry too — it is a document, not an object", () => {
+  // The registry joins the trust root and the checkpoint keyring as a DOCUMENT, so the same boundary
+  // rules apply to it: a live object is refused rather than traversed (its getters could answer one
+  // thing to the signature check and another to the field read), a duplicate key is refused rather
+  // than last-wins (producer and verifier must not be able to disagree about which value is "the"
+  // value), and `__proto__` is refused rather than applied.
+  //
+  // These are exercised HERE rather than assumed from the kernel, because a new caller of the parser
+  // is a new place to get it wrong: the bytes that get AUTHENTICATED and the bytes that get READ have
+  // to be the same bytes, and this file is where that is measured for the newest input.
+  const fx = load(ENROLLED);
+  const registry = fx.enrolmentRegistries![0]!;
+  const cases: ReadonlyArray<readonly [string, unknown]> = [
+    ["a live object where a document belongs", registry],
+    ["a duplicate key", "{\"spec\":\"noa.action-class-enrolment/0.1\",\"spec\":\"other\"}"],
+    ["a __proto__ key", "{\"spec\":\"noa.action-class-enrolment/0.1\",\"__proto__\":{\"closed\":true}}"],
+    ["a null entry in the list", null],
+  ];
+  for (const [why, doc] of cases) {
+    const res = verifyEvidence(b(fx.bundle), {
+      tenantRoot: b(fx.tenantRoot),
+      checkpointKeyring: b(fx.checkpointKeyring),
+      // Deliberately NOT run through `b()`: the point is what happens when the caller hands over
+      // something that is not the bytes of a document.
+      enrolmentRegistries: [doc as never],
+      audience: fx.audience!,
+      now: fx.now,
+      maxAgeMs: fx.maxAgeHours * 3600 * 1000,
+      schemas,
+    });
+    assert.equal(res.verdict, "UNVERIFIED", `${why}: verdict ${res.verdict}`);
+    assert.equal(res.code, "E_ENROLMENT_UNVERIFIABLE", `${why}: code ${res.code}`);
+  }
+});
+
+test("DECISION: an EMPTY registry list means the same as no list, and the CLI cannot produce one", () => {
+  // Pinned because it is a DECISION, not an accident, and the two readings are both defensible.
+  // `undefined` and `[]` both say "this reader holds no registries", so they behave identically. The
+  // failure mode that would make this wrong — a caller whose file read failed silently yielding `[]`
+  // and losing the check — is closed at the surface an operator actually uses: the CLI omits the
+  // option entirely when it read no registry file, and a file it CANNOT read is a usage error (exit
+  // 5), never an empty list. An in-process caller assembling the array owns its own emptiness.
+  const fx = load(ENROLLED);
+  const none = run(fx, { registries: undefined, audience: undefined });
+  const empty = run(fx, { registries: [], audience: fx.audience });
+  assert.equal(none.verdict, "VALID_FULL_CHAIN");
+  assert.equal(empty.verdict, none.verdict, "an empty list and no list disagreed");
+  assert.equal(empty.enrolment, "NOT_EVALUATED");
+  assert.equal(exitOf(empty), 0);
 });
 
 test("DOWNGRADE: an empty --audience string is not 'no audience needed'", () => {
