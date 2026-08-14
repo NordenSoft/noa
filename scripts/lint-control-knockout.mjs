@@ -53,7 +53,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING, partitionByDependency,
-  buildStateGuardFor,
+  buildStateGuardFor, isGitWorkTree,
 } from "./lib/knockout-runner.mjs";
 import { DEPENDENCY_PROBES } from "./lib/phone-core-probe.mjs";
 
@@ -1771,24 +1771,66 @@ if (REQUIRES && selected.length === 0) {
 //
 // This runs BEFORE the baselines on purpose. A baseline measured against a leaked mutant build is
 // the same defect one level down: every verdict in the sweep would then be relative to it.
+//
+// AND IT IS A HARD STOP, not a finding filed at the end (panel round 1). A finding is something the
+// run reports after measuring; the whole point here is that measuring must not begin. Two states
+// end this process before a single baseline is taken:
+//   • ANOTHER RUN HOLDS THIS TREE — its mutation is on disk right now. Racing it produces two sets
+//     of verdicts about a third tree that is neither run's.
+//   • THE PREVIOUS RUN'S LEFTOVERS COULD NOT BE PROVEN CLEAN — a mutant source that could not be
+//     restored, or a file whose contents are neither pristine nor the recorded mutation. Every
+//     baseline after that would be measured against unknown bytes.
 const RECOVERY = buildStateGuardFor(ROOT).recover();
-const recoveryFindings = [];
+if (RECOVERY && RECOVERY.kind === "held") {
+  console.error(
+    `\nANOTHER KNOCKOUT RUN OWNS THIS TREE.\n` +
+    `  holder:   pid ${RECOVERY.pid}, in arm "${RECOVERY.entry}", since ${RECOVERY.startedAt}\n` +
+    `  marker:   ${RECOVERY.markerPath}\n` +
+    `Its mutation is on disk right now. Two runs mutating one worktree measure a third tree that is\n` +
+    `neither of theirs, so this one refuses to start rather than race. Wait for it, or — if that pid\n` +
+    `is gone — delete the marker.\n`,
+  );
+  process.exit(1);
+}
 if (RECOVERY) {
   console.log(`⚠ RECOVERED an interrupted knockout run (entry ${RECOVERY.entry}, started ${RECOVERY.startedAt}):`);
   const say = (label, items) => { if (items.length) console.log(`    ${label}: ${items.join(", ")}`); };
   say("restored mutant SOURCE", RECOVERY.sources);
   say(`restored ${RECOVERY.artifacts.length} build artefact(s)`, RECOVERY.artifacts.slice(0, 6));
   say("deleted build output the interrupted arm created", RECOVERY.removed.slice(0, 6));
-  say("reverted generated file(s)", RECOVERY.tracked);
-  say("left in place (untracked, not this runner's to delete)", RECOVERY.additions);
-  if (RECOVERY.failures.length === 0) console.log("    the tree is back to its pre-crash state\n");
-  else {
-    for (const f of RECOVERY.failures) console.log(`    ⚠ ${f}`);
-    recoveryFindings.push(
-      `  CRASH RECOVERY INCOMPLETE  a previous run died during ${RECOVERY.entry} and this run could ` +
-      `not fully repair the tree: ${RECOVERY.failures.join("; ")}`,
+  const blocking = [...RECOVERY.failures, ...RECOVERY.unresolved];
+  if (blocking.length === 0 && RECOVERY.suspect.length === 0) {
+    console.log("    the tree is provably back to its pre-crash state\n");
+  } else {
+    for (const f of blocking) console.error(`    ⚠ ${f}`);
+    for (const p of RECOVERY.suspect) {
+      console.error(
+        `    ⚠ ${p} went dirty during the interrupted arm. During a live arm this runner is the only` +
+        ` actor and can prove that file is its output; after a crash the window is unbounded, so it` +
+        ` will not revert it for you.`,
+      );
+    }
+    console.error(
+      `\nTHE PREVIOUS RUN'S LEFTOVERS COULD NOT BE PROVEN CLEAN.\n` +
+      `  marker:   ${RECOVERY.markerPath}  (kept, deliberately — a cleared marker over an\n` +
+      `            unrestored tree tells the next run there is nothing to look at)\n` +
+      `Every baseline measured from here would be measured against unknown bytes, so no baseline is\n` +
+      `measured. Inspect the files above, put them right, then re-run.\n`,
     );
+    process.exit(1);
   }
+}
+
+// The tracked-file half of the guard is only as good as git's answer, and "git could not tell us"
+// must never arrive as "nothing was dirty". Inside the gate that distinction is not left to a
+// library default: this repository IS a git work tree, and if it ever is not, the sweep says so and
+// stops rather than running with a third of the guard silently inert.
+if (!isGitWorkTree(ROOT)) {
+  console.error(
+    `\n${ROOT} is not a git work tree, so the guard cannot see which generated files an arm\n` +
+    `rewrites — the surface that corrupted a committed conformance fixture in CI. Refusing to run.\n`,
+  );
+  process.exit(1);
 }
 
 // Snapshot the worktree BEFORE anything runs, so residue is measured as a DIFFERENCE.
@@ -1813,6 +1855,12 @@ for (const k of selected) {
 const unmeasurable = [...baselines.entries()].filter(([, b]) => b.timedOut);
 
 const results = [];
+// ── AN ARM THAT COULD NOT GIVE THE TREE BACK ENDS THE SWEEP ────────────────────────────────────
+// This used to record RESTORATION_FAILED and carry on to the next arm, which is the same fail-open
+// shape as the defect this guard was written for: every later arm would then mutate, measure and
+// restore relative to whatever the failed one left behind, and the honest verdicts of 100 arms
+// would be printed beside the one line saying the tree was never clean. The instrument stops.
+let aborted = null;
 for (const k of selected) {
   const baseline = baselines.get(suiteKey(k));
   if (baseline.timedOut) {
@@ -1822,6 +1870,10 @@ for (const k of selected) {
   }
   const result = runKnockout({ root: ROOT, entry: k, registry: KNOCKOUTS, baseline });
   results.push(requireNamedProofFailures(k, result));
+  if (result.restored === false || result.verdict === VERDICT.RESTORATION_FAILED) {
+    aborted = { id: k.id, detail: result.detail, done: results.length, total: selected.length };
+    break;
+  }
 }
 
 // ── REPORT ─────────────────────────────────────────────────────────────────────────────────────
@@ -1897,7 +1949,16 @@ try {
 } catch { /* not a git tree — the check below simply cannot run */ }
 
 const bad = results.filter((r) => !PASSING.has(r.verdict));
-const errors = [...recoveryFindings];
+const errors = [];
+if (aborted) {
+  errors.push(
+    `  SWEEP ABORTED              ${aborted.id} could not return the tree, so the run STOPPED after ` +
+    `${aborted.done} of ${aborted.total} controls.\n` +
+    `      ${aborted.detail || "(no detail)"}\n` +
+    `      The ${aborted.total - aborted.done} control(s) after it were NOT measured. A knockout that ` +
+    `cannot restore the tree has not produced a security result, and neither has anything measured after it.`,
+  );
+}
 for (const r of bad) {
   errors.push(`  ${r.verdict.padEnd(26)} ${r.id} — ${r.detail || "(no detail)"}`);
 }
