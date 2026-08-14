@@ -428,12 +428,24 @@ test("no enrolment input exists, so EVERY fixture reports that the question was 
   }
 });
 
+/**
+ * Does this fixture carry EITHER settlement member?
+ *
+ * Keyed on both names, not on the artifact alone. A preimage riding ALONE is itself a rejection (the
+ * co-presence rule), so an artifact-only predicate would let that fixture fall into the invariants
+ * below, which are about the corpus that existed before any settlement member did.
+ */
+function carriesSettlementMember(fx: Fixture): boolean {
+  const b = fx.bundle as { settlementEvidence?: unknown; actionParamsPreimage?: unknown };
+  return b.settlementEvidence !== undefined || b.actionParamsPreimage !== undefined;
+}
+
 test("the settlement dimension states which of the two happened: the rule never ran, or nobody asked", () => {
   for (const { id, fx } of fixtures) {
-    // The settlement RULE runs only when a bundle carries a settlement artifact; those fixtures set a
+    // The settlement RULE runs when a bundle carries either settlement member; those fixtures set a
     // settlement value (BOUNDS_UNCHECKABLE / CONTRADICTED) and are the subject of the conformance +
     // cli-wire suites, not of this "nobody asked, so nothing moved" invariant over the prior corpus.
-    if ((fx.bundle as { settlementEvidence?: unknown }).settlementEvidence !== undefined) continue;
+    if (carriesSettlementMember(fx)) continue;
     const res = run(fx);
     const want: SettlementDimension = res.failedStep === undefined ? "NO_EXECUTION_BINDING" : "UNCHECKED";
     assert.equal(
@@ -448,10 +460,11 @@ test("the settlement dimension states which of the two happened: the rule never 
 test("MIGRATION: every fixture's exit code is byte-for-byte the one it had before the ladder", () => {
   for (const { id, fx } of fixtures) {
     // A settlement-bearing bundle could not exist before this slice — the container schema
-    // (additionalProperties:false) rejected it — so there is no "before" exit code to preserve. The
-    // migration guarantee is about the bundles that DID exist: every one WITHOUT a settlement artifact,
-    // which is 100% of prior traffic. Those must still map byte-for-byte to their pre-ladder code.
-    if ((fx.bundle as { settlementEvidence?: unknown }).settlementEvidence !== undefined) continue;
+    // (additionalProperties:false) rejected both members — so there is no "before" exit code to
+    // preserve. The migration guarantee is about the bundles that DID exist: every one carrying
+    // NEITHER member, which is 100% of prior traffic. Those must still map byte-for-byte to their
+    // pre-ladder code.
+    if (carriesSettlementMember(fx)) continue;
     const res = run(fx);
     assert.equal(
       exitCodeFor(res.verdict, res.enrolment, res.dimensions.settlement),

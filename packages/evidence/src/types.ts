@@ -181,6 +181,11 @@ export type StepCode =
   | "E_SETTLEMENT_POLARITY" // R1 — a determinate non-settlement status under an EXECUTED outcome
   | "E_SETTLEMENT_CORRELATION" // R3 — the recomputed D7 nonce != the artifact's correlation
   | "E_PARAMS_PREIMAGE_MISMATCH" // R2 — a SUPPLIED preimage does not hash to paramsHash / bad shape
+  // R2 co-presence. Beyond spec §5.3's table, which does not contemplate the case: the union admits
+  // the two members INDEPENDENTLY, so a preimage can arrive with no artifact to bound — and every
+  // check that would read it sits behind the artifact. Its own code rather than a fold into
+  // E_SETTLEMENT_BINDING, which §5.3 warns must not become a bucket.
+  | "E_PARAMS_PREIMAGE_ORPHANED" // R2 — a preimage with no settlementEvidence: it bounds nothing
   | "E_SETTLEMENT_BOUNDS_UNCHECKABLE" // R2 — witness present, preimage ABSENT or paramsHash keyed
   | "E_SETTLEMENT_BOUNDS_EXCEEDED"; // R3 — network/asset/payer/payee/amount outside the preimage
 

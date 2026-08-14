@@ -957,6 +957,19 @@ emit("settlement", "s5-settlement-not-observed-polarity", fixtureFrom(settlement
 // R1 binding — the artifact's own tenant is not the verifier's (R-11), a hard rejection caught offline.
 emit("settlement", "s5-settlement-tenant-mismatch", fixtureFrom(settlementWorld({ artifactTenant: "tenant-globex" }), { description: "R1 binding: the settlement artifact's own tenant is not the verifier's expected tenant (R-11), so it is a replay of another tenant's evidence. INVALID / E_SETTLEMENT_BINDING, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BINDING" }));
 
+// CO-PRESENCE — an EXECUTED bundle carrying a preimage and NO settlement artifact. The union admits
+// the two members independently, and every check that reads the preimage sits behind the artifact, so
+// before this rule an attacker holding NO signing key could append a preimage member to a valid
+// signed bundle and still get VALID_FULL_CHAIN / exit 0 — a positive verdict covering bytes no step
+// examined. The value here is deliberately unparseable junk, so the ONLY thing that can refuse it is
+// the co-presence rule itself.
+{
+  const w = buildWorld("EXECUTED");
+  const bundle = clone(w.bundle);
+  (bundle as unknown as Record<string, unknown>).actionParamsPreimage = "garbage - not JSON, not JCS, signed by nobody";
+  emit("settlement", "s5-params-preimage-without-artifact", fixtureFrom(w, { description: "CO-PRESENCE (panel F1): an EXECUTED bundle carrying actionParamsPreimage with NO settlementEvidence. The preimage bounds nothing, no hash or shape check reaches it, and it still DISCLOSES payee/cap/resource — so it is a rejection, not a tolerated extra. Before this rule the same bundle returned VALID_FULL_CHAIN / exit 0 with the member unexamined. INVALID / E_PARAMS_PREIMAGE_ORPHANED, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_PARAMS_PREIMAGE_ORPHANED", bundle }));
+}
+
 // C.13 — a preimage that HASHES CORRECTLY but carries a seventh member. Not a tolerance: an accepted
 // extra member lets two honest parties holding "the same" params compute two different paramsHash
 // values. It is SUPPLIED under a sha256 hash, so it takes the producer-lie branch, not the withheld one.
@@ -965,11 +978,24 @@ emit("settlement", "s5-settlement-tenant-mismatch", fixtureFrom(settlementWorld(
   emit("settlement", "s5-params-preimage-unknown-member", fixtureFrom(settlementWorld({ paramsHash: "sha256:" + sha256Hex(preimage7Text), preimage: preimage7Text }), { description: "C.13 (F2): the preimage hashes correctly to action.paramsHash but carries a seventh member. R-HASH-2 refuses an unknown member rather than tolerating it — an accepted extra member lets two honest parties holding 'the same' params compute two different paramsHash values. INVALID / E_PARAMS_PREIMAGE_MISMATCH, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_PARAMS_PREIMAGE_MISMATCH" }));
 }
 
-// C.16 — THE VECTOR THAT PROVES THE DERIVATION INPUTS CAME FROM THE PREIMAGE, NOT THE ARTIFACT.
-// The artifact is UNIFORMLY testnet — network, asset, and a correlation genuinely derived from those
-// testnet coordinates — while the verified preimage says mainnet. An implementation that lifted
-// chainId/token/payer from the artifact would derive exactly this nonce, find it matching, and pass.
-// B1 against the preimage runs BEFORE the correlation compare and refuses.
+// C.16 — the artifact is UNIFORMLY testnet (network, asset, and a correlation genuinely derived from
+// those testnet coordinates) while the verified preimage says mainnet. B1 against the preimage runs
+// BEFORE any correlation work and refuses.
+//
+// ⚠ WHAT THIS VECTOR DOES **NOT** PROVE, corrected after a reviewer challenged the original claim and
+// the challenge was MEASURED. It was described here as proving that the derivation inputs come from
+// the preimage rather than from the artifact. It does not, and no vector can:
+//   • Measured 2026-08-14 — the derivation was mutated to take chainId/token/payer from
+//     `chainWitness` instead of the verified preimage. The ENTIRE rail corpus (113 tests) and this
+//     vector stayed GREEN. The mutant is not merely untested, it is observationally EQUIVALENT.
+//   • The reason is structural, and it is the actual defence: B1/B2/B3 compare the artifact's
+//     network, asset and payer to the verified preimage and REFUSE on any difference — before the
+//     derivation runs. So on every path that reaches the derivation the two candidate sources are
+//     provably equal, and no input can tell them apart. The bounds ARE the provenance enforcement;
+//     the derivation's choice of source is a readability property, not an independently testable one.
+// What this vector genuinely pins is the ORDERING that makes the question moot: it expects the BOUNDS
+// code, so an implementation that derived the correlation first would report a correlation mismatch
+// here instead and go red.
 {
   const S_NETWORK_TESTNET = "eip155:84532";
   const S_TOKEN_TESTNET = "0x036cbd53842c5426634e7929541ec2318f3dcf7e"; // Base Sepolia USDC
@@ -979,7 +1005,7 @@ emit("settlement", "s5-settlement-tenant-mismatch", fixtureFrom(settlementWorld(
   const testnetNonce = deriveCorrelationNonce({
     chainId: 84532, tokenAddress: S_TOKEN_TESTNET, payerAddress: S_PAYER, dispatchId: bdT.digest, seed: Buffer.from(S_GRANT_NONCE, "hex"),
   }).nonce;
-  emit("settlement", "s5-settlement-network-substituted", fixtureFrom(settlementWorld({ witness: { network: S_NETWORK_TESTNET, asset: `${S_NETWORK_TESTNET}/erc20:${S_TOKEN_TESTNET}` }, correlation: testnetNonce }), { description: "C.16 (F2): the artifact's chainWitness is UNIFORMLY testnet and its correlation is genuinely derived from those testnet coordinates, while the verified preimage says mainnet. An implementation that lifted the derivation inputs from the artifact would derive this same nonce and PASS — B1 against the verified preimage runs first and refuses. INVALID / E_SETTLEMENT_BOUNDS_EXCEEDED, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_EXCEEDED" }));
+  emit("settlement", "s5-settlement-network-substituted", fixtureFrom(settlementWorld({ witness: { network: S_NETWORK_TESTNET, asset: `${S_NETWORK_TESTNET}/erc20:${S_TOKEN_TESTNET}` }, correlation: testnetNonce }), { description: "C.16 (F2): the artifact's chainWitness is UNIFORMLY testnet and its correlation is genuinely derived from those testnet coordinates, while the verified preimage says mainnet. B1 against the verified preimage runs BEFORE any correlation work and refuses. NOTE (measured, corrected claim): this does NOT prove the derivation reads the preimage rather than the artifact — a mutant taking the coordinates from the artifact leaves the whole corpus green, because B1-B3 force the two sources equal before the derivation runs. What it pins is that ORDERING: deriving first would report a correlation mismatch here instead. INVALID / E_SETTLEMENT_BOUNDS_EXCEEDED, exit 2", expectVerdict: "INVALID", expectStep: "STEP_10_EXECUTED", expectCode: "E_SETTLEMENT_BOUNDS_EXCEEDED" }));
 }
 
 // E.5 — the preimage IS a container member, so it IS in OPTIONAL_ARTIFACT_FIELDS and the step-0 union

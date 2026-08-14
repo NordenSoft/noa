@@ -896,7 +896,26 @@ function checkGrantUnexpiredAtConsumption(ctx: Ctx, S: StepName, code: StepResul
  */
 function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
   const b = ctx.bundle;
-  if (b.settlementEvidence === undefined) return null; // no artifact — enrolment's "absence is required" (R8) is a later slice
+  if (b.settlementEvidence === undefined) {
+    // CO-PRESENCE. The two members are admitted to the EXECUTED union INDEPENDENTLY, so without this
+    // rule a preimage could ride alone — and every check that would look at it lives below, behind the
+    // artifact. An attacker holding NO signing key could append `actionParamsPreimage: "garbage"` to
+    // an otherwise valid signed bundle: the container admits a string, the union admits the name, and
+    // nothing hashes it, shape-checks it, or reads it. The bundle would still return VALID_FULL_CHAIN
+    // and exit 0 — a positive verdict covering bytes no step examined, which is the exact class the
+    // union pre-rule exists to close.
+    //
+    // A preimage exists ONLY to bound a settlement artifact. Alone it bounds nothing, and it is not
+    // inert: it DISCLOSES the payee, the cap and the resource URL (§7.3's named privacy cost) while
+    // buying the bundle no check whatever. So it is a rejection, with its own code — not folded into
+    // E_SETTLEMENT_BINDING, which the spec warns must not become a bucket.
+    if (b.actionParamsPreimage !== undefined) {
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_PARAMS_PREIMAGE_ORPHANED",
+        "actionParamsPreimage is present with no settlementEvidence — a params preimage exists only to bound a settlement artifact, so alone it is a disclosure nothing checks and nothing needs");
+    }
+    return null; // no artifact and no preimage — enrolment's "absence is required" (R8) is a later slice
+  }
 
   // R1 — authenticate the artifact ITSELF (layer 2) before the reconciler is allowed to trust it.
   const av = verifyArtifact(encodeDocument(b.settlementEvidence), encodeDocument({ schemas: ctx.schemas, keyring: ctx.resolvedKeyring!, now: ctx.now }));
