@@ -18,6 +18,7 @@ import {
   EVIDENCE_SPEC,
   POSITIVE_OUTCOMES,
   VERIFIER_POLICY_VERSION,
+  type EnrolmentEvaluation,
   type VerdictDimensions,
   type VerificationPurpose,
   type EvidenceBundle,
@@ -142,6 +143,34 @@ export interface VerifyEvidenceOptions {
   purpose?: VerificationPurpose;
 }
 
+/**
+ * THE SETTLEMENT / ENROLMENT ASSIGNMENT, and why every path in this file gets it explicitly.
+ *
+ * The rule is that every return point maps to exactly ONE `(enrolment, settlement)` pair — because
+ * the process exit code is a pure function of `(verdict, settlement)` (`exit-codes.ts`), and two
+ * verifiers must not return different exit codes for the same bytes. A default that quietly applies
+ * wherever nobody thought about it is how that property is lost, so the pairs below are stated at
+ * each return rather than inherited.
+ *
+ * TODAY THERE IS NO ENROLMENT INPUT, and that is not an omission — it is the migration mechanism.
+ * The verifier is not configured to ask whether this action's class requires settlement evidence, so
+ * it does not ask, and it does not change its answer. Every run therefore reports
+ * `enrolment: NOT_EVALUATED`, and:
+ *
+ *   • every path that STOPS before the end of the pipeline  → `settlement: UNCHECKED`
+ *     (including the pre-pipeline returns: nothing about settlement was examined);
+ *   • every path that completes the pipeline                → `settlement: NO_EXECUTION_BINDING`
+ *     (nobody asked, so no execution binding is established for this bundle — which is the true
+ *     thing to say, and `VALID_FULL_CHAIN` means exactly what it meant before this field existed).
+ *
+ * `NO_EXECUTION_BINDING` replaces the tempting name `NOT_REQUIRED`. A hostile auditor reads
+ * "not required" as "verified, and settlement evidence was not needed for this to be true". The
+ * actual state is "no execution binding exists for this class; EXECUTED here still means the gate
+ * said it dispatched" — a statement about EVIDENCE, not about policy, in the one place this design
+ * is weakest.
+ */
+const NOT_EVALUATED: EnrolmentEvaluation = "NOT_EVALUATED";
+
 function result(
   verdict: EvidenceVerdict,
   outcome: EvidenceOutcome | null,
@@ -149,8 +178,9 @@ function result(
   warnings: string[],
   failing?: StepResult,
   rolesAsserted: ReceiptRole[] = [],
-  dimensions: VerdictDimensions = { integrity: "BROKEN", authorization: "UNCHECKED" },
+  dimensions: VerdictDimensions = { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" },
   purpose: VerificationPurpose = "audit",
+  enrolment: EnrolmentEvaluation = NOT_EVALUATED,
 ): VerifyEvidenceResult {
   const r: VerifyEvidenceResult = {
     verdict,
@@ -159,6 +189,7 @@ function result(
     warnings,
     rolesAsserted,
     dimensions,
+    enrolment,
     policy: { verifierVersion: VERIFIER_POLICY_VERSION, purpose },
   };
   if (failing) {
@@ -230,11 +261,11 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
   // rejects duplicate keys outright, so it fails here rather than deeper in.
   const parsedBundle = parseDocument(bundleInput, "bundle");
   if (!parsedBundle.ok) {
-    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the byte boundary: ${parsedBundle.reason}` }, [], { integrity: "BROKEN", authorization: "UNCHECKED" }, purpose);
+    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the byte boundary: ${parsedBundle.reason}` }, [], { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" }, purpose);
   }
   const bundle = parsedBundle.value as EvidenceBundle;
   if (bundle === null || typeof bundle !== "object" || Array.isArray(bundle)) {
-    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "bundle rejected at the byte boundary: the document is not a JSON object" }, [], { integrity: "BROKEN", authorization: "UNCHECKED" }, purpose);
+    return result("INVALID", null, [], warnings, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "bundle rejected at the byte boundary: the document is not a JSON object" }, [], { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" }, purpose);
   }
 
   const rootKeyring = asRootKeyEntryMap(optTenantRoot);
@@ -315,7 +346,9 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
       // failure at step 17 means it is broken. Neither is reported as INTACT: this dimension states
       // what was PROVEN, never what was merely not disproven.
       const integrity: VerdictDimensions["integrity"] = ctx.checkpointReconciled === true && r.step !== "STEP_17_CHECKPOINT_RECONCILE" ? "INTACT" : "BROKEN";
-      return result(verdict, bundle.outcome, steps, ctx.warnings, r, [...ctx.rolesAsserted], { integrity, authorization: ctx.authorization }, purpose);
+      // The pipeline stopped, so the settlement question was never reached. `UNCHECKED` is the one
+      // value that must never be read as "an artifact was examined and found acceptable".
+      return result(verdict, bundle.outcome, steps, ctx.warnings, r, [...ctx.rolesAsserted], { integrity, authorization: ctx.authorization, settlement: "UNCHECKED" }, purpose);
     }
   }
 
@@ -337,7 +370,11 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     ctx.warnings,
     undefined,
     [...ctx.rolesAsserted],
-    { integrity: "INTACT", authorization: ctx.authorization },
+    // The whole pipeline ran and nobody asked the settlement question, because no enrolment input
+    // was supplied. `NO_EXECUTION_BINDING` says the true thing about what this verdict rests on:
+    // for this bundle no execution binding was established, and the verdict word means exactly what
+    // it meant before this field existed.
+    { integrity: "INTACT", authorization: ctx.authorization, settlement: "NO_EXECUTION_BINDING" },
     purpose,
   );
 }
