@@ -1,12 +1,19 @@
-Last updated: 2026-08-12 (measured; every number below was re-run in this tree, not carried forward)
+Last updated: 2026-08-15 (measured; every number below was re-run in this tree, not carried forward)
 
-> ⚠ **This file has now been stale twice, and both corrections are part of the commit that found
-> them.** The 2026-08-04 revision corrected four wrong claims about the registry, the checkout
-> version and CI. That revision then went stale in turn: it reported the kernel at **534** tests, the
-> knockout suite at **74 controls**, and `lint:release-parity` as **PARITY PASS**. All three were
-> wrong by 2026-08-12 — measured 585, 82, and RED. The lesson is not "try harder to remember": it is
-> that a state file has to be re-measured on every release, which is why it is now a release blocker
-> with its own line in `06_RELEASE_CHECKLIST.md`.
+> ⚠ **This file has now been stale three times, and each correction is part of the commit that found
+> it.** The 2026-08-04 revision corrected four wrong claims about the registry, the checkout version
+> and CI. That revision went stale in turn: it reported the kernel at **534** tests, the knockout
+> suite at **74 controls**, and `lint:release-parity` as **PARITY PASS** — measured 585, 82 and RED
+> on 2026-08-12. And that revision went stale too, which an external reviewer of PR #78 found rather
+> than a release: on 2026-08-15 it still claimed **585** kernel tests against 589, **133** evidence
+> tests against **446**, and **82** knockout controls against **144**, while omitting two packages
+> from its table entirely. Understating coverage by a factor of three is not a harmless error — a
+> release reviewer reads this file as evidence.
+>
+> The lesson is not "try harder to remember". A state file has to be re-measured on every release,
+> which is why it is a release blocker with its own line in `06_RELEASE_CHECKLIST.md` — and the third
+> staleness happened anyway, because between releases nothing re-runs it. Numbers below now carry the
+> command that produced them, so the next reader can re-run rather than trust.
 
 Production status: `PROTOTYPE` with active `SPECIFICATION` work. Zero tenants, zero revenue, zero
 external adopters. A public individual Internet-Draft `-00` exists; later local text is proposed and
@@ -43,39 +50,69 @@ because the feature is not in what is published under that version. The check ex
 that, and it goes green by RELEASING, never by relaxing the check. It is deliberately not part of
 `ci.yml` for the same reason.
 
-## Measured totals, 2026-08-12
+## Measured totals, 2026-08-15
 
-Kernel `npm test`: **585 pass / 0 fail / 0 skipped**.
+Re-measured in full on 2026-08-15. **Every number in the previous edition of this section was
+stale**, some of them by a factor of three: it claimed 585 kernel tests against 589, 133 evidence
+tests against 446, and 82 knockout controls against 144. A document that calls itself the measured
+current state and reports a third of the real coverage is worse than one that reports nothing, so
+what follows is a fresh run of each command, and the command is named beside the number.
 
-| package | result |
-|---|---|
-| `packages/gate` | 246 pass / 0 fail |
-| `packages/adapter-core` | 332 pass / 0 fail |
-| `packages/approval-artifacts` | 179 pass / 0 fail |
-| `packages/relay` | 166 pass / 0 fail |
-| `packages/evidence` | 133 pass / 0 fail |
-| `packages/tsa-anchor` | 120 pass / 0 fail |
-| `packages/signer-core` | 79 pass / 0 fail |
-| `packages/e2e-demo` | 15 pass / 0 fail |
-| `packages/mcp-proxy` | no numeric tally — see below |
-| `packages/signer-sidecar` | no numeric tally — see below |
+Kernel `npm test` at the repository root: **589 pass / 0 fail / 0 skipped**, exit 0.
 
-`packages/mcp-proxy` and `packages/signer-sidecar` end their runs at a hand-rolled `SMOKE TEST PASS`
-line rather than a `node --test` tally, so **there is no pass count to quote and none is invented
-here.** No failure appears anywhere in either log. A reader who wants a number for those two will not
-find one, and that is the accurate answer until their scripts emit one.
+Per package, each from `cd packages/<name> && npm test`, run sequentially (never in parallel — they
+share the root `dist/` and would race on it):
+
+| package | result | previously claimed |
+|---|---|---|
+| `packages/evidence` | 446 pass / 0 fail | 133 |
+| `packages/adapter-core` | 377 pass / 0 fail | 332 |
+| `packages/gate` | 289 pass / 0 fail | 246 |
+| `packages/approval-artifacts` | 209 pass / 0 fail | 179 |
+| `packages/relay` | 166 pass / 0 fail | 166 |
+| `packages/framework-adapters` | 126 pass / 0 fail | *(absent from the table)* |
+| `packages/mcp-proxy` | 124 pass / 0 fail, plus its smoke line | "no numeric tally" |
+| `packages/tsa-anchor` | 120 pass / 0 fail | 120 |
+| `packages/rail-x402` | 113 pass / 0 fail | *(absent from the table)* |
+| `packages/signer-core` | 79 pass / 0 fail | 79 |
+| `packages/e2e-demo` | **not measurable here** — see below | 15 pass / 0 fail |
+| `packages/signer-sidecar` | no numeric tally — see below | no numeric tally |
+
+Three corrections to how this table used to read:
+
+- `packages/mcp-proxy` **does** emit a `node --test` tally now (124 / 0). It also prints a
+  hand-rolled `SMOKE TEST PASS` line, which is what the previous edition saw. `packages/signer-sidecar`
+  still emits only the smoke line, so **there is still no pass count to quote for it and none is
+  invented here.** No failure appears anywhere in its log.
+- `packages/framework-adapters` and `packages/rail-x402` have test scripts and were simply missing
+  from the table. Both are green.
+- `packages/e2e-demo` **cannot be measured on a machine without the private phone core.** Its suites
+  fail at import with `ERR_MODULE_NOT_FOUND: Cannot find package 'noa-mobile'`, which is an absent
+  dependency, not a defect in this tree. Reported here as unmeasured rather than as a number, and it
+  is the same absence that leaves three `lint:resolver-parity` proofs red below. CI, which checks the
+  private core out, is the place that number comes from.
 
 Other gates:
 
-- `lint:knockout` — **82 controls, 82 proven load-bearing.** Each control is deleted in turn and the
-  suite must go red; a control that can be removed without breaking anything was never a control.
-- `typecheck:all` — **0 errors** across 12 projects. Four (`framework-adapters`, `mcp-proxy`,
-  `signer-sidecar`, `tsa-anchor`) report `skip — no TypeScript (plain .mjs)`, which is a stated skip,
-  not a silent pass.
-- `lint:security-gates` — **zero blocking findings**; 362 warn-mode findings, all within ratcheted
-  budgets. Budgets may only fall: a regression fails the build even though the absolute number is
-  non-zero.
-- `lint:resolver-parity` — **OK, 0 findings** over 55 sites and 128 vocabulary files.
+- `lint:knockout` — **144 controls in the registry** (`--print-selection`, which reports the
+  validated registry without running the sweep). The previous edition said 82. On a machine without
+  the private phone core, 10 are DECLARED `SETUP_FAILED` and 134 would run. **The full sweep was not
+  run for this edition** — it deletes each control in turn and re-runs that package's whole suite,
+  about forty minutes across four CI shards — so this is a count of controls, *not* a claim that all
+  144 are currently proven load-bearing. That claim belongs to a sweep, and the sweep is CI's.
+- `typecheck:all` — **13 projects; 0 errors in 12 of them, and `packages/e2e-demo` FAILS here** with
+  four `TS2307: Cannot find module 'noa-mobile/…'`. Same absent private core as above, not a type
+  error in this tree. Five (`framework-adapters`, `mcp-proxy`, `rail-x402`, `signer-sidecar`,
+  `tsa-anchor`) report `skip — no TypeScript (plain .mjs)`, which is a stated skip, not a silent
+  pass. The previous edition said 12 projects and four skips.
+- `lint:security-gates` — **zero blocking findings**; **367** warn-mode findings, all within
+  ratcheted budgets (the previous edition said 362). Budgets may only fall: a regression fails the
+  build even though the absolute number is non-zero.
+- `lint:resolver-parity` — **3 findings here, all of them the same absent dependency**, over 65
+  sites and 145 vocabulary files (the previous edition said 0 findings over 55 sites and 128 files).
+  All three are `PROOF_UNRESOLVED` on `packages/e2e-demo/test/keyring-resolver-parity.test.ts`: the
+  gate treats the runner as ground truth, that suite never runs without the private phone core, so
+  its three proofs are recorded as never observed. On a machine that has the core this is 0.
 - `test:r7-exploits` — **closed 13 / open 1** over a 14-exploit corpus. The open one is
   `o01_preload_includes.mjs` and it is **pinned OPEN on purpose**: see `NON-CLAIMS.md` NC-6.4 and
   ADR-0002 §3, which withdrew the in-realm intrinsic-immunity claim rather than re-scoping it.
