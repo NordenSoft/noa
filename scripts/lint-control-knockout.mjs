@@ -1449,8 +1449,8 @@ const KNOCKOUTS = [
       "early and false of one that finished; the two are the difference between an unfinished check " +
       "and an unasked question, and the result carries exactly one of them.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },",
-    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"UNCHECKED\" },",
+    find: "settlement: \"NO_EXECUTION_BINDING\", settlementObserver:",
+    replace: "settlement: \"UNCHECKED\", settlementObserver:",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
