@@ -46,14 +46,15 @@
  * already have.
  *
  * Run:  node scripts/lint-control-knockout.mjs [--warn] [--only <id>] [--requires <tag>] [--shard i/n]
+ *       node scripts/lint-control-knockout.mjs --print-selection [--shard i/n]   (what it WOULD run)
  */
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
-  runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING, partitionByDependency,
-  buildStateGuardFor, isGitWorkTree, shardOf,
+  runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING,
+  buildStateGuardFor, isGitWorkTree, shardOf, selectControls,
 } from "./lib/knockout-runner.mjs";
 import { DEPENDENCY_PROBES } from "./lib/phone-core-probe.mjs";
 
@@ -2137,44 +2138,54 @@ for (const k of KNOCKOUTS) {
 // The exclusion is DECLARED (`requires: [...]`), never inferred from the failure shape: e2e-demo's
 // poisoned baseline is "exit 1 with 3 named failures", the same shape as `packages/gate`'s
 // legitimate owner-deferred red baseline above. A runner that guessed would excuse real failures.
-const { runnable: DEPS_OK, setupFailed: DEPS_MISSING } = partitionByDependency(
-  KNOCKOUTS, ROOT, DEPENDENCY_PROBES,
-);
-const chosen = ONLY
-  ? DEPS_OK.filter((k) => k.id === ONLY)
-  : REQUIRES
-    ? DEPS_OK.filter((k) => (k.requires ?? []).includes(REQUIRES))
-    : DEPS_OK;
-// The shard is applied LAST, over whatever the other selectors chose, so `--requires x --shard 1/2`
-// means "half of x" rather than "half of everything, then x".
-const selected = SHARD ? chosen.filter((k) => shardOf(k.id, SHARD.total) === SHARD.index) : chosen;
-if (SHARD) {
+//
+// THE SELECTION IS ONE FUNCTION, and it lives in `lib/knockout-runner.mjs` so the self-test can
+// drive the SAME code. It used to be three inline `.filter()` calls here while the self-test
+// re-parsed this file with a regex and re-implemented the ideal partition with `shardOf`. That is a
+// test of a re-implementation: a reviewer excluded a live control from every shard HERE and the
+// self-test stayed green, against the workflow's promise that dropping a control is unrepresentable.
+const { selected, chosen, setupFailed: DEPS_MISSING, empty: EMPTY_SELECTION } = selectControls({
+  registry: KNOCKOUTS, repoRoot: ROOT, probes: DEPENDENCY_PROBES,
+  only: ONLY, requires: REQUIRES, shard: SHARD,
+});
+if (EMPTY_SELECTION) {
   // NO VERDICT IS NOT A PASS, applied to the partition itself. An empty slice means n exceeds the
   // selection, which is an operator error rather than a clean run: exiting 0 there would let a
-  // workflow declare five green shards over a four-control selection.
-  if (selected.length === 0) {
-    console.error(
-      `--shard ${SHARD.index}/${SHARD.total}: this slice is EMPTY (${chosen.length} control(s) selected ` +
-      `in total). A shard that measures nothing is not green — reduce the shard count.`,
-    );
-    process.exit(1);
-  }
+  // workflow declare five green shards over a four-control selection. Same for a `--requires` job
+  // whose whole selection fell into SETUP_FAILED — it must refuse loudly, not exit 0 having
+  // measured nothing.
+  console.error(EMPTY_SELECTION);
+  process.exit(1);
+}
+
+// ── --print-selection: WHAT THIS PROCESS WOULD MEASURE, IN MACHINE-READABLE FORM ───────────────
+//
+// The other half of the fix above, and the one that closes the gap a shared function alone leaves:
+// a filter added ANYWHERE in this file, after the selector returns, would still be invisible to a
+// self-test that only calls the selector. So the real process is asked what it really chose.
+//
+// The self-test spawns this script once per shard with this flag and asserts that the union of the
+// slices, plus the DECLARED setup-failed exclusions, is the whole validated registry. A control
+// that vanishes from every shard and is not declared missing turns that check red and names itself.
+//
+// It exits BEFORE the state guard and before any baseline: this must be answerable without owning
+// the tree or running a suite, or the check it exists for would cost forty minutes.
+if (process.argv.includes("--print-selection")) {
+  process.stdout.write(JSON.stringify({
+    registry: KNOCKOUTS.map((k) => k.id),
+    setupFailed: DEPS_MISSING.map((m) => m.id),
+    chosen: chosen.map((k) => k.id),
+    selected: selected.map((k) => k.id),
+    shard: SHARD ? { index: SHARD.index, total: SHARD.total } : null,
+  }) + "\n");
+  process.exit(0);
+}
+
+if (SHARD) {
   console.log(
     `shard ${SHARD.index}/${SHARD.total}: ${selected.length} of ${chosen.length} selected control(s). ` +
     `Every control is in exactly one shard; the other shards are separate, BLOCKING jobs.\n`,
   );
-}
-if (REQUIRES && selected.length === 0) {
-  // No verdict is not a pass (KURAL 29): an armed job whose whole selection fell into
-  // SETUP_FAILED — or matched nothing — must refuse loudly, not exit 0 having measured nothing.
-  const declared = KNOCKOUTS.filter((k) => (k.requires ?? []).includes(REQUIRES));
-  const setupFailed = DEPS_MISSING.filter((m) => declared.some((k) => k.id === m.id));
-  console.error(
-    `--requires ${REQUIRES}: 0 runnable entries selected ` +
-    `(${declared.length} declared, ${setupFailed.length} SETUP_FAILED). ` +
-    `The experiment did not happen; refusing to report a pass.`,
-  );
-  process.exit(1);
 }
 
 // ── A RUN THAT DIED MID-ARM IS REPAIRED BEFORE ANYTHING IS MEASURED ────────────────────────────

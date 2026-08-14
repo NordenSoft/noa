@@ -746,9 +746,14 @@ jobs:
   #   • the partition is a total function of the control's ID (`shardOf`), not of its array position
   #     — inserting an entry does not re-shard the rest, so a flake stays attributable and a bisect
   #     does not cross jobs;
-  #   • `lint-control-knockout.selftest.mjs` asserts against the REAL registry, for n in 1..12, that
-  #     the slices are pairwise disjoint and their union is every control. There is no filter and no
-  #     fall-through branch for a control to disappear into;
+  #   • `lint-control-knockout.selftest.mjs` asks the RUNNER, once per shard, what it would actually
+  #     arm (`--print-selection`), and asserts that the union of those answers plus the DECLARED
+  #     setup-failed exclusions is the whole validated registry. This bullet used to claim the same
+  #     property and did not have it: the selftest re-parsed the registry with a regex and
+  #     re-implemented the ideal split, so it compared one ideal partition against another and never
+  #     observed the real selector. A reviewer excluded a live control from every shard in the runner
+  #     and the selftest stayed green. There is now ONE selector (`selectControls`), driven directly
+  #     by the selftest, AND the end-to-end union check above it, which catches a drop anywhere else;
   #   • an EMPTY shard is a hard refusal, not a clean run — otherwise five green jobs could report
   #     coverage over a four-control selection;
   #   • each shard prints `shard i/n: k of N selected` so the arithmetic is checkable from the log.

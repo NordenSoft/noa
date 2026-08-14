@@ -93,6 +93,66 @@ export function shardOf(id, total) {
   return (parseInt(digest, 16) % total) + 1;
 }
 
+/**
+ * WHICH CONTROLS THIS RUN WILL MEASURE — the ONE implementation, used by the runner and by the
+ * self-test that judges it.
+ *
+ * ── WHY IT LIVES HERE AND NOT IN THE RUNNER ──────────────────────────────────────────────────────
+ *
+ * It used to live in `lint-control-knockout.mjs` as three inline `.filter()` calls, and the
+ * self-test "verified" the partition by re-parsing the registry with a regex and re-implementing the
+ * ideal split with `shardOf`. So the self-test measured a SECOND partition that happened to agree
+ * with the first, and never observed what the runner actually selected. A cross-family reviewer
+ * excluded a live control from every shard IN THE RUNNER and the self-test stayed green — against a
+ * workflow comment promising that dropping a control was "unrepresentable".
+ *
+ * A test that re-implements its subject tests the re-implementation. There is now one selector, and
+ * the self-test drives THIS function; the runner's `--print-selection` closes the remaining gap by
+ * letting the self-test observe the real process end-to-end, filters and all.
+ *
+ * ── THE ORDER IS NORMATIVE ───────────────────────────────────────────────────────────────────────
+ *
+ * Dependency exclusion first (an entry whose dependency is absent is NOT RUN, and that is declared
+ * per entry, never inferred from a failure shape), then `--only` / `--requires`, then the shard LAST
+ * over whatever those chose — so `--requires x --shard 1/2` means "half of x", not "half of
+ * everything, then x".
+ *
+ * Returns `{ selected, chosen, setupFailed, empty }`. `empty` is a REASON string when the selection
+ * measures nothing, because no verdict is not a pass: an empty slice is an operator error, and
+ * exiting 0 there would let five green jobs report coverage over a four-control selection.
+ */
+export function selectControls({ registry, repoRoot, probes, only = null, requires = null, shard = null }) {
+  if (!Array.isArray(registry)) throw new Error("selectControls: registry must be an array");
+  if (shard !== null) {
+    if (!Number.isSafeInteger(shard.total) || shard.total < 1) throw new Error(`selectControls: shard total must be a positive integer, got ${String(shard.total)}`);
+    if (!Number.isSafeInteger(shard.index) || shard.index < 1 || shard.index > shard.total) {
+      throw new Error(`selectControls: shard index ${String(shard.index)} does not exist in a partition of ${String(shard.total)}`);
+    }
+  }
+  const { runnable, setupFailed } = partitionByDependency(registry, repoRoot, probes);
+  const chosen = only
+    ? runnable.filter((k) => k.id === only)
+    : requires
+      ? runnable.filter((k) => (k.requires ?? []).includes(requires))
+      : runnable;
+  const selected = shard ? chosen.filter((k) => shardOf(k.id, shard.total) === shard.index) : chosen;
+
+  let empty = null;
+  if (shard && selected.length === 0) {
+    empty =
+      `--shard ${shard.index}/${shard.total}: this slice is EMPTY (${chosen.length} control(s) selected ` +
+      `in total). A shard that measures nothing is not green — reduce the shard count.`;
+  } else if (requires && selected.length === 0) {
+    const declared = registry.filter((k) => (k.requires ?? []).includes(requires));
+    const blocked = setupFailed.filter((m) => declared.some((k) => k.id === m.id));
+    empty =
+      `--requires ${requires}: 0 runnable entries selected ` +
+      `(${declared.length} declared, ${blocked.length} SETUP_FAILED). ` +
+      `The experiment did not happen; refusing to report a pass.`;
+  }
+  return { selected, chosen, setupFailed, empty };
+}
+
 /** Validate the whole registry before any suite is allowed to run. Returns its unambiguous id map. */
 export function validateKnockoutRegistry(registry) {
   if (!Array.isArray(registry)) throw new Error("knockout registry must be an array");
