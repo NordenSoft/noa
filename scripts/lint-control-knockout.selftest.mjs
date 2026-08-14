@@ -32,7 +32,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs } from "./lib/knockout-runner.mjs";
+import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, privateFallbackRoot, ensurePrivateDir, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs } from "./lib/knockout-runner.mjs";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "ko-selftest-"));
 let failures = 0;
@@ -966,6 +966,87 @@ check("the real repository's own TypeScript projects all satisfy the artifact-ro
   assert.deepEqual(unsupportedArtifactRoots(repo, dirs), [],
     "a package in this repository emits where the guard cannot see it, so its knockouts would " +
       "report a clean restore over a leaked build");
+});
+
+/* ─── CodeQL js/insecure-temporary-file, 3×HIGH ────────────────────────────────────────────────
+ * The fallback store — used for a tree with no `node_modules` to hide a cache in — wrote this run's
+ * pristine sources, mutant hashes and lock under `os.tmpdir()` at a path derived only from the
+ * repository path. Deterministic on purpose, because crash recovery has to FIND it, and therefore
+ * predictable to everyone else on a shared machine. The `O_NOFOLLOW` reads and the `wx` lock refuse
+ * the symlink and pre-created-file halves; the class fix is the DIRECTORY itself. */
+check("the fallback store's root is per-user, 0700, and REFUSES anything it did not make", () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), "ko-fallback-"));
+  derivedRoots.push(base);
+  const root = privateFallbackRoot(base);
+
+  const uid = typeof process.getuid === "function" ? process.getuid() : null;
+  assert.ok(path.basename(root).startsWith("noa-knockout-"), "the fallback root is not namespaced at all");
+  if (uid !== null) {
+    assert.equal(path.basename(root), `noa-knockout-${uid}`,
+      "two accounts on one machine would share a directory holding each other's pristine sources");
+  }
+
+  ensurePrivateDir(root);
+  const made = fs.lstatSync(root);
+  assert.ok(made.isDirectory());
+  assert.equal(made.mode & 0o777, 0o700,
+    "the store other accounts must not read was created world-readable");
+  assert.doesNotThrow(() => ensurePrivateDir(root), "a directory this guard itself created was then rejected");
+
+  // A directory somebody else left loose is refused, not quietly repaired.
+  fs.chmodSync(root, 0o777);
+  assert.throws(() => ensurePrivateDir(root), /not 700/,
+    "a world-writable store was accepted; another account could have replaced the pristine sources " +
+      "this run restores from");
+  fs.chmodSync(root, 0o700);
+  assert.doesNotThrow(() => ensurePrivateDir(root));
+
+  // THE PLANTED SYMLINK: the attack the CodeQL rule is about.
+  const elsewhere = path.join(base, "somewhere-else");
+  fs.mkdirSync(elsewhere, { mode: 0o700 });
+  fs.rmSync(root, { recursive: true, force: true });
+  fs.symlinkSync(elsewhere, root);
+  assert.throws(() => ensurePrivateDir(root), /not a real directory/,
+    "a symlink planted at the predictable fallback path was followed — this run's pristine sources " +
+      "and its lock would have been written wherever it pointed");
+  assert.deepEqual(fs.readdirSync(elsewhere), [], "something was written through the planted symlink");
+
+  // ...and a plain file at that path is refused for the same reason.
+  fs.unlinkSync(root);            // unlink, not rm: the symlink itself goes, never what it points at
+  fs.writeFileSync(root, "not a directory at all\n");
+  assert.throws(() => ensurePrivateDir(root), /not a real directory/);
+  fs.rmSync(root, { force: true });
+});
+
+check("the PRIMARY store is untouched: a tree with node_modules never reaches the shared fallback", () => {
+  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-primary-"));
+  derivedRoots.push(r);
+  fs.mkdirSync(path.join(r, "node_modules"), { recursive: true });
+  const guard = createBuildStateGuard({ root: r });
+  assert.equal(guard.cacheDir, path.join(r, "node_modules", ".cache", "noa-knockout"),
+    "a tree with node_modules was pushed out to the shared temp store");
+  assert.equal(guard.start().ok, true);
+  assert.ok(fs.existsSync(guard.lockPath), "the primary store did not take its lock where it always did");
+  assert.equal(fs.lstatSync(guard.cacheDir).mode & 0o777, 0o755,
+    "the primary store's permissions changed; this fix was supposed to leave it alone");
+  guard.release();
+
+  // ...and the real repository is on that same primary path.
+  const repo = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  assert.equal(createBuildStateGuard({ root: repo }).cacheDir,
+    path.join(repo, "node_modules", ".cache", "noa-knockout"));
+});
+
+check("a tree with NO node_modules lands inside the private root, and still deterministically", () => {
+  const r = fs.mkdtempSync(path.join(os.tmpdir(), "ko-nonm-"));
+  derivedRoots.push(r);
+  const a = createBuildStateGuard({ root: r }).cacheDir;
+  const b = createBuildStateGuard({ root: r }).cacheDir;
+  assert.equal(a, b, "the fallback path is not deterministic, so a crashed run could never be found again");
+  assert.ok(a.startsWith(`${privateFallbackRoot()}${path.sep}`),
+    `the fallback store is not under the per-user private root: ${a}`);
+  assert.notEqual(path.dirname(a), os.tmpdir(),
+    "the store sits directly in the world-shared temp directory, which is the finding");
 });
 
 check("listBuildArtifacts takes every dist/ tree and never enters node_modules", () => {
