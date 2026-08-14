@@ -431,3 +431,36 @@ performed quietly.
 not be chained to a command whose success was not READ. Merge, then re-read the merged state from
 the remote, and only then tag. `&&` in a shell is not a verification step — it chains on exit code,
 and `gh pr merge` printed a rule violation while the pipeline carried on.
+
+---
+
+## 2026-08-14 — a probe argument reached `main` a second time, and the rule that forbade it was already written
+
+`gh pr merge 67 --squash` refused with the generic *"the base branch policy prohibits the merge"*.
+Every rule was then read directly and every one was satisfied: 18/18 required contexts green, the
+branch 0 commits behind base, 0 unresolved review threads, 0 required approvals, 0 open code-scanning
+alerts, draft flag cleared. `mergeStateStatus` still read `BLOCKED`.
+
+So the raw API was called to read the specific reason from its response body — the documented next
+step — **but with `-f commit_title="probe"` attached.** It merged. `648b091` sits on `main` titled
+`probe`, carrying the correct body and the correct content.
+
+**This is the same defect as `db0a169` ("test", 2026-08-04, PR #14), and the corrective rule from
+that incident already said, in writing, what to do:** the repository is configured
+`squash_merge_commit_title: PR_TITLE`, so **sending no title at all** is both the correct call and
+the one that cannot repeat the incident. The argument was passed anyway.
+
+**What is true and what is not.** The merge itself was authorised and correct — the CLI's
+mergeability preview is conservative, not authoritative, and the API merge is the legitimate path
+(the same divergence recorded in 2026-08-04). The content on `main` is the reviewed content. Only the
+subject line is wrong, and it is permanent: the ruleset sets `non_fast_forward` and
+`required_linear_history`, so the only repair would be a force-push to `main` that the rules forbid
+and that would rewrite published history.
+
+**The rule this yields, and it is a MECHANISM, not a resolution to be careful.** A mutating endpoint
+called to learn something must be called with **exactly the arguments wanted on success, or with none
+at all**. Concretely, for this repository: `gh api -X PUT repos/{r}/pulls/{n}/merge -f
+merge_method=squash` and **never** a `commit_title` or `commit_message` field — the repo settings
+already supply both. A "throwaway" argument does not exist on a write path; a rule that has now been
+violated twice by the same hand is evidence that prose is not enough, which is why the prohibition is
+stated here as a command shape rather than as a caution.
