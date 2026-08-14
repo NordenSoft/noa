@@ -56,11 +56,14 @@
  * whole design exists to surface. `6` keeps the old meaning of `3` intact and gives the new state
  * its own number.
  *
- * `6` is DEFINED here and is NOT REACHABLE from this build: no rule in this verifier assigns a
- * settlement value that produces it. The first rule that can is the one admitting a settlement
- * artifact with no verified params preimage. The table is written ahead of that rule on purpose —
- * writing it afterwards, beside the rule, is the exact ordering that produced the unreachable branch
- * described above — but "defined" and "live" are different words and this file uses them that way.
+ * `6` is DEFINED here and, since the settlement artifact plane landed, it is also LIVE: a bundle
+ * carrying a settlement artifact with no verifiable params preimage — absent, or committed under the
+ * keyed `hmac-sha256:` form — is assigned `BOUNDS_UNCHECKABLE` and exits `6`. The table was written
+ * ahead of that rule on purpose (writing it afterwards, beside the rule, is the exact ordering that
+ * produced the unreachable branch described above), and this paragraph moves WITH the rule rather
+ * than lagging it: a file still calling the branch unreachable would be telling an automation owner
+ * not to handle the one code this ladder exists to raise. `test/cli-wire.test.ts` spawns the built
+ * binary and asserts the real process status, so "live" here is a measurement, not an intention.
  *
  * ── WHY NOT `1` ──────────────────────────────────────────────────────────────────────────────────
  *

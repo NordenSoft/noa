@@ -1626,15 +1626,48 @@ const KNOCKOUTS = [
       "preimage is INCONCLUSIVE (the producer withheld a checkable preimage — asked and unanswered, " +
       "exit 6), while a SUPPLIED preimage that does not hash to the approval is a producer LIE and a " +
       "HARD rejection (INVALID / E_PARAMS_PREIMAGE_MISMATCH, exit 2). Forcing the uncheckable branch " +
-      "always-taken collapses the lie into the honest-withholding case, so the params-preimage-mismatch " +
-      "fixture — and ONLY it — flips from INVALID to INCONCLUSIVE; the two absent/keyed fixtures are " +
-      "unaffected. That single-fixture flip is what makes this an independent pin on the distinction " +
-      "rather than on the rule at large.",
+      "always-taken collapses the lie into the honest-withholding case, so the two SUPPLIED-preimage " +
+      "fixtures — the hash mismatch and the unknown seventh member — flip from INVALID to " +
+      "INCONCLUSIVE, while the two absent/keyed fixtures are UNAFFECTED. That asymmetry is what makes " +
+      "this an independent pin on the distinction rather than on the settlement rule at large: a " +
+      "mutation that broke the plane wholesale would move the absent/keyed fixtures too.",
     file: "packages/evidence/src/steps.ts",
     find: "      if (preimageUncheckable) {",
     replace: "      if (true) {",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "params-preimage-may-not-ride-alone",
+    control:
+      "The container admits `actionParamsPreimage` and `settlementEvidence` INDEPENDENTLY, and every " +
+      "check that reads the preimage — the hash, the six-member shape, the bounds — sits behind the " +
+      "artifact. Without the co-presence rule an attacker holding NO signing key appends a preimage " +
+      "member to an otherwise valid signed EXECUTED bundle and still gets VALID_FULL_CHAIN and exit 0, " +
+      "with those bytes examined by nothing. That is the precise 'positive verdict over a member no " +
+      "step looked at' class the outcome union exists to close, reopened one member later. Removing " +
+      "the rule must red the preimage-without-artifact vector.",
+    file: "packages/evidence/src/steps.ts",
+    find: "    if (b.actionParamsPreimage !== undefined) {",
+    replace: "    if (false) {",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "params-preimage-must-be-canonical-bytes",
+    control:
+      "The preimage's hash proves only that the receipt committed to THESE bytes — not that the bytes " +
+      "are the canonical (JCS) encoding the rule names. Without the re-canonicalize-and-compare, a " +
+      "preimage carrying insignificant whitespace, unsorted members or non-minimal string escaping is " +
+      "accepted under a 'canonical JCS' label, so one set of approved parameters can carry several " +
+      "different valid paramsHash values. That is the same two-parties-two-hashes ambiguity the " +
+      "unknown-member refusal exists to prevent, reached by a different door. Removing it must red the " +
+      "three non-canonical vectors.",
+    file: "packages/rail-x402/src/settlement-evidence.mjs",
+    find: "  if (bufToString(rawBuf, \"utf8\") !== canonicalize(p)) {",
+    replace: "  if (false) {",
+    kind: "tests",
+    suite: ["packages/rail-x402", "npm", ["test"]],
   },
 ];
 

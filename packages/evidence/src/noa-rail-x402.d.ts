@@ -3,9 +3,24 @@
  *
  * `noa-rail-x402` ships as plain `.mjs` with JSDoc and no `.d.ts`, so TypeScript cannot see through
  * its `main`. This file declares ONLY the one surface this package consumes — the D7 reconciler and
- * its §6 result envelope — so a signature drift in the shipped module (a renamed field, a new code)
- * surfaces here as a compile error rather than as an `any`. The shape mirrors the JSDoc at
- * `packages/rail-x402/src/settlement-evidence.mjs`; the module header there is the authority.
+ * its §6 result envelope — so that consumption is typed rather than `any`.
+ *
+ * ⚠ WHAT THIS DOES AND DOES NOT CATCH, corrected after a reviewer found the earlier claim false. It
+ * previously said a renamed field or a new code in the shipped module "surfaces here as a compile
+ * error". It does not. This declaration is HAND-WRITTEN and is never checked against the JavaScript
+ * module, so implementation drift is invisible to the compiler: if the module renames a field, this
+ * file keeps describing the old one and the build stays green. What it does buy is that THIS
+ * package's uses are type-checked against the shape written here, and that the shape is stated in one
+ * place a reader can diff against the module by hand.
+ *
+ * `code` is deliberately `string` and not a union of the registered codes: the reconciler owns that
+ * registry (`SETTLEMENT_RESULT_CODES`), and duplicating it here would create a second authority that
+ * drifts silently. The consequence is that a new or renamed code is NOT exhaustiveness-checked — the
+ * `switch` over it in `steps.ts` fails CLOSED on anything it does not recognise, which is where that
+ * risk is actually handled.
+ *
+ * The shape mirrors the JSDoc at `packages/rail-x402/src/settlement-evidence.mjs`; that module header
+ * is the authority, and on any disagreement it wins.
  */
 declare module "noa-rail-x402" {
   /** The bytes-or-string documents + verifier policy the reconciler consumes (S4 layers 4+6). */

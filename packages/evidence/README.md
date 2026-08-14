@@ -64,10 +64,27 @@ what it found:
 | Field | Meaning |
 |---|---|
 | `enrolment` | whether the enrolment question was asked at all. No enrolment registry is supplied to this verifier, so it is always `NOT_EVALUATED`: the question was not put, so the answer did not change. |
-| `dimensions.settlement` | the settlement question, reported beside `integrity` and `authorization` because the three can legitimately disagree. `NO_EXECUTION_BINDING` on a completed run (nobody asked, so no execution binding was established for this bundle); `UNCHECKED` on a run that stopped earlier. |
+| `dimensions.settlement` | the settlement question, reported beside `integrity` and `authorization` because the three can legitimately disagree. `NO_EXECUTION_BINDING` on a completed run (nobody asked, so no execution binding was established for this bundle); `UNCHECKED` on a run that stopped before the settlement rule; `BOUNDS_UNCHECKABLE` when a settlement artifact arrived with no verifiable params preimage, so nothing about the money was compared to anything — this is **not** "passed"; `CONTRADICTED` when the artifact is unbound, out of bounds, mis-correlated, or asserts a non-settlement under an executed outcome. `RECONFIRMED` and `ATTESTED_UNVERIFIED` are declared but not reachable in this build: both need inputs (an enrolment registry, a relying-party chain-facts record) this verifier is not yet handed. |
 
 `EXECUTED` has never meant the money moved — it means the gate signed that it handed the request
 off. `dimensions.settlement` is where the result says so, instead of leaving it to be inferred.
+
+#### Container compatibility, stated rather than assumed
+
+The `EXECUTED` union gained two **optional** members, `settlementEvidence` and
+`actionParamsPreimage`, under the **unchanged** `noa.approval-evidence/0.1` identifier. That is
+additive in one direction only, and the other direction is worth saying out loud:
+
+- every bundle produced before this change still verifies, unchanged, with the same verdict and the
+  same exit code — that guarantee is asserted over the whole shipped corpus;
+- but the container is `additionalProperties: false`, so **a strict pre-slice reader of `0.1` will
+  reject a new settlement-bearing bundle** as an unknown-property error. Old bundles staying valid
+  under a new reader does not by itself make a schema rolling-compatible.
+
+The identifier bump is **deferred deliberately**, not overlooked: there are no external verifiers and
+no production tenants today, so spending a new wire identifier now would burn the one cheap
+compatibility break before anything depends on it. It becomes **required** as soon as a verifier
+outside this repository consumes `0.1` bundles.
 
 ### Exit codes
 
@@ -78,7 +95,7 @@ off. `dimensions.settlement` is where the result says so, instead of leaving it 
 | `3` | `INCONCLUSIVE` — a non-executed outcome with no fresh trusted checkpoint |
 | `4` | `UNVERIFIED` — no external trust root / checkpoint keyring supplied |
 | `5` | usage / IO error |
-| `6` | `INCONCLUSIVE` — the settlement question was asked and not answered. **Defined and reserved; not reachable from this build**, because no rule here assigns a settlement value that produces it. It is documented so a consumer can wire it before the rule that fires it exists. |
+| `6` | `INCONCLUSIVE` — the settlement question was asked and not answered. **Reachable, and measured at the process boundary:** a bundle carrying a settlement artifact whose params preimage is absent, or whose `action.paramsHash` is the keyed `hmac-sha256:` form, exits `6`. The money was compared to nothing, so no positive is available. Handle it explicitly — it is **not** a stale checkpoint (`3`) and retrying will not change it. |
 | `7` | internal invariant violation — a `(verdict, enrolment, settlement)` tuple the rules cannot produce reached the exit mapper. A statement about the verifier, never about the evidence. |
 
 The mapping is a function of `(verdict, enrolment, dimensions.settlement)` and is exported as
