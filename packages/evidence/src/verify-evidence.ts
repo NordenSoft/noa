@@ -178,10 +178,22 @@ const NOT_EVALUATED: EnrolmentEvaluation = "NOT_EVALUATED";
 
 /**
  * The dimensions of a run that never reached the settlement question — every early return and every
- * pipeline stop. Named rather than repeated: nine call sites spelling the same three fields is nine
- * chances to spell one of them differently.
+ * pipeline stop. A FUNCTION, not a shared constant, and the distinction is not stylistic.
+ *
+ * It shipped as a constant for exactly one review round, and a reviewer reproduced the consequence:
+ * `result()` puts whatever it is handed on the result BY REFERENCE, so every early-return result in
+ * a process shared ONE dimensions object. A consumer that wrote to one — deliberately or by
+ * accident, and this object is not frozen — silently rewrote the dimensions of every later
+ * verification in that process, including ones it never saw. The reproduction turned a later
+ * INVALID result into `integrity: INTACT, authorization: VALID_NOW, settlement: RECONFIRMED`.
+ *
+ * Bundle bytes cannot do this; an in-process caller can. A verifier whose past answers can be edited
+ * by its own caller is not offering a verdict, and the previous shape — a per-call default parameter
+ * expression — did not have the defect. Naming the value is worth keeping; sharing the object is not.
  */
-const NOTHING_PROVEN: VerdictDimensions = { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" };
+function nothingProven(): VerdictDimensions {
+  return { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" };
+}
 
 function result(
   verdict: EvidenceVerdict,
@@ -249,7 +261,7 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     optMaxAgeMs = opts.maxAgeMs;
     rawPurpose = opts.purpose ?? "audit";
   } catch {
-    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "verification options could not be read: an option accessor threw" });
+    return result("INVALID", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "verification options could not be read: an option accessor threw" });
   }
   const schemas = suppliedSchemas ?? loadSchemas();
 
@@ -259,7 +271,7 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
   // decides whether a live authorization check runs, an unrecognised value must FAIL CLOSED, never
   // quietly downgrade to audit.
   if (rawPurpose !== "audit" && rawPurpose !== "authorize") {
-    return result("UNVERIFIED", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: `unrecognised purpose ${JSON.stringify(rawPurpose)} — must be exactly "audit" or "authorize" (fail-closed: an unknown purpose is never treated as audit)` });
+    return result("UNVERIFIED", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: `unrecognised purpose ${JSON.stringify(rawPurpose)} — must be exactly "audit" or "authorize" (fail-closed: an unknown purpose is never treated as audit)` });
   }
   const purpose: VerificationPurpose = rawPurpose;
 
@@ -273,11 +285,11 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
   // rejects duplicate keys outright, so it fails here rather than deeper in.
   const parsedBundle = parseDocument(bundleInput, "bundle");
   if (!parsedBundle.ok) {
-    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the byte boundary: ${parsedBundle.reason}` }, [], purpose);
+    return result("INVALID", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle rejected at the byte boundary: ${parsedBundle.reason}` }, [], purpose);
   }
   const bundle = parsedBundle.value as EvidenceBundle;
   if (bundle === null || typeof bundle !== "object" || Array.isArray(bundle)) {
-    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "bundle rejected at the byte boundary: the document is not a JSON object" }, [], purpose);
+    return result("INVALID", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: "bundle rejected at the byte boundary: the document is not a JSON object" }, [], purpose);
   }
 
   const rootKeyring = asRootKeyEntryMap(optTenantRoot);
@@ -285,7 +297,7 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
 
   // (F7a) external trust root REQUIRED — no root / no checkpoint keyring → UNVERIFIED, never VALID.
   if (Object.keys(rootKeyring).length === 0) {
-    return result("UNVERIFIED", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --tenant-root supplied (F7a): cannot anchor the delegation → manifest chain" });
+    return result("UNVERIFIED", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_1_HOLD_ENVELOPE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --tenant-root supplied (F7a): cannot anchor the delegation → manifest chain" });
   }
   if (
     !checkpointTrust.ok
@@ -294,17 +306,17 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     || Array.isArray(checkpointTrust.value)
     || Object.keys(checkpointTrust.value).length === 0
   ) {
-    return result("UNVERIFIED", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_17_CHECKPOINT_RECONCILE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --checkpoint-keyring supplied (F7a): cannot authenticate the tail-completeness anchor" });
+    return result("UNVERIFIED", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_17_CHECKPOINT_RECONCILE", ok: false, code: "E_NO_TRUST_ROOT", reason: "no external --checkpoint-keyring supplied (F7a): cannot authenticate the tail-completeness anchor" });
   }
 
   // container shape (the union structure; sub-artifact internals are validated per-step). Runs over
   // the FROZEN snapshot — the same bytes every step will read.
   const shape = evalSchema(schemas.container as Record<string, unknown>, bundle as unknown as Record<string, unknown>);
   if (!shape.ok) {
-    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle container invalid: ${shape.errors.join("; ")}` });
+    return result("INVALID", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `bundle container invalid: ${shape.errors.join("; ")}` });
   }
   if (bundle.spec !== EVIDENCE_SPEC) {
-    return result("INVALID", null, [], warnings, NOTHING_PROVEN, NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `spec != ${EVIDENCE_SPEC}` });
+    return result("INVALID", null, [], warnings, nothingProven(), NOT_EVALUATED, { step: "STEP_0_TENANT_EQUALITY", ok: false, code: "E_BUNDLE_SHAPE", reason: `spec != ${EVIDENCE_SPEC}` });
   }
 
   // precompute the shared context.
