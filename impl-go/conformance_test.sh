@@ -24,6 +24,13 @@ GO_BIN="$SCRIPT_DIR/noa-verify"
 GO="${GO:-go}"
 ( cd "$SCRIPT_DIR" && "$GO" build -o noa-verify . ) || { echo "go build failed"; exit 1; }
 
+# The Go unit suite (jcs_test.go byte-parity + schema_test.go cross-field coherence) runs HERE, in
+# the one script CI actually invokes for this implementation. Before this line `go test` existed in
+# the tree and was executed by nothing — a test nobody runs is a comment. A unit failure fails the
+# whole conformance run: the vectors below prove agreement WITH impl-py, the unit tests prove the
+# rules the vectors cannot reach (every boundary of the calendar layer, one field at a time).
+( cd "$SCRIPT_DIR" && "$GO" test ./... ) || { echo "go unit tests FAILED"; exit 1; }
+
 G="$CONF/golden/0.3.0"
 V="$CONF/vectors"
 

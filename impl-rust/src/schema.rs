@@ -495,3 +495,113 @@ pub fn validate_receipt_shape(value: &Json) -> Result<(), String> {
 
     Ok(())
 }
+
+// ── CROSS-FIELD COHERENCE (R1-R5) + the real-instant timestamp rule ──────────────────────────────
+//
+// A receipt can satisfy every single-field check and still be a statement that argues both ways:
+// `agent.principal: "SANDBOX_SIM"` (the actor was the sandbox simulator) beside
+// `governance.sandboxed: false` (this really happened), on a CRITICAL `wire.transfer`. Five such
+// receipts — signed, chain-valid, hash-genuine — verified VALID 25 times out of 25 across the five
+// shipped verifiers before these rules landed.
+//
+// Every rule is tested BOTH ways. A rule that refuses everything is an outage, not a control, so
+// each contradiction is paired with a NEGATIVE CONTROL in which the same two fields agree.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::json::parse;
+
+    /// One structurally-complete receipt. `chain.hash`/`sig.value` are well-formed but not
+    /// recomputed — `validate_receipt_shape` runs BEFORE any hashing (it is the step that decides
+    /// MALFORMED), so shape is the only thing under test.
+    fn receipt(ts: &str, principal: &str, verdict: &str, sandboxed: bool, reversible: bool, rollback: Option<&str>) -> String {
+        let h = format!("sha256:{}", "a".repeat(64));
+        let rb = match rollback {
+            Some(v) => format!("\"{v}\""),
+            None => "null".to_string(),
+        };
+        format!(
+            "{{\"spec\":\"noa.receipt/0.1\",\"id\":\"rcpt_1\",\"ts\":\"{ts}\",\
+             \"scope\":{{\"tenant\":\"acme\",\"chain\":\"c1\"}},\
+             \"agent\":{{\"id\":\"agent-1\",\"model\":null,\"principal\":\"{principal}\"}},\
+             \"action\":{{\"id\":\"wire.transfer\",\"canonical\":\"wire.transfer\",\"riskClass\":\"CRITICAL\",\
+             \"paramsHash\":\"{h}\",\"reversible\":{reversible},\"rollbackRef\":{rb}}},\
+             \"governance\":{{\"mode\":\"on\",\"verdict\":\"{verdict}\",\"ruleId\":\"r\",\"approval\":null,\"sandboxed\":{sandboxed}}},\
+             \"chain\":{{\"seq\":0,\"prevHash\":null,\"hash\":\"{h}\"}},\
+             \"sig\":{{\"alg\":\"ed25519\",\"kid\":\"k1\",\"value\":\"AAAA\"}}}}"
+        )
+    }
+
+    fn shape_ok(js: &str) -> bool {
+        let v = parse(js).expect("fixture did not parse");
+        validate_receipt_shape(&v).is_ok()
+    }
+
+    const OK_TS: &str = "2026-08-14T00:00:00.000Z";
+
+    #[test]
+    fn coherence_rules() {
+        // The baseline every case below is a one-field edit away from.
+        assert!(shape_ok(&receipt(OK_TS, "SERVICE", "EXECUTED", false, true, None)), "baseline must be VALID");
+
+        // R1 — the actor is the sandbox simulator while the receipt denies it was a simulation.
+        assert!(!shape_ok(&receipt(OK_TS, "SANDBOX_SIM", "EXECUTED", false, true, None)));
+        assert!(shape_ok(&receipt(OK_TS, "SANDBOX_SIM", "EXECUTED", true, true, None)), "R1 control");
+        // …and it is ONE-DIRECTIONAL: a SERVICE agent may legitimately run inside a sandbox.
+        assert!(shape_ok(&receipt(OK_TS, "SERVICE", "EXECUTED", true, true, None)), "R1 one-directional");
+
+        // R2 — a SIMULATED outcome while the receipt denies it was a simulation.
+        assert!(!shape_ok(&receipt(OK_TS, "SERVICE", "SIMULATED", false, true, None)));
+        assert!(shape_ok(&receipt(OK_TS, "SERVICE", "SIMULATED", true, true, None)), "R2 control");
+
+        // R3 — an action declared impossible to undo, carrying the reference used to undo it.
+        assert!(!shape_ok(&receipt(OK_TS, "SERVICE", "EXECUTED", false, false, Some("snap_1"))));
+        assert!(shape_ok(&receipt(OK_TS, "SERVICE", "EXECUTED", false, false, None)), "R3 control (null)");
+        assert!(shape_ok(&receipt(OK_TS, "SERVICE", "EXECUTED", false, true, Some("snap_1"))), "R3 control (reversible)");
+
+        // R4 — the receipt says the action WAS undone while declaring it could not be.
+        assert!(!shape_ok(&receipt(OK_TS, "SERVICE", "ROLLED_BACK", false, false, None)));
+        assert!(shape_ok(&receipt(OK_TS, "SERVICE", "ROLLED_BACK", false, true, Some("snap_1"))), "R4 control");
+
+        // R5 — a `ts` with the SHAPE of RFC 3339 that denotes no instant.
+        assert!(!shape_ok(&receipt("2026-13-45T99:99:99.000Z", "SERVICE", "EXECUTED", false, true, None)));
+        assert!(shape_ok(&receipt("2026-06-30T23:59:60.000Z", "SERVICE", "EXECUTED", false, true, None)), "leap second");
+    }
+
+    /// The calendar layer, including the one acceptance that must never be "tightened" away: second
+    /// 60. A leap second is a real instant that has really occurred 27 times, and refusing it would
+    /// refuse a truthful receipt.
+    #[test]
+    fn rfc3339_instant() {
+        for s in [
+            "2026-06-20T07:30:54Z",
+            "2026-06-20t07:30:54z", // RFC 3339 §5.6 permits lowercase
+            "2024-02-29T00:00:00Z", // a leap day
+            "2000-02-29T00:00:00Z", // the %400 rule: 2000 IS a leap year
+            "2026-06-30T23:59:60Z", // THE LEAP SECOND — must stay accepted
+            "2026-06-30T23:59:60.000+14:00",
+            "2026-06-20T07:30:54.123456789-12:45",
+            "2026-12-31T23:59:59Z",
+        ] {
+            assert!(is_rfc3339_instant(s), "should be accepted: {s}");
+        }
+        for s in [
+            "2026-13-45T99:99:99.000Z", // the reproduction's own timestamp
+            "2026-00-10T00:00:00Z",     // month 0
+            "2026-06-00T00:00:00Z",     // day 0
+            "2026-06-31T00:00:00Z",     // June has 30 days
+            "2026-02-29T00:00:00Z",     // 2026 is not a leap year
+            "1900-02-29T00:00:00Z",     // 1900 is NOT a leap year (the %100 rule)
+            "2026-01-01T24:00:00Z",     // hour 24
+            "2026-01-01T00:60:00Z",     // minute 60
+            "2026-01-01T00:00:61Z",     // second 61
+            "2026-01-01T00:00:00+24:00",
+            "2026-01-01T00:00:00-05:60",
+        ] {
+            assert!(!is_rfc3339_instant(s), "should be refused: {s}");
+            // …and the LEXICAL layer must still accept every one of them: the shape was never the
+            // question, which is exactly why a second layer exists.
+            assert!(is_rfc3339(s), "the lexical form should still match: {s}");
+        }
+    }
+}

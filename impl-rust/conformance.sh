@@ -24,6 +24,16 @@ if [[ ! -x "$BIN" ]]; then
   echo "FATAL: $BIN not built. Run: (cd $SCRIPT_DIR && cargo build --release)"; exit 2
 fi
 
+# The Rust unit suite (schema.rs cross-field coherence + the calendar layer, one boundary at a time)
+# runs HERE, in the one script CI actually invokes for this implementation — otherwise `cargo test`
+# is a test nobody runs. Skipped only when cargo is genuinely absent, and SAID OUT LOUD when skipped:
+# a silently-skipped suite reads exactly like a passing one.
+if command -v cargo >/dev/null 2>&1; then
+  ( cd "$SCRIPT_DIR" && cargo test --quiet ) || { echo "FATAL: rust unit tests FAILED"; exit 1; }
+else
+  echo "NOTE: cargo not on PATH — the Rust UNIT suite was NOT run (the vector comparison below still is)"
+fi
+
 PASS=0; FAIL=0
 declare -a FAILED=()
 
