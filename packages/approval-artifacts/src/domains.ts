@@ -18,7 +18,15 @@ export type ManifestRole =
   | "approve-high"
   | "approve-critical"
   | "audit-decrypt"
-  | "key-manifest-sign";
+  | "key-manifest-sign"
+  // S5 §3.3 — enrolment authority, granted by the ROOT through `noa.key-delegation/0.1.permissions`
+  // and never by the manifest. It is a separate permission from `key-manifest-sign` so a root can
+  // revoke the authority to say WHICH ACTION CLASSES REQUIRE SETTLEMENT EVIDENCE without rotating
+  // the manifest signer. Stated honestly, because the spec's first draft overstated it: putting both
+  // permissions on ONE delegation gives ONE kid and ONE private key both authorities, so this buys
+  // VISIBILITY and INDEPENDENT REVOCATION, not custody separation. Custody separation needs a second
+  // delegation slot, which the container does not have.
+  | "action-class-enrol";
 
 export interface ArtifactMeta {
   spec: string;
@@ -133,6 +141,17 @@ export const ARTIFACTS: Record<string, ArtifactMeta> = frozenTable({
     schemaId: "noa-settlement-evidence-0.1.schema.json",
     signerType: "GATE",
     signerRole: "settlement-observer",
+  },
+  "noa.action-class-enrolment/0.1": {
+    spec: "noa.action-class-enrolment/0.1",
+    domain: "NOA-ActionClassEnrolment-v0.1-sig",
+    schemaId: "noa-action-class-enrolment-0.1.schema.json",
+    // `signerType: null` like `noa.key-manifest/0.1`, and for the same reason: the signer is the
+    // ROOT-DELEGATED kid, whose authority comes from the delegation the external tenant root signed —
+    // not from the manifest's own typed key list. With the type check skipped, the POSITIVE role
+    // check below is the whole control, which is why the permission is its own enum member.
+    signerType: null,
+    signerRole: "action-class-enrol",
   },
 });
 

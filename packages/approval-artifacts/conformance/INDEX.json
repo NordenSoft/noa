@@ -3,7 +3,7 @@
   "now": "2026-07-14T12:00:00.000Z",
   "tenant": "tenant-acme",
   "totals": {
-    "files": 129
+    "files": 142
   },
   "bySpec": {
     "noa.hold/0.1": {
@@ -57,6 +57,10 @@
     "noa.settlement-evidence/0.1": {
       "valid": 1,
       "reject": 14
+    },
+    "noa.action-class-enrolment/0.1": {
+      "valid": 1,
+      "reject": 12
     }
   }
 }

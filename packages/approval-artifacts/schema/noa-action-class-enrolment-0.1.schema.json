@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://noatrust.com/schema/noa-action-class-enrolment-0.1.schema.json",
+  "title": "NOA Action-Class Enrolment Registry",
+  "description": "A tenant-root-delegated statement of WHICH ACTION CLASSES REQUIRE SETTLEMENT EVIDENCE before an EXECUTED outcome may be believed. It is a VERIFIER INPUT supplied out of band, never a member of an evidence bundle: enrolment is a statement about a tenant's governance, not about the bundle it adjudicates, and a producer that held it could delete it. `audience` is mandatory and non-empty so a registry knows who it is addressed to; a registry naming a different reader is NOT SELECTED rather than rejected. `closed: true` is required and means only 'for this audience, in this window, these are all the classes I make any statement about' — it gates whether the registry may be CONSULTED and never makes an omission permissive: a class outside a consulted registry is UNANSWERED, never positively unenrolled. Domain NOA-ActionClassEnrolment-v0.1-sig. Signer = the root-DELEGATED kid holding the action-class-enrol permission (F15 role; the TYPE check is skipped exactly as for noa.key-manifest/0.1).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["spec", "tenant", "version", "audience", "notBefore", "notAfter", "closed", "classes", "sig"],
+  "properties": {
+    "spec": { "const": "noa.action-class-enrolment/0.1" },
+    "tenant": { "type": "string", "pattern": "^.{1,256}$" },
+    "version": { "type": "integer", "minimum": 1 },
+    "audience": {
+      "description": "The relying parties this registry is addressed to. Non-empty, and WILDCARDS ARE FORBIDDEN: the `*` character may not appear in an identifier, so there is no value meaning 'everyone'. A tenant that wants one registry for all its readers enumerates them. Same reason `closed:false` is refused — a value meaning 'I did not decide' must never be readable as 'I decided yes'.",
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "pattern": "^[^*]{1,256}$" }
+    },
+    "notBefore": { "$ref": "#/$defs/rfc3339" },
+    "notAfter": { "$ref": "#/$defs/rfc3339" },
+    "closed": {
+      "description": "MUST be true. A registry that does not claim completeness for its audience and window cannot be reasoned over at all, so `false` is a refusal rather than a weaker statement.",
+      "const": true
+    },
+    "classes": {
+      "description": "The enrolled classes. MAY be empty: an empty closed registry states 'I make no statement about any class for this audience', which yields UNVERIFIED for every class — never a positive.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/enrolledClass" }
+    },
+    "sig": { "$ref": "#/$defs/sig" }
+  },
+  "$defs": {
+    "rfc3339": {
+      "type": "string",
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}[Tt]\\d{2}:\\d{2}:\\d{2}(\\.\\d{1,9})?([Zz]|[+-]\\d{2}:\\d{2})$"
+    },
+    "hash256": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
+    "projectionId": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version", "hash"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^.{1,256}$" },
+        "version": { "type": "integer", "minimum": 1 },
+        "hash": { "$ref": "#/$defs/hash256" }
+      }
+    },
+    "enrolledClass": {
+      "description": "One enrolled class. The class KEY is the PAIR (actionSchema, projection): actionSchema is the class identity and is what the deferred receipt's action.id is checked against; projection pins the renderer whose code produced the human's display, so a rendering change drops the class out of enrolment. Enrolling on identity alone would let the display drift silently; enrolling on rendering alone cannot be tied to the action at all.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actionId", "actionSchema", "projection", "witnessSpec", "claimTier", "declaredExecutableFields", "declaredWitnessedFields"],
+      "properties": {
+        "actionId": {
+          "description": "The ACTION-SCHEMA namespace identifier (e.g. \"deploy.apply\"), which is the namespace deferredReceipt.action.id lives in — NOT the display-projection namespace (\"deploy.display\"). A row naming the projection namespace here is a contradiction, not a near-miss.",
+          "type": "string",
+          "pattern": "^.{1,256}$"
+        },
+        "actionSchema": { "$ref": "#/$defs/projectionId" },
+        "projection": { "$ref": "#/$defs/projectionId" },
+        "witnessSpec": { "const": "noa.settlement-evidence/0.1" },
+        "claimTier": { "enum": ["SETTLEMENT_CORRELATED"] },
+        "declaredExecutableFields": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^.{1,128}$" } },
+        "declaredWitnessedFields": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^.{1,128}$" } }
+      }
+    },
+    "sig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "kid", "value"],
+      "properties": {
+        "alg": { "const": "ed25519" },
+        "kid": { "type": "string", "pattern": "^.{1,128}$" },
+        "value": { "type": "string", "pattern": "^.{1,512}$" }
+      }
+    }
+  }
+}

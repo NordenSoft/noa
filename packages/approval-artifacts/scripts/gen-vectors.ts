@@ -41,6 +41,11 @@ const KEYS: Record<string, { publicKey: string; privateKey: string }> = {
   "gate-dual-7": { publicKey: "MCowBQYDK2VwAyEAg+hHsMpx4PXzqgNIz0zBVdiqu/0fL4zgLugMia8o15U=", privateKey: "MC4CAQAwBQYDK2VwBCIEIIKm4Dm024JaGFkK6s0BN5BwQ04eh+D43WPR7aOvriRe" },
   "revoked-observer-3": { publicKey: "MCowBQYDK2VwAyEAHSxACar+lVpW0wQpIwF0Ubl0C8VrwxlNVSi+p2eW5hc=", privateKey: "MC4CAQAwBQYDK2VwBCIEIM/EWvimWg024unhuCfn4NHC9k3fhEtqZeNi9htMeIJa" },
   "approver-observer-8": { publicKey: "MCowBQYDK2VwAyEAyWyKrlqUjXHNne/+QyauGtbuM9OgyNUy0PaKeAI6U+k=", privateKey: "MC4CAQAwBQYDK2VwBCIEIKmpqampqampqampqampqampqampqampqampqampqalY" },
+  // S5 §3.3 — the ROOT-DELEGATED enrolment signers. Deliberately SEPARATE kids from
+  // `manifest-signer-3`: keeping the two authorities on two kids is what makes the wrong-role vector
+  // measure something real (a manifest-signing delegation confers no enrolment authority).
+  "enrol-signer-4": { publicKey: "MCowBQYDK2VwAyEA6+RM10QdYpijDNBGsHwk8SoA+xvYWwnW03CkplcexMA=", privateKey: "MC4CAQAwBQYDK2VwBCIEIE5PQS1TNS1lbnJvbC1zaWduZXItNC10ZXN0LWtleSEA" },
+  "enrol-revoked-6": { publicKey: "MCowBQYDK2VwAyEAIr4E8uDJwZbNplRik4MPb+tjxGOsRgqYfuAX9wTzl34=", privateKey: "MC4CAQAwBQYDK2VwBCIEIE5PQS1TNS1lbnJvbC1yZXZva2VkLTYtdGVzdC1rZXkh" },
 };
 const HPKE: Record<string, string> = {
   "approver-1-device-2": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28",
@@ -69,6 +74,12 @@ const keyring: Record<string, KeyEntry> = {
   // check is measured on its own — every other wrong-key fixture also lacks the role, letting the
   // role check mask a deleted type check (measured: type-check deletion left 13/13 green).
   "approver-observer-8": { publicKey: KEYS["approver-observer-8"]!.publicKey, type: "APPROVER", roles: ["settlement-observer"] },
+  // S5 §3.3 — enrolment authority. `enrol-signer-4` is what a root-signed delegation carrying the
+  // `action-class-enrol` permission resolves to (`type: "DELEGATED"`, roles = the delegation's
+  // permissions verbatim); `enrol-revoked-6` HOLDS the same role and is revoked, so the revoked
+  // vector measures revocation rather than check-ordering luck.
+  "enrol-signer-4": { publicKey: KEYS["enrol-signer-4"]!.publicKey, type: "DELEGATED", roles: ["action-class-enrol"] },
+  "enrol-revoked-6": { publicKey: KEYS["enrol-revoked-6"]!.publicKey, type: "DELEGATED", roles: ["action-class-enrol"], revokedAt: "2026-07-01T00:00:00.000Z" },
   // attacker-x is deliberately ABSENT → an "unknown signing key" rejection.
 };
 
@@ -657,6 +668,82 @@ function addUnknownProp(signedOrCore: J): J {
   // non-canonical ("AB==" — nonzero padding bits). The narrowed schema grammar refuses it at
   // layer 1, keeping the published schema and the reconciler's strict round-trip in agreement.
   emit("settlement-evidence", "reject-noncanonical-base64.json", { description: "railReceipt.bytes 'AB==' — lexically base64-shaped, non-canonical final quantum (re-signed; the narrowed layer-1 grammar refuses, matching the reconciler's strict round-trip)", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(settlementCore), railReceipt: { disclosure: "FULL", format: "x402-offer-receipt/eip712", encoding: "base64", bytes: "AB==" } }, spec, "gate-observer-2"), context: baseCtx });
+}
+
+// ====================== ACTION-CLASS ENROLMENT (S5 §3.2: 1 valid + 10 rejections) =================
+//
+// The registry is a VERIFIER INPUT, never a bundle member, so these vectors measure exactly the three
+// layers this package owns — the shipped schema, the Ed25519 signature, and the F15 role — and
+// nothing about enrolment SEMANTICS. Window arithmetic, audience selection, `closed`-gated
+// consultation and the class-key pair are the evidence verifier's rules and are pinned in its own
+// corpus; duplicating them here would be a second authority that drifts.
+//
+// WHY THE SIGNER TYPE IS NOT TESTED: `signerType` is deliberately `null` for this spec (the authority
+// is the root delegation, exactly as for `noa.key-manifest/0.1`), so the POSITIVE role check is the
+// whole control — which is why the wrong-role vector below is signed by a DELEGATED key that holds
+// `key-manifest-sign` and nothing else. A manifest-signing delegation confers no enrolment authority,
+// and that sentence is only true because something measures it.
+{
+  const spec = "noa.action-class-enrolment/0.1";
+  const baseCtx: Vector["context"] = { now: NOW, equals: [{ path: "tenant", value: TENANT }] };
+  const enrolmentCore: J = {
+    spec, tenant: TENANT, version: 7,
+    audience: ["rp:vendor.example", "rp:acquirer.example"],
+    notBefore: "2026-07-01T00:00:00.000Z",
+    notAfter: "2027-07-01T00:00:00.000Z",
+    closed: true,
+    classes: [
+      {
+        // The class KEY is the PAIR, and both halves are taken from the SAME envelope the rest of
+        // this world is built around, so a reader can check the registry against a real hold.
+        actionId: "deploy.apply",
+        actionSchema: { id: "deploy.apply", version: 1, hash: sha256Prefixed("schema|deploy.apply|1") },
+        projection: { id: "deploy.display", version: 1, hash: sha256Prefixed("proj|deploy.display|1") },
+        witnessSpec: "noa.settlement-evidence/0.1",
+        claimTier: "SETTLEMENT_CORRELATED",
+        declaredExecutableFields: ["chainId", "token", "from", "to", "value"],
+        declaredWitnessedFields: ["chainId", "token", "from", "to", "value", "nonce"],
+      },
+    ],
+  };
+  const enrolment = signArtifact(b(enrolmentCore), D[spec]!.domain!, signer("enrol-signer-4"));
+
+  emit("action-class-enrolment", "valid.json", { description: "valid root-delegated enrolment registry: mandatory non-wildcard audience, closed:true, one enrolled class keyed on the (actionSchema, projection) PAIR", spec, expect: "ACCEPT", artifact: enrolment, context: baseCtx });
+
+  emit("action-class-enrolment", "reject-unknown-property.json", { description: "smuggled extra ROOT field, RE-SIGNED so layer 1 (additionalProperties:false) is the only refuser", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: reSign(addUnknownProp(clone(enrolmentCore)), spec, "enrol-signer-4"), context: baseCtx });
+
+  const nestedSmuggle = clone(enrolmentCore);
+  (((nestedSmuggle.classes as J[])[0]) as J)["_smuggled"] = "x";
+  emit("action-class-enrolment", "reject-unknown-property-nested.json", { description: "smuggled extra field INSIDE classes[0], RE-SIGNED — the nested additionalProperties:false is a distinct control and the only refuser", spec, expect: "REJECT", rejectionClass: "unknown-property", artifact: reSign(nestedSmuggle, spec, "enrol-signer-4"), context: baseCtx });
+
+  // Layer 2: the class-key hash is altered AFTER signing. This is the de-enrolment attack in its
+  // crudest form — repoint a row at a different projection build — and the stale signature refuses it.
+  const tamperedClass = clone(enrolment);
+  ((((tamperedClass.classes as J[])[0]) as J).projection as J).hash = "sha256:" + "9".repeat(64);
+  emit("action-class-enrolment", "reject-tampered-content.json", { description: "classes[0].projection.hash altered after signing (stale signature) — layer 2", spec, expect: "REJECT", rejectionClass: "tampered-content", artifact: tamperedClass, context: baseCtx });
+
+  emit("action-class-enrolment", "reject-wrong-key.json", { description: "signed by a key the tenant root never delegated (attacker-x, absent from the keyring) — the registry's authority IS the root delegation, so an unknown signer is the whole failure", spec, expect: "REJECT", rejectionClass: "wrong-key", artifact: reSign(clone(enrolmentCore), spec, "attacker-x"), context: baseCtx });
+
+  emit("action-class-enrolment", "reject-wrong-role.json", { description: "F15 role: the MANIFEST-SIGNING delegated key (manifest-signer-3, key-manifest-sign only) may NOT sign an enrolment registry — key-rotation authority is not claim authority, and this vector is why the permission is its own enum member rather than a reuse", spec, expect: "REJECT", rejectionClass: "wrong-role", artifact: reSign(clone(enrolmentCore), spec, "manifest-signer-3"), context: baseCtx });
+
+  emit("action-class-enrolment", "reject-revoked-key.json", { description: "signed by a revoked key that DOES hold action-class-enrol (enrol-revoked-6) — measures revocation, not role-check ordering luck", spec, expect: "REJECT", rejectionClass: "revoked-key", artifact: reSign(clone(enrolmentCore), spec, "enrol-revoked-6"), context: baseCtx });
+
+  emit("action-class-enrolment", "reject-open-registry.json", { description: "closed:false, RE-SIGNED — a registry that does not claim completeness for its audience and window cannot be reasoned over at all, so the schema refuses it outright rather than treating it as a weaker statement", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(enrolmentCore), closed: false }, spec, "enrol-signer-4"), context: baseCtx });
+
+  emit("action-class-enrolment", "reject-audience-wildcard.json", { description: "audience [\"*\"], RE-SIGNED — wildcards are forbidden at the grammar. A value meaning \"I did not decide\" must never be readable as \"I decided yes\", which is the same reason closed:false is refused", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(enrolmentCore), audience: ["*"] }, spec, "enrol-signer-4"), context: baseCtx });
+
+  emit("action-class-enrolment", "reject-empty-audience.json", { description: "audience [], RE-SIGNED — an empty list is the other spelling of \"everyone\" and is refused by minItems: a registry that does not know who is reading it cannot be scoped, and an unscoped registry is the hole this field exists to close", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign({ ...clone(enrolmentCore), audience: [] }, spec, "enrol-signer-4"), context: baseCtx });
+
+  // NOT TESTED HERE, AND SAID SO RATHER THAN FAKED: a row whose `actionId` names the DISPLAY
+  // namespace ("deploy.display") instead of the action-schema one is a well-formed string to every
+  // layer this package owns. It is a CONTRADICTION only against a bundle, so the evidence verifier's
+  // corpus owns that vector. Writing a REJECT here that actually refused for some other reason would
+  // record coverage this layer does not have.
+  emit("action-class-enrolment", "reject-unknown-claim-tier.json", { description: "claimTier \"SELF_REPORTED\", RE-SIGNED — the tier enum is closed at the one value that carries a settlement requirement. A registry may not invent a weaker tier and have a verifier read it as an enrolment", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign((() => { const c = clone(enrolmentCore); ((c.classes as J[])[0] as J).claimTier = "SELF_REPORTED"; return c; })(), spec, "enrol-signer-4"), context: baseCtx });
+
+  emit("action-class-enrolment", "reject-class-hash-form.json", { description: "classes[0].actionSchema.hash is not a sha256:<64hex>, RE-SIGNED — the class key is a hash PAIR, and a member that is not a hash cannot be compared to a gate-signed envelope at all", spec, expect: "REJECT", rejectionClass: "structural", artifact: reSign((() => { const c = clone(enrolmentCore); (((c.classes as J[])[0] as J).actionSchema as J).hash = "sha256:short"; return c; })(), spec, "enrol-signer-4"), context: baseCtx });
+
+  emit("action-class-enrolment", "reject-wrong-tenant.json", { description: "tenant changed to a foreign tenant (re-signed) — a registry that authenticates under THIS root while declaring another tenant is a contradiction, and the tenant field is the only place it is visible offline", spec, expect: "REJECT", rejectionClass: "wrong-tenant", artifact: reSign({ ...clone(enrolmentCore), tenant: "tenant-EVIL" }, spec, "enrol-signer-4"), context: baseCtx });
 }
 
 // ─── Write everything ────────────────────────────────────────────────────────────────────────────
