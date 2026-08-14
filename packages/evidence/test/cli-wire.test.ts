@@ -125,6 +125,27 @@ test("WIRE ANTI-VACUITY: the four cases produce four DIFFERENT exit codes", () =
   assert.deepEqual([...new Set(seen)].sort(), [0, 2, 3, 4], "the wire collapsed distinct verdicts onto one exit code");
 });
 
+test("WIRE: the consumption-result rule reaches the SHELL — one field separates exit 0 from exit 2", () => {
+  // The rule that requires `FAILED_BEFORE_DISPATCH` under `EXECUTION_FAILED` flips a class of bundle
+  // that used to exit 0 to exit 2. That flip is only real if it survives to the process boundary: a
+  // verdict a payment script never sees is a verdict that changed nothing.
+  //
+  // The pair is chosen so nothing else can explain the difference — the two bundles differ in one
+  // artifact, the consumption, and the corpus test that proves that runs beside this one. Asserted as
+  // a DIFFERENCE as well as two numbers, because a wire that returned the same code for both would
+  // satisfy neither reading of the rule.
+  const good = verify("valid/execution_failed.json");
+  const bad = verify("reject/step11-execution-failed-result.json");
+  assert.equal(good.run.status, 0, `the re-minted EXECUTION_FAILED fixture exited ${good.run.status}, expected 0`);
+  assert.equal(
+    bad.run.status, 2,
+    `EXECUTION_FAILED over a DISPATCHED consumption exited ${bad.run.status}, expected 2. Before this rule ` +
+      `that bundle exited 0 — the number a script reads as "go ahead".`,
+  );
+  assert.notEqual(good.run.status, bad.run.status, "the wire gave both bundles the same answer");
+  assert.equal(bad.result["code"], "E_EXECUTION_FAILED", "the printed result does not name the rule that fired");
+});
+
 test("WIRE: a usage error exits 5 — never 0, and never a verdict code", () => {
   // "the arguments were wrong" and "the evidence says X" must not share a number, or a script reads
   // a typo as an answer. Three shapes, because each takes a different branch through the parser.

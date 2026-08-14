@@ -255,11 +255,11 @@
       "grantHash": "sha256:979b5d0a55fe932af8b3a080f5961b3299b451dd3a0818b0e0cf32a1f05a77e6",
       "consumedAt": "2026-07-14T11:58:00.000Z",
       "attemptReceiptHash": "sha256:9a1b0905ad93d6b3a22aa2b297d4e8fbe2d3f0549534839a44c0ea3efcc5cfdc",
-      "result": "DISPATCHED",
+      "result": "FAILED_BEFORE_DISPATCH",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "l7TMwgEw5hrq7wRYuV3g+B8kBnMCR8cS6rfqvCola2ORq2hCz6vbXlCpm3WnsMZYoo2mFqmE7CWrVY4q5nvjBQ=="
+        "value": "U/ZZLxybe0IiMY5BXrOdOu/cfeLGBDU41cE8ZflNTewsWK4ovfW+5efShO35I3affQ2UPFq41j5ywUX6VjnVCw=="
       }
     },
     "checkpoint": {

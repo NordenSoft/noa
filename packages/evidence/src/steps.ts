@@ -794,6 +794,53 @@ function checkGrantBinding(ctx: Ctx, S: StepName, code: StepResult["code"]): Ste
 }
 
 /**
+ * (R10) The consumption's RESULT must be the one its OUTCOME admits — and the two outcomes admit
+ * OPPOSITE values.
+ *
+ *   EXECUTED         requires `DISPATCHED`             (step 10, shipped since the first version)
+ *   EXECUTION_FAILED requires `FAILED_BEFORE_DISPATCH` (step 11)
+ *
+ * WHY THE FAILURE PATH IS THE INTERESTING ONE. `EXECUTION_FAILED` is a DETERMINATE NEGATIVE: it says
+ * the tool was never invoked. `NON-CLAIMS.md` NC-2.1 states when that is claimable at all — *only*
+ * where a party other than the executed one observed the non-dispatch — and the wire value carrying
+ * that observation is `FAILED_BEFORE_DISPATCH`. A bundle claiming `EXECUTION_FAILED` over a
+ * `DISPATCHED` consumption is asserting, in one document, that the request was handed off AND that
+ * nothing was ever invoked. Step 11 constrained `result` NOWHERE before this rule, so that bundle
+ * verified.
+ *
+ * THIS IS ONE RULE WITH AN ARGUMENT, NOT TWO RULES THAT HAPPEN TO AGREE. Written as two inline
+ * literals, nothing in the file says the two values must be opposites, and a change that makes step
+ * 11 admit `DISPATCHED` reads as a local edit. Written here, the opposition is the signature.
+ *
+ * WHAT THIS RULE DOES NOT ESTABLISH, stated where the rule is rather than in a doc nobody opens.
+ * The consumption is gate-signed, so this check tests the SHAPE of the claim, never its truth: a key
+ * that can sign `FAILED_BEFORE_DISPATCH` can sign a false one. Two things bound that. First, the
+ * shipped gate cannot produce this artifact at all — `packages/gate/src/engine.ts:1265-1275` records
+ * that after the C-04 fix no code path signs a determinate negative, and `:1296` signs `DISPATCHED`
+ * as "the only outcome this method can still sign", so a conformant `EXECUTION_FAILED` bundle is
+ * wire-verifiable and producer-unreachable today. Second, the residual is the reverse direction and
+ * it is REAL: a party holding the gate key that wants to hide a dispatch may claim the failure
+ * outcome, and this verifier cannot refute it offline. That is NC-2.1's own subject and it is not
+ * closed here — closing it needs an observation this bundle does not carry, not a stricter local
+ * check.
+ */
+function checkConsumptionResult(
+  ctx: Ctx,
+  S: StepName,
+  code: StepResult["code"],
+  expected: "DISPATCHED" | "FAILED_BEFORE_DISPATCH",
+): StepResult | null {
+  const consumption = asObj(ctx.bundle.executionConsumption);
+  // Unreachable from either caller (both prove the consumption present first), and it is a REFUSAL
+  // rather than a `null`: "there is nothing to read" must never be answered "the value is fine".
+  if (!consumption) return fail(S, code, "no executionConsumption to read a result from");
+  if (asStr(consumption.result) !== expected) {
+    return fail(S, code, `consumption.result != ${expected} (${String(consumption.result)})`);
+  }
+  return null;
+}
+
+/**
  * (G5) The grant had not expired when it was consumed. Also step-10-only previously, although
  * `EXECUTION_FAILED` carries the identical grant+consumption pair: an expired grant could be
  * consumed on the failure path and the bundle still verified. Same rule, both paths.
@@ -840,7 +887,10 @@ export function step10_executed(ctx: Ctx): StepResult {
   if (expErr) return expErr;
 
   if (asStr(consumption.grantHash) !== refHash(b.executionGrant)) return fail(S, "E_EXECUTED", "consumption.grantHash != refHash(grant) (F1)");
-  if (asStr(consumption.result) !== "DISPATCHED") return fail(S, "E_EXECUTED", `consumption.result != DISPATCHED (${String(consumption.result)})`);
+  // (R10) EXECUTED admits exactly one consumption result. Unchanged in position, code and message;
+  // it moved into the shared helper so the failure path's OPPOSITE requirement is one rule with it.
+  const resultErr = checkConsumptionResult(ctx, S, "E_EXECUTED", "DISPATCHED");
+  if (resultErr) return resultErr;
   if (asStr(consumption.attemptReceiptHash) !== receiptRefHash(executed)) return fail(S, "E_EXECUTED", "consumption.attemptReceiptHash != executedReceipt.chain.hash (G4)");
   // executed chains onto ALLOWED (full contiguity + signatures at step 17).
   if (asStr(getPath(executed, "chain.prevHash")) !== asStr(getPath(allowed, "chain.hash"))) {
@@ -851,7 +901,8 @@ export function step10_executed(ctx: Ctx): StepResult {
 
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 // STEP 11 — EXECUTION_FAILED: grant + consumption present; attemptReceiptHash == failedReceipt whose
-// verdict is FAILED; grant issued before the failure.
+// verdict is FAILED; grant issued before the failure; and (R10) the consumption reports the
+// determinate non-dispatch this outcome is about, never a dispatch.
 // ════════════════════════════════════════════════════════════════════════════════════════════════
 export function step11_executionFailed(ctx: Ctx): StepResult {
   const S: StepName = "STEP_11_EXECUTION_FAILED";
@@ -888,6 +939,11 @@ export function step11_executionFailed(ctx: Ctx): StepResult {
   if (asStr(getPath(failed, "chain.prevHash")) !== asStr(getPath(allowed, "chain.hash"))) {
     return fail(S, "E_EXECUTION_FAILED", "failedReceipt.chain.prevHash != allowedReceipt.chain.hash");
   }
+  // (R10) LAST, so every binding above is attributed to its own check first: a bundle that is
+  // unbound AND mislabelled is reported as unbound. This is the rule step 11 never had — the
+  // failure outcome may not ride a consumption that says the request was dispatched.
+  const resultErr = checkConsumptionResult(ctx, S, "E_EXECUTION_FAILED", "FAILED_BEFORE_DISPATCH");
+  if (resultErr) return resultErr;
   return ok(S);
 }
 

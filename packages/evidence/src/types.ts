@@ -355,8 +355,17 @@ export interface VerdictPolicy {
   purpose: VerificationPurpose;
 }
 
-/** The rule-set version of this verifier. BUMP when a change can flip a bundle's verdict. */
-export const VERIFIER_POLICY_VERSION = "noa.verify-evidence/2026-08-01" as const;
+/**
+ * The rule-set version of this verifier. BUMP when a change can flip a bundle's verdict.
+ *
+ * `2026-08-14` is that case, and the flip is named rather than left to be discovered: step 11 now
+ * requires the consumption to report the determinate non-dispatch (`FAILED_BEFORE_DISPATCH`), so an
+ * `EXECUTION_FAILED` bundle carrying a `DISPATCHED` consumption — which verified before — is now
+ * `INVALID`. That is a retroactive change to a class of historical evidence, and it is the reason
+ * this string moves: a reader holding two verdicts for the same bytes can tell which rules produced
+ * each, because every result carries it.
+ */
+export const VERIFIER_POLICY_VERSION = "noa.verify-evidence/2026-08-14" as const;
 
 /** The full `verify-evidence` result. */
 export interface VerifyEvidenceResult {
