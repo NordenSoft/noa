@@ -57,6 +57,42 @@ export const KNOCKOUT_ENTRY_KEYS = new Set([
 /** Dependency names an entry may declare in `requires`. Authority: `phone-core-probe.mjs`. */
 const DECLARABLE_DEPENDENCIES = new Set(Object.keys(DEPENDENCY_PROBES));
 
+/**
+ * WHICH SHARD A CONTROL BELONGS TO — a total function of its ID and nothing else.
+ *
+ * ── THE PROPERTY THAT MATTERS, AND WHY IT IS THIS SHAPE ──────────────────────────────────────────
+ *
+ * A sharded gate has exactly one way to fail dangerously: drop a control and stay green. So the
+ * partition is built to make that unrepresentable rather than to make it unlikely. Every id maps to
+ * exactly one shard in `1..total`, the mapping depends on nothing but the id, and the selftest
+ * asserts for a range of `total` that the union of shards is the whole registry and no two shards
+ * overlap. There is no filter, no skip and no "if it doesn't fit" branch for a control to fall
+ * through.
+ *
+ * ── WHY BY ID HASH RATHER THAN BY ARRAY INDEX OR BY SUITE ────────────────────────────────────────
+ *
+ * By array index: inserting one entry re-shards everything below it, so a control silently moves
+ * between jobs on an unrelated commit and a flake becomes impossible to attribute.
+ *
+ * By suite: it would measure each package's clean baseline once instead of once per shard, which is
+ * the real cost of this scheme — but the registry is 43 controls on one package and 33 on another,
+ * so suite-grouped shards would be wildly unequal and the longest job would still be most of the
+ * sweep. The whole point is to cut the LONGEST job.
+ *
+ * By id hash: stable across insertions, near-uniform in size, and provably total. The price is that
+ * each shard re-measures the baselines for whichever suites it happens to touch — bounded, paid in
+ * parallel, and cheap next to re-running a suite once per arm, which is what the sweep actually
+ * spends its time on.
+ */
+export function shardOf(id, total) {
+  if (!Number.isSafeInteger(total) || total < 1) throw new Error(`shard total must be a positive integer, got ${String(total)}`);
+  if (typeof id !== "string" || id.length === 0) throw new Error("shard id must be a non-empty string");
+  // Four hex digits of a sha256 is 16 bits of a uniform digest — ample for a registry two orders of
+  // magnitude smaller, and it keeps the arithmetic inside a safe integer with no bigint dance.
+  const digest = crypto.createHash("sha256").update(id).digest("hex").slice(0, 8);
+  return (parseInt(digest, 16) % total) + 1;
+}
+
 /** Validate the whole registry before any suite is allowed to run. Returns its unambiguous id map. */
 export function validateKnockoutRegistry(registry) {
   if (!Array.isArray(registry)) throw new Error("knockout registry must be an array");

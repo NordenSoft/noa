@@ -32,7 +32,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, privateFallbackRoot, ensurePrivateDir, userCacheHome, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs } from "./lib/knockout-runner.mjs";
+import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, privateFallbackRoot, ensurePrivateDir, userCacheHome, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs, shardOf } from "./lib/knockout-runner.mjs";
 
 /**
  * EVERY fixture this file writes lives under one private workspace, and that workspace is NOT the
@@ -1182,6 +1182,69 @@ check("gitWorkTreeState is THREE-valued; only a probe that RAN may answer 'no'",
       "git failed inside a work tree and the guard reported it as 'nothing was dirty'");
   } finally {
     fs.chmodSync(indexPath, 0o644);
+  }
+});
+
+// ── THE SHARD PARTITION — the one way a sharded gate can fail dangerously ──────────────────────
+//
+// A sharded sweep that DROPS a control and stays green is worse than the slow sweep it replaced,
+// because it reports the same coverage over less work. These arms measure the partition against the
+// REAL registry rather than a fixture: every control lands in exactly one shard, the union across
+// shards is the whole registry, and the mapping does not move when unrelated entries are added.
+check("shard partition: every control lands in exactly one shard, for every shard count", () => {
+  const registrySource = fs.readFileSync(path.join(REPO, "scripts", "lint-control-knockout.mjs"), "utf8");
+  const ids = [...registrySource.matchAll(/^ {4}id: "([^"]+)"/gm)].map((m) => m[1]);
+  assert.ok(ids.length >= 100, `expected the real registry to be large, parsed ${ids.length} ids`);
+  assert.equal(new Set(ids).size, ids.length, "the registry has duplicate ids — sharding cannot fix that");
+
+  for (const total of [1, 2, 3, 4, 5, 6, 8, 12]) {
+    const union = new Set();
+    const perShard = new Map();
+    for (let index = 1; index <= total; index += 1) {
+      const slice = ids.filter((id) => shardOf(id, total) === index);
+      perShard.set(index, slice);
+      for (const id of slice) {
+        assert.equal(union.has(id), false, `${id} appears in more than one shard at n=${total}`);
+        union.add(id);
+      }
+    }
+    assert.equal(
+      union.size, ids.length,
+      `n=${total}: ${ids.length - union.size} control(s) belong to NO shard. A sharded gate that drops ` +
+        `controls reports the coverage of the sweep it replaced over less work than it does.`,
+    );
+    // …and no shard may be empty at a count a workflow would plausibly use, or a job would exit
+    // having measured nothing while looking green.
+    if (total <= 8) {
+      for (const [index, slice] of perShard) {
+        assert.ok(slice.length > 0, `n=${total}: shard ${index} is empty`);
+      }
+    }
+  }
+});
+
+check("shard assignment depends on the ID ALONE — inserting entries does not re-shard the rest", () => {
+  // The reason it is not the array index. Under index sharding, adding one entry moves every control
+  // below it to a different job, so a flake cannot be attributed and a bisect crosses jobs.
+  const before = ["alpha-control", "beta-control", "gamma-control"];
+  const after = ["a-new-one", ...before, "another-new-one"];
+  for (const id of before) {
+    assert.equal(shardOf(id, 4), shardOf(id, 4), "the function is not deterministic");
+    assert.ok(after.includes(id));
+  }
+  const map1 = new Map(before.map((id) => [id, shardOf(id, 4)]));
+  const map2 = new Map(after.filter((id) => before.includes(id)).map((id) => [id, shardOf(id, 4)]));
+  assert.deepEqual([...map1], [...map2], "adding entries changed an existing control's shard");
+});
+
+check("shard assignment refuses inputs it cannot partition", () => {
+  // A total that is not a positive integer, or a missing id, must THROW rather than answer 1 — an
+  // answer here is a control quietly assigned to the first job on every run.
+  for (const bad of [0, -1, 1.5, NaN, "4", null, undefined]) {
+    assert.throws(() => shardOf("some-control", bad), /shard total/, `shardOf accepted total=${String(bad)}`);
+  }
+  for (const bad of ["", null, undefined, 7]) {
+    assert.throws(() => shardOf(bad, 4), /shard id/, `shardOf accepted id=${String(bad)}`);
   }
 });
 

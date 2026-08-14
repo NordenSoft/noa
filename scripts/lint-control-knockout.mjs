@@ -45,7 +45,7 @@
  * taxonomy in `lib/knockout-runner.mjs`, and a kill requires a failure the CLEAN baseline did not
  * already have.
  *
- * Run:  node scripts/lint-control-knockout.mjs [--warn] [--only <id>] [--requires <tag>]
+ * Run:  node scripts/lint-control-knockout.mjs [--warn] [--only <id>] [--requires <tag>] [--shard i/n]
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -53,7 +53,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING, partitionByDependency,
-  buildStateGuardFor, isGitWorkTree,
+  buildStateGuardFor, isGitWorkTree, shardOf,
 } from "./lib/knockout-runner.mjs";
 import { DEPENDENCY_PROBES } from "./lib/phone-core-probe.mjs";
 
@@ -67,6 +67,33 @@ const ONLY = onlyIdx > -1 ? process.argv[onlyIdx + 1] : null;
 // Used by the golden-path CI job, which is the one environment where `phone-core` is present.
 const requiresIdx = process.argv.indexOf("--requires");
 const REQUIRES = requiresIdx > -1 ? process.argv[requiresIdx + 1] : null;
+// --shard i/n: run the i-th of n disjoint slices of the selection. The sweep re-runs a whole package
+// suite per arm, so it grows with the registry and it is the longest gate in the repository; at 142
+// controls a CI run was CANCELLED at its ceiling, which reports nothing at all — a truncated gate is
+// indistinguishable from a passing one unless somebody reads the log.
+//
+// SHARDING IS NOT SKIPPING, and the difference is the whole design. Every control still runs, every
+// slice still BLOCKS, and the partition is a total function of the control's id (`shardOf`) with a
+// selftest asserting that across a range of n the slices are disjoint and their union is the whole
+// registry. There is no branch a control can fall through. What a shard buys is wall-clock: n jobs
+// in parallel instead of one job serially, at the cost of re-measuring each shard's suite baselines.
+const shardIdx = process.argv.indexOf("--shard");
+const SHARD = (() => {
+  if (shardIdx === -1) return null;
+  const raw = process.argv[shardIdx + 1];
+  const m = /^([1-9][0-9]*)\/([1-9][0-9]*)$/.exec(String(raw));
+  if (!m) {
+    console.error(`--shard expects i/n with 1 <= i <= n, got ${JSON.stringify(raw)}`);
+    process.exit(1);
+  }
+  const index = Number(m[1]);
+  const total = Number(m[2]);
+  if (index > total) {
+    console.error(`--shard ${raw}: shard ${index} does not exist in a partition of ${total}`);
+    process.exit(1);
+  }
+  return { index, total };
+})();
 const PROOF_INVENTORY = JSON.parse(
   fs.readFileSync(path.join(ROOT, "scripts", "resolver-inventory.json"), "utf8"),
 ).proofs ?? {};
@@ -2113,11 +2140,30 @@ for (const k of KNOCKOUTS) {
 const { runnable: DEPS_OK, setupFailed: DEPS_MISSING } = partitionByDependency(
   KNOCKOUTS, ROOT, DEPENDENCY_PROBES,
 );
-const selected = ONLY
+const chosen = ONLY
   ? DEPS_OK.filter((k) => k.id === ONLY)
   : REQUIRES
     ? DEPS_OK.filter((k) => (k.requires ?? []).includes(REQUIRES))
     : DEPS_OK;
+// The shard is applied LAST, over whatever the other selectors chose, so `--requires x --shard 1/2`
+// means "half of x" rather than "half of everything, then x".
+const selected = SHARD ? chosen.filter((k) => shardOf(k.id, SHARD.total) === SHARD.index) : chosen;
+if (SHARD) {
+  // NO VERDICT IS NOT A PASS, applied to the partition itself. An empty slice means n exceeds the
+  // selection, which is an operator error rather than a clean run: exiting 0 there would let a
+  // workflow declare five green shards over a four-control selection.
+  if (selected.length === 0) {
+    console.error(
+      `--shard ${SHARD.index}/${SHARD.total}: this slice is EMPTY (${chosen.length} control(s) selected ` +
+      `in total). A shard that measures nothing is not green — reduce the shard count.`,
+    );
+    process.exit(1);
+  }
+  console.log(
+    `shard ${SHARD.index}/${SHARD.total}: ${selected.length} of ${chosen.length} selected control(s). ` +
+    `Every control is in exactly one shard; the other shards are separate, BLOCKING jobs.\n`,
+  );
+}
 if (REQUIRES && selected.length === 0) {
   // No verdict is not a pass (KURAL 29): an armed job whose whole selection fell into
   // SETUP_FAILED — or matched nothing — must refuse loudly, not exit 0 having measured nothing.
@@ -2352,18 +2398,24 @@ console.log(`\nproven load-bearing ${passed.length}/${results.length}`);
 // A silent exclusion is how a gate comes to report full coverage over a shrinking set. These
 // entries are absent from BOTH sides of the ratio above — a control nobody asked did not fail to
 // prove itself — so the only place their absence can be seen is here.
-if (DEPS_MISSING.length > 0 && !ONLY) {
+// SHARD-SCOPED, so four jobs do not each claim the SAME ten exclusions and a reader does not read
+// forty unmeasured controls where there are ten. An excluded control belongs to exactly one shard,
+// like every other control.
+const DEPS_MISSING_HERE = SHARD
+  ? DEPS_MISSING.filter((e) => shardOf(e.id, SHARD.total) === SHARD.index)
+  : DEPS_MISSING;
+if (DEPS_MISSING_HERE.length > 0 && !ONLY) {
   const byDep = new Map();
-  for (const e of DEPS_MISSING) {
+  for (const e of DEPS_MISSING_HERE) {
     for (const d of e.missing) byDep.set(d, (byDep.get(d) ?? 0) + 1);
   }
   const summary = [...byDep].map(([d, n]) => `${n} × ${d}`).join(", ");
   console.log(
-    `\n⚠ NOT MEASURED — ${DEPS_MISSING.length} control(s) were not run because a declared ` +
+    `\n⚠ NOT MEASURED — ${DEPS_MISSING_HERE.length} control(s) were not run because a declared ` +
     `dependency is absent (${summary}).`,
   );
   console.log(`  These are neither kills nor findings: the experiment did not happen.`);
-  for (const e of DEPS_MISSING) console.log(`  ${VERDICT.SETUP_FAILED.padEnd(26)} ${e.id} — needs ${e.missing.join(", ")}`);
+  for (const e of DEPS_MISSING_HERE) console.log(`  ${VERDICT.SETUP_FAILED.padEnd(26)} ${e.id} — needs ${e.missing.join(", ")}`);
   console.log(`  To measure them, make the dependency reachable (phone-core: set NOA_MOBILE_SRC, or`);
   console.log(`  check out NordenSoft/noa-mobile beside this repo / inside the workspace).`);
 }
@@ -2410,9 +2462,9 @@ for (const [key] of unmeasurable) errors.push(`  BASELINE UNMEASURABLE      ${JS
 // gate still measures something; a run where EVERY entry was excluded has produced no security
 // result at all, and exiting 0 there would report the strongest possible coverage from the weakest
 // possible run. "The check could not run" and "the check passed" must never share an exit code.
-if (results.length === 0 && DEPS_MISSING.length > 0) {
+if (results.length === 0 && DEPS_MISSING_HERE.length > 0) {
   errors.push(
-    `  NOTHING MEASURED           all ${DEPS_MISSING.length} control(s) were excluded for absent ` +
+    `  NOTHING MEASURED           all ${DEPS_MISSING_HERE.length} control(s) were excluded for absent ` +
     `dependencies, so this run proves nothing. A gate that measures zero controls is not green.`,
   );
 }
