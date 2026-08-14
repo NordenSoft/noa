@@ -1551,6 +1551,56 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
+  {
+    id: "consumption-result-failure-outcome-refuses-a-dispatch",
+    control:
+      "An EXECUTION_FAILED bundle may not ride a consumption that says the request was DISPATCHED. " +
+      "The outcome claims the tool was never invoked; the consumption says it was handed off; before " +
+      "this rule step 11 read that field NOWHERE and the bundle verified with both statements in it. " +
+      "A determinate negative is claimable only on a non-executing party's observation " +
+      "(NON-CLAIMS.md NC-2.1), and FAILED_BEFORE_DISPATCH is the value carrying it. The mutation " +
+      "removes the check — the exact code that shipped before — so the corpus's step-11 rejection " +
+      "must go red rather than quietly returning to VALID_FULL_CHAIN.",
+    file: "packages/evidence/src/steps.ts",
+    find:
+      "  const resultErr = checkConsumptionResult(ctx, S, \"E_EXECUTION_FAILED\", \"FAILED_BEFORE_DISPATCH\");\n" +
+      "  if (resultErr) return resultErr;\n",
+    replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "consumption-result-failure-outcome-is-not-the-executed-one",
+    control:
+      "The two outcomes require OPPOSITE consumption results, and requiring the executed outcome's " +
+      "value on the failure path is a DIFFERENT defect from having no rule at all — it is the one a " +
+      "specification draft actually made, twice. Registered separately from the deletion knockout " +
+      "because the two are told apart only by a corpus that fills all four cells of (outcome × " +
+      "result): a suite that asserted only the two rejections would score this mutation as healthy " +
+      "while the shipped VALID failure bundle became INVALID.",
+    file: "packages/evidence/src/steps.ts",
+    find: "  const resultErr = checkConsumptionResult(ctx, S, \"E_EXECUTION_FAILED\", \"FAILED_BEFORE_DISPATCH\");",
+    replace: "  const resultErr = checkConsumptionResult(ctx, S, \"E_EXECUTION_FAILED\", \"DISPATCHED\");",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "consumption-result-executed-outcome-requires-a-dispatch",
+    control:
+      "The executed outcome's half of the same rule, which had no knockout for as long as it has " +
+      "existed. EXECUTED means the gate handed the request off, and the consumption is the artifact " +
+      "that says so; without this check a bundle could claim EXECUTED over a consumption reporting " +
+      "that the tool was never invoked. Registered as its own entry so the two halves are proven " +
+      "independently — one shared arm would let a mutation on either side be scored by the other " +
+      "side's fixture.",
+    file: "packages/evidence/src/steps.ts",
+    find:
+      "  const resultErr = checkConsumptionResult(ctx, S, \"E_EXECUTED\", \"DISPATCHED\");\n" +
+      "  if (resultErr) return resultErr;\n",
+    replace: "",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment
