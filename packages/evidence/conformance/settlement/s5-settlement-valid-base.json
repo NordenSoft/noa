@@ -1,0 +1,355 @@
+{
+  "description": "S5: a VALID EXECUTED bundle carrying a bound, in-bounds SETTLED settlement artifact + its params preimage. No enrolment registry exists, so the class is not ENROLLED and the artifact buys no upgrade — VALID_FULL_CHAIN, dimensions.settlement NO_EXECUTION_BINDING, exit 0 (R-DIM-1's unenrolled-valid-artifact row)",
+  "expectVerdict": "VALID_FULL_CHAIN",
+  "expectStep": null,
+  "expectCode": null,
+  "now": "2026-07-14T12:00:00.000Z",
+  "maxAgeHours": 24,
+  "bundle": {
+    "spec": "noa.approval-evidence/0.1",
+    "outcome": "EXECUTED",
+    "holdEnvelope": {
+      "spec": "noa.hold/0.1",
+      "holdId": "hold-001",
+      "deferredReceiptId": "rcpt_deferred",
+      "deferredReceiptHash": "sha256:cb3fd47f030074faf0c87fc3e14b39db954025e0af498c6243af0ea8a2a318f3",
+      "mode": "ENFORCED",
+      "displayCiphertextHash": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "actionSchema": {
+        "id": "deploy.apply",
+        "version": 1,
+        "hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "displayProjection": {
+        "id": "deploy.display",
+        "version": 1,
+        "hash": "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "canonicalization": "JCS-RFC8785",
+      "keyManifestVersion": 2,
+      "keyManifestHash": "sha256:7931684b3699def6598141ebcd0df1dd9a519ec1685cb6e8a5ddf6d8973356b1",
+      "tenant": "tenant-acme",
+      "expiresAt": "2026-07-14T12:30:00.000Z",
+      "nonce": "envelope-nonce-01",
+      "gateKid": "gate-prod-1",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "mEjr75OJ08/1dUolToqEj2UiPCTgDfLM0ZtgyzlunutDks4rBGqVn8RpgyRKku8S7RMh8R7SBP101opV4d25CA=="
+      }
+    },
+    "deferredReceipt": {
+      "spec": "noa.receipt/0.1",
+      "id": "rcpt_deferred",
+      "ts": "2026-07-14T11:50:00.000Z",
+      "scope": {
+        "tenant": "tenant-acme",
+        "chain": "chain-acme-1"
+      },
+      "agent": {
+        "id": "agent-a",
+        "model": null,
+        "principal": "SERVICE"
+      },
+      "action": {
+        "id": "deploy.apply",
+        "canonical": "deploy.apply",
+        "riskClass": "HIGH",
+        "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+        "reversible": false,
+        "rollbackRef": null
+      },
+      "governance": {
+        "mode": "on",
+        "verdict": "DEFERRED",
+        "sandboxed": false
+      },
+      "chain": {
+        "seq": 0,
+        "prevHash": null,
+        "hash": "sha256:cb3fd47f030074faf0c87fc3e14b39db954025e0af498c6243af0ea8a2a318f3"
+      },
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "HzQGygQkJkezeiDi50tpKuanEc7gq3kuuCK/0dBLL3XKium+638luDvLip3H9If/Mw/WXxSDu2WUSQmbHyZlCQ=="
+      }
+    },
+    "keyManifest": {
+      "spec": "noa.key-manifest/0.1",
+      "tenant": "tenant-acme",
+      "version": 2,
+      "issuedAt": "2026-07-14T10:30:00.000Z",
+      "expiresAt": "2026-07-15T09:30:00.000Z",
+      "previousManifestHash": null,
+      "keys": [
+        {
+          "kid": "gate-prod-1",
+          "type": "GATE",
+          "roles": [
+            "hold-signer",
+            "execution-signer",
+            "settlement-observer"
+          ],
+          "publicKey": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw=",
+          "validFrom": "2026-07-14T10:00:00.000Z",
+          "revokedAt": null
+        },
+        {
+          "kid": "approver-1-device-2",
+          "type": "APPROVER",
+          "roles": [
+            "approve-high"
+          ],
+          "publicKey": "MCowBQYDK2VwAyEANrq8SiwpHxclTXg0+xBZHhycN9Md4xQxm4Csh0DMwb8=",
+          "hpkePublicKey": "1e8662be6344591d1d39a7e6026ea36d8f59904a4665db445e0065f695ec9b28",
+          "validFrom": "2026-07-14T10:00:00.000Z",
+          "revokedAt": null
+        },
+        {
+          "kid": "approver-crit-5",
+          "type": "APPROVER",
+          "roles": [
+            "approve-critical"
+          ],
+          "publicKey": "MCowBQYDK2VwAyEAtN4H1lCn75RSP7yjvFOXA8mX3RNhjmPvMcGqRBjIlhY=",
+          "hpkePublicKey": "6d7d71dc3d1948fd59db600f3f342789f57c2da1998306b4a2f88a92acb18b75",
+          "validFrom": "2026-07-14T10:00:00.000Z",
+          "revokedAt": null
+        },
+        {
+          "kid": "audit-1",
+          "type": "AUDIT",
+          "roles": [
+            "audit-decrypt"
+          ],
+          "hpkePublicKey": "aa8a1771a106d1909a688bcc65fe6b56745070a56707fd7644c8233999b5d102",
+          "validFrom": "2026-07-14T10:00:00.000Z",
+          "revokedAt": null
+        }
+      ],
+      "sig": {
+        "alg": "ed25519",
+        "kid": "manifest-signer-3",
+        "value": "5G9iOo6oLtOlBnNwokGn9Ljav9vxezx4d1PVkIgJFlO8jca9kT9OZ+MhuEISH0dHsr2/MRx7MKBlXyM0uP8MAg=="
+      }
+    },
+    "keyDelegation": {
+      "spec": "noa.key-delegation/0.1",
+      "tenant": "tenant-acme",
+      "delegatedKid": "manifest-signer-3",
+      "delegatedPublicKey": "MCowBQYDK2VwAyEA27oD5NxHqlbHBJILS5x8DuhvFh5JJ92RO4FOSkRkrnQ=",
+      "permissions": [
+        "key-manifest-sign"
+      ],
+      "validFrom": "2026-07-14T10:00:00.000Z",
+      "expiresAt": "2026-07-20T10:00:00.000Z",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "tenant-authority-1",
+        "value": "d2ZI5NyYgbtgZptFDdLiil8X3PPaJ/g6KmM7/Wr19asdijFer5Wxf0A4o9TMsCdJlojQQbHljeILI2AjB42dCQ=="
+      }
+    },
+    "holdResolution": {
+      "spec": "noa.hold-resolution/0.1",
+      "holdId": "hold-001",
+      "holdEnvelopeHash": "sha256:f82b8adad3db9e18f71b34f28ad1f6d0cebd70434a6eb65928b0dcfef3a503c7",
+      "decisionArtifactHash": "sha256:27539a798c8602905eec78be0a2d21358bc4d2852de6c5f2abac14cbb8350e38",
+      "verdictReceiptHash": "sha256:75cb3d8a0042947f608d234d979a1d05b2fda26fb8f53046e3fa1141abf335c2",
+      "status": "APPROVED",
+      "reasonCode": null,
+      "receivedAt": "2026-07-14T11:56:30.000Z",
+      "keyManifestVersion": 2,
+      "keyManifestHash": "sha256:7931684b3699def6598141ebcd0df1dd9a519ec1685cb6e8a5ddf6d8973356b1",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "/ZfsvyixEfR16du1WexNZTCjfrsGHSPrjJqz157lJi/j+hINxYLzC3R4W+B6wOgnsA3QQWNV4KMnECt3LEbJAg=="
+      }
+    },
+    "allowedReceipt": {
+      "spec": "noa.receipt/0.1",
+      "id": "rcpt_allowed",
+      "ts": "2026-07-14T11:56:30.000Z",
+      "scope": {
+        "tenant": "tenant-acme",
+        "chain": "chain-acme-1"
+      },
+      "agent": {
+        "id": "approver-a",
+        "model": null,
+        "principal": "HUMAN"
+      },
+      "action": {
+        "id": "deploy.apply",
+        "canonical": "deploy.apply",
+        "riskClass": "HIGH",
+        "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+        "reversible": false,
+        "rollbackRef": null
+      },
+      "governance": {
+        "mode": "on",
+        "verdict": "ALLOWED",
+        "ruleId": "human-approved",
+        "approval": {
+          "by": "approver-1-device-2",
+          "at": "2026-07-14T11:56:30.000Z"
+        },
+        "sandboxed": false
+      },
+      "chain": {
+        "seq": 1,
+        "prevHash": "sha256:cb3fd47f030074faf0c87fc3e14b39db954025e0af498c6243af0ea8a2a318f3",
+        "hash": "sha256:75cb3d8a0042947f608d234d979a1d05b2fda26fb8f53046e3fa1141abf335c2"
+      },
+      "sig": {
+        "alg": "ed25519",
+        "kid": "approver-1-device-2",
+        "value": "4XfpW5RPtOiW5Xe0aw39cHLO/t3ARghDwivAzASkOfQ2LSV3bQs8hh5svMKmea/FS7eAHBXqbg2DHxQWHwbQCQ=="
+      }
+    },
+    "decisionArtifact": {
+      "spec": "noa.decision/0.1",
+      "holdEnvelopeHash": "sha256:f82b8adad3db9e18f71b34f28ad1f6d0cebd70434a6eb65928b0dcfef3a503c7",
+      "decision": "APPROVE",
+      "reasonCode": "vendor-verified",
+      "reasonEncryption": {
+        "spec": "noa.encrypted-reason/0.1",
+        "recipientKid": "audit-1",
+        "suite": {
+          "kem": 32,
+          "kdf": 1,
+          "aead": 3
+        },
+        "enc": "ZW5jLXJlYXNvbg",
+        "ciphertext": "Y2lwaGVy",
+        "aadHash": "sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "decidedAt": "2026-07-14T11:56:00.000Z",
+      "approverKid": "approver-1-device-2",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "approver-1-device-2",
+        "value": "BRuR+iYRzVx/aS1uYs1VT7w8Jpidzwrxfo+349NwlAdySa29yu6HOEVVWrnwRENtMWjeRtWSmAu2Yq4ca3GmBA=="
+      }
+    },
+    "executionGrant": {
+      "spec": "noa.execution-grant/0.1",
+      "grantId": "grant-001",
+      "holdId": "hold-001",
+      "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+      "holdEnvelopeHash": "sha256:f82b8adad3db9e18f71b34f28ad1f6d0cebd70434a6eb65928b0dcfef3a503c7",
+      "approvalReceiptHash": "sha256:75cb3d8a0042947f608d234d979a1d05b2fda26fb8f53046e3fa1141abf335c2",
+      "issuedAt": "2026-07-14T11:57:00.000Z",
+      "expiresAt": "2026-07-14T12:30:00.000Z",
+      "maxUses": 1,
+      "nonce": "5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed5eed",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "8dTeq8A/4uD7eDmE0qyDzIXQcXxvVc6aNiuOHxBETWrrPPoJ+mx0VN83gpx/h/zACSj65ezy46geYMXuAZ5ODQ=="
+      }
+    },
+    "executionConsumption": {
+      "spec": "noa.execution-consumption/0.1",
+      "grantHash": "sha256:e0041c457f0bc020c6d1b43cb7f11a1efbbe07fa42a0579ea20040fa5822aa7c",
+      "consumedAt": "2026-07-14T11:58:00.000Z",
+      "attemptReceiptHash": "sha256:a1fc33ceac42476f21ed123537b8a5ff924e3ce66e6020296e438fb3d1a98f19",
+      "result": "DISPATCHED",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "5PgETqn7xBJow3y/Fu2OyG/FOaSm/288SOCa3ev1T5iN6oDB2yoTu6Gdy3Xe4jylMF/HoTFzkzyh0x1r3k6FAQ=="
+      }
+    },
+    "checkpoint": {
+      "spec": "noa.checkpoint/0.1",
+      "chain": "chain-acme-1",
+      "highestSeq": 2,
+      "headHash": "sha256:a1fc33ceac42476f21ed123537b8a5ff924e3ce66e6020296e438fb3d1a98f19",
+      "ts": "2026-07-14T11:59:00.000Z",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "4RTHuFwQAosbLeG4YwtjUc/W05K80651ZTjGxuHvx9Kb5jWZUIW+ruqVunoWALo3Q2KKo7Osvl2JTRFoETFrAQ=="
+      }
+    },
+    "executedReceipt": {
+      "spec": "noa.receipt/0.1",
+      "id": "rcpt_exec",
+      "ts": "2026-07-14T11:58:00.000Z",
+      "scope": {
+        "tenant": "tenant-acme",
+        "chain": "chain-acme-1"
+      },
+      "agent": {
+        "id": "agent-a",
+        "model": null,
+        "principal": "SERVICE"
+      },
+      "action": {
+        "id": "deploy.apply",
+        "canonical": "deploy.apply",
+        "riskClass": "HIGH",
+        "paramsHash": "sha256:77598d42d729e3c8af962c015583c36e60a254df21248ecf95d981423f1cd98b",
+        "reversible": false,
+        "rollbackRef": null
+      },
+      "governance": {
+        "mode": "on",
+        "verdict": "EXECUTED",
+        "sandboxed": false
+      },
+      "chain": {
+        "seq": 2,
+        "prevHash": "sha256:75cb3d8a0042947f608d234d979a1d05b2fda26fb8f53046e3fa1141abf335c2",
+        "hash": "sha256:a1fc33ceac42476f21ed123537b8a5ff924e3ce66e6020296e438fb3d1a98f19"
+      },
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "bm32xu0y/sqsuC26EIDLk87xl2mYOEHt9zDAktKTQrXF9rPf5whirsY+fmlbvGLy+hZ+swixD/GViwbxfPl0BA=="
+      }
+    },
+    "settlementEvidence": {
+      "spec": "noa.settlement-evidence/0.1",
+      "tenant": "tenant-acme",
+      "chain": "chain-acme-1",
+      "authorizationReceiptHash": "sha256:75cb3d8a0042947f608d234d979a1d05b2fda26fb8f53046e3fa1141abf335c2",
+      "executionGrantHash": "sha256:e0041c457f0bc020c6d1b43cb7f11a1efbbe07fa42a0579ea20040fa5822aa7c",
+      "correlation": "0x2361fab7ad5d2a736e701a84c31ad71852c3192550095c7ac25c2fca606c6c19",
+      "railFamily": "x402/exact/eip3009",
+      "chainWitness": {
+        "status": "SETTLED",
+        "network": "eip155:8453",
+        "asset": "eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913",
+        "payer": "0x1111111111111111111111111111111111111111",
+        "payee": "0x2222222222222222222222222222222222222222",
+        "amount": "1000000",
+        "txHash": "0x3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+        "blockNumber": 33554432,
+        "settledAt": "2026-07-14T11:58:30.000Z"
+      },
+      "railReceipt": null,
+      "observerKid": "gate-prod-1",
+      "observedAt": "2026-07-14T11:59:00.000Z",
+      "sig": {
+        "alg": "ed25519",
+        "kid": "gate-prod-1",
+        "value": "pDP+WwmtwknLe5OSNVKrv6jQCfCfZRPGFd3anz3VPXQtXgdrdfYVLhIQryOBoBp3uLGq0KI/fkLYCv82laYPAA=="
+      }
+    },
+    "actionParamsPreimage": "{\"assetCaip19\":\"eip155:8453/erc20:0x833589fcd6edb6e08f4c7c32d4f71b54bda02913\",\"maxAmountMinorUnits\":\"10000000\",\"networkCaip2\":\"eip155:8453\",\"payee\":\"0x2222222222222222222222222222222222222222\",\"payer\":\"0x1111111111111111111111111111111111111111\",\"resource\":\"https://vendor.example/invoice/42\"}"
+  },
+  "tenantRoot": {
+    "tenant-authority-1": {
+      "publicKey": "MCowBQYDK2VwAyEAiZQzmnkArDMxw25BKfAc/EjIjOigCzTxWmO0Ag+Dn00=",
+      "type": "ROOT",
+      "roles": []
+    }
+  },
+  "checkpointKeyring": {
+    "gate-prod-1": "MCowBQYDK2VwAyEAyYa5MD7chN+UZmKPN+3OCYhm6sldhUU3qKurMigSdjw="
+  }
+}
