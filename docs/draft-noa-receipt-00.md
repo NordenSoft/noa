@@ -1,5 +1,12 @@
 # The NOA Receipt Format: Offline-Verifiable Provenance for AI-Agent Actions
 
+> **Archived copy — do not edit to match later corrections.** This file reproduces a published
+> Internet-Draft. One sentence below describes OpenSSL's verifier as "cofactored"; that
+> characterisation is wrong (measured 2026-08-15: node v23.7.0 / OpenSSL 3.6.3 executes the strict
+> equation, and the real divergence is in KEY ACCEPTANCE — see `src/keys.ts`). It is left in place
+> because this is what was published, and a local copy that silently disagrees with the archive is
+> worse than one that carries the correction as a note.
+
 ```
 Internet Engineering Task Force (IETF)                        T. Toraman
 Internet-Draft                                                NordenSoft

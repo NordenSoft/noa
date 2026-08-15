@@ -49,7 +49,7 @@ the TS reference across the conformance corpus and the documented controls: **st
 (`validate_receipt_shape`, run before hashing — exact-keys/`additionalProperties:false`, enums, `spec`,
 `id`-length **measured in code points**, RFC-3339 `ts`, hash formats, `sig.alg=="ed25519"`, and the
 optional B4 `governance.compliance` block, matching `validateReceiptShape`), hash-chain, Ed25519 signature
-(incl. **small-order / non-canonical public-key rejection**, so a cofactored OpenSSL verify and this
+(incl. **small-order / non-canonical public-key rejection**, so an OpenSSL-backed verify and this
 strict RFC-8032 path agree on the key), key-continuity, **identity binding** (`--identity` → `UNTRUSTED`
 on an unauthorized `(agent.id, kid)` pairing), **checkpoint tail-truncation** (`--checkpoint`, incl. the
 §5b checkpoint-identity binding), and a **strict parse** (duplicate-key / float / prototype-key rejection,

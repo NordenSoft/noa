@@ -60,7 +60,7 @@ export interface KeyPair {
 
 /**
  * Canonical encodings of the eight points in Ed25519's small-order torsion subgroup.
- * OpenSSL's cofactored verifier accepts some of these keys, while the protocol's strict
+ * OpenSSL's key acceptance admits some of these keys, while the protocol's strict
  * reference verifier rejects them. Keep this list in parity with `src/keys.ts` so a side
  * artifact cannot be accepted under a key that the receipt verifier rejects.
  */

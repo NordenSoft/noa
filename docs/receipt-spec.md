@@ -175,7 +175,7 @@ non-monotonic-timestamp warning if `ts` goes backwards.
 
 **Public-key strictness (interop-normative).** A conformant verifier MUST decode the Ed25519 public
 key `A` strictly: it **MUST reject** the 8 canonical small-order point encodings (the torsion subgroup
-of order dividing 8) and **MUST reject** any non-canonical encoding with `y ≥ q`. A cofactored verifier
+of order dividing 8) and **MUST reject** any non-canonical encoding with `y ≥ q`. A verifier whose library admits low-order keys
 (e.g. OpenSSL) otherwise accepts low-order keys that a strict RFC-8032 verifier rejects, splitting the
 verdict on identical signed bytes (a legitimate signing key is never a low-order point, so this rejects
 no genuine key). This is the minimal pin for cross-impl agreement on `A` — **not** full ZIP-215

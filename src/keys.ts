@@ -33,14 +33,26 @@ export interface KeyPair {
 /**
  * The 8 canonical small-order Ed25519 public-key encodings (the torsion subgroup of order dividing 8:
  * identity, the order-2 point, the two order-4 points, the four order-8 points), as 32-byte
- * little-endian point encodings. CROSS-IMPL CONSENSUS: node:crypto/OpenSSL verify is
- * *cofactored* and ACCEPTS a low-order public key (a small-subgroup key passes createPublicKey + the
- * curve-type pin + canonical-SPKI round-trip), whereas the independent strict-equation Python reference
- * can REJECT it — the SAME signed bytes then split VALID(TS) / TAMPERED(PY), breaking the "two
- * independent verifiers agree" guarantee. We reject these encodings in BOTH impls so they agree. A
+ * little-endian point encodings. CROSS-IMPL CONSENSUS: node:crypto/OpenSSL ACCEPTS a low-order
+ * public key — a small-subgroup key passes createPublicKey + the curve-type pin + the canonical-SPKI
+ * round-trip — whereas the independent Python reference decodes the point and can REJECT it. The SAME
+ * signed bytes then split VALID(TS) / TAMPERED(PY), breaking the "two independent verifiers agree"
+ * guarantee. We reject these encodings in BOTH impls so they agree. A
  * legitimate signing key is NEVER a low-order point (key generation samples a full-order point), so this
  * changes no valid behavior. (Mirrors libsodium's has_small_order / ZIP-215's small-order rejection;
  * the chosen convention is documented in THREAT-MODEL.md T15 + the spec verification section.)
+ *
+ * CORRECTION (2026-08-15). An earlier version of this comment gave the reason as "node:crypto/OpenSSL
+ * verify is *cofactored*". That is FALSE, and it was load-bearing: it was cited into an IETF draft as
+ * a measured nonconformance of this implementation and into a security task, and both had to be
+ * withdrawn. Measured here — node v23.7.0 links OpenSSL 3.6.3, whose crypto/ec/curve25519.c says
+ * verbatim "note that we have used the strict verification equation here … we checked that
+ * ENC( [h](-A) + [s]B ) == r", and names the cofactored form "the less strict verification equation".
+ * What this constant closes is a divergence in KEY VALIDATION — which points each library admits as a
+ * public key — not in the verification equation; the two are different questions. And the equation
+ * OpenSSL executes is a property of the LINKED VERSION, not of this package, so any future claim
+ * about it must name the Node/OpenSSL pair it was measured on rather than asserting it in the
+ * abstract. The conclusion above was always right; only this reason for it was wrong.
  */
 const isSmallOrderPubkey = membership([
   "0100000000000000000000000000000000000000000000000000000000000000", // order 1 (identity)
