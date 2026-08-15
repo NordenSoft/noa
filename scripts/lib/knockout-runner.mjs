@@ -164,6 +164,52 @@ export function selectControls({ registry, repoRoot, probes, only = null, requir
   return { selected, chosen, setupFailed, empty };
 }
 
+/**
+ * DID THIS ARM ACTUALLY RUN? — answered from the RESIDUE, never from the row.
+ *
+ * ⚠ A CONTROL MUST NEVER BE THE SOURCE OF ITS OWN EVIDENCE. The first version of this audit derived
+ * "executed" from `results.map((r) => r.id)` — i.e. from rows this very loop appends. A reviewer
+ * inserted a branch that pushed a fabricated `DETECTOR_TRIGGERED` row, ran no mutation at all, and
+ * the gate reported `proven load-bearing 1/1` and exited 0. The row WAS the evidence, so writing the
+ * row was the whole experiment.
+ *
+ * An experiment leaves residue. `runKnockout` records, per arm: the sha256 of every target file
+ * before mutation, the sha256 of the mutant bytes it staged, the sha256 after restoration, and the
+ * real exit status of the child process that ran the suite. Those are facts about the filesystem and
+ * a process, not assertions by the loop.
+ *
+ * The proof is then RE-VERIFIED against the disk here, outside the runner: `hashBefore` must equal
+ * the sha256 of that file as it stands NOW. A fabricated row cannot satisfy that without having
+ * actually read and restored the real control file — which is the work it was trying to skip.
+ *
+ * HONEST LIMIT: nothing in-process can stop someone who edits this file from also computing real
+ * hashes. What this removes is the cheap forgery — a plausible row — and it makes the expensive one
+ * require doing the experiment.
+ */
+export function verifyExecutionResidue(r, root) {
+  const before = r.hashBefore;
+  const mutant = r.hashMutatedByFile;
+  const after = r.hashAfter;
+  if (!before || typeof before !== "object" || Object.keys(before).length === 0) return "no pre-mutation file hashes were recorded";
+  if (!mutant || typeof mutant !== "object") return "no mutant bytes were ever staged";
+  const files = Object.keys(before);
+  if (!files.some((f) => mutant[f] && mutant[f] !== before[f])) return "no target file's bytes actually changed";
+  if (typeof r.mutatedExit !== "number" && r.mutatedSignal == null) return "no child process exit status was observed — no suite ran";
+  if (!after || typeof after !== "object") return "no post-restoration hashes were recorded";
+  for (const f of files) {
+    if (after[f] !== before[f]) return `${f} did not return to its pre-mutation bytes`;
+    let onDisk;
+    try {
+      onDisk = crypto.createHash("sha256").update(fs.readFileSync(path.join(root, f), "utf8")).digest("hex");
+    } catch (e) {
+      return `${f} could not be re-read to verify the arm touched the real file (${e.code ?? e.message})`;
+    }
+    if (onDisk !== before[f]) return `${f}'s recorded pre-mutation hash does not match the file on disk — this arm did not measure the shipped control`;
+  }
+  return null;
+}
+
+
 /** Validate the whole registry before any suite is allowed to run. Returns its unambiguous id map. */
 export function validateKnockoutRegistry(registry) {
   if (!Array.isArray(registry)) throw new Error("knockout registry must be an array");
@@ -1796,11 +1842,12 @@ export function runKnockout({
       writeFileNoFollow(path.join(root, rel), Buffer.from(src));
     }
     ev.hashMutated = sha(mutated.get(entry.file));
-    if (paired) {
-      ev.hashMutatedByFile = Object.fromEntries(
-        [...mutated].map(([rel, src]) => [rel, sha(src)]),
-      );
-    }
+    // RECORDED FOR EVERY ARM, not only paired ones. This is the residue an auditor re-verifies to
+    // decide whether an experiment happened at all: without it a single-file arm carried no
+    // per-file mutant hash, and "this control was measured" rested on the runner's own say-so.
+    ev.hashMutatedByFile = Object.fromEntries(
+      [...mutated].map(([rel, src]) => [rel, sha(src)]),
+    );
 
     const obs = observeSuite(root, entry.suite, timeoutMs);
     ev.mutatedExit = obs.exit;

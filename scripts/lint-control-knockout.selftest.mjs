@@ -32,7 +32,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, privateFallbackRoot, ensurePrivateDir, userCacheHome, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs, shardOf, selectControls } from "./lib/knockout-runner.mjs";
+import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, privateFallbackRoot, ensurePrivateDir, userCacheHome, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs, shardOf, selectControls, verifyExecutionResidue } from "./lib/knockout-runner.mjs";
 
 /**
  * EVERY fixture this file writes lives under one private workspace, and that workspace is NOT the
@@ -1378,20 +1378,46 @@ check("the REGISTRY itself is pinned — deleting a control is red and names it"
   assert.equal(manifest.length, new Set(manifest).size, "the manifest has duplicate ids");
 });
 
-check("SELECTED must equal EXECUTED — a skipped control cannot hide behind the ratio", () => {
-  // The reviewer added one `continue` to the execution loop and the targeted gate printed
-  // `L4 control knockout: 0 controls`, `proven load-bearing 0/0`, exit 0. The runner now audits the
-  // executed ids against the selected ids, so a control that is chosen and then skipped is named.
+check("EXECUTION IS PROVEN BY RESIDUE — a fabricated result row is not a result", () => {
+  // ⚠ A CONTROL MUST NOT BE THE SOURCE OF ITS OWN EVIDENCE, and this arm is the one that was.
+  // It used to REGEX THE RUNNER'S SOURCE for the strings "executedIds" and "SELECTED BUT NOT RUN" —
+  // a test that the words exist, not that the property holds. A reviewer pushed a fabricated
+  // DETECTOR_TRIGGERED row, ran no mutation, and got `proven load-bearing 1/1` while this file
+  // stayed green.
   //
-  // Asserted here on the runner's own source, because executing a full sharded sweep to observe it
-  // would cost forty minutes: the guard must exist, compare the two sets, and be part of `errors`.
-  const src = fs.readFileSync(path.join(REPO, "scripts", "lint-control-knockout.mjs"), "utf8");
-  assert.match(src, /const executedIds = new Set\(results\.map\(\(r\) => r\.id\)\)/, "the executed-id audit is gone");
-  assert.match(src, /SELECTED BUT NOT RUN/, "the selected-vs-executed mismatch no longer produces an error");
-  assert.match(
-    src, /if \(results\.length === 0\) \{/,
-    "the zero-work guard is conditional again — it must fire on ANY empty result set, not only when " +
-      "dependency exclusions happen to explain it",
+  // `verifyExecutionResidue` is now the ONE implementation, used by the gate and exercised here on
+  // real and forged rows. A row counts as executed only if it left residue: changed bytes, a real
+  // child exit status, and a file restored to bytes that still match the disk.
+
+  // A REAL arm, run through the real runner against the fixture suite, must satisfy it.
+  const real = runKnockout({
+    root,
+    entry: { ...entryBase, kind: "tests", find: MARKER, replace: "const guard = true;" },
+    baseline,
+    timeoutMs: 60_000,
+  });
+  assert.equal(real.verdict, VERDICT.DETECTOR_TRIGGERED, `the fixture arm did not kill: ${real.detail}`);
+  assert.equal(
+    verifyExecutionResidue(real, root), null,
+    `a genuine knockout was rejected as having no residue: ${verifyExecutionResidue(real, root)}`,
+  );
+
+  // THE FORGERY, verbatim in shape: a passing verdict with nothing behind it.
+  const forged = { id: "forged", control: "x", verdict: VERDICT.DETECTOR_TRIGGERED, detail: "QA forged execution record: no mutation arm ran", restored: true };
+  assert.match(String(verifyExecutionResidue(forged, root)), /no pre-mutation file hashes/, "a bare fabricated row was accepted as an execution");
+
+  // …and the near-misses, each of which is a different way of half-faking it.
+  const almost = { ...real };
+  assert.equal(verifyExecutionResidue({ ...almost, hashMutatedByFile: undefined }, root) !== null, true, "a row with no mutant bytes was accepted");
+  assert.equal(verifyExecutionResidue({ ...almost, mutatedExit: undefined, mutatedSignal: null }, root) !== null, true, "a row with no child exit status was accepted");
+  assert.equal(
+    verifyExecutionResidue({ ...almost, hashBefore: Object.fromEntries(Object.keys(almost.hashBefore).map((f) => [f, "0".repeat(64)])) }, root) !== null,
+    true, "a row whose recorded pre-mutation hash does not match the file on disk was accepted",
+  );
+  // The mutant hash must actually DIFFER from the original, or nothing was mutated.
+  assert.equal(
+    verifyExecutionResidue({ ...almost, hashMutatedByFile: { ...almost.hashBefore } }, root) !== null,
+    true, "a row whose 'mutant' bytes equal the original was accepted as an experiment",
   );
 });
 

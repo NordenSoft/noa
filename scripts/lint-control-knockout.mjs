@@ -50,11 +50,12 @@
  */
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
   runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING,
-  buildStateGuardFor, isGitWorkTree, shardOf, selectControls,
+  buildStateGuardFor, isGitWorkTree, shardOf, selectControls, verifyExecutionResidue,
 } from "./lib/knockout-runner.mjs";
 import { DEPENDENCY_PROBES } from "./lib/phone-core-probe.mjs";
 
@@ -2175,9 +2176,43 @@ if (EMPTY_SELECTION) {
 // `--write-control-manifest` regenerates the committed expectation the self-test compares against.
 // Adding or removing a control is a visible edit to that file, which is the whole mechanism.
 if (process.argv.includes("--write-control-manifest")) {
+  // ⚠ SAME LAW AS THE SECURITY RATCHET: a control must not be able to lower its own bar.
+  //
+  // Deleting a registry entry was RED — and deleting it and running THIS command was green at 143
+  // controls. "The manifest diff is visible in review" is not a control; it is a hope about
+  // attention. Adding controls is the normal operation. REMOVING one requires a separately named
+  // flag with a written reason, because a security control disappearing is a decision, never a
+  // side effect of regenerating a file.
+  const prior = fs.existsSync(CONTROL_MANIFEST)
+    ? fs.readFileSync(CONTROL_MANIFEST, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"))
+    : [];
+  const live = KNOCKOUTS.map((k) => k.id);
+  const removed = prior.filter((id) => !live.includes(id));
+  const overrideArg = process.argv.find((a) => a.startsWith("--allow-control-removal="));
+  const justification = overrideArg ? overrideArg.slice("--allow-control-removal=".length).trim() : "";
+
+  if (removed.length > 0 && justification.length < 12) {
+    console.error(
+      `\nREFUSING TO SHRINK THE CONTROL MANIFEST.\n\n` +
+      `  ${removed.length} control(s) would be REMOVED:\n` +
+      removed.map((id) => `    ${id}`).join("\n") +
+      `\n\n  Every one of these is a security control that currently has a proof it is load-bearing.\n` +
+      `  Regenerating the manifest is how a deletion becomes invisible — the gate then measures a\n` +
+      `  smaller set and reports full coverage over it.\n\n` +
+      `  Restore the entry, or record a deliberate removal with a written reason:\n` +
+      `    node scripts/lint-control-knockout.mjs --write-control-manifest \\\n` +
+      `      --allow-control-removal="why this control no longer needs to exist"\n`,
+    );
+    process.exit(1);
+  }
+
   const header = fs.readFileSync(CONTROL_MANIFEST, "utf8").split("\n").filter((l) => l.startsWith("#")).join("\n");
-  fs.writeFileSync(CONTROL_MANIFEST, `${header}\n${KNOCKOUTS.map((k) => k.id).sort().join("\n")}\n`);
-  console.log(`wrote ${KNOCKOUTS.length} control id(s) to ${path.relative(ROOT, CONTROL_MANIFEST)}`);
+  fs.writeFileSync(CONTROL_MANIFEST, `${header}\n${live.slice().sort().join("\n")}\n`);
+  console.log(`wrote ${live.length} control id(s) to ${path.relative(ROOT, CONTROL_MANIFEST)}`);
+  if (removed.length > 0) {
+    console.log(`\n⚠ DELIBERATE REMOVAL recorded for ${removed.length} control(s): ${removed.join(", ")}`);
+    console.log(`  justification: ${justification}`);
+  }
   process.exit(0);
 }
 
@@ -2413,7 +2448,9 @@ for (const r of results) {
   }
 }
 
-const passed = results.filter((r) => PASSING.has(r.verdict));
+// A pass counts ONLY with execution residue behind it — see executionProof below. A row that
+// claims a kill and cannot show changed bytes plus a real child exit status is not a result.
+const passed = results.filter((r) => PASSING.has(r.verdict) && verifyExecutionResidue(r, ROOT) === null);
 console.log(`\nproven load-bearing ${passed.length}/${results.length}`);
 
 // ── WHAT WAS NOT MEASURED, SAID OUT LOUD ───────────────────────────────────────────────────────
@@ -2493,8 +2530,26 @@ for (const [key] of unmeasurable) errors.push(`  BASELINE UNMEASURABLE      ${JS
 // selector chose must appear in the results, by id; anything missing is named. A control that is
 // selected and then silently skipped is the same defect as a control dropped from a shard, one
 // stage later, and it gets the same answer.
-const executedIds = new Set(results.map((r) => r.id));
-const skipped = selected.filter((k) => !executedIds.has(k.id)).map((k) => k.id);
+const proofFailures = new Map();
+const executedIds = new Set();
+for (const r of results) {
+  const why = verifyExecutionResidue(r, ROOT);
+  if (why === null) executedIds.add(r.id);
+  else proofFailures.set(r.id, why);
+}
+// A row that CLAIMS a pass without residue is the forgery this exists to catch, and it is reported
+// separately from a control that was simply never reached.
+const forged = results.filter((r) => PASSING.has(r.verdict) && proofFailures.has(r.id));
+if (forged.length > 0) {
+  errors.push(
+    `  NO EXECUTION RESIDUE       ${forged.length} control(s) report a PASSING verdict with no evidence that any ` +
+    `experiment ran:\n` +
+    forged.map((r) => `      ${r.id} — ${proofFailures.get(r.id)}`).join("\n") +
+    `\n      A knockout is proven by what it left behind — changed bytes, a real child exit status, a ` +
+    `restored file — never by a row the runner appended about itself.`,
+  );
+}
+const skipped = selected.filter((k) => !executedIds.has(k.id) && !forged.some((f) => f.id === k.id)).map((k) => k.id);
 if (skipped.length > 0 && !aborted) {
   errors.push(
     `  SELECTED BUT NOT RUN       ${skipped.length} of ${selected.length} selected control(s) produced no ` +

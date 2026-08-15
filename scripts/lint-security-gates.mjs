@@ -1337,9 +1337,48 @@ const RATCHET_FILE = path.join(ROOT, "scripts", "security-gate-counts.json");
 const ratchetable = summary.filter((s) => s.mode === "warn" && typeof s.count === "number" && s.count >= 0);
 
 if (process.argv.includes("--write-security-counts")) {
+  // ⚠ A GATE WHOSE OWN TOOLING CAN RAISE ITS FLOOR HAS NO FLOOR.
+  //
+  // The first version of this writer overwrote the snapshot and exited BEFORE reading the old one.
+  // A reviewer inserted a prohibited live `.map()` into the MCP authorization path: the gate went
+  // RED at 37→38, then the repository's OWN re-record command laundered it to GREEN at 38. The
+  // "count may only fall" property was true of the comparison and false of the system, because the
+  // system includes the command we tell people to run.
+  //
+  // Tightening is the normal operation and stays a one-word command. RAISING requires a separately
+  // named flag carrying a written justification, so it can never be the accidental result of
+  // "re-record the counts" — it is a decision somebody made and signed.
+  let prior = {};
+  try { prior = JSON.parse(fs.readFileSync(RATCHET_FILE, "utf8")); } catch { prior = {}; }
+  const increases = ratchetable
+    .filter((s) => typeof prior[s.id] === "number" && s.count > prior[s.id])
+    .map((s) => `${s.id}: ${prior[s.id]} → ${s.count}`);
+  const overrideArg = process.argv.find((a) => a.startsWith("--allow-ratchet-increase="));
+  const justification = overrideArg ? overrideArg.slice("--allow-ratchet-increase=".length).trim() : "";
+
+  if (increases.length > 0 && justification.length < 12) {
+    console.error(
+      `\nREFUSING TO RAISE THE RATCHET.\n\n` +
+      `  ${increases.length} gate(s) would INCREASE:\n` +
+      increases.map((l) => `    ${l}`).join("\n") +
+      `\n\n  This command tightens a ratchet; it does not relax one. Raising a floor hides a new\n` +
+      `  prohibited construct on a decision path, which is the exact thing these counts exist to\n` +
+      `  make visible — and doing it through the normal re-record command makes it invisible in\n` +
+      `  review as well.\n\n` +
+      `  Fix the regression, or record a deliberate increase with a written reason:\n` +
+      `    node scripts/lint-security-gates.mjs --write-security-counts \\\n` +
+      `      --allow-ratchet-increase="why this new violation is accepted"\n`,
+    );
+    process.exit(1);
+  }
+
   const next = Object.fromEntries(ratchetable.map((s) => [s.id, s.count]).sort((a, b) => a[0].localeCompare(b[0])));
   fs.writeFileSync(RATCHET_FILE, `${JSON.stringify(next, null, 2)}\n`);
   console.log(`recorded ${Object.keys(next).length} warn-mode count(s) to ${path.relative(ROOT, RATCHET_FILE)}`);
+  if (increases.length > 0) {
+    console.log(`\n⚠ DELIBERATE INCREASE recorded for ${increases.length} gate(s): ${increases.join(", ")}`);
+    console.log(`  justification: ${justification}`);
+  }
   process.exit(0);
 }
 
