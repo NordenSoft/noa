@@ -12,7 +12,7 @@ import { RECEIPT_SPEC } from "./types.js";
 import { parseDocument } from "./bytes.js";
 import { arrayPush, arrayIncludes, arrayConcat, hasOwn, objectKeys, isArray, arrayLength, strIsWellFormed, strCodePointCount, isSafeInteger } from "./intrinsics.js";
 import { membership } from "./inert.js";
-import { isSha256Hash, isParamsHash, isRfc3339 } from "./scan.js";
+import { isSha256Hash, isParamsHash, isRfc3339Instant } from "./scan.js";
 
 /**
  * ── EVERY ENUM HERE WAS A `Set`, AND A `Set` IS A DECISION THAT DISPATCHES THROUGH A MUTABLE SLOT ──
@@ -150,7 +150,11 @@ export function validateReceiptShapeParsed(value: unknown): SchemaResult {
   // over-128-code-point id pass the cap. `strCodePointCount` folds surrogate pairs by index and
   // returns the identical count with no iterator dispatch (verified against `[...s].length`).
   if (!str(r.id) || r.id.length === 0 || strCodePointCount(r.id) > 128) arrayPush(errors, "receipt.id: non-empty string ≤128 chars");
-  if (!str(r.ts) || !isRfc3339(r.ts)) arrayPush(errors, "receipt.ts: must be RFC 3339 UTC timestamp");
+  // R5. `isRfc3339Instant`, not `isRfc3339`: the lexical form alone accepted `2026-13-45T99:99:99Z`
+  // — month 13, day 45, hour 99 — as the timestamp of a signed CRITICAL action. A `ts` that denotes
+  // no instant cannot be ordered against its neighbours, so the chain's own non-monotonic warning
+  // is blind to it. See src/scan.ts for why second 60 (a leap second) stays ACCEPTED.
+  if (!str(r.ts) || !isRfc3339Instant(r.ts)) arrayPush(errors, "receipt.ts: must be RFC 3339 UTC timestamp");
 
   // scope
   if (isPlainObject(r.scope)) {
@@ -206,7 +210,7 @@ export function validateReceiptShapeParsed(value: unknown): SchemaResult {
       if (isPlainObject(r.governance.approval)) {
         checkExactKeys(r.governance.approval, ["by", "at"], [], "receipt.governance.approval", errors);
         if (!str(r.governance.approval.by)) arrayPush(errors, "receipt.governance.approval.by: string");
-        if (!str(r.governance.approval.at) || !isRfc3339(r.governance.approval.at as string))
+        if (!str(r.governance.approval.at) || !isRfc3339Instant(r.governance.approval.at as string))
           arrayPush(errors, "receipt.governance.approval.at: RFC 3339 UTC");
       } else arrayPush(errors, "receipt.governance.approval: object or null");
     }
@@ -226,6 +230,54 @@ export function validateReceiptShapeParsed(value: unknown): SchemaResult {
       } else arrayPush(errors, "receipt.governance.compliance: object or null");
     }
   } else arrayPush(errors, "receipt.governance: object required");
+
+  /**
+   * ── CROSS-FIELD COHERENCE (2026-08-14) — A SIGNED RECEIPT MAY NOT CONTRADICT ITSELF ────────────
+   *
+   * Every check above reads ONE field. A receipt can satisfy all of them and still be a statement
+   * that argues both ways: `agent.principal: "SANDBOX_SIM"` (the actor was the sandbox simulator)
+   * next to `governance.sandboxed: false` (this really happened), on a CRITICAL `wire.transfer`,
+   * signed, chain-valid, verifying VALID in all five implementations. That was reproduced — five
+   * such receipts, five verifiers, 25 of 25 VALID — and it is the worst failure this format can
+   * have, because the whole premise of the profile is that a reader can tell a real action from a
+   * rehearsal. After the fact, the producer can point at whichever field suits them.
+   *
+   * These belong HERE, in the shape validator, and not on the signature path, for the same reason
+   * an unknown smuggled field or a malformed `paramsHash` does: they are decidable with NO KEY
+   * MATERIAL AT ALL. A reader who has only the bytes can see the contradiction. Placing them here
+   * also means `buildReceipt`'s fail-closed guard (builder.ts — it runs `validateReceiptShapeParsed`
+   * over the finished draft and throws `BuilderError`) inherits them for free: this library can no
+   * longer SIGN a receipt that contradicts itself, which is the half of the fix that stops the
+   * artifacts being minted in the first place.
+   *
+   * Each rule is ONE-DIRECTIONAL and states which direction, because the converse is legitimate:
+   * a `SERVICE` agent may well run inside a sandbox (`sandboxed: true` with a non-`SANDBOX_SIM`
+   * principal is a real, VALID receipt — `conformance/golden/0.3.0/multi/chain.json` contains one),
+   * and a reversible action need not carry a `rollbackRef`.
+   */
+  if (isPlainObject(r.agent) && isPlainObject(r.action) && isPlainObject(r.governance)) {
+    const principal = r.agent.principal;
+    const verdict = r.governance.verdict;
+    const sandboxed = r.governance.sandboxed;
+    const reversible = r.action.reversible;
+    // `=== false` / `=== true` against the literal, never `!== true`: when a field failed its own
+    // type check above it is neither, so a malformed receipt reports its ONE real defect rather
+    // than collecting a second, misleading coherence error on top.
+    const rollbackRefPresent = has(r.action, "rollbackRef") && r.action.rollbackRef !== null;
+
+    // R1. The receipt names the SANDBOX SIMULATOR as the actor while denying it was a simulation.
+    if (principal === "SANDBOX_SIM" && sandboxed === false)
+      arrayPush(errors, 'receipt.governance.sandboxed: must be true when agent.principal is "SANDBOX_SIM"');
+    // R2. The receipt records a SIMULATED outcome while denying it was a simulation.
+    if (verdict === "SIMULATED" && sandboxed === false)
+      arrayPush(errors, 'receipt.governance.sandboxed: must be true when governance.verdict is "SIMULATED"');
+    // R3. An action declared impossible to undo, carrying the reference used to undo it.
+    if (reversible === false && rollbackRefPresent)
+      arrayPush(errors, "receipt.action.rollbackRef: must be absent or null when action.reversible is false");
+    // R4. The receipt says the action WAS undone while declaring it could not be.
+    if (verdict === "ROLLED_BACK" && reversible === false)
+      arrayPush(errors, 'receipt.action.reversible: must be true when governance.verdict is "ROLLED_BACK"');
+  }
 
   // chain
   if (isPlainObject(r.chain)) {

@@ -104,8 +104,15 @@ const CLASS_RULES = [
   // Explicit structural allow-list (NOT a catch-all): every current structural label is named here.
   // Adding a new structural vector to conformance.mjs requires adding its keyword here on purpose —
   // otherwise it surfaces as unclassified → FAIL, forcing a conscious classification decision.
+  //
+  // `coherence` — the CROSS-FIELD rules (2026-08-14) — is classified STRUCTURAL on purpose, for the
+  // same reason they live in validateReceiptShape and not on the signature path: a receipt whose
+  // SIGNED BODY contradicts itself (SANDBOX_SIM acting while sandboxed:false; a `ts` that denotes no
+  // instant) is decidable from the BYTES ALONE with no key material — the defining property of this
+  // class, exactly like `smuggled unknown field` and `bad enum`. It is emphatically NOT `hash` or
+  // `sig`: every one of those vectors carries a genuine hash and a genuine signature.
   [
-    /ts-signed chain|\(no keyring\)|smuggled unknown field|bad enum|sig\.alg|wrong spec|trailing-newline|compliance receipt|keyring is a json|oversized int|nan literal|identity provided as null|identity file = null|checkpoint provided as null|checkpoint file = null|checkpoint is a json|^usage/i,
+    /ts-signed chain|\(no keyring\)|smuggled unknown field|bad enum|sig\.alg|wrong spec|trailing-newline|coherence|compliance receipt|keyring is a json|oversized int|nan literal|identity provided as null|identity file = null|checkpoint provided as null|checkpoint file = null|checkpoint is a json|^usage/i,
     "structural",
   ],
 ];
@@ -364,6 +371,12 @@ const FILE_VECTOR_CLASS_RULES = [
   // compound falls through to unclassified (forcing the conscious decision the design intends)
   // instead of being silently misfiled. Proven in --selftest.
   [/pii-smuggle|float-number|proto-pollution|trailing-garbage|deep-nest|(?<!forged-)\bgenesis[\s,+(]|\bmulti[\s,+(]|valid-chain/i, "structural"],
+  // gen-vectors.ts 10/10b: the CROSS-FIELD COHERENCE family (2026-08-14) — five attack vectors whose
+  // SIGNED BODY contradicts itself, plus the three companions that must STAY VALID (an honest
+  // rehearsal, a real rollback, and the leap second). Same class as TS/Python's own `coherence`
+  // labels in CLASS_RULES above, and for the same reason: decidable from the bytes with NO key
+  // material. Deliberately LAST so the earlier, narrower rules keep first-match precedence.
+  [/coherence|leap[- ]second/i, "structural"],
 ];
 
 function classifyFileVector(label) {

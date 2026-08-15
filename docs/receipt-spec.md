@@ -73,6 +73,38 @@ Canonicalized per **RFC 8785 (JCS)** — with NOA hardening (§4) — before has
 - **`paramsHash`** is `sha256:<hex>` or, recommended for low-entropy params,
   `hmac-sha256:<hex>` with a tenant-scoped key (plain SHA-256 of an amount/id/bool is
   brute-forceable and identical across tenants → correlation; see THREAT-MODEL §params).
+- **`ts` and `approval.at` MUST denote a real instant**, not merely match the RFC 3339 shape.
+  Month `01`-`12`; day within the real length of that month in that year (leap years included);
+  hour ≤ `23`; minute ≤ `59`; second ≤ `60`; offset ≤ `23:59`. **Second `60` is ACCEPTED** — a leap
+  second is a real instant, and refusing one would refuse a truthful receipt; which UTC days carry
+  one is an IERS table, not a property of the string, so the range is what a verifier enforces.
+  `2026-13-45T99:99:99.000Z` matches the pattern and is **`MALFORMED`**.
+
+### Coherence rules (cross-field)
+
+Every rule above reads ONE field. A receipt can satisfy all of them and still be a statement that
+argues both ways — `agent.principal: "SANDBOX_SIM"` (the actor was the sandbox simulator) beside
+`governance.sandboxed: false` (this really happened), on a `CRITICAL` transfer, signed and
+chain-valid. A verifier MUST reject these as **`MALFORMED`**:
+
+| | Rule |
+|---|---|
+| **R1** | `agent.principal == "SANDBOX_SIM"` REQUIRES `governance.sandboxed == true` |
+| **R2** | `governance.verdict == "SIMULATED"` REQUIRES `governance.sandboxed == true` |
+| **R3** | `action.reversible == false` REQUIRES `action.rollbackRef` absent or `null` |
+| **R4** | `governance.verdict == "ROLLED_BACK"` REQUIRES `action.reversible == true` |
+
+Each is **one-directional**, and the converse is legitimate: a `SERVICE` agent may run inside a
+sandbox (`sandboxed: true` with any principal is valid), and a reversible action need not carry a
+`rollbackRef`.
+
+These are decidable **with no key material at all** — a reader holding only the bytes can see the
+contradiction — which is why they belong beside the unknown-field rule rather than in the signature
+path. The same placement means a conformant *producer* cannot sign one either. R1-R4 are encoded in
+[`schema/noa-receipt-0.1.schema.json`](../schema/noa-receipt-0.1.schema.json) `allOf`; the
+real-instant rule above is **not** expressible in JSON Schema and is enforced only by the normative
+validators. Pinned by `conformance/vectors/attack/coherence-*.json` (reject) and
+`conformance/vectors/coherence-*.json` + `conformance/vectors/ts-leap-second.json` (must stay valid).
 
 ### Hashing rule (frozen)
 
@@ -142,7 +174,9 @@ NOA service, via `noa verify` (or the library `verifyChain`):
 
 ```
 verify(receipts, { keyring?, checkpoint?, identityManifest? }):
-  1. structural validate each receipt (strict; reject unknown fields)   -> else MALFORMED
+  1. structural validate each receipt (strict; reject unknown fields;   -> else MALFORMED
+     enforce the §2 coherence rules R1-R4 and the real-instant `ts` rule
+     — all decidable with no key material)
   2. single chain partition; seqs contiguous 0..n-1, unique             -> else TAMPERED
   for each receipt in seq order:
   3. recompute hash = sha256(JCS(receipt \ chain.hash \ sig.value)); assert == chain.hash

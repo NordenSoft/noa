@@ -8,6 +8,105 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 Nothing yet.
 
+## [0.8.0] - 2026-08-14
+
+**MINOR, and it contains a deliberate behaviour break.** Receipts that verified `VALID` in `0.7.0`
+verify `MALFORMED` here. Under [SemVer §4](https://semver.org/#spec-item-4) major-version-zero that
+is allowed in a minor bump; it is stated at the top of this entry rather than buried, and
+[VERSIONING.md §3.1](VERSIONING.md) carries the carve-out against this project's own
+"an already-issued `noa.receipt/0.1` receipt keeps verifying exactly as it does today" promise.
+
+### Security
+
+- **A signed receipt could contradict itself, and all five shipped verifiers said `VALID`.** Five
+  receipts were built, signed and run through the TypeScript, Python, Go, Rust and C# verifiers on
+  identical bytes: **25 of 25 came back `VALID`.** Every one carried `riskClass: CRITICAL` on a
+  `wire.transfer`:
+
+  | | The contradiction inside the signed receipt |
+  |---|---|
+  | A | `agent.principal: "SANDBOX_SIM"` while `governance.sandboxed: false`, verdict `EXECUTED` |
+  | B | `governance.verdict: "SIMULATED"` while `governance.sandboxed: false` |
+  | C | `action.reversible: false` while `action.rollbackRef: "snap_1"` |
+  | D | `governance.verdict: "ROLLED_BACK"` while `action.reversible: false` |
+  | E | `ts: "2026-13-45T99:99:99.000Z"` — month 13, day 45, hour 99 |
+
+  The whole premise of this format is that a reader can tell a real action from a rehearsal. A and B
+  are signed, chain-valid, fully-verifying receipts for a million-euro transfer that can be argued
+  **both ways** after the fact: whoever produced one can point at whichever field suits them. E is
+  the same failure in the time dimension — every implementation validated the *shape* of an RFC 3339
+  string and none asked whether it denotes an instant, so the receipt cannot be ordered against its
+  neighbours and the chain's own non-monotonic-timestamp warning is blind to it.
+
+  **What now stops verifying** (verdict `MALFORMED`, CLI exit `3`, in all five implementations):
+
+  | | Rule |
+  |---|---|
+  | **R1** | `agent.principal == "SANDBOX_SIM"` REQUIRES `governance.sandboxed == true` |
+  | **R2** | `governance.verdict == "SIMULATED"` REQUIRES `governance.sandboxed == true` |
+  | **R3** | `action.reversible == false` REQUIRES `action.rollbackRef` absent or `null` |
+  | **R4** | `governance.verdict == "ROLLED_BACK"` REQUIRES `action.reversible == true` |
+  | **R5** | `receipt.ts`, `governance.approval.at` and `checkpoint.ts` MUST denote a real instant — month 01-12, the real length of that month in that year (leap years included), hour ≤ 23, minute ≤ 59, second ≤ 60, offset ≤ 23:59 |
+
+  **Second `60` is ACCEPTED.** A leap second is a real instant that has really occurred 27 times, and
+  refusing one would refuse a truthful receipt — the same defect in the opposite direction. Which UTC
+  days carry a leap second is an IERS table, not a property of the string, so the *range* is enforced
+  and never a calendar of leap seconds. `conformance/vectors/ts-leap-second.json` pins that acceptance for every
+  implementation, and TypeScript, Go and Rust add their own unit assertions; Python's pin is the
+  in-memory parity case in `impl-py/conformance.mjs`. **C# has no unit suite** — `impl-csharp/` is
+  `src/` plus a conformance script — so its only pin is that vector file, which is why the runners
+  now FAIL on a missing vector instead of counting two absent files as agreement.
+
+  Every rule is **one-directional**, because the converse is legitimate and must keep verifying: a
+  `SERVICE` agent may run inside a sandbox (`conformance/golden/0.3.0/multi/chain.json` contains
+  exactly that receipt), and a reversible action need not carry a `rollbackRef`. Three companion
+  vectors, and a negative control per rule in every suite, pin that half — a rule that refuses
+  everything is an outage, not a control.
+
+  **Where the rules live, and why that matters to you.** In each implementation's *shape validator*,
+  never in the signature path: they are decidable with **no key material at all**, exactly like an
+  unknown smuggled field or a malformed `paramsHash`. One consequence deserves its own sentence —
+  `buildReceipt` runs that validator over the finished draft and throws `BuilderError`, so **this
+  library can no longer sign a receipt that contradicts itself.** If you build receipts with
+  `buildReceipt`, a producer bug that used to mint an unfalsifiable artifact is now a loud failure at
+  the moment of signing.
+
+  **Measured blast radius, not estimated.** Across all 496 `noa.receipt/0.1` receipts committed in
+  this repository (352 JSON files), exactly six changed verdict: the five new attack vectors,
+  deliberately added, and one pre-existing fixture in `packages/evidence` whose generator asked for
+  `ROLLED_BACK` on an irreversible action. `conformance/golden/0.3.0` is **untouched** and
+  `test/golden-backcompat.test.ts` passes 16/16 — every artifact a real `0.3.0` release produced
+  still verifies exactly as it did.
+
+### Added
+
+- **Eight conformance vectors** holding all five implementations to the rules —
+  `conformance/vectors/attack/coherence-*.json` (five, each cryptographically perfect: hash
+  recomputed, signature genuine under the pinned key, linkage intact, so only the coherence rule can
+  reject it) plus `coherence-consistent-sandbox.json`, `coherence-rolled-back-consistent.json` and
+  `ts-leap-second.json`, which must stay `VALID`. Run by all four conformance runners.
+- **R1-R4 in the machine-readable schema.** `schema/noa-receipt-0.1.schema.json` gains an `allOf`
+  block expressing the four cross-field rules, so external tooling reaches the same verdict. R5 is
+  **not** expressible in JSON Schema — `pattern` cannot do calendar arithmetic and `format:
+  date-time` is annotation-only in most validators — and the schema's `$comment` now says so
+  explicitly instead of leaving a reader to assume the file is complete.
+- **`test/scan-parity.test.ts`**, closing a piece of documentation rot: `src/scan.ts` had claimed
+  since it was written that this file proved its hand-written scanners equivalent to the regular
+  expressions they replaced. The file did not exist. It does now — a real differential test over
+  every boundary character of every character class, plus an independently-written `Date.UTC` oracle
+  for the new calendar layer and an anti-vacuity floor.
+- **The Go and Rust unit suites now actually run.** `go test` existed in this tree and was executed
+  by nothing; `cargo test` had no tests at all. Both are invoked from the script CI already runs for
+  that implementation, and a unit failure fails the whole conformance run.
+
+### Changed
+
+- `isRfc3339` (`src/scan.ts`) is unchanged and still purely lexical — the parity claim above depends
+  on it staying that way. The calendar layer is a new, separately-tested `isRfc3339Instant`, and
+  every trust-artifact timestamp in the TypeScript kernel now goes through it: receipts,
+  checkpoints, `approval.at`, federation anchors and frontiers, action-digest grant windows, and
+  keyring retirement stamps.
+
 ## [0.7.0] - 2026-08-12
 
 **MINOR, and the reason is mechanical.** `src/index.ts` gained nine exported names and removed none

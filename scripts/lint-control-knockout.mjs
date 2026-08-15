@@ -2054,6 +2054,92 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
+
+  // ── CROSS-FIELD COHERENCE (2026-08-14) — A SIGNED RECEIPT MAY NOT CONTRADICT ITSELF ────────────
+  //
+  // Five receipts, each cryptographically PERFECT, were run through all five shipped verifiers on
+  // identical bytes: 25 of 25 came back VALID. Every check in the shape validator read ONE field, so
+  // a receipt could satisfy all of them and still argue both ways after the fact. Each entry below
+  // removes exactly ONE of the five rules and requires the suite to notice.
+  //
+  // Each mutation is chosen so the file still COMPILES and the surrounding code is untouched: the
+  // condition still evaluates, the message is still built — it is pushed onto a THROWAWAY array
+  // instead of `errors`. That is precisely "the control ran and reported nothing", which is the
+  // shape a real regression takes here (a rule quietly stops being load-bearing), and it is a
+  // stronger knockout than deleting the branch, because a deleted branch also removes the evidence
+  // that anyone ever intended the rule.
+  {
+    id: "coherence-r1-sandbox-principal-requires-sandboxed",
+    control:
+      "R1 — `agent.principal: \"SANDBOX_SIM\"` REQUIRES `governance.sandboxed: true`. Without it a " +
+      "receipt names the SANDBOX SIMULATOR as the actor while denying it was a simulation, on a " +
+      "CRITICAL wire.transfer, signed and chain-valid — and a reader can be told either story " +
+      "afterwards. Decidable with NO key material, so a verifier that misses it is not being " +
+      "lenient about a formality; it is publishing an unfalsifiable statement. Must red the R1 " +
+      "coherence test AND the coherence-sandbox-principal conformance vector.",
+    file: "src/schema.ts",
+    find: "    if (principal === \"SANDBOX_SIM\" && sandboxed === false)\n      arrayPush(errors, 'receipt.governance.sandboxed: must be true when agent.principal is \"SANDBOX_SIM\"');",
+    replace: "    if (principal === \"SANDBOX_SIM\" && sandboxed === false)\n      arrayPush([] as string[], 'receipt.governance.sandboxed: must be true when agent.principal is \"SANDBOX_SIM\"');",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "coherence-r2-simulated-verdict-requires-sandboxed",
+    control:
+      "R2 — `governance.verdict: \"SIMULATED\"` REQUIRES `governance.sandboxed: true`. The same " +
+      "contradiction in the OUTCOME rather than the actor: the receipt records that nothing really " +
+      "happened while the sandbox flag says it did. Must red the R2 coherence test AND the " +
+      "coherence-simulated-not-sandboxed vector.",
+    file: "src/schema.ts",
+    find: "    if (verdict === \"SIMULATED\" && sandboxed === false)\n      arrayPush(errors, 'receipt.governance.sandboxed: must be true when governance.verdict is \"SIMULATED\"');",
+    replace: "    if (verdict === \"SIMULATED\" && sandboxed === false)\n      arrayPush([] as string[], 'receipt.governance.sandboxed: must be true when governance.verdict is \"SIMULATED\"');",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "coherence-r3-irreversible-carries-no-rollbackref",
+    control:
+      "R3 — `action.reversible: false` REQUIRES `rollbackRef` absent or null. An action declared " +
+      "impossible to undo, carrying the reference used to undo it, is a receipt that answers the " +
+      "one question an incident reviewer actually asks — can this be reversed — in both directions " +
+      "at once. Must red the R3 coherence test AND the coherence-irreversible-with-rollbackref " +
+      "vector, while leaving the two R3 negative controls (null, and absent) GREEN.",
+    file: "src/schema.ts",
+    find: "    if (reversible === false && rollbackRefPresent)\n      arrayPush(errors, \"receipt.action.rollbackRef: must be absent or null when action.reversible is false\");",
+    replace: "    if (reversible === false && rollbackRefPresent)\n      arrayPush([] as string[], \"receipt.action.rollbackRef: must be absent or null when action.reversible is false\");",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "coherence-r4-rolled-back-requires-reversible",
+    control:
+      "R4 — `governance.verdict: \"ROLLED_BACK\"` REQUIRES `action.reversible: true`. The receipt " +
+      "asserts the action WAS undone while declaring it could not be. Must red the R4 coherence " +
+      "test AND the coherence-rolled-back-irreversible vector, while leaving the honest rollback " +
+      "(ROLLED_BACK on a reversible action) VALID.",
+    file: "src/schema.ts",
+    find: "    if (verdict === \"ROLLED_BACK\" && reversible === false)\n      arrayPush(errors, 'receipt.action.reversible: must be true when governance.verdict is \"ROLLED_BACK\"');",
+    replace: "    if (verdict === \"ROLLED_BACK\" && reversible === false)\n      arrayPush([] as string[], 'receipt.action.reversible: must be true when governance.verdict is \"ROLLED_BACK\"');",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "coherence-r5-ts-must-denote-a-real-instant",
+    control:
+      "R5 — the CALENDAR layer of `isRfc3339Instant`. The lexical scanner alone accepted " +
+      "`2026-13-45T99:99:99.000Z` on a signed CRITICAL receipt in all five implementations: month " +
+      "13, day 45, hour 99. A `ts` that denotes no instant cannot be ordered against its " +
+      "neighbours, so the chain's own non-monotonic-timestamp warning is blind to it. The mutation " +
+      "widens every field bound to 99 — the exact laxness the lexical `[0-9]{2}` already had — so " +
+      "the function still runs, still compiles, and decides nothing. Must red the R5 coherence " +
+      "test, the scan-parity calendar oracle, AND the coherence-ts-not-an-instant vector, while " +
+      "leaving the leap-second acceptance (second 60) GREEN.",
+    file: "src/scan.ts",
+    find: "  if (month < 1 || month > 12) return false;\n  if (day < 1 || day > daysInMonth(year, month)) return false;\n  if (num2(s, 11) > 23) return false; // time-hour\n  if (num2(s, 14) > 59) return false; // time-minute\n  if (num2(s, 17) > 60) return false; // time-second — 60 is the leap second, and it is legal",
+    replace: "  if (month < 1 || month > 99) return false;\n  if (day < 1 || day > 99 || daysInMonth(year, month) < 0) return false;\n  if (num2(s, 11) > 99) return false; // time-hour\n  if (num2(s, 14) > 99) return false; // time-minute\n  if (num2(s, 17) > 99) return false; // time-second",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment

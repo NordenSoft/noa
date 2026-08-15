@@ -24,6 +24,16 @@ if [[ ! -x "$BIN" ]]; then
   echo "FATAL: $BIN not built. Run: (cd $SCRIPT_DIR && cargo build --release)"; exit 2
 fi
 
+# The Rust unit suite (schema.rs cross-field coherence + the calendar layer, one boundary at a time)
+# runs HERE, in the one script CI actually invokes for this implementation — otherwise `cargo test`
+# is a test nobody runs. Skipped only when cargo is genuinely absent, and SAID OUT LOUD when skipped:
+# a silently-skipped suite reads exactly like a passing one.
+if command -v cargo >/dev/null 2>&1; then
+  ( cd "$SCRIPT_DIR" && cargo test --quiet ) || { echo "FATAL: rust unit tests FAILED"; exit 1; }
+else
+  echo "NOTE: cargo not on PATH — the Rust UNIT suite was NOT run (the vector comparison below still is)"
+fi
+
 PASS=0; FAIL=0
 declare -a FAILED=()
 
@@ -31,6 +41,18 @@ declare -a FAILED=()
 # runs impl-py and the rust bin with the same args; compares exit codes.
 run_case() {
   local cat="$1"; local label="$2"; shift 2
+  # EXISTENCE GATE (2026-08-15). A missing vector file made BOTH verifiers exit 3, the codes
+  # "agreed", and the case counted as PASS — so deleting a vector silently deleted its guarantee.
+  # A file that is not there proves nothing about two implementations agreeing.
+  local __arg
+  for __arg in "$@"; do
+    [[ "$__arg" == --* ]] && continue
+    if [[ ! -f "$__arg" ]]; then
+      TOTAL=$((TOTAL+1)); FAIL=$((FAIL+1))
+      printf '  FAIL  MISSING VECTOR FILE: %s  (%s)\n' "$__arg" "$label"
+      return
+    fi
+  done
   "$PY" "$PYV" "$@" >/dev/null 2>&1; local pe=$?
   "$BIN" "$@" >/dev/null 2>&1; local re=$?
   local names=( VALID UNVERIFIED TAMPERED MALFORMED USAGE UNTRUSTED )
@@ -81,6 +103,18 @@ run_case attack      "tenant-splice-via-absent"                  "$V/attack/tena
 run_case attack      "tenant-splice-via-absent-long"             "$V/attack/tenant-splice-via-absent-long.json" "$KR"
 run_case valid       "tenant-omission-then-same-tenant"          "$V/tenant-omission-then-same-tenant.json" "$KR"
 run_case valid       "tenant-enrichment-absent-first"            "$V/tenant-enrichment-absent-first.json" "$KR"
+# CROSS-FIELD COHERENCE (2026-08-14): cryptographically PERFECT receipts whose SIGNED BODY
+# contradicts itself — VALID in all five verifiers before these rules landed. MALFORMED, decided
+# with no key material. The three `valid` companions pin the other half: a rule that refuses every
+# receipt is an outage, and the leap second (23:59:60) is a real instant.
+run_case attack      "coherence-sandbox-principal"               "$V/attack/coherence-sandbox-principal.json" "$KR"
+run_case attack      "coherence-simulated-not-sandboxed"         "$V/attack/coherence-simulated-not-sandboxed.json" "$KR"
+run_case attack      "coherence-irreversible-with-rollbackref"   "$V/attack/coherence-irreversible-with-rollbackref.json" "$KR"
+run_case attack      "coherence-rolled-back-irreversible"        "$V/attack/coherence-rolled-back-irreversible.json" "$KR"
+run_case attack      "coherence-ts-not-an-instant"               "$V/attack/coherence-ts-not-an-instant.json" "$KR"
+run_case valid       "coherence-consistent-sandbox"              "$V/coherence-consistent-sandbox.json" "$KR"
+run_case valid       "coherence-rolled-back-consistent"          "$V/coherence-rolled-back-consistent.json" "$KR"
+run_case valid       "ts-leap-second (23:59:60 is a real instant)" "$V/ts-leap-second.json" "$KR"
 run_case attack      "relinked"                                  "$V/attack/relinked.json" "$KR"
 run_case attack      "forged-genesis"                            "$V/attack/forged-genesis.json" "$KR"
 run_case attack      "tail-truncated (+ checkpoint)"             "$V/attack/tail-truncated.json" "$KR" --checkpoint "$V/checkpoint.json"

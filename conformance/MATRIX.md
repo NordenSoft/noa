@@ -8,7 +8,7 @@
 
 | Vector class | TS (reference) | Python (`impl-py/noa_verify.py`) | Go (`impl-go/`) | Rust (`impl-rust/`) | C# (`impl-csharp/`) |
 |---|---|---|---|---|---|
-| `structural` | PASS (14) | PASS (20) | PASS (16) | PASS (12) | PASS (11) |
+| `structural` | PASS (22) | PASS (28) | PASS (24) | PASS (20) | PASS (19) |
 | `hash` | not asserted here† | PASS (1) | PASS (1) | PASS (1) | PASS (1) |
 | `sig` | PASS (2) | PASS (3) | PASS (2) | PASS (1) | PASS (1) |
 | `key-swap` | PASS (1) | PASS (1) | PASS (2) | PASS (2) | PASS (2) |
@@ -29,7 +29,7 @@
 - **Rust (`impl-rust/`):** PASS (7) — see `impl-rust/conformance.sh` for the full list.
 - **C# (`impl-csharp/`):** PASS (8) — see `impl-csharp/conformance.sh` for the full list.
 
-Total checks in this run — `node impl-py/conformance.mjs`: **99** checks, exit **0** (0 = every check agreed). · `bash impl-go/conformance_test.sh`: **47** checks (39 in the table above, 8 additional), exit **0**. · `bash impl-rust/conformance.sh`: **38** checks (31 in the table above, 7 additional), exit **0**. · `bash impl-csharp/conformance.sh`: **40** checks (32 in the table above, 8 additional), exit **0**.
+Total checks in this run — `node impl-py/conformance.mjs`: **115** checks, exit **0** (0 = every check agreed). · `bash impl-go/conformance_test.sh`: **55** checks (47 in the table above, 8 additional), exit **0**. · `bash impl-rust/conformance.sh`: **46** checks (39 in the table above, 7 additional), exit **0**. · `bash impl-csharp/conformance.sh`: **48** checks (40 in the table above, 8 additional), exit **0**.
 
 **`correlation-composition` (S4) — not asserted for Python/Go/Rust/C#.** The D7 composition corpus (fixed receipt + grant → `noa.action-digest/0.1` → seeded correlation nonce → settlement-evidence verdict; `packages/rail-x402/conformance/settlement-evidence/vectors.json`, octet framing pinned in `docs/settlement-evidence-spec.md` §3) is currently consumed by the TS suite only (`packages/rail-x402`, gated by its own `npm test`). No vector in the shared file-based corpus exercises the composition for the other four implementations, and none of their suites loads the rail corpus — so no composition cell is claimed for them. Treat this as an open coverage gap, not a passing claim: porting the corpus into a language's own runner is what closes it for real, exactly as the `malleability` note above prescribes for its gap.
 

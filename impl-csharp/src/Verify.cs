@@ -73,7 +73,7 @@ public static class Verifier
         if (!(cp.Get("chain") is JStr chn && chn.Value.Length > 0)) return CpVerdict.Bad;
         if (cp.Get("highestSeq") is not JInt hs || hs.Value < 0 || hs.Value > SafeIntMax) return CpVerdict.Bad;
         if (!(cp.Get("headHash") is JStr hh && Schema.HashFormat(hh.Value))) return CpVerdict.Bad;
-        if (!(cp.Get("ts") is JStr ts && Schema.Rfc3339(ts.Value))) return CpVerdict.Bad;
+        if (!(cp.Get("ts") is JStr ts && Schema.Rfc3339Instant(ts.Value))) return CpVerdict.Bad;
 
         if (cp.Get("sig") is not JObj sig) return CpVerdict.Bad;
         foreach (string k in sig.Keys)

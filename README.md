@@ -190,10 +190,11 @@ Read [THREAT-MODEL.md](THREAT-MODEL.md) before you rely on any of this.
   comparison chain in CI — Python against the TS reference, then Go, Rust and C# against Python, no
   partial credit per vector class — see the table below and
   [`conformance/MATRIX.md`](conformance/MATRIX.md).
-- A conformance corpus of **16** attack vectors and **9** malformed vectors that the verifiers must
-  reject on every push — with the per-class coverage, and the three classes (`hash`, `impersonation`,
-  `dup-key`) the cross-implementation runner does not explicitly tag for TypeScript, written down in
-  `conformance/MATRIX.md` rather than glossed.
+- A conformance corpus of **21** attack vectors and **9** malformed vectors that the verifiers must
+  reject on every push — plus the companions that must keep *passing*, because a rule that refuses
+  everything is an outage rather than a control — with the per-class coverage, and the three classes
+  (`hash`, `impersonation`, `dup-key`) the cross-implementation runner does not explicitly tag for
+  TypeScript, written down in `conformance/MATRIX.md` rather than glossed.
 - An offline CLI verifier that runs in its own process with no third-party dependencies.
 - A runtime human-approval gate in the MCP proxy: a risky call is held as a signed `DEFERRED`
   receipt until a human approves it, producing a `DEFERRED → ALLOWED → EXECUTED` chain

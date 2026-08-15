@@ -24,6 +24,13 @@ GO_BIN="$SCRIPT_DIR/noa-verify"
 GO="${GO:-go}"
 ( cd "$SCRIPT_DIR" && "$GO" build -o noa-verify . ) || { echo "go build failed"; exit 1; }
 
+# The Go unit suite (jcs_test.go byte-parity + schema_test.go cross-field coherence) runs HERE, in
+# the one script CI actually invokes for this implementation. Before this line `go test` existed in
+# the tree and was executed by nothing — a test nobody runs is a comment. A unit failure fails the
+# whole conformance run: the vectors below prove agreement WITH impl-py, the unit tests prove the
+# rules the vectors cannot reach (every boundary of the calendar layer, one field at a time).
+( cd "$SCRIPT_DIR" && "$GO" test ./... ) || { echo "go unit tests FAILED"; exit 1; }
+
 G="$CONF/golden/0.3.0"
 V="$CONF/vectors"
 
@@ -34,6 +41,20 @@ total=0
 run_case() {
 	local label="$1"
 	shift
+	# EXISTENCE GATE (2026-08-15). A missing vector file made BOTH verifiers exit 3, the codes
+	# "agreed", and the case counted as PASS — so deleting a vector silently deleted its guarantee.
+	# Observed live: the leap-second pin evaporated while the runner printed TOTAL=48 PASS=48 FAIL=0.
+	# A file that is not there proves nothing about two implementations agreeing.
+	for __arg in "$@"; do
+		case "$__arg" in
+			--*) continue ;;
+		esac
+		if [ ! -f "$__arg" ]; then
+			TOTAL=$((TOTAL+1)); FAIL=$((FAIL+1))
+			printf '	FAIL	MISSING VECTOR FILE: %s	(%s)\n' "$__arg" "$label"
+			return
+		fi
+	done
 	python3 "$PY_SCRIPT" "$@" >/dev/null 2>&1
 	local pyc=$?
 	"$GO_BIN" "$@" >/dev/null 2>&1
@@ -80,6 +101,19 @@ run_case "attack/tenant-splice-via-absent + keyring"     "$V/attack/tenant-splic
 run_case "attack/tenant-splice-via-absent-long + kr"     "$V/attack/tenant-splice-via-absent-long.json" "$V/keyring.json"
 run_case "tenant-omission-then-same-tenant + keyring"    "$V/tenant-omission-then-same-tenant.json" "$V/keyring.json"
 run_case "tenant-enrichment-absent-first + keyring"      "$V/tenant-enrichment-absent-first.json" "$V/keyring.json"
+# CROSS-FIELD COHERENCE (2026-08-14): five cryptographically PERFECT receipts — hash recomputed,
+# signature genuine, linkage intact — whose SIGNED BODY contradicts itself. All five verified VALID
+# in all five implementations before these rules landed. MALFORMED (exit 3), decided with no key
+# material at all. The three companions below must STAY VALID: a rule that refuses every receipt is
+# an outage, and the leap second (23:59:60) is a real instant.
+run_case "attack/coherence-sandbox-principal + kr"      "$V/attack/coherence-sandbox-principal.json" "$V/keyring.json"
+run_case "attack/coherence-simulated-not-sandboxed"     "$V/attack/coherence-simulated-not-sandboxed.json" "$V/keyring.json"
+run_case "attack/coherence-irreversible-w-rollbackref"  "$V/attack/coherence-irreversible-with-rollbackref.json" "$V/keyring.json"
+run_case "attack/coherence-rolled-back-irreversible"    "$V/attack/coherence-rolled-back-irreversible.json" "$V/keyring.json"
+run_case "attack/coherence-ts-not-an-instant"           "$V/attack/coherence-ts-not-an-instant.json" "$V/keyring.json"
+run_case "coherence-consistent-sandbox + keyring"       "$V/coherence-consistent-sandbox.json" "$V/keyring.json"
+run_case "coherence-rolled-back-consistent + keyring"   "$V/coherence-rolled-back-consistent.json" "$V/keyring.json"
+run_case "ts-leap-second + keyring"                     "$V/ts-leap-second.json" "$V/keyring.json"
 run_case "attack/dup-seq + keyring"                      "$V/attack/dup-seq.json" "$V/keyring.json"
 run_case "attack/wrong-signature + keyring"              "$V/attack/wrong-signature.json" "$V/keyring.json"
 run_case "attack/wrong-signature (no keyring)"           "$V/attack/wrong-signature.json"

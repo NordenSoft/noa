@@ -80,7 +80,7 @@ import { signingMessage } from "./signing.js";
 import { receiptHashInput } from "./canonicalize.js";
 import { parseDocument } from "./bytes.js";
 import { validateReceiptShapeParsed } from "./schema.js";
-import { isSha256Hash, isParamsHash, isRfc3339, isHex64 } from "./scan.js";
+import { isSha256Hash, isParamsHash, isRfc3339Instant, isHex64 } from "./scan.js";
 import { verifyChain } from "./verify.js";
 import { resolveVerificationKey } from "./verification-keyring.js";
 import { verifyEd25519 } from "./keys.js";
@@ -323,10 +323,10 @@ function checkGrant(grant: unknown): { ok: true; value: Record<string, unknown> 
   if (typeof grant["approvalReceiptHash"] !== "string" || !isSha256Hash(grant["approvalReceiptHash"])) {
     return fail("grant.approvalReceiptHash: must be sha256:<64 hex>");
   }
-  if (typeof grant["issuedAt"] !== "string" || !isRfc3339(grant["issuedAt"])) {
+  if (typeof grant["issuedAt"] !== "string" || !isRfc3339Instant(grant["issuedAt"])) {
     return fail("grant.issuedAt: must be an RFC 3339 timestamp");
   }
-  if (typeof grant["expiresAt"] !== "string" || !isRfc3339(grant["expiresAt"])) {
+  if (typeof grant["expiresAt"] !== "string" || !isRfc3339Instant(grant["expiresAt"])) {
     return fail("grant.expiresAt: must be an RFC 3339 timestamp");
   }
   // SINGLE USE (`carlos.md` §3: "a signed, single-use execution nonce"). The gate mints grants with

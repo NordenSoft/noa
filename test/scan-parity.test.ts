@@ -1,0 +1,150 @@
+/**
+ * SCAN PARITY — the hand-written scanners in `src/scan.ts` against the regular expressions they
+ * replaced, and the calendar layer against an independently-written oracle.
+ *
+ * `src/scan.ts`'s header has always claimed this file exists ("`test/scan-parity.test.ts` proves
+ * equivalence by differential testing against the original `RegExp`"). It did not. The claim is made
+ * true here, in the same commit that adds a SECOND layer to the timestamp check — because that is
+ * exactly the moment when "the scanner still equals its pattern" stops being obvious.
+ *
+ * The scanners exist because a regex on a decision path dispatches through `RegExp.prototype.exec`,
+ * a writable global slot (see the header of src/scan.ts for the reproduction). The patterns below
+ * are therefore NEVER used in production — only here, as the differential oracle.
+ *
+ * TWO SEPARATE CLAIMS, kept separate on purpose:
+ *   1. LEXICAL parity — `isRfc3339` and friends decide exactly what their pattern decides. Any drift
+ *      is a cross-implementation interop break on identical signed bytes.
+ *   2. CALENDAR correctness — `isRfc3339Instant` = the lexical form AND the field ranges RFC 3339
+ *      §5.6's ABNF comments impose. A pattern cannot express this, so the oracle here is a second,
+ *      independently-written implementation (Date.UTC round-trip), not a regex.
+ */
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { isSha256Hash, isParamsHash, isHex64, isHex4, isRfc3339, isRfc3339Instant } from "../src/scan.js";
+
+// The ORIGINAL patterns, verbatim from the doc comment of each scanner.
+const RE_SHA256 = /^sha256:[0-9a-f]{64}$/;
+const RE_PARAMS = /^(sha256|hmac-sha256):[0-9a-f]{64}$/;
+const RE_HEX64 = /^[0-9a-f]{64}$/;
+const RE_HEX4 = /^[0-9a-fA-F]{4}$/;
+const RE_RFC3339 = /^\d{4}-\d{2}-\d{2}[Tt]\d{2}:\d{2}:\d{2}(\.\d{1,9})?([Zz]|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Every boundary character of every character class the scanners use, plus the characters that sit
+ * immediately OUTSIDE each class (`/` is '0'-1, `:` is '9'+1, '`' is 'a'-1, 'g' is 'f'+1) — the
+ * off-by-one a hand-written `c >= ZERO && c <= NINE` gets wrong if it gets anything wrong.
+ */
+const BOUNDARY_CHARS = ["0", "9", "a", "f", "A", "F", "/", ":", "`", "g", "@", "G", "z", "Z", "-", "+", ".", "T", "t", " ", "\n", "\t", "\u0662", "\uFF12", "\u0000", "\u20AC"];
+
+const HEX64 = "a".repeat(64);
+
+function hashCorpus(): string[] {
+  const out: string[] = ["", "sha256:", "sha256:" + HEX64, "hmac-sha256:" + HEX64, "SHA256:" + HEX64,
+    "sha256:" + "A".repeat(64), "sha256:" + HEX64 + "\n", "\nsha256:" + HEX64,
+    "sha256:" + "a".repeat(63), "sha256:" + "a".repeat(65), "sha-256:" + HEX64, HEX64];
+  for (const c of BOUNDARY_CHARS) {
+    out.push("sha256:" + c + "a".repeat(63));
+    out.push("sha256:" + "a".repeat(63) + c);
+    out.push("hmac-sha256:" + c + "a".repeat(63));
+    out.push(c + "a".repeat(63));
+    out.push("a".repeat(63) + c);
+    out.push(c.repeat(4), "ab" + c + "c");
+  }
+  return out;
+}
+
+test("LEXICAL parity: isSha256Hash / isParamsHash / isHex64 / isHex4 decide exactly what their patterns decide", () => {
+  for (const s of hashCorpus()) {
+    assert.equal(isSha256Hash(s), RE_SHA256.test(s), `isSha256Hash drift on ${JSON.stringify(s)}`);
+    assert.equal(isParamsHash(s), RE_PARAMS.test(s), `isParamsHash drift on ${JSON.stringify(s)}`);
+    assert.equal(isHex64(s), RE_HEX64.test(s), `isHex64 drift on ${JSON.stringify(s)}`);
+    if (s.length === 4) assert.equal(isHex4(s), RE_HEX4.test(s), `isHex4 drift on ${JSON.stringify(s)}`);
+  }
+});
+
+/** A wide timestamp corpus: real forms, malformed forms, and every boundary character in every slot. */
+function tsCorpus(): string[] {
+  const out: string[] = [
+    "", "2026-06-20T07:30:54Z", "2026-06-20t07:30:54z", "2026-06-20T07:30:54.1Z",
+    "2026-06-20T07:30:54.123456789Z", "2026-06-20T07:30:54.1234567890Z", "2026-06-20T07:30:54.Z",
+    "2026-06-20T07:30:54+02:00", "2026-06-20T07:30:54-02:00", "2026-06-20T07:30:54+0200",
+    "2026-06-20T07:30:54", "2026-06-20 07:30:54Z", "2026-6-20T07:30:54Z", "26-06-20T07:30:54Z",
+    "2026-13-45T99:99:99.000Z", "2026-06-20T07:30:60Z", "2026-06-20T07:30:54Z ",
+    " 2026-06-20T07:30:54Z", "2026-06-20T07:30:54Z\n", "٢٠٢٦-٠٦-٢٠T٠٧:٣٠:٥٤Z",
+    "2026-06-20T07:30:54ZZ", "2026-06-20T07:30:54+99:99", "2026-06-20T07:30:54ز",
+  ];
+  const base = "2026-06-20T07:30:54Z";
+  for (let i = 0; i < base.length; i++) {
+    for (const c of BOUNDARY_CHARS) out.push(base.slice(0, i) + c + base.slice(i + 1));
+  }
+  // A full calendar sweep: every month 0-13 and day 0-32 across a leap year, a non-leap year, a
+  // century non-leap (1900) and a 400-year leap (2000).
+  for (const y of ["1900", "2000", "2023", "2024", "2026"]) {
+    for (let m = 0; m <= 13; m++) {
+      for (const d of [0, 1, 28, 29, 30, 31, 32]) {
+        out.push(`${y}-${String(m).padStart(2, "0")}-${String(d).padStart(2, "0")}T00:00:00Z`);
+      }
+    }
+  }
+  for (let h = 0; h <= 25; h++) out.push(`2026-06-20T${String(h).padStart(2, "0")}:00:00Z`);
+  for (let mi = 0; mi <= 61; mi++) out.push(`2026-06-20T00:${String(mi).padStart(2, "0")}:00Z`);
+  for (let s = 0; s <= 61; s++) out.push(`2026-06-20T00:00:${String(s).padStart(2, "0")}Z`);
+  for (let oh = 0; oh <= 25; oh++) out.push(`2026-06-20T00:00:00+${String(oh).padStart(2, "0")}:00`);
+  for (let om = 0; om <= 61; om++) out.push(`2026-06-20T00:00:00-05:${String(om).padStart(2, "0")}`);
+  return out;
+}
+
+test("LEXICAL parity: isRfc3339 decides exactly what its pattern decides (incl. month 13, hour 99)", () => {
+  for (const s of tsCorpus()) {
+    assert.equal(isRfc3339(s), RE_RFC3339.test(s), `isRfc3339 drift on ${JSON.stringify(s)}`);
+  }
+  // Stated explicitly, because it is the whole reason a SECOND layer exists: the shape was never
+  // the question. The lexical layer accepts a string that denotes no instant, exactly as it always
+  // has, and exactly as the normative JSON-Schema `pattern` still does.
+  assert.equal(isRfc3339("2026-13-45T99:99:99.000Z"), true);
+});
+
+/**
+ * An INDEPENDENT calendar oracle: the date is checked by a `Date.UTC` round-trip (a different
+ * algorithm from the scanner's `daysInMonth` table — if either has the leap rule wrong, they
+ * disagree), and the time fields by plain integer comparison. Second 60 is skipped by the oracle and
+ * asserted separately below, because `Date` normalizes a leap second into the next minute and so
+ * cannot be the oracle for it.
+ */
+function calendarOracle(s: string): boolean {
+  if (!RE_RFC3339.test(s)) return false;
+  const y = Number(s.slice(0, 4)), mo = Number(s.slice(5, 7)), d = Number(s.slice(8, 10));
+  const h = Number(s.slice(11, 13)), mi = Number(s.slice(14, 16)), sec = Number(s.slice(17, 19));
+  if (mo < 1 || mo > 12 || d < 1) return false;
+  const probe = new Date(Date.UTC(2000, mo - 1, d));
+  probe.setUTCFullYear(y); // years < 100 would otherwise be mapped into the 1900s
+  if (probe.getUTCFullYear() !== y || probe.getUTCMonth() !== mo - 1 || probe.getUTCDate() !== d) return false;
+  if (h > 23 || mi > 59 || sec > 60) return false;
+  const last = s[s.length - 1]!;
+  if (last === "Z" || last === "z") return true;
+  return Number(s.slice(-5, -3)) <= 23 && Number(s.slice(-2)) <= 59;
+}
+
+test("CALENDAR correctness: isRfc3339Instant agrees with an independently-written Date.UTC oracle", () => {
+  let accepted = 0;
+  for (const s of tsCorpus()) {
+    const got = isRfc3339Instant(s);
+    assert.equal(got, calendarOracle(s), `isRfc3339Instant drift on ${JSON.stringify(s)}`);
+    if (got) accepted++;
+  }
+  // Anti-vacuity: an oracle that agrees because BOTH answered "false" to everything proves nothing.
+  assert.ok(accepted > 100, `the corpus must contain real instants too, got ${accepted}`);
+});
+
+/**
+ * THE LEAP SECOND. 23:59:60 has really occurred 27 times, so refusing it would refuse a truthful
+ * receipt — the R5 rule's own failure mode in the opposite direction. Which UTC days carry one is an
+ * IERS table, not a property of the string, so the RANGE is enforced and never a calendar of leap
+ * seconds. This assertion exists so a later "tightening" cannot quietly remove the acceptance.
+ */
+test("CALENDAR: second 60 is ACCEPTED (a leap second is a real instant) and second 61 is not", () => {
+  assert.equal(isRfc3339Instant("2026-06-30T23:59:60Z"), true);
+  assert.equal(isRfc3339Instant("2016-12-31T23:59:60.000Z"), true);
+  assert.equal(isRfc3339Instant("2026-06-30T23:59:60+01:00"), true);
+  assert.equal(isRfc3339Instant("2026-06-30T23:59:61Z"), false);
+});

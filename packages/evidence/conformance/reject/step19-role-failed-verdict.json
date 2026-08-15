@@ -254,24 +254,24 @@
       "spec": "noa.execution-consumption/0.1",
       "grantHash": "sha256:979b5d0a55fe932af8b3a080f5961b3299b451dd3a0818b0e0cf32a1f05a77e6",
       "consumedAt": "2026-07-14T11:58:00.000Z",
-      "attemptReceiptHash": "sha256:6c9090abc8e880cb65a1008c212b8dd6368f184c40075b0d1866892e8325af42",
+      "attemptReceiptHash": "sha256:b35520023c4484131994cd37d80be36e64167ce470ffa885f09ab946b6e8b769",
       "result": "FAILED_BEFORE_DISPATCH",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "HBMwHOMm/GCj6H+38siJZPfSEZ3WoxkBLOhPoEVtSTknJkhQrmQv4Vw9ExH4sWmwqCmIceQTxqwHYr7jgZ+5Bw=="
+        "value": "dSTBG3UK5HX4k5AabOr1VQi2j536sTPzhtGl0QG0MooqJqVFI/qb4oZ84pK66X8G4BxtMbuhaC5HksqGZqvNAw=="
       }
     },
     "checkpoint": {
       "spec": "noa.checkpoint/0.1",
       "chain": "chain-acme-1",
       "highestSeq": 2,
-      "headHash": "sha256:6c9090abc8e880cb65a1008c212b8dd6368f184c40075b0d1866892e8325af42",
+      "headHash": "sha256:b35520023c4484131994cd37d80be36e64167ce470ffa885f09ab946b6e8b769",
       "ts": "2026-07-14T11:59:00.000Z",
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "KnqdlUtgPXYgncCEZLWseizlod6dfX00KlMcaykLY5BLAc16X5AYYjqT08huFP1zpzHCeOhb5qobmcdoFlf4AQ=="
+        "value": "OHZV5kRkzHp+9Aw8FIJJQsQBlfyZbsv1fwgmqXjUdesVeU2GLNayymwFIw+nHaoA7QKNmuL7aRJ3TTF5sCcQBA=="
       }
     },
     "failedReceipt": {
@@ -297,18 +297,18 @@
       },
       "governance": {
         "mode": "on",
-        "verdict": "ROLLED_BACK",
+        "verdict": "EXECUTED",
         "sandboxed": false
       },
       "chain": {
         "seq": 2,
         "prevHash": "sha256:bf1e7eb26c1561c39116fed076f07eb75e7c2f1eca3ff66818e1c2ecf65bd94c",
-        "hash": "sha256:6c9090abc8e880cb65a1008c212b8dd6368f184c40075b0d1866892e8325af42"
+        "hash": "sha256:b35520023c4484131994cd37d80be36e64167ce470ffa885f09ab946b6e8b769"
       },
       "sig": {
         "alg": "ed25519",
         "kid": "gate-prod-1",
-        "value": "574Mt5mR3iTqfajsU8eiOrNjO034hh/xXa1DHpMvWWpB0ntUnQON/Eoy6Hk6d1YMwmy7632YGrXuUIEiM2WEBg=="
+        "value": "V7+bubwCrDvV0r4V2NXOt/RHxyvgJqPXBo1WtjswpB2yDL1rOik5Stk+GhIyXJDlfTE888oPhr8CiWRjZRrpDw=="
       }
     }
   },

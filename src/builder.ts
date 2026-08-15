@@ -6,7 +6,7 @@ import { signEd25519 } from "./keys.js";
 import { signingMessage, RECEIPT_SIG_DOMAIN, CHECKPOINT_SIG_DOMAIN } from "./signing.js";
 import { validateReceiptShapeParsed } from "./schema.js";
 import { nonNfcPaths, isNFC } from "./nfc.js";
-import { isSha256Hash, isRfc3339 } from "./scan.js";
+import { isSha256Hash, isRfc3339Instant } from "./scan.js";
 import { arrayPush, structuredCloneValue } from "./intrinsics.js";
 
 export interface Signer {
@@ -210,7 +210,7 @@ function checkpointDraftErrors(cp: Checkpoint): string[] {
     arrayPush(errors, "checkpoint.highestSeq: non-negative safe integer");
   if (typeof cp.headHash !== "string" || !isSha256Hash(cp.headHash))
     arrayPush(errors, "checkpoint.headHash: sha256:<64 hex>");
-  if (typeof cp.ts !== "string" || !isRfc3339(cp.ts))
+  if (typeof cp.ts !== "string" || !isRfc3339Instant(cp.ts))
     arrayPush(errors, "checkpoint.ts: must be RFC 3339 UTC timestamp");
   if (cp.sig.alg !== "ed25519") arrayPush(errors, 'checkpoint.sig.alg: must be "ed25519"');
   if (typeof cp.sig.kid !== "string" || cp.sig.kid.length === 0) arrayPush(errors, "checkpoint.sig.kid: non-empty string");

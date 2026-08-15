@@ -8,7 +8,7 @@ import { nonNfcPaths, isNFC } from "./nfc.js";
 import { parseDocument } from "./bytes.js";
 import { inertOptions, type OptionSchema } from "./opts.js";
 import { arrayPush, arrayIncludes, arrayEvery, arrayLength, arrayJoin, publishArray, dateParse, mapHas, mapGet, mapSet, newMap, newSet, objectKeys, objectGetOwnPropertyNames, isSafeInteger, arraySlice, setAdd, setSize, isArray, isNaNValue, jsonStringify } from "./intrinsics.js";
-import { isSha256Hash, isRfc3339 } from "./scan.js";
+import { isSha256Hash, isRfc3339Instant } from "./scan.js";
 import { frozenTable } from "./inert.js";
 import { parseVerificationKeyring, type ParsedVerificationKeyring } from "./verification-keyring.js";
 
@@ -775,7 +775,7 @@ function verifyCheckpointParsed(cp: Checkpoint, verification?: ParsedVerificatio
   if (typeof c.chain !== "string" || c.chain.length === 0) return "malformed checkpoint";
   if (typeof c.highestSeq !== "number" || !isSafeInteger(c.highestSeq) || c.highestSeq < 0) return "malformed checkpoint";
   if (typeof c.headHash !== "string" || !isSha256Hash(c.headHash)) return "malformed checkpoint";
-  if (typeof c.ts !== "string" || !isRfc3339(c.ts)) return "malformed checkpoint";
+  if (typeof c.ts !== "string" || !isRfc3339Instant(c.ts)) return "malformed checkpoint";
   const sig = c.sig as Record<string, unknown> | undefined;
   // sig sub-object is ALSO strict (top-level strictness alone isn't enough): exactly
   // {alg,kid,value}, alg="ed25519" — closes a smuggled-field channel inside the SIGNED surface + an

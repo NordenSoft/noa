@@ -1,0 +1,41 @@
+[
+  {
+    "spec": "noa.receipt/0.1",
+    "id": "rcpt_coherence_rollback_ok",
+    "ts": "2026-06-20T08:01:00.000Z",
+    "scope": {
+      "tenant": "store_demo",
+      "chain": "coherence_ok_chain_2"
+    },
+    "agent": {
+      "id": "agent-refunds",
+      "model": "example-provider/llm-v1",
+      "principal": "SERVICE"
+    },
+    "action": {
+      "id": "payment.refund",
+      "canonical": "payment.refund",
+      "riskClass": "HIGH",
+      "paramsHash": "sha256:9c10250f78b359d3c3abdf2dcd91a50af8aa4f7529cfbf3cfead14cf2500eac6",
+      "reversible": true,
+      "rollbackRef": "snap_before_refund"
+    },
+    "governance": {
+      "mode": "on",
+      "verdict": "ROLLED_BACK",
+      "ruleId": "auto-rollback",
+      "approval": null,
+      "sandboxed": false
+    },
+    "chain": {
+      "seq": 0,
+      "prevHash": null,
+      "hash": "sha256:9a4c3d6ebc0292d9141ab47a4b8c1f9c638db6bcacd2e48972a7089dce73076a"
+    },
+    "sig": {
+      "alg": "ed25519",
+      "kid": "noa-test-key-2026",
+      "value": "aJFbuOj0oJnMwDAF01lL8N499+F5QFsClkmgijFl+EUb/uYR9gXNe84onTfxTn4S2xCyupZj9h7lBxKAdVSwAA=="
+    }
+  }
+]

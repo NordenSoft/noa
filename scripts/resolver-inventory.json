@@ -1613,6 +1613,7 @@
     "test/builder-async.test.ts": "root kernel tests: string-keyring consumers",
     "test/builder.test.ts": "root kernel tests: string-keyring consumers",
     "test/checkpoint-scope-warning.test.ts": "root kernel tests: string-keyring consumers",
+    "test/coherence.test.ts": "root kernel tests: string-keyring consumer. The cross-field coherence suite (R1-R5) mints one local keypair and hands { [kid]: publicKey } to verifyChain to prove the rules reach MALFORMED end to end; it constructs no KeyEntry and never reads validFrom/revokedAt/roles or calls resolveVerificationKey. Same classification as the sibling root-kernel string-keyring consumers in this census.",
     "test/cose/cose.test.ts": "root kernel tests: string-keyring consumers",
     "test/dogfood/co-attestation.test.ts": "root kernel tests: string-keyring consumers",
     "test/dogfood/co-attestation.ts": "root kernel tests: string-keyring consumers",
