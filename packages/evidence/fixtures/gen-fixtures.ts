@@ -650,7 +650,7 @@ for (const oc of OUTCOMES) {
   const bundle = clone(w.bundle);
   const allowed = clone(w.bundle.allowedReceipt) as Receipt;
   const notFailed = buildReceipt(
-    { id: "rcpt_failed", ts: T_EXECUTED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: action("HIGH"), governance: { mode: "on", verdict: "ROLLED_BACK", sandboxed: false } },
+    { id: "rcpt_failed", ts: T_EXECUTED, scope: { tenant: TENANT, chain: CHAIN }, agent: { id: "agent-a", model: null, principal: "SERVICE" }, action: action("HIGH"), governance: { mode: "on", verdict: "EXECUTED", sandboxed: false } },
     allowed, rSign("gate-prod-1"),
   );
   bundle.failedReceipt = notFailed;
