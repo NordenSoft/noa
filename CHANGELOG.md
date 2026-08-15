@@ -6,7 +6,56 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- **`receiptFromCose` checked the identity manifest against the wrong signature, and got both
+  answers backwards** (`src/cose/receipt-cose.ts`). An enveloped receipt carries two signatures that
+  attribute two different parties — the **native** `sig.kid` names the agent, the **outer** COSE kid
+  names whoever emitted the envelope — and this entry point checked the manifest against the outer
+  one and never verified the native signature at all. Both consequences were reproduced against the
+  built package:
+  - **Laundering (accepted what it must refuse).** A receipt natively signed by a rogue key,
+    claiming `agent.id: "alice"`, wrapped in an envelope signed by *any* key the manifest authorizes
+    for alice, returned `ok:true`. The rogue key was never bound to anything.
+  - **Legitimate relay (refused what it must accept).** A receipt properly signed by alice's own key,
+    presented by a relay, returned `ok:false` — "agent alice is not authorized for signing key
+    k-relay". A relay is a legitimate presentation and the agent claim rides on the native signature
+    it never touched.
+
+  The manifest now binds the **native** `sig.kid`, and — because a `sig.kid` no signature covers is
+  a self-asserted string an attacker relabels for free — this entry point now **verifies the native
+  signature too**: it re-derives the receipt's hash input, requires `chain.hash` to be the receipt's
+  own contents, and refuses a native key that is unknown to the keyring or retired. **`ok:true`
+  therefore means both signatures verified**; there is no mode in which it means one.
+  `verifyChain`'s 4c-bis and `verifyReceiptCompliance` were already correct and are unchanged.
+  Rules: `draft-noa-scitt-ai-agent-receipt-01` §6, mirrored into `docs/receipt-spec.md` §8.
+
+### Added
+
+- **`ReceiptCoseResult` reports both identifiers and both dispositions** — `nativeKid`/`agentClaim`
+  (the agent claim) beside `envelopeKid`/`envelopeClaim` (the emitter), typed by the new
+  `CoseAttribution` union. A single boolean cannot say *which* of two claims was established, and a
+  caller previously had to dig the native kid out of the payload with nothing labelling what it
+  meant. An outer kid taken from the **unprotected** header still resolves a key — `kid` says which —
+  but is never reported as an identity: `envelopeKid` stays `null` and `envelopeClaim` is
+  `UNAUTHENTICATED`.
+- **`conformance/cose-attribution/`** — six vectors with their generator, covering **both**
+  directions of the rule. One alone proves nothing: a verifier that only refuses the laundering case
+  can do it by refusing everything, and one that only accepts the relay case can do it by accepting
+  everything. Exercised on every `npm test` by `test/cose/attribution-vectors.test.ts`, and six
+  knockout registry entries (one per control) make removing any of them turn the suite red.
+
+### Changed (behaviour, pre-1.0)
+
+- `receiptFromCose` now **refuses** an envelope whose enveloped receipt is signed by a key absent
+  from the supplied keyring, where it previously returned `ok:true` on the envelope's authority
+  alone. The envelope authenticates its emitter and never the agent inside it; accepting told the
+  caller more than had been checked. Callers that relay third-party receipts must supply the agent's
+  key alongside the relay's.
+- The H4 guard on an unprotected outer kid no longer rejects the whole receipt in manifest mode. Its
+  rule is unchanged — never present an identifier no signature covers as an identity — and it is now
+  enforced on the claim it governs (`envelopeKid` stays `null`) instead of sinking an agent claim
+  that an unsigned emitter label cannot reach.
 
 ## [0.8.0] - 2026-08-14
 

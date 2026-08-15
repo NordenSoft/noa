@@ -100,6 +100,14 @@ truth or safety.
   manifest is a trust input the operator vouches for (same class as the keyring); distributing it as a
   *signed* statement is a deployment concern. *Remaining:* in-band rotation-attestation (one endorsed
   key→key transition) so live chains survive rotation without manual manifest edits.
+  *On the COSE path, the manifest is checked against the receipt's own `sig.kid`, never the envelope's*
+  (fixed 2026-08-15; spec §8, draft §6). An enveloped receipt has two signers and they attribute two
+  different parties: the receipt's own key is the agent, the envelope's key is whoever presented it.
+  `receiptFromCose` had checked the envelope's, so an envelope signed by a key authorized for the
+  victim laundered a rogue-signed receipt to `ok:true`, while a genuine receipt merely relayed by a
+  third party was refused. Both directions are now conformance vectors
+  (`conformance/cose-attribution/`), the native signature is verified there rather than assumed, and
+  the result reports the two claims separately (`agentClaim` / `envelopeClaim`).
 - **Replay / freshness / liveness:** a wholly-valid chain, head, or checkpoint can be re-presented
   later as if current. The format carries no nonce/epoch/expiry. **Freshness is the caller's
   responsibility** — pin an expected chain id + head hash from a fresh, trusted channel; do not

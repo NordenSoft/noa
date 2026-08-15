@@ -289,9 +289,24 @@ That is what makes it universal rather than bespoke.
   still verifies; only the `alg` pin and `crit`-processability are enforced (a critical header the
   verifier cannot process is rejected, fail-closed).
 - **kid:** NOA *emits* `kid` (label `4`) in the **protected** (signed) header, so the signature covers
-  the (agent, key) attribution and it cannot be swapped for a same-length victim kid; the unprotected
+  the emitter's identifier and it cannot be swapped for a same-length victim kid; the unprotected
   bucket is emitted empty. A verifier resolves the kid against its keyring from EITHER bucket,
-  preferring the protected (signed) copy when present.
+  preferring the protected (signed) copy when present. An outer kid taken from the *unprotected*
+  bucket MAY resolve a key and MUST NOT be reported as an identity.
+- **TWO SIGNATURES, TWO CLAIMS (normative MUST — draft §6):** an enveloped receipt carries two
+  identifiers and they answer different questions. The **native** `sig.kid` inside the payload
+  attributes the **agent**: it is the key that signed the receipt into its chain and the identifier
+  `agent.id` makes a claim about. The **outer** COSE kid attributes the party that **emitted the
+  envelope** — an issuer submitting its own receipt, or a relay presenting someone else's. A verifier
+  supplied an identity manifest MUST check it against the **native** `sig.kid`; MUST NOT let an
+  authorized outer kid satisfy the agent check (an envelope signed by a key that happens to be
+  authorized for `agent.id` says nothing about who signed the receipt inside it); MUST NOT reject a
+  receipt solely because its outer signer is not one of the agent's keys (a relay is a legitimate
+  presentation); and MUST report the two results separately. This profile defines no authorization
+  list for the emitter: the manifest binds agents to keys, not envelopes to emitters.
+  `receiptFromCose` therefore verifies **both** signatures — `ok:true` never means one of the two —
+  and returns `nativeKid`/`agentClaim` beside `envelopeKid`/`envelopeClaim`. Vectors for both
+  directions: `conformance/cose-attribution/vectors.json`.
 - **Payload:** the JCS-canonical NOA receipt bytes (§2/§4). So a standard COSE verify authenticates the
   receipt; a NOA-native consumer then parses the payload and runs the hash-chain / policy checks (§3–§6).
 - **Sig_structure:** the RFC 9052 `["Signature1", protected, external_aad(empty), payload]`, Ed25519-signed.
