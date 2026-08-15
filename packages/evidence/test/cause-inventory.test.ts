@@ -86,25 +86,40 @@ interface Cause {
   via: string;
 }
 
-const srcFiles = (): string[] =>
-  readdirSync(SRC).filter((f) => f.endsWith(".ts") && !f.endsWith(".d.ts")).sort();
-
 // ── ENUMERATION ─────────────────────────────────────────────────────────────────────────────────
 
-function literalSegments(node: ts.Node): string[] | null {
+/**
+ * The literal fragments of a reason, in order, EMPTIES PRESERVED.
+ *
+ * The empty strings are load-bearing and dropping them was a real defect. A template that begins
+ * with a substitution has an empty head, and `"a" + \`${x} b\`` therefore has NO adjacency across
+ * the `+`: the text between "a" and " b" is whatever `x` produced. Filtering empties before fusing
+ * turned that into the single fragment `"a b"`, which the real output never contains — so
+ * `receipt-roles.ts`'s role-verdict refusal, which is produced by four fixtures, was reported as
+ * produced by none.
+ */
+function rawSegments(node: ts.Node): string[] | null {
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) return [node.text];
   if (ts.isTemplateExpression(node)) {
-    return [node.head.text, ...node.templateSpans.map((s) => s.literal.text)].filter((s) => s.length > 0);
+    return [node.head.text, ...node.templateSpans.map((s) => s.literal.text)];
   }
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const l = literalSegments(node.left);
-    const r = literalSegments(node.right);
+    const l = rawSegments(node.left);
+    const r = rawSegments(node.right);
     if (l === null || r === null) return null;
     if (l.length === 0 || r.length === 0) return [...l, ...r];
+    // Contiguous text: the last fragment of the left and the first of the right are adjacent. When
+    // either is "" (a substitution sits at that boundary) the fusion is a no-op, which is exactly
+    // the right answer.
     return [...l.slice(0, -1), l[l.length - 1]! + r[0]!, ...r.slice(1)];
   }
-  if (ts.isParenthesizedExpression(node)) return literalSegments(node.expression);
+  if (ts.isParenthesizedExpression(node)) return rawSegments(node.expression);
   return null;
+}
+
+function literalSegments(node: ts.Node): string[] | null {
+  const raw = rawSegments(node);
+  return raw === null ? null : raw.filter((s) => s.length > 0);
 }
 
 /** The function-like node that lexically encloses a node, if any. */
@@ -223,10 +238,59 @@ function findProducers(parsed: Parsed[]): Map<string, Producer> {
   return producers;
 }
 
+/**
+ * A REFUSAL BUILT AS A LITERAL, not routed through any helper.
+ *
+ * `fail` is a convenience, not a chokepoint: a `StepResult` is a plain object, so `return { step,
+ * ok: false, code, reason }` refuses just as effectively and goes through no function this scan was
+ * following. That is precisely how a reviewer's `src/qa/hidden-refusal.ts` denied a valid bundle
+ * while a call-graph-only inventory reported everything covered.
+ *
+ * So refusals are recognised by SHAPE as well as by call: any object literal with `ok: false` that a
+ * function returns is a refusal, wherever it is written and whatever it is called.
+ */
+function refusalLiteral(n: ts.Node): ts.ObjectLiteralExpression | null {
+  if (!ts.isObjectLiteralExpression(n)) return null;
+  const ok = n.properties.find((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "ok");
+  if (!ok || !ts.isPropertyAssignment(ok) || ok.initializer.kind !== ts.SyntaxKind.FalseKeyword) return null;
+  const hasReason = n.properties.some((p) => ts.isPropertyAssignment(p) && ts.isIdentifier(p.name) && p.name.text === "reason");
+  return hasReason ? n : null;
+}
+
+const propOf = (o: ts.ObjectLiteralExpression, name: string): ts.Expression | null => {
+  const p = o.properties.find((x) => ts.isPropertyAssignment(x) && ts.isIdentifier(x.name) && x.name.text === name);
+  return p && ts.isPropertyAssignment(p) ? p.initializer : null;
+};
+
 function enumerateCauses(parsed: Parsed[], producers: Map<string, Producer>): Cause[] {
   const causes: Cause[] = [];
   for (const { file, sf } of parsed) {
     const walk = (n: ts.Node): void => {
+      // ── refusal-by-shape: `return { …, ok: false, …, reason: <expr> }` ──────────────────────
+      const lit = refusalLiteral(n);
+      if (lit) {
+        const returned = lit.parent && (ts.isReturnStatement(lit.parent)
+          || (ts.isArrowFunction(lit.parent) && lit.parent.body === lit)
+          || (ts.isParenthesizedExpression(lit.parent) && lit.parent.parent && ts.isArrowFunction(lit.parent.parent)));
+        const reasonExpr = propOf(lit, "reason");
+        if (returned && reasonExpr) {
+          const fn = enclosingFunction(lit);
+          const params = fn ? fn.parameters.map((p) => (ts.isIdentifier(p.name) ? p.name.text : null)) : [];
+          // `fail`'s own literal just forwards its `reason` parameter — the causes are its callers.
+          const isForward = reasonCarrierParam(reasonExpr, params) >= 0;
+          if (!isForward) {
+            const codeExpr = propOf(lit, "code");
+            causes.push({
+              file,
+              line: sf.getLineAndCharacterOfPosition(lit.getStart(sf)).line + 1,
+              code: codeExpr && ts.isStringLiteral(codeExpr) ? codeExpr.text : "<dynamic>",
+              segments: literalSegments(reasonExpr),
+              expr: reasonExpr.getText(sf).replace(/\s+/g, " ").slice(0, 100),
+              via: "StepResult literal",
+            });
+          }
+        }
+      }
       if (ts.isCallExpression(n) && ts.isIdentifier(n.expression) && producers.has(n.expression.text)) {
         const prod = producers.get(n.expression.text)!;
         const reasonExpr = n.arguments[prod.reasonArg];
@@ -260,10 +324,46 @@ function enumerateCauses(parsed: Parsed[], producers: Map<string, Producer>): Ca
   return causes;
 }
 
-const PARSED: Parsed[] = srcFiles().map((file) => ({
-  file,
-  sf: ts.createSourceFile(file, readFileSync(join(SRC, file), "utf8"), ts.ScriptTarget.ES2022, true),
-}));
+/**
+ * THE FILE SET COMES FROM THE COMPILER, NOT FROM THIS TEST.
+ *
+ * ⚠ A CONTROL MUST NEVER BE THE SOURCE OF ITS OWN EVIDENCE, and this is where that law was broken.
+ * The scan used to call `readdirSync(SRC)` — non-recursive — and then assert that it had covered
+ * "every src file". So the control defined its own scope, and the claim was true by construction and
+ * false in fact. A reviewer put a refusal in an imported `src/qa/hidden-refusal.ts`, reachable for an
+ * audience the corpus never supplies, and it DENIED A VALID BUNDLE while this file reported 5/5 and
+ * the evidence suite reported 448/448.
+ *
+ * The external authority is the TypeScript program: `tsconfig.json` decides what is compiled, and a
+ * refusal that is not compiled cannot run. Taking the file set from `ts.createProgram` means this
+ * scan sees exactly what ships, at any directory depth, including files it would never have thought
+ * to look for. A file that stops being compiled disappears from BOTH the build and this inventory
+ * together, which is the only way the two can be kept honest with each other.
+ */
+function programSourceFiles(): Parsed[] {
+  const pkgRoot = join(HERE, "..", "..");
+  const configPath = ts.findConfigFile(pkgRoot, ts.sys.fileExists, "tsconfig.json");
+  assert.ok(configPath, `no tsconfig.json above ${pkgRoot} — this scan cannot establish what is compiled`);
+  const raw = ts.readConfigFile(configPath!, ts.sys.readFile);
+  assert.ok(!raw.error, `tsconfig.json could not be read: ${JSON.stringify(raw.error)}`);
+  const parsed = ts.parseJsonConfigFileContent(raw.config, ts.sys, pkgRoot);
+  assert.equal(parsed.errors.length, 0, `tsconfig.json did not parse: ${parsed.errors.map((e) => String(e.messageText)).join("; ")}`);
+
+  const program = ts.createProgram(parsed.fileNames, parsed.options);
+  const srcPrefix = SRC.endsWith("/") ? SRC : `${SRC}/`;
+  // The FILE SET is the program's — that is the external authority, and the whole point. The files
+  // are then re-parsed with `setParentNodes`, because a program's source files carry no parent
+  // pointers until something forces binding, and every producer/forwarder rule below walks upward.
+  return program.getSourceFiles()
+    .filter((sf) => !sf.isDeclarationFile && sf.fileName.startsWith(srcPrefix))
+    .map((sf) => ({
+      file: sf.fileName.slice(srcPrefix.length),
+      sf: ts.createSourceFile(sf.fileName, sf.text, ts.ScriptTarget.ES2022, true),
+    }))
+    .sort((a, b) => a.file.localeCompare(b.file));
+}
+
+const PARSED: Parsed[] = programSourceFiles();
 const PRODUCERS = findProducers(PARSED);
 const CAUSES = enumerateCauses(PARSED, PRODUCERS);
 const at = (c: Cause) => `src/${c.file}:${c.line}`;
@@ -401,8 +501,27 @@ const RELAYS: readonly { code: string; expr: string; why: string }[] = [
 
 // ── THE PROPERTIES ──────────────────────────────────────────────────────────────────────────────
 
-test("the scan sees the whole verifier — every src file, and refusals reached through helpers", () => {
+test("the scan sees the whole verifier — the COMPILER's file set, at any depth", () => {
+  // The file list is the program's, so this is a statement about what is compiled rather than about
+  // what a directory listing happened to show. Nested files count: `src/a/b/c.ts` is as much part of
+  // the verifier as `src/steps.ts`, and the previous non-recursive walk could not see it at all.
   assert.ok(PARSED.length >= 8, `expected the verifier to span several files, parsed ${PARSED.length}`);
+  const onDisk = new Set<string>();
+  const walkDir = (dir: string, prefix: string): void => {
+    for (const e of readdirSync(dir, { withFileTypes: true })) {
+      if (e.isDirectory()) walkDir(join(dir, e.name), `${prefix}${e.name}/`);
+      else if (e.name.endsWith(".ts") && !e.name.endsWith(".d.ts")) onDisk.add(`${prefix}${e.name}`);
+    }
+  };
+  walkDir(SRC, "");
+  const scanned = new Set(PARSED.map((p) => p.file));
+  const unscanned = [...onDisk].filter((f) => !scanned.has(f)).sort();
+  assert.deepEqual(
+    unscanned, [],
+    `these TypeScript files exist under src/ and are NOT in the compiler's program: ${unscanned.join(", ")}. ` +
+      `Either they are dead code the build does not compile, or tsconfig's include no longer covers them — ` +
+      `and a refusal in one of them would run without this inventory ever seeing it.`,
+  );
   assert.ok(CAUSES.length >= 120, `expected many refusal causes, enumerated ${CAUSES.length}`);
   assert.ok(PRODUCED.length >= 90, `expected most of the corpus to produce a reason, collected ${PRODUCED.length}`);
   assert.ok(new Set(PRODUCED.map((p) => p.reason)).size >= 60, "too few distinct reasons to measure anything");
