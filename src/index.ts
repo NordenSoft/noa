@@ -153,7 +153,7 @@ export {
 // Universal envelope — the NOA receipt as a COSE_Sign1 (RFC 9052) / SCITT Signed Statement, so it
 // verifies in ANY conforming COSE implementation without NOA's code. Zero runtime deps.
 export { coseSign1, coseSign1Verify, type CoseSigner, type CoseVerifyResult } from "./cose/cose-sign1.js";
-export { receiptToCose, receiptFromCose, type ReceiptCoseResult } from "./cose/receipt-cose.js";
+export { receiptToCose, receiptFromCose, type ReceiptCoseResult, type CoseAttribution } from "./cose/receipt-cose.js";
 export { encInt, encBstr, encTstr, encArray, encMap, encTag, decode, CborError, type CborValue } from "./cose/cbor.js";
 
 // Witness & transparency federation — OPT-IN and DISJOINT from the default verify path (federation-spec §4).

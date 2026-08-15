@@ -14,6 +14,10 @@ import { safeParse } from "../safe-json.js";
 import { validateReceiptShapeParsed } from "../schema.js";
 import { parseDocument } from "../bytes.js";
 import { parseVerificationKeyring } from "../verification-keyring.js";
+import { receiptHashInput } from "../canonicalize.js";
+import { sha256Hex } from "../hash.js";
+import { signingMessage, RECEIPT_SIG_DOMAIN } from "../signing.js";
+import { verifyEd25519 } from "../keys.js";
 import type { Receipt } from "../types.js";
 import type { IdentityManifest } from "../keys.js";
 import { arrayIncludes, mapGet, mapSet, newMap, arraySlice, arrayEvery, objectGetOwnPropertyNames, isArray, bufferFrom, bufToString, bufEquals, jsonStringify } from "../intrinsics.js";
@@ -23,24 +27,127 @@ export function receiptToCose(receipt: Receipt, signer: CoseSigner): Buffer {
   return coseSign1(bufferFrom(canonicalize(receipt), "utf8"), signer);
 }
 
+/**
+ * The disposition of ONE attribution claim. An enveloped receipt carries two, and spec §6 requires
+ * them to be reported separately — a single boolean cannot say which of the two was established.
+ *
+ * `NOT_EVALUATED` is not a polite `FAILED`: it means the check never ran because an earlier one
+ * stopped verification, and a consumer that treats "did not run" as "did not authenticate" would
+ * report a parse error as an impersonation.
+ */
+export type CoseAttribution =
+  /** The signature verified and — when a manifest was supplied — the pairing is authorized. */
+  | "VERIFIED"
+  /** AGENT claim only: the native signature verified, but the manifest does not authorize the pairing. */
+  | "UNAUTHORIZED"
+  /** AGENT claim only: the native signature verified; no manifest was supplied, so it binds a KEY, not an agent.id. */
+  | "UNBOUND"
+  /** ENVELOPE claim only: the signature verified, but its kid is not covered by it — not an identity (§6). */
+  | "UNAUTHENTICATED"
+  /** The check ran and did not authenticate (unknown key, retired key, or a bad signature). */
+  | "FAILED"
+  /** The check never ran: an earlier failure stopped verification before it. */
+  | "NOT_EVALUATED";
+
 export interface ReceiptCoseResult {
+  /** True only when BOTH signatures verified and, with a manifest, the agent pairing is authorized. */
   ok: boolean;
+  /**
+   * The kid used to RESOLVE the envelope's public key — the outer COSE header's label 4.
+   *
+   * NOT an identity claim, and deliberately still populated when it came from the UNPROTECTED
+   * header, because resolving a key from an unsigned hint is permitted and reporting it as an
+   * identity is not (§6). Read `envelopeKid` for the identity-grade value.
+   */
   kid: string | null;
+  /**
+   * The AGENT claim's identifier: the receipt's OWN native `sig.kid`, the key that signed this
+   * receipt into its chain and the one `agent.id` makes a claim about. This — never the outer kid —
+   * is what the identity manifest is checked against.
+   */
+  nativeKid: string | null;
+  /** What was established about the agent claim. */
+  agentClaim: CoseAttribution;
+  /**
+   * The EMITTER's identifier: the party that produced this envelope (an issuer submitting its own
+   * receipt, or a relay presenting someone else's). `null` unless the outer kid came from the
+   * PROTECTED (signed) bucket — an unsigned identifier is not reportable as an identity (§6).
+   * This profile defines no authorization list for the emitter: the manifest binds agents to keys,
+   * not envelopes to emitters.
+   */
+  envelopeKid: string | null;
+  /** What was established about the envelope claim. */
+  envelopeClaim: CoseAttribution;
   receipt: Receipt | null;
   reason?: string;
   /** Non-fatal honesty notes (e.g. kid-level attribution when no identityManifest is supplied). */
   warnings: string[];
 }
 
+/** Every negative return, with both claims defaulting to "the check never ran". */
+function refuse(
+  reason: string,
+  o: {
+    kid?: string | null;
+    nativeKid?: string | null;
+    envelopeKid?: string | null;
+    agentClaim?: CoseAttribution;
+    envelopeClaim?: CoseAttribution;
+  } = {},
+): ReceiptCoseResult {
+  return {
+    ok: false,
+    kid: o.kid === undefined ? null : o.kid,
+    nativeKid: o.nativeKid === undefined ? null : o.nativeKid,
+    agentClaim: o.agentClaim === undefined ? "NOT_EVALUATED" : o.agentClaim,
+    envelopeKid: o.envelopeKid === undefined ? null : o.envelopeKid,
+    envelopeClaim: o.envelopeClaim === undefined ? "NOT_EVALUATED" : o.envelopeClaim,
+    receipt: null,
+    reason,
+    warnings: [],
+  };
+}
+
 /**
  * Verify a COSE_Sign1-wrapped receipt: COSE signature (universal) + strict receipt-shape on the
  * payload (parsed with the hardened safeParse). Returns the receipt for NOA-native chain checks.
  *
- * IDENTITY: like `verifyChain`, an optional `identityManifest` (agent.id -> authorized kid(s)) binds
- * WHICH agent — not merely which key — signed. Without it, attribution is kid-level and this surfaces
- * an explicit warning (the COSE path used to be silent, re-opening cross-agent impersonation for a
- * consumer that trusts `ok:true` + reads `receipt.agent.id`). With a manifest, an unauthorized
- * (agent.id, kid) pairing fails (ok:false) — mirroring the `UNTRUSTED` verdict.
+ * TWO SIGNATURES, TWO CLAIMS, REPORTED SEPARATELY (spec §6). An enveloped receipt carries two
+ * identifiers and they answer different questions:
+ *
+ *   • the NATIVE `sig.kid` inside the payload attributes the AGENT — it is the key that signed this
+ *     receipt into its chain, and the identifier `agent.id` makes a claim about;
+ *   • the OUTER COSE kid attributes whoever EMITTED this envelope — an issuer submitting its own
+ *     receipt, or a relay presenting someone else's.
+ *
+ * ⚠ FIXED 2026-08-15. This function used to check the identity manifest against the OUTER kid, and
+ * never verified the native signature at all. Both verdicts were the exact reverse of the rule, and
+ * both were reproduced against the built package:
+ *
+ *   • LAUNDERING (accepted what it must refuse): a receipt natively signed by rogue key `k-rogue`
+ *     and claiming `agent.id: "alice"`, wrapped in an envelope signed by `k-alice` — a key the
+ *     manifest authorizes for alice — returned `ok:true`. `k-rogue` was never bound to anything. An
+ *     envelope signed by an authorized key says nothing about who signed the receipt inside it.
+ *   • LEGITIMATE RELAY (refused what it must accept): a receipt properly signed by alice's own key
+ *     and relayed under `k-relay` returned `ok:false` — "agent alice is not authorized for signing
+ *     key k-relay". A relay is a legitimate presentation, and the agent claim rides on the native
+ *     signature the relay never touched.
+ *
+ * WHY THE NATIVE SIGNATURE IS VERIFIED HERE, and not merely reported as unchecked. Moving the
+ * manifest check onto `receipt.sig.kid` is worthless on its own: `sig.kid` is a field of a payload
+ * the emitter controls, so an unverified one is a self-asserted string and an attacker relabels it
+ * `k-alice` for free. Binding an agent to an identifier no signature covers is exactly the H4
+ * mistake in a second costume. So this entry point verifies the native signature against the SAME
+ * keyring — recomputing the hash input, requiring `chain.hash` to be the receipt's own contents,
+ * refusing a retired or unknown native key — before any manifest lookup, mirroring the carrier-receipt
+ * rule already shipped at `src/policy/compliance.ts` (§4c-bis). The contract is therefore flat:
+ * **`ok:true` means BOTH signatures verified**; there is no mode in which it means half.
+ *
+ * IDENTITY: an optional `identityManifest` (agent.id -> authorized kid(s)) binds WHICH agent — not
+ * merely which key — signed. Without it the agent claim is `UNBOUND` (key-level) and this surfaces
+ * an explicit warning. With it, an unauthorized (agent.id, NATIVE sig.kid) pairing is `UNAUTHORIZED`
+ * and `ok:false` — mirroring the `UNTRUSTED` verdict. An unauthorized OUTER kid is not an error:
+ * this profile defines no authorization list for emitters.
  */
 export function receiptFromCose(
   coseBytes: Uint8Array,
@@ -53,13 +160,13 @@ export function receiptFromCose(
   // `slice` itself dispatches through a poisonable prototype slot. The shape-validation pass below
   // is kept for its error messages; what it walks is now parser output.
   const kParsed = parseVerificationKeyring(keyringBytes, "keyring");
-  if (!kParsed.ok) return { ok: false, kid: null, receipt: null, reason: kParsed.reason, warnings: [] };
+  if (!kParsed.ok) return refuse(kParsed.reason);
   const verification = kParsed.value;
   const keyring = verification.keyring;
   let identityManifest: IdentityManifest | undefined;
   if (identityManifestBytes !== undefined) {
     const mParsed = parseDocument(identityManifestBytes, "identityManifest");
-    if (!mParsed.ok) return { ok: false, kid: null, receipt: null, reason: mParsed.reason, warnings: [] };
+    if (!mParsed.ok) return refuse(mParsed.reason);
     identityManifest = mParsed.value as IdentityManifest;
   }
   // Validate the optional manifest AND SNAPSHOT it (fail-closed; matches verifyChain). TOCTOU hardening:
@@ -72,7 +179,7 @@ export function receiptFromCose(
   const manifest = newMap<string, string[]>();
   if (haveManifest) {
     if (typeof identityManifest !== "object" || identityManifest === null || isArray(identityManifest)) {
-      return { ok: false, kid: null, receipt: null, reason: "identityManifest must be an object (agent.id -> kid[])", warnings: [] };
+      return refuse("identityManifest must be an object (agent.id -> kid[])");
     }
     // GUARD the manifest read in try/catch: the entries / array elements are caller-supplied LIVE
     // values, so a hostile accessor (`get someAgent(){throw}` or a throwing element getter) must yield a clean
@@ -89,34 +196,31 @@ export function receiptFromCose(
         const aid = aids[ai] as string;
         const kidsLive = (identityManifest as Record<string, unknown>)[aid]; // ONE read of the entry
         if (!isArray(kidsLive)) {
-          return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
+          return refuse(`identityManifest["${aid}"] must be an array of kid strings`);
         }
         const kids = arraySlice(kidsLive) as unknown[]; // copy by value
         if (!arrayEvery(kids, (k) => typeof k === "string")) {
-          return { ok: false, kid: null, receipt: null, reason: `identityManifest["${aid}"] must be an array of kid strings`, warnings: [] };
+          return refuse(`identityManifest["${aid}"] must be an array of kid strings`);
         }
         mapSet(manifest, aid, kids as string[]);
       }
     } catch {
-      return { ok: false, kid: null, receipt: null, reason: "identityManifest threw during validation (hostile accessor)", warnings: [] };
+      return refuse("identityManifest threw during validation (hostile accessor)");
     }
   }
   const r = coseSign1VerifyParsed(coseBytes, keyring);
   if (r.kid !== null && verification.retiredKids[r.kid] === true) {
-    return {
-      ok: false,
-      kid: r.kid,
-      receipt: null,
-      reason: `signing key ${jsonStringify(r.kid)} is retired; signer-chosen artifact time is not an independent witness`,
-      warnings: [],
-    };
+    return refuse(
+      `signing key ${jsonStringify(r.kid)} is retired; signer-chosen artifact time is not an independent witness`,
+      { kid: r.kid, envelopeClaim: "FAILED" },
+    );
   }
-  if (!r.ok || !r.payload) return { ok: false, kid: r.kid, receipt: null, reason: r.reason, warnings: [] };
+  if (!r.ok || !r.payload) return refuse(r.reason ?? "COSE signature did not verify", { kid: r.kid, envelopeClaim: "FAILED" });
   let parsed: unknown;
   try {
     parsed = safeParse(bufToString(r.payload, "utf8"));
   } catch (e) {
-    return { ok: false, kid: r.kid, receipt: null, reason: `payload parse: ${(e as Error).message}`, warnings: [] };
+    return refuse(`payload parse: ${(e as Error).message}`, { kid: r.kid });
   }
   // H5 — the receipt returned MUST re-canonicalize to EXACTLY the signed payload bytes. safeParse
   // rejects duplicate/prototype keys and unpaired surrogates, but a signed payload can still be
@@ -134,32 +238,84 @@ export function receiptFromCose(
   try {
     recanon = bufferFrom(canonicalize(parsed), "utf8");
   } catch (e) {
-    return { ok: false, kid: r.kid, receipt: null, reason: `payload is not canonicalizable: ${(e as Error).message}`, warnings: [] };
+    return refuse(`payload is not canonicalizable: ${(e as Error).message}`, { kid: r.kid });
   }
   if (!bufEquals(recanon, r.payload)) {
-    return { ok: false, kid: r.kid, receipt: null, reason: "COSE payload is not canonical JCS: it does not re-canonicalize to the signed bytes (non-canonical encoding, or invalid/lossy UTF-8) — the returned receipt would not match the bytes the signature covers", warnings: [] };
+    return refuse("COSE payload is not canonical JCS: it does not re-canonicalize to the signed bytes (non-canonical encoding, or invalid/lossy UTF-8) — the returned receipt would not match the bytes the signature covers", { kid: r.kid });
   }
   const v = validateReceiptShapeParsed(parsed);
-  if (!v.ok) return { ok: false, kid: r.kid, receipt: null, reason: `payload is not a NOA receipt: ${v.errors[0]}`, warnings: [] };
+  if (!v.ok) return refuse(`payload is not a NOA receipt: ${v.errors[0]}`, { kid: r.kid });
   const receipt = parsed as Receipt;
-  // Identity binding (mirrors verifyChain 4c-bis). The COSE signature is authenticated (r.ok), so an
-  // unauthorized (agent.id, kid) pairing is cross-agent impersonation → reject.
+
+  // ── THE ENVELOPE CLAIM: who emitted this envelope ─────────────────────────────────────────────
+  // H4, KEPT AND REPOINTED. The rule it encodes is "never present an identifier no signature covers
+  // as an identity", and it used to sit in front of the manifest lookup because the manifest was
+  // (wrongly) checked against the OUTER kid. The manifest now binds the NATIVE kid, so the guard
+  // moves to the claim it actually governs: an outer kid taken from the UNPROTECTED header MAY be
+  // used to resolve a key — `r.kid` still reports what resolved it — but it is NOT reported as an
+  // identity, so `envelopeKid` is null and the disposition says why (§6). It no longer sinks the
+  // whole receipt: the agent claim is carried by the native signature, which an unsigned emitter
+  // label cannot touch.
+  const envelopeAuthenticated = r.kidAuthenticated && r.kid !== null;
+  const envelopeKid = envelopeAuthenticated ? r.kid : null;
+  const envelopeClaim: CoseAttribution = envelopeAuthenticated ? "VERIFIED" : "UNAUTHENTICATED";
+  const warnings: string[] = [];
+  if (!envelopeAuthenticated) {
+    warnings[warnings.length] = `the outer COSE kid ${jsonStringify(r.kid)} is not in the signed (protected) header — it resolved the envelope key but is NOT reported as an identity (envelopeKid is null); an unprotected label is swappable between keyring aliases (H4)`;
+  }
+
+  // ── THE AGENT CLAIM: verify the receipt's OWN signature, then bind it ──────────────────────────
+  // The manifest binds (agent.id -> authorized kid), and the kid it must be checked against is the
+  // receipt's native `sig.kid`. That field is only worth checking once the signature over it has
+  // been verified, so the verification comes first and a failure is fatal: `ok:true` never means
+  // "one of the two signatures". Same sequence as the carrier-receipt rule in policy/compliance.ts.
+  const nativeKid = receipt.sig.kid;
+  let hashInput: string;
+  try {
+    hashInput = receiptHashInput(receipt);
+  } catch (e) {
+    return refuse(`the enveloped receipt cannot be hashed: ${(e as Error).message}`, { kid: r.kid, nativeKid, envelopeKid, envelopeClaim, agentClaim: "FAILED" });
+  }
+  // `chain.hash` is excluded from the hash input, so the signature alone does not pin it. Without
+  // this, a receipt could carry any `chain.hash` it liked and still verify — and `chain.hash` is
+  // what the NEXT receipt links to.
+  if ("sha256:" + sha256Hex(hashInput) !== receipt.chain.hash) {
+    return refuse("the enveloped receipt's chain.hash is not a hash of its own contents — not authentic", { kid: r.kid, nativeKid, envelopeKid, envelopeClaim, agentClaim: "FAILED" });
+  }
+  if (verification.retiredKids[nativeKid] === true) {
+    return refuse(
+      `the receipt's own signing key ${jsonStringify(nativeKid)} is retired; signer-chosen receipt time is not an independent witness`,
+      { kid: r.kid, nativeKid, envelopeKid, envelopeClaim, agentClaim: "FAILED" },
+    );
+  }
+  const nativePub = keyring[nativeKid];
+  if (!nativePub) {
+    return refuse(
+      `the receipt's own signing key ${jsonStringify(nativeKid)} is not in the keyring — the envelope authenticates its EMITTER, never the agent inside it`,
+      { kid: r.kid, nativeKid, envelopeKid, envelopeClaim, agentClaim: "FAILED" },
+    );
+  }
+  if (!verifyEd25519(nativePub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), receipt.sig.value)) {
+    return refuse(
+      `the enveloped receipt's own signature does not verify under its kid ${jsonStringify(nativeKid)} — a valid envelope around an unsigned receipt`,
+      { kid: r.kid, nativeKid, envelopeKid, envelopeClaim, agentClaim: "FAILED" },
+    );
+  }
+
+  // Identity binding (mirrors verifyChain 4c-bis). The NATIVE signature is now authenticated, so an
+  // unauthorized (agent.id, sig.kid) pairing is cross-agent impersonation → reject.
   if (haveManifest) {
-    // H4 — the identity manifest binds an agent to the SIGNER kid, so the kid MUST be authenticated:
-    // covered by the signature (from the PROTECTED header). A kid present only in the UNPROTECTED header
-    // verifies the signature but is SWAPPABLE to a victim kid with the signature still valid — binding
-    // an agent to it is exactly the impersonation this manifest check exists to stop. Refuse to bind an
-    // unauthenticated kid rather than attributing the receipt to whatever kid the unsigned bytes claim.
-    if (!r.kidAuthenticated) {
-      return { ok: false, kid: r.kid, receipt: null, reason: `the COSE kid is not in the signed (protected) header — attribution cannot be bound to an agent from an unauthenticated, swappable kid (H4)`, warnings: [] };
-    }
     // C-02(c) SINK, CLOSED: `allowed.includes(kid)` dispatched through the writable
     // `Array.prototype.includes`, and `c02_cose_includes.mjs` used it to bind bob's key to alice.
     const allowed = mapGet(manifest, receipt.agent.id);
-    if (allowed === undefined || r.kid === null || !arrayIncludes(allowed, r.kid)) {
-      return { ok: false, kid: r.kid, receipt: null, reason: `agent "${receipt.agent.id}" is not authorized for signing key "${r.kid}" (identity manifest)`, warnings: [] };
+    if (allowed === undefined || !arrayIncludes(allowed, nativeKid)) {
+      return refuse(
+        `agent "${receipt.agent.id}" is not authorized for signing key "${nativeKid}" (identity manifest)`,
+        { kid: r.kid, nativeKid, envelopeKid, envelopeClaim, agentClaim: "UNAUTHORIZED" },
+      );
     }
-    return { ok: true, kid: r.kid, receipt, warnings: [] };
+    return { ok: true, kid: r.kid, nativeKid, agentClaim: "VERIFIED", envelopeKid, envelopeClaim, receipt, warnings };
   }
-  return { ok: true, kid: r.kid, receipt, warnings: ["no identityManifest: attribution is kid-level — ok:true proves a keyring-trusted key signed, NOT which agent.id (run with an identityManifest to bind, or treat receipt.agent.id as unauthenticated)"] };
+  warnings[warnings.length] = `no identityManifest: attribution is kid-level — ok:true proves the receipt's own key ${jsonStringify(nativeKid)} signed it and a keyring-trusted key enveloped it, NOT which agent.id (run with an identityManifest to bind, or treat receipt.agent.id as unauthenticated)`;
+  return { ok: true, kid: r.kid, nativeKid, agentClaim: "UNBOUND", envelopeKid, envelopeClaim, receipt, warnings };
 }

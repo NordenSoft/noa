@@ -1524,6 +1524,7 @@
   "vocabularyFiles": {
     "packages/mcp-proxy/test/init.test.mjs": "test for `proxy.mjs init`: string-keyring consumer. It names the generated approver-keyring.json and asserts its { [kid]: publicKey } shape; it constructs no KeyEntry and never reads validFrom/revokedAt/roles or calls resolveVerificationKey (measured: all zero occurrences). Same classification as the sibling string-keyring consumers in this census.",
     "conformance/cose-3rd-party/gen-vector.mjs": "example/conformance driver: string-keyring consumer",
+    "conformance/cose-attribution/gen-vectors.mjs": "conformance driver for the two-signature attribution vectors (spec §6): builds a plain {kid: publicKey} map and hands it to receiptFromCose as BYTES to self-check every vector before writing the file. It constructs no KeyEntry and reads no validFrom/revokedAt/roles — the keyring is present because the rule under test is about WHICH of two kids a manifest is checked against, so a vector without one measures nothing.",
     "docs/reproductions/repro-P0-14-retired-key-forgery.mjs": "standalone reproduction of P0-14 (task #84): calls createRotatableSigner().keyring() and verifyOutcomeReceipt to demonstrate that a RETIRED signing key still mints new evidence. A string-keyring CONSUMER that constructs no KeyEntry. Kept in the repo deliberately so the reproduction survives a machine restart; it is evidence, not product code, and must be updated or deleted when P0-14 is fixed.",
     "examples/killer-demo/demo.mjs": "example/conformance driver: string-keyring consumer",
     "examples/mcp-preflight/preflight.mjs": "example/conformance driver: string-keyring consumer",
@@ -1615,6 +1616,7 @@
     "test/checkpoint-scope-warning.test.ts": "root kernel tests: string-keyring consumers",
     "test/coherence.test.ts": "root kernel tests: string-keyring consumer. The cross-field coherence suite (R1-R5) mints one local keypair and hands { [kid]: publicKey } to verifyChain to prove the rules reach MALFORMED end to end; it constructs no KeyEntry and never reads validFrom/revokedAt/roles or calls resolveVerificationKey. Same classification as the sibling root-kernel string-keyring consumers in this census.",
     "test/cose/cose.test.ts": "root kernel tests: string-keyring consumers",
+    "test/cose/attribution-vectors.test.ts": "root kernel tests: string-keyring consumer. It reads the committed keyring out of conformance/cose-attribution/vectors.json and hands it to receiptFromCose as BYTES; it constructs no KeyEntry and resolves nothing itself (validFrom/revokedAt/roles appear zero times).",
     "test/dogfood/co-attestation.test.ts": "root kernel tests: string-keyring consumers",
     "test/dogfood/co-attestation.ts": "root kernel tests: string-keyring consumers",
     "test/dogfood/proxy.ts": "root kernel tests: string-keyring consumers",

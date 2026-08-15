@@ -2140,6 +2140,100 @@ const KNOCKOUTS = [
     kind: "tests",
     suite: [".", "npm", ["test"]],
   },
+  // ── ADDED 2026-08-15: TWO-SIGNATURE ATTRIBUTION ON THE COSE ENTRY POINT (spec §6) ───────────────
+  // `receiptFromCose` checked the identity manifest against the OUTER COSE kid and never verified the
+  // receipt's own signature. Both verdicts were the exact reverse of the rule and both were measured
+  // against the built package: a rogue-signed receipt wrapped by a key authorized for the victim
+  // returned ok:true (laundering), and a correctly agent-signed receipt presented by a relay returned
+  // ok:false (a legitimate presentation refused). NOTHING in the repository went red for either — the
+  // COSE identity path had no knockout entry at all, which is why one line could hold two inverted
+  // security verdicts through a green suite. Six entries, one per control, all measured.
+  {
+    id: "cose-manifest-binds-the-native-kid",
+    control:
+      "THE fix. The identity manifest is checked against the receipt's NATIVE sig.kid — the key that " +
+      "signed it into its chain and the one agent.id makes a claim about — never against the outer " +
+      "COSE kid, which names whoever emitted the envelope. The mutation restores the original line " +
+      "verbatim, and it fails in BOTH directions at once, which is why the corpus needs both: an " +
+      "envelope signed by a key authorized for alice launders a rogue-signed receipt into ok:true, " +
+      "and a receipt genuinely signed by alice is refused because the RELAY is not one of alice's " +
+      "keys. A verifier that only refuses the first can do it by refusing everything.",
+    file: "src/cose/receipt-cose.ts",
+    find: "    if (allowed === undefined || !arrayIncludes(allowed, nativeKid)) {",
+    replace: "    if (allowed === undefined || r.kid === null || !arrayIncludes(allowed, r.kid)) {",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "cose-native-signature-is-verified",
+    control:
+      "Moving the manifest check onto sig.kid is worthless unless the signature under that kid is " +
+      "verified: sig.kid is a field of a payload the emitter controls, so an unverified one is a " +
+      "self-asserted string an attacker relabels for free. The mutation removes the Ed25519 " +
+      "verification and keeps the pairing check, which is the plausible half-fix — the vector that " +
+      "catches it names k-alice as its signer, pairs perfectly with the manifest, and was signed by " +
+      "k-rogue.",
+    file: "src/cose/receipt-cose.ts",
+    find: "  if (!verifyEd25519(nativePub, signingMessage(RECEIPT_SIG_DOMAIN, hashInput), receipt.sig.value)) {",
+    replace: "  if (false as boolean) {",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "cose-native-chain-hash-is-self-consistent",
+    control:
+      "chain.hash is EXCLUDED from the receipt's hash input, so the native signature does not pin it. " +
+      "Without this check a receipt carries any chain.hash it likes while every signature verifies — " +
+      "and chain.hash is what the NEXT receipt links to, so the caller is handed an attacker-chosen " +
+      "successor link with an ok:true beside it. The mutation removes the re-derivation.",
+    file: "src/cose/receipt-cose.ts",
+    find: "  if (\"sha256:\" + sha256Hex(hashInput) !== receipt.chain.hash) {",
+    replace: "  if (false as boolean) {",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "cose-unknown-native-key-is-refused",
+    control:
+      "A native kid absent from the keyring is a refusal, not a fallback: the envelope authenticates " +
+      "its EMITTER and never the agent inside it. The mutation does not delete the check, it does the " +
+      "tempting thing — falls back to the ENVELOPE's key — which is the historical shape of this bug " +
+      "and still produces an ok:false, just with the wrong reason. The vector asserts the reason, so " +
+      "a refusal for the wrong cause is still a detection.",
+    file: "src/cose/receipt-cose.ts",
+    find: "  const nativePub = keyring[nativeKid];",
+    replace: "  const nativePub = keyring[nativeKid] ?? keyring[r.kid ?? \"\"];",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "cose-unprotected-outer-kid-is-not-an-identity",
+    control:
+      "H4, kept and repointed. An outer kid taken from the UNPROTECTED header MAY resolve a key and " +
+      "MUST NOT be reported as an identity, because an unsigned label is swappable between keyring " +
+      "aliases. The result therefore reports it under `kid` (what resolved the key) and leaves " +
+      "`envelopeKid` null. The mutation promotes the unauthenticated kid to the identity field, which " +
+      "is invisible to any assertion that only reads `ok`.",
+    file: "src/cose/receipt-cose.ts",
+    find: "  const envelopeKid = envelopeAuthenticated ? r.kid : null;",
+    replace: "  const envelopeKid = r.kid;",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
+  {
+    id: "cose-retired-native-key-is-refused",
+    control:
+      "The retired-key rule applies to the RECEIPT's own key, not only the envelope's. The outer " +
+      "check cannot see it: a live relay key re-presenting a receipt signed by a superseded agent key " +
+      "is exactly how a retired key comes back, and it is a signer-chosen timestamp with no " +
+      "independent witness. The mutation removes the native-side check while leaving the outer one, " +
+      "so only the enveloped P0-14 case — two DIFFERENT keys — goes red.",
+    file: "src/cose/receipt-cose.ts",
+    find: "  if (verification.retiredKids[nativeKid] === true) {",
+    replace: "  if (false as boolean) {",
+    kind: "tests",
+    suite: [".", "npm", ["test"]],
+  },
 ];
 
 // Fail before measuring any baseline: an unknown key means the registry describes an experiment

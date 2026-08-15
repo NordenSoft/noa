@@ -87,6 +87,40 @@ test("P0-14: both public COSE verification surfaces refuse a lifecycle-retired s
   assert.match(receiptAttack.reason ?? "", /retired/i);
 });
 
+test("P0-14 (enveloped): a CURRENT emitter cannot re-present a receipt signed by a RETIRED agent key", () => {
+  // The test above retires the key that signs BOTH layers, so the outer check alone answers it. Here
+  // the two keys differ: the envelope is signed by a live relay key and the retired key is only the
+  // receipt's own. Nothing on the outer layer can see that, and an enveloped receipt is exactly how a
+  // superseded key would be re-presented after its retirement.
+  const retired = generateKeyPair("agent-retired");
+  const current = generateKeyPair("agent-current");
+  const relay = generateKeyPair("relay-live");
+  const lifecycle = b({
+    spec: "noa.signing-key-lifecycle/0.1",
+    keys: {
+      [retired.kid]: { publicKey: retired.publicKey, retiredAt: "2026-08-01T08:36:12.643Z" },
+      [current.kid]: { publicKey: current.publicKey, retiredAt: null },
+      [relay.kid]: { publicKey: relay.publicKey, retiredAt: null },
+    },
+  });
+
+  const staleReceipt = mkReceipt({ kid: retired.kid, privateKey: retired.privateKey });
+  const relayed = receiptToCose(staleReceipt, { kid: relay.kid, privateKey: relay.privateKey });
+  const attack = receiptFromCose(relayed, lifecycle);
+  assert.equal(attack.ok, false, "a live envelope must not resurrect a retired agent key");
+  assert.equal(attack.agentClaim, "FAILED");
+  assert.equal(attack.nativeKid, retired.kid);
+  assert.equal(attack.envelopeClaim, "VERIFIED", "the relay's own signature is genuine — the two claims are separate");
+  assert.match(attack.reason ?? "", /retired/i);
+
+  // CONTROL: the identical shape with a live agent key verifies, so the refusal above is about
+  // retirement and not about relaying.
+  const liveReceipt = mkReceipt({ kid: current.kid, privateKey: current.privateKey });
+  const ok = receiptFromCose(receiptToCose(liveReceipt, { kid: relay.kid, privateKey: relay.privateKey }), lifecycle);
+  assert.equal(ok.ok, true, ok.reason ?? "");
+  assert.equal(ok.agentClaim, "UNBOUND");
+});
+
 test("COSE_Sign1: tampered payload fails verification", () => {
   const kp = generateKeyPair("k");
   const keyring = { k: kp.publicKey };
@@ -456,29 +490,59 @@ test("H4: NOA's producer now puts the kid in the PROTECTED (signed) header — a
   assert.equal(r.kidAuthenticated, true, "the producer's kid is in the signed header");
 });
 
-test("H4: an UNPROTECTED-only kid cannot bind an agent (manifest mode) — but still verifies unbound", () => {
+// ⚠ REWRITTEN 2026-08-15 with the two-signature attribution fix, and the assertions got STRICTER,
+// not looser. The old body asserted `ok:false` on the last case for a reason that has stopped being
+// true: the manifest used to bind the OUTER kid, so an unprotected outer kid sank the whole receipt.
+// The manifest now binds the receipt's NATIVE sig.kid, which lives inside the signed payload and is
+// covered by two signatures — an unsigned emitter label cannot reach it. So H4's rule is unchanged
+// ("never present an identifier no signature covers as an identity") and it is now enforced where
+// it belongs: the unprotected kid is not REPORTED as an identity (envelopeKid stays null), while the
+// agent claim is decided on its own evidence. The laundering half is asserted below in the same
+// test, which the old body could not express at all.
+test("H4: an UNPROTECTED-only outer kid is never REPORTED as an identity — and cannot bind, nor sink, the agent claim", () => {
   const kp = generateKeyPair("unsigned-kid");
+  const rogue = generateKeyPair("rogue-kid");
   const receipt = mkReceipt({ kid: kp.kid, privateKey: kp.privateKey }); // agent.id = "a1"
   const payload = Buffer.from(canonicalize(receipt), "utf8");
   // hand-build an envelope with kid ONLY in the unprotected header (a legacy/external peer).
   const protNoKid = encMap([[encInt(1), encInt(-19)]]);
   const unprotKid = encMap([[encInt(4), encBstr(Buffer.from(kp.kid, "utf8"))]]);
   const cose = buildCose(protNoKid, unprotKid, payload, kp.privateKey);
-  const keyring = { [kp.kid]: kp.publicKey };
+  const keyring = { [kp.kid]: kp.publicKey, [rogue.kid]: rogue.publicKey };
 
   // no manifest → ok:true (a keyring-trusted key signed) + the existing kid-level-attribution warning.
   const weak = receiptFromCose(cose, b(keyring));
   assert.equal(weak.ok, true, weak.reason ?? "");
   assert.ok(weak.warnings.some((w) => /attribution is kid-level/.test(w)));
 
-  // with a manifest → REJECTED: the kid is not signed, so it is swappable and cannot bind an agent.
+  // THE H4 RULE, at the claim it governs: the unprotected kid resolved the key (`kid` says so) but is
+  // NOT reported as an identity — `envelopeKid` is null and the disposition names the reason.
   const strong = receiptFromCose(cose, b(keyring), b({ a1: [kp.kid] }));
-  assert.equal(strong.ok, false, "an unauthenticated (unprotected) kid must not bind an agent");
-  assert.match(strong.reason ?? "", /protected|authenticated/i);
+  assert.equal(strong.kid, kp.kid, "the unprotected kid MAY resolve a key, and the result says which one did");
+  assert.equal(strong.envelopeKid, null, "an unsigned kid must never be reported as an identity");
+  assert.equal(strong.envelopeClaim, "UNAUTHENTICATED");
+  assert.ok(strong.warnings.some((w) => /not in the signed \(protected\) header/.test(w)));
+  // …and it does not sink the agent claim, which rides on the native signature the emitter label
+  // cannot touch (spec §6: MUST NOT reject solely because of the outer signer).
+  assert.equal(strong.ok, true, strong.reason ?? "");
+  assert.equal(strong.nativeKid, kp.kid);
+  assert.equal(strong.agentClaim, "VERIFIED");
 
-  // contrast: the SAME receipt produced with a protected kid DOES bind (no over-correction).
+  // AND the unprotected envelope still cannot launder: a receipt natively signed by the ROGUE key,
+  // enveloped under a kid the manifest authorizes for a1, is refused on the native pairing.
+  const laundered = mkReceipt({ kid: rogue.kid, privateKey: rogue.privateKey }); // agent.id = "a1"
+  const launderedCose = buildCose(protNoKid, unprotKid, Buffer.from(canonicalize(laundered), "utf8"), kp.privateKey);
+  const bad = receiptFromCose(launderedCose, b(keyring), b({ a1: [kp.kid] }));
+  assert.equal(bad.ok, false, "an authorized envelope key must not launder a rogue native signature");
+  assert.equal(bad.agentClaim, "UNAUTHORIZED");
+  assert.equal(bad.nativeKid, rogue.kid);
+
+  // contrast: the SAME receipt produced with a protected kid DOES report the emitter (no over-correction).
   const good = receiptToCose(receipt, { kid: kp.kid, privateKey: kp.privateKey });
-  assert.equal(receiptFromCose(good, b(keyring), b({ a1: [kp.kid] })).ok, true);
+  const goodResult = receiptFromCose(good, b(keyring), b({ a1: [kp.kid] }));
+  assert.equal(goodResult.ok, true);
+  assert.equal(goodResult.envelopeKid, kp.kid);
+  assert.equal(goodResult.envelopeClaim, "VERIFIED");
 });
 
 test("H4: swapping the unprotected kid on a protected-kid envelope does NOT change attribution", () => {
