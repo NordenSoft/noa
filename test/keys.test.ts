@@ -31,8 +31,9 @@ test("signEd25519 symmetrically refuses a non-Ed25519 (Ed448) private key", () =
   assert.throws(() => signEd25519(ed448Pkcs8, Buffer.from("x")), /not an Ed25519/);
 });
 
-// ── low-order / non-canonical public-key consensus pin (cofactored OpenSSL vs strict RFC-8032) ──
-// node:crypto/OpenSSL verify is cofactored and ACCEPTS a small-subgroup public key; the independent Python
+// ── low-order / non-canonical public-key consensus pin (OpenSSL key acceptance vs strict decode) ──
+// node:crypto/OpenSSL ACCEPTS a small-subgroup public key (a key-validation difference, NOT a
+// verification-equation one — see src/keys.ts); the independent Python
 // reference can reject it → VALID(TS)/TAMPERED(PY) on identical signed bytes. verifyEd25519 now rejects the 8
 // canonical small-order point encodings AND any non-canonical y ≥ q encoding, so both impls agree on the key.
 const ED25519_SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");

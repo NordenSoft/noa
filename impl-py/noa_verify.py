@@ -170,7 +170,7 @@ def spki_to_raw(pub_b64):
         raise ValueError("not a canonical Ed25519 SPKI")
     raw = der[12:]
     # CROSS-IMPL CONSENSUS: reject a SMALL-ORDER public key here so this strict reference and the
-    # cofactored node:crypto/OpenSSL reference (which ACCEPTS low-order keys) agree on the SAME verdict. Done at
+    # node:crypto/OpenSSL reference (whose KEY ACCEPTANCE admits low-order keys) agree on the SAME verdict. Done at
     # the key-decode boundary (not deep in ed25519_verify) so the rejection is deterministic regardless of the
     # accompanying signature, exactly matching src/keys.ts. (Non-canonical y >= q encodings of these points are
     # rejected separately by _decodepoint's y >= q guard during verification.) A legitimate key is never low-order.
