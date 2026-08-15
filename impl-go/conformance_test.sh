@@ -41,6 +41,20 @@ total=0
 run_case() {
 	local label="$1"
 	shift
+	# EXISTENCE GATE (2026-08-15). A missing vector file made BOTH verifiers exit 3, the codes
+	# "agreed", and the case counted as PASS — so deleting a vector silently deleted its guarantee.
+	# Observed live: the leap-second pin evaporated while the runner printed TOTAL=48 PASS=48 FAIL=0.
+	# A file that is not there proves nothing about two implementations agreeing.
+	for __arg in "$@"; do
+		case "$__arg" in
+			--*) continue ;;
+		esac
+		if [ ! -f "$__arg" ]; then
+			TOTAL=$((TOTAL+1)); FAIL=$((FAIL+1))
+			printf '	FAIL	MISSING VECTOR FILE: %s	(%s)\n' "$__arg" "$label"
+			return
+		fi
+	done
 	python3 "$PY_SCRIPT" "$@" >/dev/null 2>&1
 	local pyc=$?
 	"$GO_BIN" "$@" >/dev/null 2>&1

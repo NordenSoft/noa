@@ -41,6 +41,18 @@ declare -a FAILED=()
 # runs impl-py and the rust bin with the same args; compares exit codes.
 run_case() {
   local cat="$1"; local label="$2"; shift 2
+  # EXISTENCE GATE (2026-08-15). A missing vector file made BOTH verifiers exit 3, the codes
+  # "agreed", and the case counted as PASS — so deleting a vector silently deleted its guarantee.
+  # A file that is not there proves nothing about two implementations agreeing.
+  local __arg
+  for __arg in "$@"; do
+    [[ "$__arg" == --* ]] && continue
+    if [[ ! -f "$__arg" ]]; then
+      TOTAL=$((TOTAL+1)); FAIL=$((FAIL+1))
+      printf '  FAIL  MISSING VECTOR FILE: %s  (%s)\n' "$__arg" "$label"
+      return
+    fi
+  done
   "$PY" "$PYV" "$@" >/dev/null 2>&1; local pe=$?
   "$BIN" "$@" >/dev/null 2>&1; local re=$?
   local names=( VALID UNVERIFIED TAMPERED MALFORMED USAGE UNTRUSTED )

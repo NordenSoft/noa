@@ -51,8 +51,11 @@ is allowed in a minor bump; it is stated at the top of this entry rather than bu
   **Second `60` is ACCEPTED.** A leap second is a real instant that has really occurred 27 times, and
   refusing one would refuse a truthful receipt — the same defect in the opposite direction. Which UTC
   days carry a leap second is an IERS table, not a property of the string, so the *range* is enforced
-  and never a calendar of leap seconds. `conformance/vectors/ts-leap-second.json` and a unit test in
-  every language pin that acceptance so a later "tightening" cannot quietly remove it.
+  and never a calendar of leap seconds. `conformance/vectors/ts-leap-second.json` pins that acceptance for every
+  implementation, and TypeScript, Go and Rust add their own unit assertions; Python's pin is the
+  in-memory parity case in `impl-py/conformance.mjs`. **C# has no unit suite** — `impl-csharp/` is
+  `src/` plus a conformance script — so its only pin is that vector file, which is why the runners
+  now FAIL on a missing vector instead of counting two absent files as agreement.
 
   Every rule is **one-directional**, because the converse is legitimate and must keep verifying: a
   `SERVICE` agent may run inside a sandbox (`conformance/golden/0.3.0/multi/chain.json` contains
