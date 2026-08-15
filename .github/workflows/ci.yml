@@ -484,6 +484,18 @@ jobs:
         # cannot reach the public surface without a human reading the change. Hand-maintained lists
         # are what H-03 was made of.
         run: npm run check:entry-points
+      - name: Canonical state document is measured, not typed (no drift)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # 00_CURRENT_STATE.md calls itself the measured current state and is a release blocker, so a
+        # release reviewer reads it as evidence. It went stale FOUR times while being maintained by
+        # hand. The measured sections are now generated and diff-gated like the registry above.
+        #
+        # `--with-tests` is not optional here, and its absence was a finding: the flag is what
+        # produces the per-package tallies, so without it the check reported success while explicitly
+        # saying it had looked only at the git-derived sections — an evidence tally could be changed
+        # from 448 to 1 and the gate stayed green. It runs every package suite, which is why this
+        # step sits with the other generated-artifact checks rather than in the fast path.
+        run: npm run check:current-state
       - name: Dispatch-surface enumeration (C-04 / H-02 class)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Every call that hands control to code we do not own is matched from source and reconciled

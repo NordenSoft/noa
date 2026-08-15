@@ -106,18 +106,18 @@ why this table said `packages/signer-sidecar` had "no numeric tally" for months 
 <!-- GENERATED:BEGIN test-tallies -->
 | package | result | status |
 |---|---|---|
-| `packages/evidence` | 448 pass / 0 fail | exit 0 |
-| `packages/adapter-core` | 377 pass / 0 fail | exit 0 |
-| `packages/gate` | 289 pass / 0 fail | exit 0 |
-| `packages/approval-artifacts` | 209 pass / 0 fail | exit 0 |
-| `packages/relay` | 166 pass / 0 fail | exit 0 |
-| `packages/framework-adapters` | 126 pass / 0 fail | exit 0 |
-| `packages/mcp-proxy` | 124 pass / 0 fail, plus 222 / 222 smoke assertions | exit 0 |
-| `packages/tsa-anchor` | 120 pass / 0 fail | exit 0 |
-| `packages/rail-x402` | 113 pass / 0 fail | exit 0 |
-| `packages/signer-core` | 79 pass / 0 fail | exit 0 |
-| `packages/e2e-demo` | 15 pass / 0 fail | exit 0 |
-| `packages/signer-sidecar` | 12 / 12 smoke assertions | exit 0 |
+| `packages/evidence` | 448 pass / 0 fail — `node --test dist/test/*.test.js` | exit 0 |
+| `packages/adapter-core` | 377 pass / 0 fail — `node --test test/*.test.mjs` | exit 0 |
+| `packages/gate` | 289 pass / 0 fail — `node --test dist/test/*.test.js` | exit 0 |
+| `packages/approval-artifacts` | 209 pass / 0 fail — `node --test dist/test/*.test.js test/*.test.mjs` | exit 0 |
+| `packages/relay` | 166 pass / 0 fail — `node --test dist/test/*.test.js` | exit 0 |
+| `packages/framework-adapters` | 126 pass / 0 fail — `node --test test/*.test.mjs` | exit 0 |
+| `packages/mcp-proxy` | 5 pass / 0 fail — `test/dependency-reachability.mjs`<br>124 pass / 0 fail — `node --test test/*.test.mjs`<br>217 pass / 0 fail — `test/smoke.mjs` | exit 0 |
+| `packages/tsa-anchor` | 120 pass / 0 fail — `node --test` | exit 0 |
+| `packages/rail-x402` | 113 pass / 0 fail — `node --test` | exit 0 |
+| `packages/signer-core` | 79 pass / 0 fail — `node --test dist/test/*.test.js test/*.test.mjs` | exit 0 |
+| `packages/e2e-demo` | 15 pass / 0 fail — `node --import tsx --test test/*.test.ts` | exit 0 |
+| `packages/signer-sidecar` | 12 pass / 0 fail — `test/smoke.mjs` | exit 0 |
 <!-- GENERATED:END test-tallies -->
 
 **If you run any of this from a `git worktree`, read this first.** `packages/e2e-demo/tsconfig.json`

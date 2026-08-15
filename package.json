@@ -86,7 +86,7 @@
     "lint:verdict-differential": "node scripts/lint-verdict-differential.mjs",
     "lint:stranded-branches": "node scripts/lint-stranded-branches.mjs --selftest && node scripts/lint-stranded-branches.mjs",
     "gen:current-state": "node scripts/gen-current-state.mjs --write --with-tests",
-    "check:current-state": "node scripts/gen-current-state.mjs --check"
+    "check:current-state": "node scripts/gen-current-state.mjs --check --with-tests"
   },
   "devDependencies": {
     "@types/node": "^26.1.2",

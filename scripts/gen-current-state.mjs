@@ -105,16 +105,44 @@ function tally(pkg) {
     out = `${e.stdout ?? ""}${e.stderr ?? ""}`;
     status = e.status ?? 1;
   }
-  const sum = (re) => [...out.matchAll(re)].reduce((n, m) => n + Number(m[1]), 0);
-  // TWO TALLY FORMATS, and missing the second is how this document came to say a package had "no
-  // numeric tally" for months. `node --test` prints `ℹ pass N`; the hand-rolled smoke suites print
-  // TAP-style `# pass N`. signer-sidecar emits ONLY the second (12/12) and mcp-proxy emits BOTH
-  // (124 node tests and 217 smoke assertions) — a reviewer found both, and the doc reported neither.
-  return {
-    nodePass: sum(/^ℹ pass (\d+)$/gm), nodeFail: sum(/^ℹ fail (\d+)$/gm),
-    smokePass: sum(/^# pass (\d+)$/gm), smokeFail: sum(/^# fail (\d+)$/gm),
-    status,
+  // ── STAGES ARE NOT ONE NUMBER ─────────────────────────────────────────────────────────────────
+  //
+  // A package's `test` script can be several commands chained with `&&`, and each emits its own
+  // tally. Summing them produces a figure that is arithmetically conserved and CATEGORICALLY FALSE:
+  // mcp-proxy runs 5 dependency-reachability checks, 124 node tests and 217 smoke assertions, and
+  // this generator published "124 ... plus 222 / 222 smoke assertions" — the 5 dependency checks
+  // relabelled as smoke. A generated document is not allowed to invent a category.
+  //
+  // So the stages are read from the package's own test script, in order, and each is reported with
+  // the command that produced it. `node --test` prints `ℹ pass N`; hand-rolled suites print
+  // TAP-style `# pass N`.
+  const stages = (JSON.parse(fs.readFileSync(path.join(dir, "package.json"), "utf8")).scripts?.test ?? "")
+    .split("&&").map((c) => c.trim()).filter(Boolean);
+  const tap = [];
+  for (const m of out.matchAll(/^# pass (\d+)$/gm)) tap.push({ pass: Number(m[1]), fail: null });
+  [...out.matchAll(/^# fail (\d+)$/gm)].forEach((m, i) => { if (tap[i]) tap[i].fail = Number(m[1]); });
+  const nodeTest = {
+    pass: [...out.matchAll(/^ℹ pass (\d+)$/gm)].reduce((n, m) => n + Number(m[1]), 0),
+    fail: [...out.matchAll(/^ℹ fail (\d+)$/gm)].reduce((n, m) => n + Number(m[1]), 0),
   };
+
+  let tapAt = 0;
+  const measured = [];
+  for (const cmd of stages) {
+    // The label is the command as written, minus the interpreter — a glob is part of what ran and
+    // is not resolved to a filename here, because guessing which files a glob matched is exactly the
+    // kind of invention this generator exists to stop.
+    const label = cmd.replace(/^node\s+/, "").replace(/\s+/g, " ").trim();
+    if (/--test/.test(cmd)) {
+      if (nodeTest.pass + nodeTest.fail > 0) measured.push({ label: `node ${label}`, ...nodeTest });
+    } else if (tap[tapAt]) {
+      measured.push({ label, pass: tap[tapAt].pass, fail: tap[tapAt].fail ?? 0 });
+      tapAt += 1;
+    }
+  }
+  // A stage this parser could not attribute is reported, never folded into a neighbour.
+  const unattributed = tap.length - tapAt;
+  return { measured, unattributed, status };
 }
 
 const PACKAGES = [
@@ -160,10 +188,9 @@ function buildBlocks() {
     for (const pkg of PACKAGES) {
       const t = tally(pkg);
       if (!t) continue;
-      const parts = [];
-      if (t.nodePass + t.nodeFail > 0) parts.push(`${t.nodePass} pass / ${t.nodeFail} fail`);
-      if (t.smokePass + t.smokeFail > 0) parts.push(`${t.smokePass} / ${t.smokePass + t.smokeFail} smoke assertions`);
-      const result = parts.length ? parts.join(", plus ") : "no tally emitted";
+      const parts = t.measured.map((m) => `${m.pass} pass / ${m.fail} fail — \`${m.label}\``);
+      if (t.unattributed > 0) parts.push(`**${t.unattributed} tally block(s) this parser could not attribute to a stage**`);
+      const result = parts.length ? parts.join("<br>") : "no tally emitted";
       rows.push(`| \`packages/${pkg}\` | ${result} | ${t.status === 0 ? "exit 0" : `**exit ${t.status}**`} |`);
     }
     blocks["test-tallies"] = [
