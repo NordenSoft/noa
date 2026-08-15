@@ -259,6 +259,10 @@ export function receiptFromCose(
   const envelopeAuthenticated = r.kidAuthenticated && r.kid !== null;
   const envelopeKid = envelopeAuthenticated ? r.kid : null;
   const envelopeClaim: CoseAttribution = envelopeAuthenticated ? "VERIFIED" : "UNAUTHENTICATED";
+  // `warnings[warnings.length] = …` rather than the captured `arrayPush` used elsewhere: index
+  // assignment reaches no prototype METHOD at all, so there is nothing to swap. (Both forms perform an
+  // ordinary [[Set]] and are equally exposed to an inherited index accessor; neither is weaker, and
+  // this one has no method slot to capture in the first place.) Not an oversight of the house idiom.
   const warnings: string[] = [];
   if (!envelopeAuthenticated) {
     warnings[warnings.length] = `the outer COSE kid ${jsonStringify(r.kid)} is not in the signed (protected) header — it resolved the envelope key but is NOT reported as an identity (envelopeKid is null); an unprotected label is swappable between keyring aliases (H4)`;
