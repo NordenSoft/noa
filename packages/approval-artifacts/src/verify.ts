@@ -241,6 +241,18 @@ function parseTime(v: unknown, timeSchema: Record<string, unknown> | null): bigi
   if (day < 1 || day > daysInMonth(year, month)) return null;
   if (hour > 23 || minute > 59) return null;
   // Leap seconds (`:60`) are explicitly refused, preserving the existing parser contract.
+  //
+  // ⚠ KNOWN DIVERGENCE, measured 2026-08-15 and RECORDED (NON-CLAIMS.md NC-S5.9) rather than closed
+  // here. Every RELEASED schema's `$defs.rfc3339` writes its seconds field as `\d{2}`, so
+  // `2016-12-31T23:59:60Z` VALIDATES and then reads as `null`: the artifact authenticates and no rule
+  // can place it in time. Fail-closed in every direction — nothing is ACCEPTED that would otherwise
+  // be refused — but the refusal arrives wearing whichever rule happened to read the instant first.
+  //
+  // Neither consistent answer is available in this revision. A leap-second-aware parser needs a table
+  // every consumer of these instants would have to share, and narrowing a RELEASED grammar to
+  // `[0-5]\d` changes what a published schema accepts, which is a specification event for a future
+  // revision rather than a patch. `noa.action-class-enrolment/0.1` DID narrow, and could, because it
+  // is unreleased; its schema states that reasoning at the field.
   if (second > 59) return null;
 
   return toBigInt(daysFromCivil(year, month, day)) * 86_400_000_000_000n

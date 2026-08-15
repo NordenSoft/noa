@@ -57,6 +57,159 @@ export const KNOCKOUT_ENTRY_KEYS = new Set([
 /** Dependency names an entry may declare in `requires`. Authority: `phone-core-probe.mjs`. */
 const DECLARABLE_DEPENDENCIES = new Set(Object.keys(DEPENDENCY_PROBES));
 
+/**
+ * WHICH SHARD A CONTROL BELONGS TO — a total function of its ID and nothing else.
+ *
+ * ── THE PROPERTY THAT MATTERS, AND WHY IT IS THIS SHAPE ──────────────────────────────────────────
+ *
+ * A sharded gate has exactly one way to fail dangerously: drop a control and stay green. So the
+ * partition is built to make that unrepresentable rather than to make it unlikely. Every id maps to
+ * exactly one shard in `1..total`, the mapping depends on nothing but the id, and the selftest
+ * asserts for a range of `total` that the union of shards is the whole registry and no two shards
+ * overlap. There is no filter, no skip and no "if it doesn't fit" branch for a control to fall
+ * through.
+ *
+ * ── WHY BY ID HASH RATHER THAN BY ARRAY INDEX OR BY SUITE ────────────────────────────────────────
+ *
+ * By array index: inserting one entry re-shards everything below it, so a control silently moves
+ * between jobs on an unrelated commit and a flake becomes impossible to attribute.
+ *
+ * By suite: it would measure each package's clean baseline once instead of once per shard, which is
+ * the real cost of this scheme — but the registry is 43 controls on one package and 33 on another,
+ * so suite-grouped shards would be wildly unequal and the longest job would still be most of the
+ * sweep. The whole point is to cut the LONGEST job.
+ *
+ * By id hash: stable across insertions, near-uniform in size, and provably total. The price is that
+ * each shard re-measures the baselines for whichever suites it happens to touch — bounded, paid in
+ * parallel, and cheap next to re-running a suite once per arm, which is what the sweep actually
+ * spends its time on.
+ */
+export function shardOf(id, total) {
+  if (!Number.isSafeInteger(total) || total < 1) throw new Error(`shard total must be a positive integer, got ${String(total)}`);
+  if (typeof id !== "string" || id.length === 0) throw new Error("shard id must be a non-empty string");
+  // Four hex digits of a sha256 is 16 bits of a uniform digest — ample for a registry two orders of
+  // magnitude smaller, and it keeps the arithmetic inside a safe integer with no bigint dance.
+  const digest = crypto.createHash("sha256").update(id).digest("hex").slice(0, 8);
+  return (parseInt(digest, 16) % total) + 1;
+}
+
+/**
+ * WHICH CONTROLS THIS RUN WILL MEASURE — the ONE implementation, used by the runner and by the
+ * self-test that judges it.
+ *
+ * ── WHY IT LIVES HERE AND NOT IN THE RUNNER ──────────────────────────────────────────────────────
+ *
+ * It used to live in `lint-control-knockout.mjs` as three inline `.filter()` calls, and the
+ * self-test "verified" the partition by re-parsing the registry with a regex and re-implementing the
+ * ideal split with `shardOf`. So the self-test measured a SECOND partition that happened to agree
+ * with the first, and never observed what the runner actually selected. A cross-family reviewer
+ * excluded a live control from every shard IN THE RUNNER and the self-test stayed green — against a
+ * workflow comment promising that dropping a control was "unrepresentable".
+ *
+ * A test that re-implements its subject tests the re-implementation. There is now one selector, and
+ * the self-test drives THIS function; the runner's `--print-selection` closes the remaining gap by
+ * letting the self-test observe the real process end-to-end, filters and all.
+ *
+ * ── THE ORDER IS NORMATIVE ───────────────────────────────────────────────────────────────────────
+ *
+ * Dependency exclusion first (an entry whose dependency is absent is NOT RUN, and that is declared
+ * per entry, never inferred from a failure shape), then `--only` / `--requires`, then the shard LAST
+ * over whatever those chose — so `--requires x --shard 1/2` means "half of x", not "half of
+ * everything, then x".
+ *
+ * Returns `{ selected, chosen, setupFailed, empty }`. `empty` is a REASON string when the selection
+ * measures nothing, because no verdict is not a pass: an empty slice is an operator error, and
+ * exiting 0 there would let five green jobs report coverage over a four-control selection.
+ */
+export function selectControls({ registry, repoRoot, probes, only = null, requires = null, shard = null }) {
+  if (!Array.isArray(registry)) throw new Error("selectControls: registry must be an array");
+  if (shard !== null) {
+    if (!Number.isSafeInteger(shard.total) || shard.total < 1) throw new Error(`selectControls: shard total must be a positive integer, got ${String(shard.total)}`);
+    if (!Number.isSafeInteger(shard.index) || shard.index < 1 || shard.index > shard.total) {
+      throw new Error(`selectControls: shard index ${String(shard.index)} does not exist in a partition of ${String(shard.total)}`);
+    }
+  }
+  const { runnable, setupFailed } = partitionByDependency(registry, repoRoot, probes);
+  const chosen = only
+    ? runnable.filter((k) => k.id === only)
+    : requires
+      ? runnable.filter((k) => (k.requires ?? []).includes(requires))
+      : runnable;
+  const selected = shard ? chosen.filter((k) => shardOf(k.id, shard.total) === shard.index) : chosen;
+
+  let empty = null;
+  if (only && chosen.length === 0) {
+    // A RENAMED OR DELETED CONTROL MUST FAIL LOUDLY. `--only some-id-that-no-longer-exists` used to
+    // select nothing, run nothing, and exit 0 printing `proven load-bearing 0/0` — a targeted gate
+    // reporting success for an experiment that did not happen. This is the shape a control rename
+    // takes in CI: the workflow still names the old id, nothing runs, and the job is green.
+    const known = registry.some((k) => k.id === only);
+    empty = known
+      ? `--only ${only}: that control EXISTS but was excluded before selection (absent dependency). ` +
+        `The experiment did not happen; refusing to report a pass.`
+      : `--only ${only}: NO control with that id exists in the registry of ${registry.length}. ` +
+        `A renamed or deleted control must fail loudly, not report a pass over zero work.`;
+  } else if (shard && selected.length === 0) {
+    empty =
+      `--shard ${shard.index}/${shard.total}: this slice is EMPTY (${chosen.length} control(s) selected ` +
+      `in total). A shard that measures nothing is not green — reduce the shard count.`;
+  } else if (requires && selected.length === 0) {
+    const declared = registry.filter((k) => (k.requires ?? []).includes(requires));
+    const blocked = setupFailed.filter((m) => declared.some((k) => k.id === m.id));
+    empty =
+      `--requires ${requires}: 0 runnable entries selected ` +
+      `(${declared.length} declared, ${blocked.length} SETUP_FAILED). ` +
+      `The experiment did not happen; refusing to report a pass.`;
+  }
+  return { selected, chosen, setupFailed, empty };
+}
+
+/**
+ * DID THIS ARM ACTUALLY RUN? — answered from the RESIDUE, never from the row.
+ *
+ * ⚠ A CONTROL MUST NEVER BE THE SOURCE OF ITS OWN EVIDENCE. The first version of this audit derived
+ * "executed" from `results.map((r) => r.id)` — i.e. from rows this very loop appends. A reviewer
+ * inserted a branch that pushed a fabricated `DETECTOR_TRIGGERED` row, ran no mutation at all, and
+ * the gate reported `proven load-bearing 1/1` and exited 0. The row WAS the evidence, so writing the
+ * row was the whole experiment.
+ *
+ * An experiment leaves residue. `runKnockout` records, per arm: the sha256 of every target file
+ * before mutation, the sha256 of the mutant bytes it staged, the sha256 after restoration, and the
+ * real exit status of the child process that ran the suite. Those are facts about the filesystem and
+ * a process, not assertions by the loop.
+ *
+ * The proof is then RE-VERIFIED against the disk here, outside the runner: `hashBefore` must equal
+ * the sha256 of that file as it stands NOW. A fabricated row cannot satisfy that without having
+ * actually read and restored the real control file — which is the work it was trying to skip.
+ *
+ * HONEST LIMIT: nothing in-process can stop someone who edits this file from also computing real
+ * hashes. What this removes is the cheap forgery — a plausible row — and it makes the expensive one
+ * require doing the experiment.
+ */
+export function verifyExecutionResidue(r, root) {
+  const before = r.hashBefore;
+  const mutant = r.hashMutatedByFile;
+  const after = r.hashAfter;
+  if (!before || typeof before !== "object" || Object.keys(before).length === 0) return "no pre-mutation file hashes were recorded";
+  if (!mutant || typeof mutant !== "object") return "no mutant bytes were ever staged";
+  const files = Object.keys(before);
+  if (!files.some((f) => mutant[f] && mutant[f] !== before[f])) return "no target file's bytes actually changed";
+  if (typeof r.mutatedExit !== "number" && r.mutatedSignal == null) return "no child process exit status was observed — no suite ran";
+  if (!after || typeof after !== "object") return "no post-restoration hashes were recorded";
+  for (const f of files) {
+    if (after[f] !== before[f]) return `${f} did not return to its pre-mutation bytes`;
+    let onDisk;
+    try {
+      onDisk = crypto.createHash("sha256").update(fs.readFileSync(path.join(root, f), "utf8")).digest("hex");
+    } catch (e) {
+      return `${f} could not be re-read to verify the arm touched the real file (${e.code ?? e.message})`;
+    }
+    if (onDisk !== before[f]) return `${f}'s recorded pre-mutation hash does not match the file on disk — this arm did not measure the shipped control`;
+  }
+  return null;
+}
+
+
 /** Validate the whole registry before any suite is allowed to run. Returns its unambiguous id map. */
 export function validateKnockoutRegistry(registry) {
   if (!Array.isArray(registry)) throw new Error("knockout registry must be an array");
@@ -1689,11 +1842,12 @@ export function runKnockout({
       writeFileNoFollow(path.join(root, rel), Buffer.from(src));
     }
     ev.hashMutated = sha(mutated.get(entry.file));
-    if (paired) {
-      ev.hashMutatedByFile = Object.fromEntries(
-        [...mutated].map(([rel, src]) => [rel, sha(src)]),
-      );
-    }
+    // RECORDED FOR EVERY ARM, not only paired ones. This is the residue an auditor re-verifies to
+    // decide whether an experiment happened at all: without it a single-file arm carried no
+    // per-file mutant hash, and "this control was measured" rested on the runner's own say-so.
+    ev.hashMutatedByFile = Object.fromEntries(
+      [...mutated].map(([rel, src]) => [rel, sha(src)]),
+    );
 
     const obs = observeSuite(root, entry.suite, timeoutMs);
     ev.mutatedExit = obs.exit;

@@ -267,7 +267,10 @@ function isSoftS5Failure(code: string | undefined): boolean {
  * expression — did not have the defect. Naming the value is worth keeping; sharing the object is not.
  */
 function nothingProven(): VerdictDimensions {
-  return { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED" };
+  // `settlementObserver` is NOT_EVALUATED here for the same reason the others are their "nothing
+  // proven" value: the settlement rule never ran, so there is no relationship to report. It must never
+  // read as "no relationship was found".
+  return { integrity: "BROKEN", authorization: "UNCHECKED", settlement: "UNCHECKED", settlementObserver: "NOT_EVALUATED" };
 }
 
 function result(
@@ -583,7 +586,11 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
       // `ctx.enrolment` is REPORTED, never re-derived: the plane that asked the question is the only
       // thing that knows what it found, and a second derivation here could disagree with the rule
       // that produced the failing step.
-      return result(verdict, bundle.outcome, steps, ctx.warnings, { integrity, authorization: ctx.authorization, settlement }, ctx.enrolment, failing, [...ctx.rolesAsserted], purpose);
+      // The observer relationship is REPORTED on every path the settlement rule ran, including the
+      // rejecting ones — which is where an auditor most wants it, because a rejected artifact is still
+      // an artifact somebody signed. Unset means the rule did not run.
+      const settlementObserver = ctx.settlementObserver ?? "NOT_EVALUATED";
+      return result(verdict, bundle.outcome, steps, ctx.warnings, { integrity, authorization: ctx.authorization, settlement, settlementObserver }, ctx.enrolment, failing, [...ctx.rolesAsserted], purpose);
     }
   }
 
@@ -607,7 +614,7 @@ export function verifyEvidence(bundleInput: Uint8Array | string, opts: VerifyEvi
     // `NO_EXECUTION_BINDING` says the true thing about what this verdict rests on, and the verdict
     // word means exactly what it meant before this field existed. This value does NOT depend on
     // `purpose` — an audit run and an authorization run examine the same settlement evidence.
-    { integrity: "INTACT", authorization: ctx.authorization, settlement: "NO_EXECUTION_BINDING" },
+    { integrity: "INTACT", authorization: ctx.authorization, settlement: "NO_EXECUTION_BINDING", settlementObserver: ctx.settlementObserver ?? "NOT_EVALUATED" },
     // REPORTED, not hardcoded, and the difference is a safety property rather than tidiness. Every
     // ENROLLED path terminates inside step 10 or 11 today, so a completed run genuinely did not ask
     // — but writing `NOT_EVALUATED` here would state "nobody asked" for ANY future rule that let an

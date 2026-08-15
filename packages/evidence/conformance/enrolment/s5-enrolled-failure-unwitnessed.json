@@ -3,6 +3,7 @@
   "expectVerdict": "INCONCLUSIVE",
   "expectStep": "STEP_11_EXECUTION_FAILED",
   "expectCode": "E_NON_DISPATCH_UNWITNESSED",
+  "expectExit": 6,
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {

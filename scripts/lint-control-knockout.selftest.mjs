@@ -32,7 +32,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, privateFallbackRoot, ensurePrivateDir, userCacheHome, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs } from "./lib/knockout-runner.mjs";
+import { runKnockout, observeSuite, VERDICT, PASSING, suiteEmittedTestMarkers, failingTestIds, partitionByDependency, validateKnockoutRegistry, createBuildStateGuard, listBuildArtifacts, gitDirtyPaths, gitWorkTreeState, isGitWorkTree, privateFallbackRoot, ensurePrivateDir, userCacheHome, probeProcess, classifyHolder, unsupportedArtifactRoots, typescriptProjectDirs, shardOf, selectControls, verifyExecutionResidue } from "./lib/knockout-runner.mjs";
 
 /**
  * EVERY fixture this file writes lives under one private workspace, and that workspace is NOT the
@@ -1182,6 +1182,253 @@ check("gitWorkTreeState is THREE-valued; only a probe that RAN may answer 'no'",
       "git failed inside a work tree and the guard reported it as 'nothing was dirty'");
   } finally {
     fs.chmodSync(indexPath, 0o644);
+  }
+});
+
+// ── THE SHARD PARTITION — the one way a sharded gate can fail dangerously ──────────────────────
+//
+// A sharded sweep that DROPS a control and stays green is worse than the slow sweep it replaced,
+// because it reports the same coverage over less work. These arms measure the partition against the
+// REAL registry rather than a fixture: every control lands in exactly one shard, the union across
+// shards is the whole registry, and the mapping does not move when unrelated entries are added.
+/**
+ * ASK THE REAL RUNNER WHAT IT WOULD MEASURE.
+ *
+ * `--print-selection` answers before the state guard and before any baseline, so this costs
+ * milliseconds. It is the only way this file can see a filter added anywhere in that script rather
+ * than only in the selector it imports.
+ */
+function realSelection(...args) {
+  const out = execFileSync(process.execPath, [path.join(REPO, "scripts", "lint-control-knockout.mjs"), "--print-selection", ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  return JSON.parse(out);
+}
+
+check("shard partition: every control lands in exactly one shard, for every shard count", () => {
+  // The registry ids come from the RUNNER ITSELF (`--print-selection`), not from a regex over its
+  // source. The old arm re-parsed the file and re-implemented the split, so it compared one ideal
+  // partition with another ideal partition and never looked at the real one.
+  const ids = realSelection().registry;
+  assert.ok(ids.length >= 100, `expected the real registry to be large, the runner reported ${ids.length} ids`);
+  assert.equal(new Set(ids).size, ids.length, "the registry has duplicate ids — sharding cannot fix that");
+
+  for (const total of [1, 2, 3, 4, 5, 6, 8, 12]) {
+    const union = new Set();
+    const perShard = new Map();
+    for (let index = 1; index <= total; index += 1) {
+      const slice = ids.filter((id) => shardOf(id, total) === index);
+      perShard.set(index, slice);
+      for (const id of slice) {
+        assert.equal(union.has(id), false, `${id} appears in more than one shard at n=${total}`);
+        union.add(id);
+      }
+    }
+    assert.equal(
+      union.size, ids.length,
+      `n=${total}: ${ids.length - union.size} control(s) belong to NO shard. A sharded gate that drops ` +
+        `controls reports the coverage of the sweep it replaced over less work than it does.`,
+    );
+    // …and no shard may be empty at a count a workflow would plausibly use, or a job would exit
+    // having measured nothing while looking green.
+    if (total <= 8) {
+      for (const [index, slice] of perShard) {
+        assert.ok(slice.length > 0, `n=${total}: shard ${index} is empty`);
+      }
+    }
+  }
+});
+
+check("shard assignment depends on the ID ALONE — inserting entries does not re-shard the rest", () => {
+  // The reason it is not the array index. Under index sharding, adding one entry moves every control
+  // below it to a different job, so a flake cannot be attributed and a bisect crosses jobs.
+  const before = ["alpha-control", "beta-control", "gamma-control"];
+  const after = ["a-new-one", ...before, "another-new-one"];
+  for (const id of before) {
+    assert.equal(shardOf(id, 4), shardOf(id, 4), "the function is not deterministic");
+    assert.ok(after.includes(id));
+  }
+  const map1 = new Map(before.map((id) => [id, shardOf(id, 4)]));
+  const map2 = new Map(after.filter((id) => before.includes(id)).map((id) => [id, shardOf(id, 4)]));
+  assert.deepEqual([...map1], [...map2], "adding entries changed an existing control's shard");
+});
+
+/* ─── THE ARM THE OLD ONES WERE MISSING ────────────────────────────────────────────────────────
+ * Everything above measures the PARTITION FUNCTION. None of it measured the SELECTOR — the code
+ * that decides which controls a run actually arms. Those were two different implementations: the
+ * runner filtered `KNOCKOUTS` inline and this file re-derived an ideal split from a regex over the
+ * runner's source, so they could disagree completely and this file would not notice.
+ *
+ * Measured by a cross-family reviewer, and it is the reason these arms exist: excluding a live
+ * control from every shard IN THE RUNNER left this whole file GREEN, while the workflow comment
+ * promised that dropping a control was "unrepresentable". It was merely unlikely.
+ *
+ * Two arms, because there are two ways to lose a control and a shared function only closes one:
+ *   1. the selector itself is wrong          → driven directly, below;
+ *   2. something else in the runner drops it → the runner is ASKED, per shard, and the union of
+ *                                              what it says it would run must be the whole registry.
+ */
+check("the SELECTOR is one implementation, and it partitions the real registry", () => {
+  const registry = realSelection().registry.map((id) => ({ id, file: "x", find: "y", replace: "z", suite: ["a", "b", []] }));
+  for (const total of [1, 4, 12]) {
+    const union = new Set();
+    for (let index = 1; index <= total; index += 1) {
+      const { selected, empty } = selectControls({ registry, repoRoot: REPO, probes: {}, shard: { index, total } });
+      assert.equal(empty, null, `n=${total} shard ${index}: the selector called its own slice empty`);
+      for (const k of selected) {
+        assert.equal(union.has(k.id), false, `${k.id} was selected by more than one shard at n=${total}`);
+        union.add(k.id);
+      }
+    }
+    assert.equal(union.size, registry.length, `n=${total}: the SELECTOR dropped ${registry.length - union.size} control(s)`);
+  }
+  // …and it refuses a shard it cannot partition, rather than answering with slice 1.
+  assert.throws(() => selectControls({ registry, repoRoot: REPO, probes: {}, shard: { index: 5, total: 4 } }), /does not exist in a partition/);
+  assert.throws(() => selectControls({ registry, repoRoot: REPO, probes: {}, shard: { index: 1, total: 0 } }), /positive integer/);
+  // An empty slice is a REASON, never a silent pass — the property the workflow's four jobs rest on.
+  const { empty } = selectControls({ registry: registry.slice(0, 1), repoRoot: REPO, probes: {}, shard: { index: 2, total: 40 } });
+  assert.match(String(empty), /EMPTY/, "a slice that measures nothing did not report itself empty");
+});
+
+check("EVERY control the runner would run: the union over the real shards IS the registry", () => {
+  // The blocking check the workflow's claim actually needs, asked of the real process. A control
+  // that falls out of every shard — through the selector, through a stray filter, through anything
+  // — is either DECLARED setup-failed or it is a control this gate silently stopped measuring.
+  const base = realSelection();
+  assert.ok(base.registry.length >= 100, `the runner reported only ${base.registry.length} controls`);
+
+  const TOTAL = 4; // the shard count ci.yml runs
+  const union = new Set();
+  for (let index = 1; index <= TOTAL; index += 1) {
+    const shard = realSelection("--shard", `${index}/${TOTAL}`);
+    assert.deepEqual(shard.registry, base.registry, `shard ${index} reported a different registry from the unsharded run`);
+    for (const id of shard.selected) {
+      assert.equal(union.has(id), false, `${id} is armed by more than one shard — two jobs would measure it and the sweep would report it twice`);
+      union.add(id);
+    }
+  }
+
+  const declaredMissing = new Set(base.setupFailed);
+  const unmeasured = base.registry.filter((id) => !union.has(id) && !declaredMissing.has(id));
+  assert.deepEqual(
+    unmeasured, [],
+    `these controls are in the validated registry, are NOT declared SETUP_FAILED, and NO shard would ` +
+      `run them: ${unmeasured.join(", ")}. Every one is a security control this gate reports as covered ` +
+      `and does not measure. That is the single dangerous failure of a sharded sweep, and ci.yml calls ` +
+      `it unrepresentable — so it is measured here against the runner's own answer, not against a ` +
+      `partition this file re-derives.`,
+  );
+  // ANTI-VACUITY: the union is not trivially everything because nothing was excluded. The declared
+  // exclusions are real and are accounted for separately, and the shards really did divide the work.
+  assert.equal(union.size + declaredMissing.size, base.registry.length, "the accounting does not close");
+  assert.ok(union.size >= 100, `only ${union.size} control(s) are armed across all four shards`);
+});
+
+/* ─── ZERO WORK IS NEVER SUCCESS ────────────────────────────────────────────────────────────────
+ * Three ways this gate reported a pass over an experiment that did not happen. All three were found
+ * by an adversarial reviewer, and all three exited 0 while printing `proven load-bearing 0/0`.
+ *
+ * The shared law: "the check could not run" and "the check passed" must never share an exit code. */
+
+/** Run the real gate and return `{ status, out }` without throwing on a non-zero exit. */
+function realGate(...args) {
+  try {
+    const out = execFileSync(process.execPath, [path.join(REPO, "scripts", "lint-control-knockout.mjs"), ...args], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return { status: 0, out };
+  } catch (e) {
+    return { status: e.status ?? 1, out: `${e.stdout ?? ""}${e.stderr ?? ""}` };
+  }
+}
+
+check("an --only id that matches NO control is a hard refusal, not a pass over zero work", () => {
+  // The rename case, and it is the realistic one: a workflow keeps naming a control that was
+  // renamed, nothing runs, and the job stays green forever.
+  const r = realGate("--only", "definitely-not-a-real-control-xyz");
+  assert.notEqual(r.status, 0, `an unknown --only id exited ${r.status}. Output:\n${r.out.slice(0, 400)}`);
+  assert.match(r.out, /NO control with that id exists/, "the refusal does not say WHY, so the operator cannot tell a typo from a deletion");
+
+  // ANTI-VACUITY: a REAL id still runs and still passes, so the guard refuses the right thing.
+  const known = fs.readFileSync(path.join(REPO, "scripts", "knockout-control-manifest.txt"), "utf8")
+    .split("\n").filter((l) => l && !l.startsWith("#"));
+  assert.ok(known.length >= 100, `the control manifest looks wrong: ${known.length} ids`);
+  const ok = realGate("--only", known.find((id) => id.startsWith("settlement-observer")) ?? known[0]);
+  assert.equal(ok.status, 0, `a REAL control id failed: ${ok.out.slice(0, 400)}`);
+  assert.match(ok.out, /proven load-bearing 1\/1/, "a real single-control run no longer reports one measured control");
+});
+
+check("the REGISTRY itself is pinned — deleting a control is red and names it", () => {
+  // The self-test used to derive its expectation FROM the runner and guard it with `length >= 100`.
+  // That is a floor, not a check: deleting a control left this file completely green. The
+  // expectation now lives in a committed manifest, so a deletion cannot be invisible.
+  const manifest = fs.readFileSync(path.join(REPO, "scripts", "knockout-control-manifest.txt"), "utf8")
+    .split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"));
+  const live = realSelection().registry;
+
+  const missing = manifest.filter((id) => !live.includes(id));
+  const added = live.filter((id) => !manifest.includes(id));
+  assert.deepEqual(
+    missing, [],
+    `these controls are in the committed manifest and NOT in the registry — they were deleted or ` +
+      `renamed: ${missing.join(", ")}. A control that disappears must be a visible edit to ` +
+      `scripts/knockout-control-manifest.txt, never a silent shrink.`,
+  );
+  assert.deepEqual(
+    added, [],
+    `these controls are in the registry and not in the manifest: ${added.join(", ")}. ` +
+      `Run: node scripts/lint-control-knockout.mjs --write-control-manifest`,
+  );
+  assert.equal(manifest.length, new Set(manifest).size, "the manifest has duplicate ids");
+});
+
+check("EXECUTION IS PROVEN BY RESIDUE — a fabricated result row is not a result", () => {
+  // ⚠ A CONTROL MUST NOT BE THE SOURCE OF ITS OWN EVIDENCE, and this arm is the one that was.
+  // It used to REGEX THE RUNNER'S SOURCE for the strings "executedIds" and "SELECTED BUT NOT RUN" —
+  // a test that the words exist, not that the property holds. A reviewer pushed a fabricated
+  // DETECTOR_TRIGGERED row, ran no mutation, and got `proven load-bearing 1/1` while this file
+  // stayed green.
+  //
+  // `verifyExecutionResidue` is now the ONE implementation, used by the gate and exercised here on
+  // real and forged rows. A row counts as executed only if it left residue: changed bytes, a real
+  // child exit status, and a file restored to bytes that still match the disk.
+
+  // A REAL arm, run through the real runner against the fixture suite, must satisfy it.
+  const real = runKnockout({
+    root,
+    entry: { ...entryBase, kind: "tests", find: MARKER, replace: "const guard = true;" },
+    baseline,
+    timeoutMs: 60_000,
+  });
+  assert.equal(real.verdict, VERDICT.DETECTOR_TRIGGERED, `the fixture arm did not kill: ${real.detail}`);
+  assert.equal(
+    verifyExecutionResidue(real, root), null,
+    `a genuine knockout was rejected as having no residue: ${verifyExecutionResidue(real, root)}`,
+  );
+
+  // THE FORGERY, verbatim in shape: a passing verdict with nothing behind it.
+  const forged = { id: "forged", control: "x", verdict: VERDICT.DETECTOR_TRIGGERED, detail: "QA forged execution record: no mutation arm ran", restored: true };
+  assert.match(String(verifyExecutionResidue(forged, root)), /no pre-mutation file hashes/, "a bare fabricated row was accepted as an execution");
+
+  // …and the near-misses, each of which is a different way of half-faking it.
+  const almost = { ...real };
+  assert.equal(verifyExecutionResidue({ ...almost, hashMutatedByFile: undefined }, root) !== null, true, "a row with no mutant bytes was accepted");
+  assert.equal(verifyExecutionResidue({ ...almost, mutatedExit: undefined, mutatedSignal: null }, root) !== null, true, "a row with no child exit status was accepted");
+  assert.equal(
+    verifyExecutionResidue({ ...almost, hashBefore: Object.fromEntries(Object.keys(almost.hashBefore).map((f) => [f, "0".repeat(64)])) }, root) !== null,
+    true, "a row whose recorded pre-mutation hash does not match the file on disk was accepted",
+  );
+  // The mutant hash must actually DIFFER from the original, or nothing was mutated.
+  assert.equal(
+    verifyExecutionResidue({ ...almost, hashMutatedByFile: { ...almost.hashBefore } }, root) !== null,
+    true, "a row whose 'mutant' bytes equal the original was accepted as an experiment",
+  );
+});
+
+check("shard assignment refuses inputs it cannot partition", () => {
+  // A total that is not a positive integer, or a missing id, must THROW rather than answer 1 — an
+  // answer here is a control quietly assigned to the first job on every run.
+  for (const bad of [0, -1, 1.5, NaN, "4", null, undefined]) {
+    assert.throws(() => shardOf("some-control", bad), /shard total/, `shardOf accepted total=${String(bad)}`);
+  }
+  for (const bad of ["", null, undefined, 7]) {
+    assert.throws(() => shardOf(bad, 4), /shard id/, `shardOf accepted id=${String(bad)}`);
   }
 });
 

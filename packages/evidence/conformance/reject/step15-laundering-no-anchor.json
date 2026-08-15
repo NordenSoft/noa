@@ -3,6 +3,7 @@
   "expectVerdict": "INCONCLUSIVE",
   "expectStep": "STEP_15_NEGATIVE_OUTCOME_PRINCIPLE",
   "expectCode": "E_INCONCLUSIVE_NO_CHECKPOINT",
+  "expectExit": 3,
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {

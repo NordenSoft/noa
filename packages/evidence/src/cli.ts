@@ -11,10 +11,15 @@
  *   4  UNVERIFIED                               (no external trust root / checkpoint keyring supplied, F7a)
  *   5  usage / IO error
  *   6  INCONCLUSIVE                             (the settlement question was asked and not answered)
- *      DEFINED, and NOT REACHABLE from this build — no rule here assigns a settlement value that
- *      produces it. The first rule that can is the one admitting a settlement artifact with no
- *      verified params preimage. Documented now so the number is reserved and a consumer can wire
- *      it; not claimed to fire.
+ *      LIVE. This entry said "DEFINED, and NOT REACHABLE from this build" long after it became
+ *      reachable: the rule it named as the first that could produce it — a settlement artifact with
+ *      no verifiable params preimage — shipped in slice I2, and 11 conformance fixtures now exit 6
+ *      at the process boundary (`test/cli-wire.test.ts` starts a real node and reads the real
+ *      status). An integrator reading the shipped source was being told NOT to expect a status this
+ *      binary really returns, which is the one direction a reserved-code note must never be wrong in.
+ *      It is MANY-TO-ONE by design — an enrolled class with no witness, a self-witnessed one, a
+ *      witness missing its coordinates, and an unverifiable-bounds settlement all land here — so the
+ *      caller that needs to know WHICH reads `failedStep`, `code` and `reason` from the JSON.
  *   7  internal invariant violation — a (verdict, enrolment, settlement) tuple the rules cannot
  *      produce reached the exit mapper. A statement about THIS VERIFIER, never about the evidence.
  *

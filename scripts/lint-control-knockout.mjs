@@ -45,19 +45,23 @@
  * taxonomy in `lib/knockout-runner.mjs`, and a kill requires a failure the CLEAN baseline did not
  * already have.
  *
- * Run:  node scripts/lint-control-knockout.mjs [--warn] [--only <id>] [--requires <tag>]
+ * Run:  node scripts/lint-control-knockout.mjs [--warn] [--only <id>] [--requires <tag>] [--shard i/n]
+ *       node scripts/lint-control-knockout.mjs --print-selection [--shard i/n]   (what it WOULD run)
  */
 import fs from "node:fs";
 import path from "node:path";
+import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import {
-  runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING, partitionByDependency,
-  buildStateGuardFor, isGitWorkTree,
+  runKnockout, observeSuite, validateKnockoutRegistry, VERDICT, PASSING,
+  buildStateGuardFor, isGitWorkTree, shardOf, selectControls, verifyExecutionResidue,
 } from "./lib/knockout-runner.mjs";
 import { DEPENDENCY_PROBES } from "./lib/phone-core-probe.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+/** The committed expectation of what the registry contains — see --write-control-manifest. */
+const CONTROL_MANIFEST = path.join(ROOT, "scripts", "knockout-control-manifest.txt");
 const WARN_ONLY = process.argv.includes("--warn");
 const onlyIdx = process.argv.indexOf("--only");
 const ONLY = onlyIdx > -1 ? process.argv[onlyIdx + 1] : null;
@@ -67,6 +71,33 @@ const ONLY = onlyIdx > -1 ? process.argv[onlyIdx + 1] : null;
 // Used by the golden-path CI job, which is the one environment where `phone-core` is present.
 const requiresIdx = process.argv.indexOf("--requires");
 const REQUIRES = requiresIdx > -1 ? process.argv[requiresIdx + 1] : null;
+// --shard i/n: run the i-th of n disjoint slices of the selection. The sweep re-runs a whole package
+// suite per arm, so it grows with the registry and it is the longest gate in the repository; at 142
+// controls a CI run was CANCELLED at its ceiling, which reports nothing at all — a truncated gate is
+// indistinguishable from a passing one unless somebody reads the log.
+//
+// SHARDING IS NOT SKIPPING, and the difference is the whole design. Every control still runs, every
+// slice still BLOCKS, and the partition is a total function of the control's id (`shardOf`) with a
+// selftest asserting that across a range of n the slices are disjoint and their union is the whole
+// registry. There is no branch a control can fall through. What a shard buys is wall-clock: n jobs
+// in parallel instead of one job serially, at the cost of re-measuring each shard's suite baselines.
+const shardIdx = process.argv.indexOf("--shard");
+const SHARD = (() => {
+  if (shardIdx === -1) return null;
+  const raw = process.argv[shardIdx + 1];
+  const m = /^([1-9][0-9]*)\/([1-9][0-9]*)$/.exec(String(raw));
+  if (!m) {
+    console.error(`--shard expects i/n with 1 <= i <= n, got ${JSON.stringify(raw)}`);
+    process.exit(1);
+  }
+  const index = Number(m[1]);
+  const total = Number(m[2]);
+  if (index > total) {
+    console.error(`--shard ${raw}: shard ${index} does not exist in a partition of ${total}`);
+    process.exit(1);
+  }
+  return { index, total };
+})();
 const PROOF_INVENTORY = JSON.parse(
   fs.readFileSync(path.join(ROOT, "scripts", "resolver-inventory.json"), "utf8"),
 ).proofs ?? {};
@@ -1422,8 +1453,8 @@ const KNOCKOUTS = [
       "early and false of one that finished; the two are the difference between an unfinished check " +
       "and an unasked question, and the result carries exactly one of them.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },",
-    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"UNCHECKED\" },",
+    find: "settlement: \"NO_EXECUTION_BINDING\", settlementObserver:",
+    replace: "settlement: \"UNCHECKED\", settlementObserver:",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
@@ -1507,8 +1538,37 @@ const KNOCKOUTS = [
       "in-process consumer can, and a verifier whose past answers its own caller can edit is not " +
       "offering a verdict. The mutation restores the shared object.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "function nothingProven(): VerdictDimensions {\n  return { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\" };\n}",
-    replace: "const SHARED_NOTHING_PROVEN: VerdictDimensions = { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\" };\nfunction nothingProven(): VerdictDimensions {\n  return SHARED_NOTHING_PROVEN;\n}",
+    find: "  return { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\", settlementObserver: \"NOT_EVALUATED\" };\n}",
+    replace: "  return SHARED_NOTHING_PROVEN;\n}\nconst SHARED_NOTHING_PROVEN: VerdictDimensions = { integrity: \"BROKEN\", authorization: \"UNCHECKED\", settlement: \"UNCHECKED\", settlementObserver: \"NOT_EVALUATED\" };",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-observer-relationship-is-carried-out",
+    control:
+      "The reconciler's observer-to-execution-signer relationship reaches the RESULT. It was derived " +
+      "on every call and read NOWHERE in packages/evidence, so a settlement witnessed by the " +
+      "execution signer's own key rode a VALID_FULL_CHAIN with nothing in the result saying so — the " +
+      "one fact about a witness an auditor most needs, and the one the verdict did not carry. The " +
+      "mutation hardcodes the relationship to UNKNOWN, which is the shape the defect had: a field " +
+      "that is present, plausible, and constant.",
+    file: "packages/evidence/src/steps.ts",
+    find: "  ctx.settlementObserver = observerRelationshipOf(r.observerRelationship);",
+    replace: "  ctx.settlementObserver = \"UNKNOWN\";",
+    kind: "tests",
+    suite: ["packages/evidence", "npm", ["test"]],
+  },
+  {
+    id: "settlement-reconciler-warnings-are-not-discarded",
+    control:
+      "The reconciler's warnings are carried into the result instead of dropped. " +
+      "SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER and SETTLEMENT_OVER_RAW_MODE_HOLD were both " +
+      "computed and both thrown away. They never become failures — that is the reconciler's own rule " +
+      "and it still holds — but a warning nobody can read is a warning that was not issued. The " +
+      "mutation drops them again.",
+    file: "packages/evidence/src/steps.ts",
+    find: "  for (const w of settlementWarningsOf(r.warnings)) ctx.warnings.push(w);",
+    replace: "",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
@@ -1555,8 +1615,8 @@ const KNOCKOUTS = [
       "because the corpus runner never passes `purpose`: it was invisible to every fixture-driven " +
       "assertion, which is why the behavioural two-run pin exists.",
     file: "packages/evidence/src/verify-evidence.ts",
-    find: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: \"NO_EXECUTION_BINDING\" },\n    // REPORTED, not hardcoded",
-    replace: "    { integrity: \"INTACT\", authorization: ctx.authorization, settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\" },\n    // REPORTED, not hardcoded",
+    find: "settlement: \"NO_EXECUTION_BINDING\", settlementObserver: ctx.settlementObserver ?? \"NOT_EVALUATED\" },",
+    replace: "settlement: purpose === \"authorize\" ? \"ATTESTED_UNVERIFIED\" : \"NO_EXECUTION_BINDING\", settlementObserver: ctx.settlementObserver ?? \"NOT_EVALUATED\" },",
     kind: "tests",
     suite: ["packages/evidence", "npm", ["test"]],
   },
@@ -2081,25 +2141,97 @@ for (const k of KNOCKOUTS) {
 // The exclusion is DECLARED (`requires: [...]`), never inferred from the failure shape: e2e-demo's
 // poisoned baseline is "exit 1 with 3 named failures", the same shape as `packages/gate`'s
 // legitimate owner-deferred red baseline above. A runner that guessed would excuse real failures.
-const { runnable: DEPS_OK, setupFailed: DEPS_MISSING } = partitionByDependency(
-  KNOCKOUTS, ROOT, DEPENDENCY_PROBES,
-);
-const selected = ONLY
-  ? DEPS_OK.filter((k) => k.id === ONLY)
-  : REQUIRES
-    ? DEPS_OK.filter((k) => (k.requires ?? []).includes(REQUIRES))
-    : DEPS_OK;
-if (REQUIRES && selected.length === 0) {
-  // No verdict is not a pass (KURAL 29): an armed job whose whole selection fell into
-  // SETUP_FAILED — or matched nothing — must refuse loudly, not exit 0 having measured nothing.
-  const declared = KNOCKOUTS.filter((k) => (k.requires ?? []).includes(REQUIRES));
-  const setupFailed = DEPS_MISSING.filter((m) => declared.some((k) => k.id === m.id));
-  console.error(
-    `--requires ${REQUIRES}: 0 runnable entries selected ` +
-    `(${declared.length} declared, ${setupFailed.length} SETUP_FAILED). ` +
-    `The experiment did not happen; refusing to report a pass.`,
-  );
+//
+// THE SELECTION IS ONE FUNCTION, and it lives in `lib/knockout-runner.mjs` so the self-test can
+// drive the SAME code. It used to be three inline `.filter()` calls here while the self-test
+// re-parsed this file with a regex and re-implemented the ideal partition with `shardOf`. That is a
+// test of a re-implementation: a reviewer excluded a live control from every shard HERE and the
+// self-test stayed green, against the workflow's promise that dropping a control is unrepresentable.
+const { selected, chosen, setupFailed: DEPS_MISSING, empty: EMPTY_SELECTION } = selectControls({
+  registry: KNOCKOUTS, repoRoot: ROOT, probes: DEPENDENCY_PROBES,
+  only: ONLY, requires: REQUIRES, shard: SHARD,
+});
+if (EMPTY_SELECTION) {
+  // NO VERDICT IS NOT A PASS, applied to the partition itself. An empty slice means n exceeds the
+  // selection, which is an operator error rather than a clean run: exiting 0 there would let a
+  // workflow declare five green shards over a four-control selection. Same for a `--requires` job
+  // whose whole selection fell into SETUP_FAILED — it must refuse loudly, not exit 0 having
+  // measured nothing.
+  console.error(EMPTY_SELECTION);
   process.exit(1);
+}
+
+// ── --print-selection: WHAT THIS PROCESS WOULD MEASURE, IN MACHINE-READABLE FORM ───────────────
+//
+// The other half of the fix above, and the one that closes the gap a shared function alone leaves:
+// a filter added ANYWHERE in this file, after the selector returns, would still be invisible to a
+// self-test that only calls the selector. So the real process is asked what it really chose.
+//
+// The self-test spawns this script once per shard with this flag and asserts that the union of the
+// slices, plus the DECLARED setup-failed exclusions, is the whole validated registry. A control
+// that vanishes from every shard and is not declared missing turns that check red and names itself.
+//
+// It exits BEFORE the state guard and before any baseline: this must be answerable without owning
+// the tree or running a suite, or the check it exists for would cost forty minutes.
+// `--write-control-manifest` regenerates the committed expectation the self-test compares against.
+// Adding or removing a control is a visible edit to that file, which is the whole mechanism.
+if (process.argv.includes("--write-control-manifest")) {
+  // ⚠ SAME LAW AS THE SECURITY RATCHET: a control must not be able to lower its own bar.
+  //
+  // Deleting a registry entry was RED — and deleting it and running THIS command was green at 143
+  // controls. "The manifest diff is visible in review" is not a control; it is a hope about
+  // attention. Adding controls is the normal operation. REMOVING one requires a separately named
+  // flag with a written reason, because a security control disappearing is a decision, never a
+  // side effect of regenerating a file.
+  const prior = fs.existsSync(CONTROL_MANIFEST)
+    ? fs.readFileSync(CONTROL_MANIFEST, "utf8").split("\n").map((l) => l.trim()).filter((l) => l && !l.startsWith("#"))
+    : [];
+  const live = KNOCKOUTS.map((k) => k.id);
+  const removed = prior.filter((id) => !live.includes(id));
+  const overrideArg = process.argv.find((a) => a.startsWith("--allow-control-removal="));
+  const justification = overrideArg ? overrideArg.slice("--allow-control-removal=".length).trim() : "";
+
+  if (removed.length > 0 && justification.length < 12) {
+    console.error(
+      `\nREFUSING TO SHRINK THE CONTROL MANIFEST.\n\n` +
+      `  ${removed.length} control(s) would be REMOVED:\n` +
+      removed.map((id) => `    ${id}`).join("\n") +
+      `\n\n  Every one of these is a security control that currently has a proof it is load-bearing.\n` +
+      `  Regenerating the manifest is how a deletion becomes invisible — the gate then measures a\n` +
+      `  smaller set and reports full coverage over it.\n\n` +
+      `  Restore the entry, or record a deliberate removal with a written reason:\n` +
+      `    node scripts/lint-control-knockout.mjs --write-control-manifest \\\n` +
+      `      --allow-control-removal="why this control no longer needs to exist"\n`,
+    );
+    process.exit(1);
+  }
+
+  const header = fs.readFileSync(CONTROL_MANIFEST, "utf8").split("\n").filter((l) => l.startsWith("#")).join("\n");
+  fs.writeFileSync(CONTROL_MANIFEST, `${header}\n${live.slice().sort().join("\n")}\n`);
+  console.log(`wrote ${live.length} control id(s) to ${path.relative(ROOT, CONTROL_MANIFEST)}`);
+  if (removed.length > 0) {
+    console.log(`\n⚠ DELIBERATE REMOVAL recorded for ${removed.length} control(s): ${removed.join(", ")}`);
+    console.log(`  justification: ${justification}`);
+  }
+  process.exit(0);
+}
+
+if (process.argv.includes("--print-selection")) {
+  process.stdout.write(JSON.stringify({
+    registry: KNOCKOUTS.map((k) => k.id),
+    setupFailed: DEPS_MISSING.map((m) => m.id),
+    chosen: chosen.map((k) => k.id),
+    selected: selected.map((k) => k.id),
+    shard: SHARD ? { index: SHARD.index, total: SHARD.total } : null,
+  }) + "\n");
+  process.exit(0);
+}
+
+if (SHARD) {
+  console.log(
+    `shard ${SHARD.index}/${SHARD.total}: ${selected.length} of ${chosen.length} selected control(s). ` +
+    `Every control is in exactly one shard; the other shards are separate, BLOCKING jobs.\n`,
+  );
 }
 
 // ── A RUN THAT DIED MID-ARM IS REPAIRED BEFORE ANYTHING IS MEASURED ────────────────────────────
@@ -2316,25 +2448,33 @@ for (const r of results) {
   }
 }
 
-const passed = results.filter((r) => PASSING.has(r.verdict));
+// A pass counts ONLY with execution residue behind it — see executionProof below. A row that
+// claims a kill and cannot show changed bytes plus a real child exit status is not a result.
+const passed = results.filter((r) => PASSING.has(r.verdict) && verifyExecutionResidue(r, ROOT) === null);
 console.log(`\nproven load-bearing ${passed.length}/${results.length}`);
 
 // ── WHAT WAS NOT MEASURED, SAID OUT LOUD ───────────────────────────────────────────────────────
 // A silent exclusion is how a gate comes to report full coverage over a shrinking set. These
 // entries are absent from BOTH sides of the ratio above — a control nobody asked did not fail to
 // prove itself — so the only place their absence can be seen is here.
-if (DEPS_MISSING.length > 0 && !ONLY) {
+// SHARD-SCOPED, so four jobs do not each claim the SAME ten exclusions and a reader does not read
+// forty unmeasured controls where there are ten. An excluded control belongs to exactly one shard,
+// like every other control.
+const DEPS_MISSING_HERE = SHARD
+  ? DEPS_MISSING.filter((e) => shardOf(e.id, SHARD.total) === SHARD.index)
+  : DEPS_MISSING;
+if (DEPS_MISSING_HERE.length > 0 && !ONLY) {
   const byDep = new Map();
-  for (const e of DEPS_MISSING) {
+  for (const e of DEPS_MISSING_HERE) {
     for (const d of e.missing) byDep.set(d, (byDep.get(d) ?? 0) + 1);
   }
   const summary = [...byDep].map(([d, n]) => `${n} × ${d}`).join(", ");
   console.log(
-    `\n⚠ NOT MEASURED — ${DEPS_MISSING.length} control(s) were not run because a declared ` +
+    `\n⚠ NOT MEASURED — ${DEPS_MISSING_HERE.length} control(s) were not run because a declared ` +
     `dependency is absent (${summary}).`,
   );
   console.log(`  These are neither kills nor findings: the experiment did not happen.`);
-  for (const e of DEPS_MISSING) console.log(`  ${VERDICT.SETUP_FAILED.padEnd(26)} ${e.id} — needs ${e.missing.join(", ")}`);
+  for (const e of DEPS_MISSING_HERE) console.log(`  ${VERDICT.SETUP_FAILED.padEnd(26)} ${e.id} — needs ${e.missing.join(", ")}`);
   console.log(`  To measure them, make the dependency reachable (phone-core: set NOA_MOBILE_SRC, or`);
   console.log(`  check out NordenSoft/noa-mobile beside this repo / inside the workspace).`);
 }
@@ -2377,14 +2517,56 @@ if (residue) {
 }
 for (const [key] of unmeasurable) errors.push(`  BASELINE UNMEASURABLE      ${JSON.parse(key)[0]}`);
 
-// NO VERDICT IS NOT A PASS. Excusing an unmeasurable control is only honest while the rest of the
-// gate still measures something; a run where EVERY entry was excluded has produced no security
-// result at all, and exiting 0 there would report the strongest possible coverage from the weakest
-// possible run. "The check could not run" and "the check passed" must never share an exit code.
-if (results.length === 0 && DEPS_MISSING.length > 0) {
+// ── SELECTED MUST EQUAL EXECUTED ───────────────────────────────────────────────────────────────
+//
+// NO VERDICT IS NOT A PASS, and the two guards below are the general form of it. The first version
+// of this block only fired when `results.length === 0 && DEPS_MISSING_HERE.length > 0` — a
+// zero-work check that required a specific EXPLANATION for the zero work. An adversarial reviewer
+// walked straight through it: adding one `continue` to the execution loop above dropped a selected
+// control, and the targeted gate printed `L4 control knockout: 0 controls`, `proven load-bearing
+// 0/0`, and exited 0.
+//
+// So the ratio is now audited against the SELECTION, not merely against itself. Everything the
+// selector chose must appear in the results, by id; anything missing is named. A control that is
+// selected and then silently skipped is the same defect as a control dropped from a shard, one
+// stage later, and it gets the same answer.
+const proofFailures = new Map();
+const executedIds = new Set();
+for (const r of results) {
+  const why = verifyExecutionResidue(r, ROOT);
+  if (why === null) executedIds.add(r.id);
+  else proofFailures.set(r.id, why);
+}
+// A row that CLAIMS a pass without residue is the forgery this exists to catch, and it is reported
+// separately from a control that was simply never reached.
+const forged = results.filter((r) => PASSING.has(r.verdict) && proofFailures.has(r.id));
+if (forged.length > 0) {
   errors.push(
-    `  NOTHING MEASURED           all ${DEPS_MISSING.length} control(s) were excluded for absent ` +
-    `dependencies, so this run proves nothing. A gate that measures zero controls is not green.`,
+    `  NO EXECUTION RESIDUE       ${forged.length} control(s) report a PASSING verdict with no evidence that any ` +
+    `experiment ran:\n` +
+    forged.map((r) => `      ${r.id} — ${proofFailures.get(r.id)}`).join("\n") +
+    `\n      A knockout is proven by what it left behind — changed bytes, a real child exit status, a ` +
+    `restored file — never by a row the runner appended about itself.`,
+  );
+}
+const skipped = selected.filter((k) => !executedIds.has(k.id) && !forged.some((f) => f.id === k.id)).map((k) => k.id);
+if (skipped.length > 0 && !aborted) {
+  errors.push(
+    `  SELECTED BUT NOT RUN       ${skipped.length} of ${selected.length} selected control(s) produced no ` +
+    `verdict:\n` + skipped.map((id) => `      ${id}`).join("\n") +
+    `\n      Selection and execution must agree. A control that is chosen and then skipped is ` +
+    `unmeasured while the ratio above still reads as full coverage.`,
+  );
+}
+// And zero work is never success, whatever the reason for it — an empty registry, a filtered-out
+// selection, dependency exclusions, or a loop that ran no arms.
+if (results.length === 0) {
+  const why = DEPS_MISSING_HERE.length > 0
+    ? `all ${DEPS_MISSING_HERE.length} control(s) were excluded for absent dependencies`
+    : `the execution loop produced no verdicts at all (${selected.length} control(s) were selected)`;
+  errors.push(
+    `  NOTHING MEASURED           ${why}, so this run proves nothing. A gate that measures zero ` +
+    `controls is not green: "the check could not run" and "the check passed" must never share an exit code.`,
   );
 }
 

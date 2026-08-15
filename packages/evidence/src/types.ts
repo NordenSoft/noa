@@ -177,6 +177,12 @@ export type StepCode =
   // step 10 (EXECUTED), and only when the bundle carries a settlement artifact (present ⇒ always
   // checked). These are the artifact-plane rules R1/R2/R3.
   | "E_SETTLEMENT_BINDING" // R1 — the artifact is not a valid, bound noa.settlement-evidence/0.1
+  // R1's two NAMED reference failures. They are members of their own rather than folded into
+  // E_SETTLEMENT_BINDING because §5.3 pins one vector to each (C.4, C.5): sharing a code makes them
+  // mutually substitutable, so a bug that reports "wrong approval" for a wrong GRANT still passes
+  // both fixtures. That is the exact bucket defect the spec names for E_SETTLEMENT_BINDING.
+  | "E_SETTLEMENT_APPROVAL_REF" // R1 — authorizationReceiptHash is not this bundle's ALLOWED receipt
+  | "E_SETTLEMENT_GRANT_REF" // R1 — executionGrantHash is not this bundle's execution grant
   | "E_SETTLEMENT_POLARITY" // R1 — a determinate non-settlement status under an EXECUTED outcome
   | "E_SETTLEMENT_CORRELATION" // R3 — the recomputed D7 nonce != the artifact's correlation
   | "E_PARAMS_PREIMAGE_MISMATCH" // R2 — a SUPPLIED preimage does not hash to paramsHash / bad shape
@@ -325,6 +331,33 @@ export interface VerdictDimensions {
   authorization: "VALID_NOW" | "EXPIRED_NOW" | "NOT_YET_VALID_NOW" | "UNCHECKED";
   /** The THIRD independent question: was the effect settled, and who checked? See `SettlementDimension`. */
   settlement: SettlementDimension;
+  /**
+   * WHO the settlement observer was, RELATIVE TO the party that signed the execution grant.
+   *
+   * The reconciler has always derived this and this package never read it, so a settlement observed
+   * by the execution signer's own key was invisible in a bundle verdict unless the class happened to
+   * be enrolled — the one path where the R-16 cap turns it into a refusal. For every other bundle the
+   * relationship decided nothing and was reported nowhere, which means an auditor reading a
+   * `VALID_FULL_CHAIN` over an unenrolled artifact could not tell a self-witnessed settlement from an
+   * independently witnessed one. That is the single most load-bearing fact about a witness and it was
+   * the one fact the result did not carry.
+   *
+   *   NOT_EVALUATED           — the settlement rule did not run: no artifact, or the pipeline
+   *                             stopped first. Never "no relationship was found".
+   *   SAME_SIGNING_KEY        — the observer's key IS the execution signer's key, by kid or by the
+   *                             underlying key material under a second kid. One party attesting to
+   *                             its own effect.
+   *   SAME_ADMINISTRATIVE_PARTY — two distinct keys, both in this tenant's own root-anchored
+   *                             manifest. Reported, never suppressed, and NOT independence: separate
+   *                             keys prove only separate keys.
+   *   UNKNOWN                 — the relationship could not be established from what this verifier
+   *                             holds. Not a statement that they are independent.
+   *
+   * REPORTING ONLY. No verdict, exit code or dimension is derived from this field; the R-16 cap that
+   * DOES change an answer lives in the enrolment plane's R8 and is unchanged. A field that both
+   * reports and decides would make "warnings never become failures" untestable.
+   */
+  settlementObserver: "NOT_EVALUATED" | "SAME_SIGNING_KEY" | "SAME_ADMINISTRATIVE_PARTY" | "UNKNOWN";
 }
 
 /**

@@ -1,0 +1,14 @@
+{
+  "L10": 37,
+  "L2-adapter-core": 18,
+  "L2-mcp-proxy": 2,
+  "L2-rail-x402-proof": 1,
+  "L2-rail-x402-verifier": 11,
+  "L3-adapter-core": 4,
+  "L3-mcp-proxy": 2,
+  "L8-adapter-core": 143,
+  "L8-mcp-proxy": 37,
+  "L8-rail-x402-proof": 9,
+  "L8-rail-x402-verifier": 8,
+  "L8-tsa-anchor": 95
+}

@@ -3,6 +3,7 @@
   "expectVerdict": "UNVERIFIED",
   "expectStep": "STEP_10_EXECUTED",
   "expectCode": "E_ENROLMENT_UNVERIFIABLE",
+  "expectExit": 4,
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {

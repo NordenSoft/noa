@@ -329,6 +329,11 @@ The committed corpus is 1 ACCEPT + 33 REJECT vectors, generated from fixed seede
 every rejection is a cryptographically well-formed pair of documents failing a **semantic** rule.
 Each vector pins the substring of the refusal reason it measures.
 
+Those two numbers are **read out of the corpus by a test** (`test/action-digest.test.ts`), not kept
+in step by hand. They had already drifted once: a vector was added, the corpus was regenerated, the
+suite stayed green, and the only thing that disagreed was this paragraph — which no test read. A
+published count is a claim, and a claim is measured or it is not made.
+
 Two disciplines make the corpus mean something, both learned the hard way here:
 
 - **A rejection vector presents the digest of its OWN documents**, never some other authorization's.

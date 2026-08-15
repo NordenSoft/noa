@@ -215,8 +215,9 @@ jobs:
       - name: Say out loud what will NOT be measured
         # A silent skip is how a repository comes to believe it tests a path nobody has run since
         # the credential lapsed. This warning appears on the PR checks page, next to the green ticks
-        # it is qualifying: 6 scenarios here, plus 10 knockout controls in the `test` job that
-        # declare `requires: ["phone-core"]` and are excluded as SETUP_FAILED.
+        # it is qualifying: 6 scenarios here, plus the 10 knockout controls that declare
+        # `requires: ["phone-core"]` — everywhere else they are excluded as SETUP_FAILED, including
+        # in every shard of the `knockout` job, and this is the one environment that can measure them.
         if: steps.preflight.outputs.present != 'true'
         run: |
           echo "::warning title=Golden path NOT executed::phone core unreachable — 6 e2e scenarios and 10 knockout controls are UNMEASURED in CI. Configure the NOA_MOBILE_SSH_KEY secret (read-only deploy key on NordenSoft/noamandate-mobile) to measure them."
@@ -377,12 +378,11 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
-    # 30 -> 60 (2026-08-14). The ceiling was reached, not approached: run 31807908253 CANCELLED both
-    # legs mid-knockout, which reports nothing at all — a truncated gate is indistinguishable from a
-    # gate that passed unless someone reads the log. The knockout registry grows every slice (111 ->
-    # 142 in this one) and each control re-runs a whole package suite, so the headroom is set well
-    # above the current ~40 minutes rather than just above it. If this is reached again the answer is
-    # to SHARD the registry across jobs, never to drop controls.
+    # 30 -> 60 (2026-08-14) when the knockout sweep still ran here and CANCELLED both legs at the
+    # ceiling; the sweep moved to the sharded `knockout` job on 2026-08-15 and this job no longer
+    # carries it. The headroom stays: this job still runs the full suite twice, the cross-impl
+    # conformance proof, the r7 exploits and the verdict-differential sweep, and a CANCELLED gate
+    # reports nothing at all — which is the failure mode worth over-provisioning against.
     timeout-minutes: 60
     strategy:
       matrix:
@@ -484,6 +484,18 @@ jobs:
         # cannot reach the public surface without a human reading the change. Hand-maintained lists
         # are what H-03 was made of.
         run: npm run check:entry-points
+      - name: Canonical state document is measured, not typed (no drift)
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        # 00_CURRENT_STATE.md calls itself the measured current state and is a release blocker, so a
+        # release reviewer reads it as evidence. It went stale FOUR times while being maintained by
+        # hand. The measured sections are now generated and diff-gated like the registry above.
+        #
+        # `--with-tests` is not optional here, and its absence was a finding: the flag is what
+        # produces the per-package tallies, so without it the check reported success while explicitly
+        # saying it had looked only at the git-derived sections — an evidence tally could be changed
+        # from 448 to 1 and the gate stayed green. It runs every package suite, which is why this
+        # step sits with the other generated-artifact checks rather than in the fast path.
+        run: npm run check:current-state
       - name: Dispatch-surface enumeration (C-04 / H-02 class)
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         # Every call that hands control to code we do not own is matched from source and reconciled
@@ -549,14 +561,20 @@ jobs:
           npm --prefix packages/approval-artifacts ci && npm --prefix packages/approval-artifacts run build
           npm --prefix packages/gate ci && npm --prefix packages/gate run build
           npm run test:r7-exploits
-      - name: Install adapter-core before the knockout sweep — it mutates sources these suites import
-        # MOVED 2026-08-03, same defect as above: the knockout ran before adapter-core was installed,
-        # so 63 of its 66 controls could not even load the code they mutate. It reported findings that
-        # were import errors, not measurements — a red gate for a reason that had nothing to do with
-        # the controls it exists to prove.
+      - name: Install adapter-core — the verdict-differential sweep and its own unit tests need it
+        # MOVED 2026-08-03 for the knockout sweep, which has since moved to the `knockout` job; the
+        # step stays because the verdict-differential poison sweep and the adapter-core unit tests
+        # below both read this package's installed tree. The original lesson still applies to both:
+        # a suite that cannot LOAD the code it measures reports import errors as findings.
         run: cd packages/adapter-core && npm ci
-      - name: Install EVERY package the knockout sweep mutates — a suite that cannot run measures nothing
+      - name: Install the sibling packages this job's later steps run — a suite that cannot run measures nothing
         # ADDED 2026-08-03, and it is the same class as the adapter-core step above found one layer up.
+        #
+        # THE KNOCKOUT SWEEP NO LONGER RUNS IN THIS JOB (it moved to the sharded `knockout` job, which
+        # builds its own environment with `scripts/ci-knockout-install.mjs` — one authority, and it
+        # REFUSES if the registry mutates a package its plan does not name). This list stays for the
+        # steps below that still need these trees. The measurement that produced it is kept because it
+        # is the reason the new script refuses rather than trusts:
         #
         # The knockout registry mutates controls across ten packages and re-runs each one's suite. This
         # job installed FOUR of them (root, approval-artifacts, gate, adapter-core). The other six were
@@ -598,25 +616,17 @@ jobs:
           # here means the two cannot drift.
           npm --prefix packages/e2e-demo run build:deps
 
-      - name: L4 control knockout (every control has a test that dies without it)
-        # ONE MATRIX LEG, and the restriction is about what the experiment MEASURES, not about what it
-        # costs. A knockout deletes a SOURCE control and re-runs the suite — mutation and assertion
-        # are both source-level — so running the identical 142 mutations again under a second Node
-        # version re-answers a question nobody asked. Every control is still measured, exactly once,
-        # and the gate still BLOCKS. Nothing is skipped, excused, or made advisory.
-        #
-        # ⚠ MEASURED 2026-08-14 (run 31807908253), and this is why the condition exists at all: with
-        # the step on both legs the job hit its 30-minute ceiling and `test (20)` and `test (22)` were
-        # both CANCELLED — not failed. A cancelled gate reports NOTHING: 142 controls went unmeasured
-        # while the run merely looked slow. The registry grows every slice, so the most expensive gate
-        # in the repository was also the one most likely to be silently truncated.
-        #
-        # The product's Node 20/22 compatibility is measured by "Build + generate vectors + test"
-        # above, which runs on BOTH legs.
-        if: ${{ !cancelled() && steps.build.outcome == 'success' && matrix.node == 22 }}
-        # Slow by construction: each control is removed and its suite re-run. It runs here rather
-        # than in a fast lane precisely because "what would have caught this?" is worth the minutes.
-        run: npm run lint:knockout
+      # ── THE L4 CONTROL KNOCKOUT MOVED OUT OF THIS JOB (2026-08-15) ──────────────────────────────
+      # It now runs in the `knockout` job below, SHARDED across parallel legs. It was here, on one
+      # matrix leg, and it was the longest gate in the repository: 142 controls, each one deleting a
+      # source control and re-running that package's whole suite, about forty minutes and growing
+      # with every slice. On 2026-08-14 it reached the job ceiling and both legs were CANCELLED —
+      # which reports NOTHING. A truncated gate and a passing one are the same colour unless someone
+      # reads the log, and 142 controls went unmeasured while the run merely looked slow.
+      #
+      # The comment on this job's `timeout-minutes` said the answer was to shard the registry across
+      # jobs, never to drop controls. That is what the `knockout` job does, and the install steps
+      # above stay here because `test:r7-exploits` and the verdict-differential sweep need them too.
       # "Conformance matrix is up to date" MOVED to the `five-verifier-conformance` job (2026-08-12):
       # the generator now regenerates all FIVE columns (TS, Python, Go, Rust, C#), which needs
       # go/cargo/dotnet on PATH — only that job installs them, and this job is a 2-way `node` matrix
@@ -728,3 +738,96 @@ jobs:
           npm ci
           npm test
           npm run mock-shell
+
+  # ══════════════════════════════════════════════════════════════════════════════════════════════
+  # L4 CONTROL KNOCKOUT — SHARDED, AND SHARDING IS NOT SKIPPING
+  # ══════════════════════════════════════════════════════════════════════════════════════════════
+  #
+  # Every security control must have a test that fails when the control is REMOVED. The sweep proves
+  # that by deleting each control from its source and re-running that package's whole suite, which
+  # makes it the most expensive gate here by an order of magnitude — 142 controls, ~40 minutes, and
+  # growing with every slice. On 2026-08-14 (run 31807908253) it hit the job ceiling and BOTH matrix
+  # legs were CANCELLED. A cancelled gate reports nothing: no failure, no pass, 142 controls
+  # unmeasured, and a run that merely looked slow.
+  #
+  # THE DESIGN, and the property it is built around. `--shard i/n` runs the i-th of n DISJOINT slices
+  # of the registry. Every control still runs; every shard is its own BLOCKING job, so a red shard is
+  # a red workflow exactly as a red step was. The one way a sharded gate can fail dangerously is to
+  # drop a control and stay green, so that is made unrepresentable rather than unlikely:
+  #
+  #   • the partition is a total function of the control's ID (`shardOf`), not of its array position
+  #     — inserting an entry does not re-shard the rest, so a flake stays attributable and a bisect
+  #     does not cross jobs;
+  #   • `lint-control-knockout.selftest.mjs` asks the RUNNER, once per shard, what it would actually
+  #     arm (`--print-selection`), and asserts that the union of those answers plus the DECLARED
+  #     setup-failed exclusions is the whole validated registry. This bullet used to claim the same
+  #     property and did not have it: the selftest re-parsed the registry with a regex and
+  #     re-implemented the ideal split, so it compared one ideal partition against another and never
+  #     observed the real selector. A reviewer excluded a live control from every shard in the runner
+  #     and the selftest stayed green. There is now ONE selector (`selectControls`), driven directly
+  #     by the selftest, AND the end-to-end union check above it, which catches a drop anywhere else;
+  #   • an EMPTY shard is a hard refusal, not a clean run — otherwise five green jobs could report
+  #     coverage over a four-control selection;
+  #   • each shard prints `shard i/n: k of N selected` so the arithmetic is checkable from the log.
+  #
+  # WHAT IT COSTS, stated rather than glossed. Each shard measures the clean baseline of whichever
+  # package suites its slice happens to touch, so baselines are paid n times instead of once. That is
+  # the price of partitioning by ID rather than by package: partitioning by package would measure
+  # each baseline once and produce wildly unequal shards (one package holds 43 controls and another
+  # 33), so the longest job would still be most of the sweep — and cutting the LONGEST job is the
+  # entire point. The baselines are bounded, paid in parallel, and small beside re-running a suite
+  # once per arm, which is where the sweep actually spends its time.
+  #
+  # SHARD COUNT: 4. At 144 controls the slices are 30/43/29/42, so the longest leg is ~30% of the
+  # sweep. Raising this is a one-line change and needs no code edit; the selftest already proves the
+  # partition holds for larger n.
+  #
+  # THE TEN PHONE-CORE CONTROLS are not measured here and are not silently missing: they declare a
+  # dependency this job's environment does not have, so the runner reports them SETUP_FAILED and says
+  # so. They are measured in `e2e-demo-golden-path` (`lint:knockout --requires phone-core`), the one
+  # job whose environment contains the phone core.
+  knockout:
+    runs-on: ubuntu-latest
+    # Longest shard measured at ~30% of a ~40-minute sweep, plus ~6 minutes of installs. 30 is
+    # headroom over that, not a fit to it: a gate that is CANCELLED reports nothing at all, which is
+    # the failure this job exists to stop happening again.
+    timeout-minutes: 30
+    strategy:
+      # `fail-fast: false` so ONE red shard does not cancel the others. A cancelled sibling is an
+      # unmeasured sibling, and the whole point of this job is that no control goes unmeasured — a
+      # single failing control must not hide the state of the other three quarters of the registry.
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          # ONE Node version, and it is about what the experiment MEASURES rather than what it costs:
+          # a knockout mutates SOURCE and asserts on SOURCE, so running the identical mutations again
+          # under a second Node version re-answers a question nobody asked. The product's Node 20/22
+          # compatibility is measured by the `test` job, which runs the full suite on both.
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # The root `dist/` the sweep's first arms expect. Their own suites would build it, but the
+      # build-state guard snapshots artefacts BEFORE the first mutation and restores them after every
+      # arm — so it should be snapshotting a real build rather than an absence.
+      - run: npm run build
+      - name: Install every package the sweep mutates — a suite that cannot run measures nothing
+        # ONE AUTHORITY, and it refuses rather than drifts. This list used to live inline in the
+        # `test` job and was maintained by memory: when packages/rail-x402 joined the registry the
+        # list did not, and the gate went red for a reason that had nothing to do with any control.
+        # Sharding would have made that hazard worse, because several jobs now need the same
+        # environment. The script checks its plan against the packages the registry actually mutates
+        # and REFUSES if one is missing — because an uninstalled package's baseline is `exit 2, 0
+        # failures`, against which no mutation can make anything worse, so every control in it
+        # reports "nothing got worse" and the gate measures an environment instead of a control.
+        run: node scripts/ci-knockout-install.mjs
+      - name: L4 control knockout — shard ${{ matrix.shard }} of 4 (BLOCKING)
+        # Slow by construction: each control is removed and its suite re-run. Nothing here is
+        # skipped, excused or made advisory — the shard is a slice of the work, never a subset of
+        # the requirement.
+        run: node scripts/lint-control-knockout.selftest.mjs && node scripts/lint-control-knockout.mjs --shard ${{ matrix.shard }}/4

@@ -89,6 +89,46 @@ test("the corpus is the shape the runner expects and is non-trivial", () => {
   }
 });
 
+test("THE SPEC'S OWN COUNT IS READ FROM THE CORPUS, so it cannot drift again", () => {
+  // MEASURED, and this test exists because the drift already happened. `docs/action-digest-spec.md`
+  // stated "1 ACCEPT + 31 REJECT vectors" while the committed corpus held 1 + 32. Nobody was
+  // careless: a vector was added, the corpus regenerated, the suite stayed green, and the only thing
+  // that disagreed was a sentence in a document no test reads.
+  //
+  // A published number is a CLAIM. The rule here is that a claim is measured or it is not made, and
+  // the honest mechanical form is to compare the sentence to the artifact it describes rather than to
+  // remember to update it. The document is PARSED rather than the number hardcoded in this file,
+  // because a constant here would be the same unmeasured claim moved one directory over.
+  const spec = readFileSync(join(ROOT, "docs", "action-digest-spec.md"), "utf8");
+  const stated = /The committed corpus is (\d+) ACCEPT \+ (\d+) REJECT vectors/.exec(spec);
+  assert.ok(
+    stated,
+    "the count sentence is gone from docs/action-digest-spec.md. Restore it or update this scan — do " +
+      "not delete the test: a document that stops stating its corpus size has not become correct.",
+  );
+  const accepts = corpus.vectors.filter((v) => v.expect.ok).length;
+  const rejects = corpus.vectors.length - accepts;
+  assert.equal(
+    Number(stated![1]), accepts,
+    `docs/action-digest-spec.md claims ${stated![1]} ACCEPT vectors; the corpus holds ${accepts}`,
+  );
+  assert.equal(
+    Number(stated![2]), rejects,
+    `docs/action-digest-spec.md claims ${stated![2]} REJECT vectors; the corpus holds ${rejects}. ` +
+      `Regenerate the corpus and update the sentence in the same commit — that is what this gate is for.`,
+  );
+});
+
+test("every corpus vector has a UNIQUE name — a duplicate is a vector nobody can point at", () => {
+  // The count above is only meaningful if the things counted are distinct. A duplicated name also
+  // makes a failure unattributable: two tests report the same title and a reader cannot tell which
+  // document failed.
+  const names = corpus.vectors.map((v) => v.name);
+  const seen = new Set<string>();
+  const duplicated = names.filter((n) => (seen.has(n) ? true : (seen.add(n), false)));
+  assert.deepEqual(duplicated, [], `duplicated vector names: ${duplicated.join(", ")}`);
+});
+
 for (const vec of corpus.vectors) {
   test(`action-digest/${vec.name} → ${vec.expect.ok ? "ACCEPT" : "REJECT"}`, () => {
     const res = verifyActionDigest(bytesOf(vec, "claim"), bytesOf(vec, "context"));

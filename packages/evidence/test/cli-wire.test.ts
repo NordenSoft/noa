@@ -323,6 +323,14 @@ test("WIRE: the result JSON carries both new reporting fields, always", () => {
     assert.ok(Object.prototype.hasOwnProperty.call(dims, "settlement"), `${c.id}: no dimensions.settlement field`);
     assert.ok(Object.prototype.hasOwnProperty.call(dims, "integrity"), `${c.id}: the pre-existing dimensions are gone`);
     assert.ok(Object.prototype.hasOwnProperty.call(dims, "authorization"), `${c.id}: the pre-existing dimensions are gone`);
+    // WHO WITNESSED THE PAYMENT, at the process boundary. A field a library caller can read and a
+    // shell caller cannot is not a reporting surface — and the shell is where a verdict gets acted
+    // on. Present on EVERY run, including the ones where the answer is NOT_EVALUATED, because a field
+    // that appears only when it is interesting cannot be relied on by a parser.
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(dims, "settlementObserver"),
+      `${c.id}: the printed result does not say who observed the settlement`,
+    );
   }
 });
 

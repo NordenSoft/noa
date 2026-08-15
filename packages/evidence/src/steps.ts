@@ -18,7 +18,7 @@ import { verifyChain, verifyCheckpoint, frozenSet, intrinsics, type SigningKeyLi
 // evidence pipeline authenticates the artifact FIRST (verifyArtifact, layer 2) and then hands the
 // reconciler the bundle documents; a positive reconciler result over an un-authenticated artifact
 // means nothing (the reconciler's own R-12b), so the verifyArtifact gate below is load-bearing.
-import { reconcileSettlementEvidence } from "noa-rail-x402";
+import { reconcileSettlementEvidence, SETTLEMENT_WARNINGS } from "noa-rail-x402";
 import { encodeDocument } from "./bytes.js";
 
 // PRISTINE DECISIONS (review #6, C1). Every membership/search below is a verdict input; none of them
@@ -111,6 +111,16 @@ export interface Ctx {
    * Absent means no artifact was accepted, which R8 reads as the absence it is.
    */
   settlementFacts?: SettlementFacts;
+  /**
+   * S5 — the observer↔execution-signer relationship the reconciler derived, recorded for REPORTING
+   * on every path the settlement rule ran, including the ones that reject. Left unset when the rule
+   * did not run at all, which the result reads as `NOT_EVALUATED`.
+   *
+   * Separate from `settlementFacts` on purpose: that field is consumed by R8 to decide an answer and
+   * is set only for an ACCEPTED artifact, so a rejected artifact's relationship — the case where an
+   * auditor most wants to know who signed what — would never be reported through it.
+   */
+  settlementObserver?: VerdictDimensions["settlementObserver"];
   /**
    * S5 — THE THIRD EXTERNAL INPUT. The enrolment registries the operator supplied, as DOCUMENTS
    * (bytes), never bundle members: enrolment states a tenant's governance, and a producer that held
@@ -896,6 +906,51 @@ function checkGrantUnexpiredAtConsumption(ctx: Ctx, S: StepName, code: StepResul
 }
 
 /**
+ * The reconciler's relationship value, mapped through a CLOSED set.
+ *
+ * The bridge types this as `string`, and a value this verifier does not recognise must not be echoed
+ * into a result an auditor reads as a finding. `UNKNOWN` is the fail-closed answer for anything
+ * unrecognised, because `UNKNOWN` already means "this could not be established" — never
+ * "independent". Mapping rather than passing through also means a new reconciler value shows up as a
+ * conservative report instead of as an unexplained string in a published surface.
+ */
+export function observerRelationshipOf(value: unknown): VerdictDimensions["settlementObserver"] {
+  return value === "SAME_SIGNING_KEY" || value === "SAME_ADMINISTRATIVE_PARTY" ? value : "UNKNOWN";
+}
+
+/**
+ * The reconciler's warnings, carried into this verifier's own warning list.
+ *
+ * Warnings NEVER become failures — that is the reconciler's own rule (its §6, "Warnings (never
+ * rejections)") and it stays true here: nothing in the verdict, dimension or exit-code path reads
+ * this list. What changes is that they are no longer discarded, which is what
+ * `SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER` and `SETTLEMENT_OVER_RAW_MODE_HOLD` were until
+ * now.
+ *
+ * Each is checked against the RECONCILER'S OWN REGISTRY before it is copied — `SETTLEMENT_WARNINGS`,
+ * imported from the module that emits them, so there is one authority and no second list to drift.
+ *
+ * ⚠ THIS WAS A SHAPE CHECK AND THAT WAS NOT A CLOSED SET. It tested `/^[A-Z][A-Z0-9_]{0,63}$/`,
+ * which admits any uppercase token at all, and the header above still called the result closed. An
+ * adversarial reviewer fed the reconciler's warning list `SETTLEMENT_FRAUD_CHECK_PASSED` and this
+ * verifier published it verbatim as its own finding — an invented all-clear, in a field an auditor
+ * reads as something the verifier established. A registry of four tokens is a closed set; a regex
+ * over their SHAPE is not.
+ */
+export function settlementWarningsOf(warnings: unknown): string[] {
+  const out: string[] = [];
+  if (!Array.isArray(warnings)) return out;
+  for (const w of warnings) {
+    out.push(
+      typeof w === "string" && (SETTLEMENT_WARNINGS as readonly string[]).includes(w)
+        ? `settlement: ${w}`
+        : "settlement: the reconciler emitted a warning this verifier does not recognise",
+    );
+  }
+  return out;
+}
+
+/**
  * S5 REVISION 3 — THE SETTLEMENT ARTIFACT PLANE (R1/R2/R3), run INSIDE step 10 AFTER every shipped
  * EXECUTED check, and ONLY when the bundle carries a settlement artifact (present ⇒ always checked,
  * §5.2 R0). It bridges to the shipped D7 reconciler; it invents no rule of its own.
@@ -990,6 +1045,24 @@ function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
     now: ctx.now,
   });
 
+  // ── WHAT THE RECONCILER SAW, CARRIED OUT — before the switch, so it is reported on EVERY path ──
+  //
+  // The reconciler derives an observer↔execution-signer relationship and a warning list on every
+  // call, and this package read neither. Measured: `observerRelationship` had ZERO read sites here,
+  // so `SETTLEMENT_OBSERVER_SAME_KEY_AS_EXECUTION_SIGNER` — the single most load-bearing fact about a
+  // witness — reached a bundle verdict only through the R8 cap, which runs for an ENROLLED class and
+  // nowhere else. For every unenrolled artifact the relationship decided nothing AND was reported
+  // nowhere, so an auditor reading VALID_FULL_CHAIN over a settlement artifact could not tell a
+  // self-witnessed settlement from an independently witnessed one.
+  //
+  // It is carried here, ahead of the switch, because the REJECTING paths are where it matters most:
+  // `settlementFacts` is set only for an accepted artifact, so a rejected one's relationship would
+  // never surface. And it is REPORTING ONLY — no verdict, dimension or exit code reads it. The rule
+  // that does change an answer (R8's cap) is untouched, and the corpus proves the point: every
+  // fixture's verdict, step, code and exit are byte-identical with this propagation in place.
+  ctx.settlementObserver = observerRelationshipOf(r.observerRelationship);
+  for (const w of settlementWarningsOf(r.warnings)) ctx.warnings.push(w);
+
   const detail = r.reason === null ? "" : ` — ${r.reason}`;
   switch (r.code) {
     // A valid, bound, in-bounds offline artifact — the ONLY non-reject settlement outcome this slice
@@ -1024,6 +1097,17 @@ function checkSettlement(ctx: Ctx, S: StepName): StepResult | null {
       }
       ctx.settlement = "CONTRADICTED";
       return fail(S, "E_PARAMS_PREIMAGE_MISMATCH", `a supplied actionParamsPreimage does not hash to the approved parameters, or is not the closed six-member shape (R2)${detail}`);
+    // R1 — the artifact points at a DIFFERENT approval, or at a DIFFERENT grant. Two codes, not one,
+    // and not the R1 catch-all: §5.3 gives each its own member precisely so they cannot substitute
+    // for each other. Folded into `E_SETTLEMENT_BINDING` (where they sat until this slice), a bug
+    // that turned "wrong approval" into "wrong grant" passed both vectors — the bucket defect the
+    // spec names for that code and then, until now, committed with these two.
+    case "AUTHORIZATION_RECEIPT_MISMATCH":
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_SETTLEMENT_APPROVAL_REF", `the settlement artifact's authorizationReceiptHash is not this bundle's ALLOWED receipt (R1)${detail}`);
+    case "EXECUTION_GRANT_MISMATCH":
+      ctx.settlement = "CONTRADICTED";
+      return fail(S, "E_SETTLEMENT_GRANT_REF", `the settlement artifact's executionGrantHash is not this bundle's execution grant (R1)${detail}`);
     // R3 — the recomputed D7 nonce disagrees with the artifact's correlation.
     case "SETTLEMENT_CORRELATION_MISMATCH":
       ctx.settlement = "CONTRADICTED";

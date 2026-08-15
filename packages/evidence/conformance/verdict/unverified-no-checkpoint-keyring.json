@@ -3,6 +3,7 @@
   "expectVerdict": "UNVERIFIED",
   "expectStep": "STEP_17_CHECKPOINT_RECONCILE",
   "expectCode": "E_NO_TRUST_ROOT",
+  "expectExit": 4,
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {

@@ -67,6 +67,11 @@ declare module "noa-rail-x402" {
   export const SETTLEMENT_EVIDENCE_SPEC: string;
   export const CHAIN_FACTS_ORIGIN_RELYING_PARTY: string;
 
+  /** The §6 warning registry — the CLOSED set of tokens the reconciler may emit. The evidence
+   *  verifier maps anything outside it to its own unrecognised-warning line rather than publishing
+   *  it, so this export is the single authority and there is no second list to drift. */
+  export const SETTLEMENT_WARNINGS: readonly string[];
+
   /** The D7 correlation derivation — used by the fixtures generator to mint bound settlement artifacts. */
   export function deriveCorrelationNonce(input: {
     chainId: number;

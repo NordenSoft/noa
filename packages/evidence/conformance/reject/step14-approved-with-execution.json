@@ -3,6 +3,7 @@
   "expectVerdict": "INVALID",
   "expectStep": "STEP_14_APPROVED_NO_EXECUTION_EVIDENCE",
   "expectCode": "E_APPROVED_NO_EXEC",
+  "expectExit": 2,
   "now": "2026-07-14T12:00:00.000Z",
   "maxAgeHours": 24,
   "bundle": {
