@@ -6,6 +6,30 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- **`NON-CLAIMS.md` gained two whole sections that ship in this package's tarball** — §S4
+  (settlement evidence, 17 entries; from #76, #65, #63, #59) and §S5 (action-class enrolment,
+  8 entries; from #76) — 419 diff lines since v0.7.0 in total. They document the limits of the
+  monorepo's `packages/evidence`, `packages/gate` and `packages/rail-x402`, none of which ship
+  in the `noa-receipt` tarball itself: a `noa-receipt`-only consumer reads non-claims about
+  features this package does not expose. Recorded here so the shipped file's growth is announced
+  in the file that announces changes (EMP-03 release-hygiene pass, 2026-08-18).
+- Root-scope additions from the settlement-correlation work (#68 merge, content reviewed and
+  evidenced in its PR body): small extensions to `src/action-digest.ts`, `src/index.ts` and
+  `src/scan.ts` (+22 lines total) supporting the D7 nonce/dispatch-ID derivation whose
+  implementation lives outside this package.
+
+### Fixed (documentation)
+
+- **`docs/receipt-spec.md` protected-header example corrected** (#75): the stale one-member
+  byte string `a10132` is replaced by the real two-member encoding (`a2 01 32 04 …`) an
+  implementer would otherwise have copied verbatim; the same commit added the
+  `attribution_substituted_for_authorization` negative conformance vector.
+- `src/keys.ts` comment-only correction (#80): the small-order-key rejection rationale was
+  misattributed to OpenSSL using a cofactored verify equation; measured against OpenSSL 3.6.3,
+  the true difference is key acceptance, not the equation. No behavior change.
+
 ### Fixed
 
 - **`receiptFromCose` checked the identity manifest against the wrong signature, and got both

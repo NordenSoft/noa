@@ -127,7 +127,11 @@ core was unreachable. It runs now.
 
 Freeze a normative authority hierarchy. Resolve the COSE construction/verification contradictions —
 prose and implementation disagree about protected `kid`, embedded receipt signatures, payload bytes,
-detached-payload binding, and whether COSE verification also establishes native-chain validity.
+and detached-payload binding. [Updated 2026-08-18, EMP-03 pass: the fifth arm — whether COSE
+verification also establishes native-chain validity — was resolved at `548a90c` (#81):
+`receiptFromCose` now verifies the native signature and binds the manifest to the native `sig.kid`;
+`ok:true` means both signatures verified. ADR-R-008 is correspondingly narrowed. The remaining four
+arms are still open and unmeasured.]
 Resolve or version the Trust semantic mismatch **without** changing frozen `noa.receipt/0.1`. The
 `action.id`/`action.canonical` mismatch is not retracted: it was never re-measured, and the receipt
 schema still does not detect it.
