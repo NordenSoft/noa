@@ -802,6 +802,16 @@ narrows WHO may register a device; it never turns registration into authority. A
 configuration goes stale the day the configuration changes — this one rests on the invariant.
 
 
+### NC-6.7b — Four COSE/SCITT reconciliation arms remain open (added 2026-08-19, EMP-03)
+
+**We do not claim SCITT/COSE interoperability.** The signer-role / kid-binding / layered
+native-chain-verification arm of the COSE reconciliation was resolved and vectored at
+`548a90c` (#81). Four arms remain open and unmeasured against the SCITT draft: COSE
+protected/unprotected `kid` header placement, embedded-signature presence, exact payload
+bytes, and detached-payload binding (03_DECISIONS_ADR.md, ADR-R-008). A package release
+carrying this file makes no interoperability claim; the open arms must be re-measured
+before any such claim.
+
 ### NC-6.8 — NOA never holds a customer's provider credentials (safe default applied 2026-08-04)
 
 **We do not claim, and will not build, a path in which NOA stores, forwards or otherwise takes

@@ -15,10 +15,11 @@ All notable changes to `noa-receipt` are documented here. The format follows
   in the `noa-receipt` tarball itself: a `noa-receipt`-only consumer reads non-claims about
   features this package does not expose. Recorded here so the shipped file's growth is announced
   in the file that announces changes (EMP-03 release-hygiene pass, 2026-08-18).
-- Root-scope additions from the settlement-correlation work (#68 merge, content reviewed and
-  evidenced in its PR body): small extensions to `src/action-digest.ts`, `src/index.ts` and
-  `src/scan.ts` (+22 lines total) supporting the D7 nonce/dispatch-ID derivation whose
-  implementation lives outside this package.
+- Root-scope additions from the settlement-correlation work (#67 merge, landed as `648b091`
+  titled "probe" — see CORRECTIONS.md 2026-08-14; content reviewed and evidenced in its PR
+  body): small extensions to `src/action-digest.ts`, `src/index.ts` and `src/scan.ts`
+  (+20/-2 lines) supporting the D7 nonce/dispatch-ID derivation whose implementation lives
+  outside this package.
 
 ### Fixed (documentation)
 
