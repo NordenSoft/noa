@@ -84,13 +84,59 @@ All notable changes to `noa-receipt` are documented here. The format follows
 
 ## [0.8.0] - 2026-08-14
 
-**MINOR, and it contains a deliberate behaviour break.** Receipts that verified `VALID` in `0.7.0`
-verify `MALFORMED` here. Under [SemVer §4](https://semver.org/#spec-item-4) major-version-zero that
-is allowed in a minor bump; it is stated at the top of this entry rather than buried, and
-[VERSIONING.md §3.1](VERSIONING.md) carries the carve-out against this project's own
-"an already-issued `noa.receipt/0.1` receipt keeps verifying exactly as it does today" promise.
+**MINOR, and it contains TWO deliberate behaviour breaks.** Under
+[SemVer §4](https://semver.org/#spec-item-4) major-version-zero both are allowed in a minor bump;
+they are stated here rather than buried, and [VERSIONING.md §3.1](VERSIONING.md) carries the
+carve-out against this project's own "an already-issued `noa.receipt/0.1` receipt keeps verifying
+exactly as it does today" promise.
+
+1. **Receipts that verified `VALID` in `0.7.0` verify `MALFORMED` here** — a signed body may no
+   longer contradict itself. Five rules, all five implementations. Detailed below.
+2. **`receiptFromCose` now refuses an envelope whose enveloped receipt is signed by a key absent
+   from the supplied keyring**, where it previously returned `ok: true` on the envelope's authority
+   alone. Detailed below.
+
+**WHAT IS AND IS NOT IN THIS ENTRY.** This changelog describes the published `noa-receipt` tarball,
+whose `files` whitelist is `dist/src`, `schema`, `docs/receipt-spec.md` and the top-level documents.
+Work in this repository's other packages — the evidence verifier (`noa-approval-evidence`), the gate
+(`noa-gate`), and the x402 settlement rail (`noa-rail-x402`, which has its own version line) — is
+**not** listed here, because none of it reaches anyone who installs this package. Listing it would
+advertise features a reader could not find in their own `node_modules`. Where such work corrected a
+statement in a document that IS shipped, the correction is recorded under *Changed*.
 
 ### Security
+
+- **The COSE identity manifest was checked against the wrong signature, and it let one agent sign as
+  another.** `receiptFromCose` looked the manifest up against the OUTER envelope's kid and never
+  verified the enveloped receipt's own signature — so an envelope's authority stood in for the
+  agent's. Both directions were reproduced against the built package. **Laundering:** a receipt
+  natively signed by `k-rogue` while claiming `agent.id: "alice"`, wrapped in an envelope signed by
+  `k-alice` (a key the manifest genuinely authorizes for alice), returned `ok: true` — the rogue key
+  was bound to nothing. **The mirror-image false refusal:** a receipt properly signed by alice's own
+  key, presented under `k-relay`, returned `ok: false`. Both verdicts flip with this release.
+
+  The fix binds the receipt's own `sig.kid` and **verifies the native signature first**, against the
+  same keyring: it re-derives `receiptHashInput(receipt)`, requires
+  `"sha256:" + sha256Hex(hashInput) === receipt.chain.hash` — the signature alone did not pin
+  `chain.hash`, which is excluded from the hash input — refuses a native kid that is retired or
+  absent, and only then runs the manifest lookup. Repointing the lookup without verifying would have
+  bought nothing: `sig.kid` is a field of a payload the emitter controls, so an unverified one is a
+  self-asserted string an attacker relabels for free.
+
+  `ReceiptCoseResult` gains four fields — `nativeKid`/`agentClaim` for the agent beside
+  `envelopeKid`/`envelopeClaim` for the emitter — typed by a new exported `CoseAttribution` union
+  (`VERIFIED` | `UNAUTHORIZED` | `UNBOUND` | `UNAUTHENTICATED` | `FAILED` | `NOT_EVALUATED`).
+  `ok: true` now means **both** signatures verified. `kid` remains key-resolution only and is
+  documented as not an identity claim.
+
+  **Why nothing went red:** the COSE identity path had no knockout entry at all. It has six now,
+  alongside six conformance vectors in `conformance/cose-attribution/` run on every `npm test`.
+  Rule cited: draft-noa-scitt-ai-agent-receipt-01 §6, mirrored into
+  [`docs/receipt-spec.md`](docs/receipt-spec.md) §8.
+
+  **A coverage gap this entry will not paper over:** `impl-go`, `impl-py`, `impl-rust` and
+  `impl-csharp` implement no COSE envelope path, so these six vectors are consumed by the TypeScript
+  suite alone. This is not five-implementation parity and is not claimed as such.
 
 - **A signed receipt could contradict itself, and all five shipped verifiers said `VALID`.** Five
   receipts were built, signed and run through the TypeScript, Python, Go, Rust and C# verifiers on
@@ -174,6 +220,25 @@ is allowed in a minor bump; it is stated at the top of this entry rather than bu
   that implementation, and a unit failure fails the whole conformance run.
 
 ### Changed
+
+- **`NON-CLAIMS.md` — four corrections, each superseded in place rather than quietly rewritten.**
+  This file ships in the tarball, so a stale non-claim is a stale promise to whoever installs the
+  package. The originals are quoted inside each supersession, which is why the file grew rather than
+  changed:
+  - **The authority-root corollary no longer describes a key that has moved.** It said the gate's
+    grant-signing key is held as a plain base64 string in the gate's Node process, readable by the
+    same ambient attacker the architecture exists to stop. That is no longer where the key lives.
+  - **Half of "the gate's own record-keeping is not transactional" stopped being true**, and the
+    paragraph was narrowed to the half that still is. The `Store` interface now carries two
+    compare-and-swap claim primitives — the single-use burn and the one-shot terminal lock — so the
+    absence was a property of one driver, not of the interface.
+  - **A control count was corrected twice in one day, and the second correction says so.** The first
+    fix wrote *three*, taken from the three IDs its own commit added and never checked against the
+    registry, which already held two more. The number is *five*. Understating coverage errs in the
+    safe direction and is still a number nobody measured — the file records that as the same mistake
+    as overstating it.
+  - **A new section S5** on action-class enrolment, with a one-sentence ceiling for the whole
+    family: *enrolment makes a claim COST more; it never makes one TRUE.*
 
 - `isRfc3339` (`src/scan.ts`) is unchanged and still purely lexical — the parity claim above depends
   on it staying that way. The calendar layer is a new, separately-tested `isRfc3339Instant`, and
